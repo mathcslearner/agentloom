@@ -17,6 +17,7 @@ import (
 
 	"github.com/mathcslearner/agentloom/internal/config"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
+	"github.com/mathcslearner/agentloom/internal/version"
 )
 
 func main() {
@@ -29,6 +30,7 @@ func main() {
 	logger := log.New(cfg.Log, os.Stdout)
 	logger.Info("demo starting",
 		slog.String("component", "demo"),
+		slog.String("version", version.Version),
 		slog.String("log_level", cfg.Log.Level.String()),
 		slog.String("log_format", string(cfg.Log.Format)),
 	)

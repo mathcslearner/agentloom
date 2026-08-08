@@ -52,6 +52,7 @@ deploy/         helm/, terraform/, dockerfiles (planned)
 docs/           architecture.md + doc index; adr/, demos/, load/ (planned)
 examples/       canonical workflow JSON fixtures (planned)
 test/           integration + chaos suites (planned)
+api/            openapi.yaml — the REST API contract (planned)
 ```
 
 ## License
