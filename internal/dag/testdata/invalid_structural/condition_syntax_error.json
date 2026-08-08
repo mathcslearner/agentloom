@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "name": "condition-syntax-error",
+  "steps": [
+    {
+      "id": "draft",
+      "type": "noop"
+    },
+    {
+      "id": "critique",
+      "type": "noop"
+    }
+  ],
+  "edges": [
+    {
+      "from": "draft",
+      "to": "critique"
+    },
+    {
+      "from": "critique",
+      "to": "draft",
+      "type": "loop",
+      "condition": "output.verdict ==",
+      "max_iterations": 3
+    }
+  ]
+}

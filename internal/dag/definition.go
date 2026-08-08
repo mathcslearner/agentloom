@@ -9,7 +9,9 @@
 // rules (1.4: only marked loop edges may form cycles, loop-edge ancestry);
 // Graph (1.4) provides adjacency, topological order, reachability, and
 // ReadySteps — ADR-003's readiness, skip-propagation, and join semantics.
-// CEL compilation (1.5) builds on these types next.
+// CompileExpr and CompiledExpr.Eval (1.5) compile the `when`/`condition`
+// CEL predicates at validation time and evaluate them for the engine —
+// evaluation errors are typed failures, never coerced to false.
 package dag
 
 import "encoding/json"

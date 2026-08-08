@@ -454,6 +454,39 @@ original text left open; no prior decision is changed.*
   is a pure, repeatable computation over run state; dispatch bookkeeping
   (claimed/running steps) is the engine's concern, not the graph library's.
 
+### CEL compilation: environment shape, result-type rule, codes
+
+*Added 2026-08-08 while implementing ticket 1.5 — clarifies points the
+original text left open; no prior decision is changed.*
+
+- **The environment declares exactly two variables.** `output` is `dyn`
+  (a step's output shape is not statically known), and `run` is
+  `map(string, dyn)` — declared as a map rather than a struct so
+  run-scoped context can grow additively without an environment version
+  bump. Only `run.params` is populated today. Standard CEL built-ins and
+  macros only; no custom functions in 1.5. Full reference:
+  `docs/expressions.md`.
+- **Predicates must check to `bool` or `dyn`.** `when` and `condition`
+  are predicates, so an expression whose checked type is anything else
+  (`1 + 2`, `'abc'`) is rejected at validation time
+  (`expression_not_boolean`). A `dyn` result is accepted at compile time
+  and enforced at evaluation: a non-bool runtime value is an evaluation
+  error under the errors-are-failures policy above, never a truthiness
+  coercion.
+- **Compile failures join the one-pass report.** Two codes:
+  `invalid_expression` (syntax/typecheck failure; one issue per CEL
+  error, message prefixed with the 1-based `line:col` position inside the
+  expression) and `expression_not_boolean`. Only the semantically
+  meaningful predicate of each edge kind is compiled (`when` on normal
+  edges, `condition` on loop edges), and over-length expressions are not
+  compiled — they are already rejected, and the 1,024-byte cap bounds
+  compile work (~50µs per expression).
+- **Evaluation is a typed helper, not an engine.** `CompileExpr` /
+  `CompiledExpr.Eval` return the routing boolean or a typed `*EvalError`
+  (`errors.As`-reachable); the completion transaction (M4) owns calling
+  it and recording the failure, and failure classification stays with
+  ADR-006 (M5).
+
 ### Enforcement points
 
 For conformance, the rules above land in specific tickets: **1.2** — strict

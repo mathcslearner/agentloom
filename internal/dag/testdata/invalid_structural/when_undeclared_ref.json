@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "when-undeclared-ref",
+  "steps": [
+    {
+      "id": "a",
+      "type": "noop"
+    },
+    {
+      "id": "b",
+      "type": "noop"
+    }
+  ],
+  "edges": [
+    {
+      "from": "a",
+      "to": "b",
+      "when": "outputs.category == 'billing'"
+    }
+  ]
+}

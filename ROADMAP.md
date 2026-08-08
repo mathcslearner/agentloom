@@ -190,13 +190,13 @@ Adjacency construction, cycle detection that rejects all cycles *except* marked 
 - [x] Property tests: readiness is monotonic, never returns a step with unmet deps, skip propagation terminates
 - [x] Benchmark: 10k nodes validated + readiness computed <100ms
 
-#### 1.5 — CEL edge conditions
+#### 1.5 — CEL edge conditions ✅
 **Depends on:** 1.4
 Integrate cel-go: compile `when` expressions at validation time (syntax/typecheck against a declared environment: `output` of the source step, `run.params`), evaluation helper used later by the engine. Policy per ADR: evaluation *error* is a step-level failure (recorded), never silently treated as `false`.
 **Done when:**
-- [ ] Invalid expressions rejected at definition-validation time with position info
-- [ ] Eval unit tests: truthy/falsy routing, missing fields, type errors → typed eval-error
-- [ ] Expression environment documented in `docs/expressions.md`
+- [x] Invalid expressions rejected at definition-validation time with position info
+- [x] Eval unit tests: truthy/falsy routing, missing fields, type errors → typed eval-error
+- [x] Expression environment documented in `docs/expressions.md`
 
 #### 1.6 — Canonical example definitions & golden fixtures
 **Depends on:** 1.5

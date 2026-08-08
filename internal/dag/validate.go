@@ -57,6 +57,8 @@ const (
 	CodeLimitExceeded           ValidationCode = "limit_exceeded"
 	CodeCycle                   ValidationCode = "cycle_detected"
 	CodeLoopEdgeNotAncestor     ValidationCode = "loop_edge_not_ancestor"
+	CodeExprInvalid             ValidationCode = "invalid_expression"
+	CodeExprNotBool             ValidationCode = "expression_not_boolean"
 )
 
 // ValidationIssue is one structural problem in a definition, qualified by
@@ -79,8 +81,9 @@ func (i *ValidationIssue) Error() string {
 // Validate enforces ADR-003's structural rules on a decoded (or
 // programmatically built) definition: ID uniqueness and syntax, edge
 // endpoint existence, per-type required config, loop- and branch-edge
-// rules, entry-step existence, and the definition limits. It reports every
-// violation in one pass.
+// rules, CEL predicate compilation (`when`/`condition`), entry-step
+// existence, and the definition limits. It reports every violation in one
+// pass.
 //
 // issues holds all findings, warnings included, in deterministic order;
 // err joins the error-severity issues (nil when the definition is valid,
@@ -272,7 +275,10 @@ func (v *validator) checkLLMConfig(path, model, prompt string, nMessages int) {
 // checkEdges validates edge endpoints and the per-edge field rules: loop
 // edges require condition and a bounded max_iterations and reject when;
 // normal edges reject the loop-only fields; expressions respect the
-// length limit.
+// length limit and must compile (ticket 1.5) — only the semantically
+// meaningful predicate of each edge kind is compiled, and over-length
+// expressions are not (they are already rejected, and the length cap
+// bounds compile work).
 func (v *validator) checkEdges(def *Definition, stepIndex map[string]int) {
 	for i, e := range def.Edges {
 		path := fmt.Sprintf("edges[%d]", i)
@@ -286,10 +292,13 @@ func (v *validator) checkEdges(def *Definition, stepIndex map[string]int) {
 			if e.When != "" {
 				v.add(CodeLoopFieldForbidden, path+".when", `"when" is not valid on a loop edge (its predicate is "condition")`)
 			}
-			if e.Condition == "" {
+			switch {
+			case e.Condition == "":
 				v.add(CodeLoopFieldRequired, path+".condition", "required on a loop edge")
-			} else if len(e.Condition) > MaxExprLen {
+			case len(e.Condition) > MaxExprLen:
 				v.add(CodeLimitExceeded, path+".condition", "expression is %d bytes (max %d)", len(e.Condition), MaxExprLen)
+			default:
+				v.checkExpr(path+".condition", e.Condition)
 			}
 			switch {
 			case e.MaxIterations == 0:
@@ -304,11 +313,45 @@ func (v *validator) checkEdges(def *Definition, stepIndex map[string]int) {
 			if e.MaxIterations != 0 {
 				v.add(CodeLoopFieldForbidden, path+".max_iterations", "only valid on loop edges")
 			}
-			if len(e.When) > MaxExprLen {
+			switch {
+			case len(e.When) > MaxExprLen:
 				v.add(CodeLimitExceeded, path+".when", "expression is %d bytes (max %d)", len(e.When), MaxExprLen)
+			case e.When != "":
+				v.checkExpr(path+".when", e.When)
 			}
 		}
 	}
+}
+
+// checkExpr compiles a `when`/`condition` predicate (ticket 1.5) and
+// reports compile failures — one issue per CEL error, message prefixed
+// with the 1-based line:col position — and non-boolean result types.
+func (v *validator) checkExpr(path, src string) {
+	_, err := CompileExpr(src)
+	if err == nil {
+		return
+	}
+	var notBool *ExprNotBoolError
+	if errors.As(err, &notBool) {
+		v.add(CodeExprNotBool, path, "%s", notBool.Error())
+		return
+	}
+	for _, sub := range flatten(err) {
+		var ce *ExprError
+		if errors.As(sub, &ce) {
+			v.add(CodeExprInvalid, path, "%s", ce.Error())
+		} else {
+			v.add(CodeExprInvalid, path, "%v", sub)
+		}
+	}
+}
+
+// flatten expands a joined error into its parts, or returns it as-is.
+func flatten(err error) []error {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		return joined.Unwrap()
+	}
+	return []error{err}
 }
 
 // checkGraph runs the degree-based graph rules: at least one entry step,

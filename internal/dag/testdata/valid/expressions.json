@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "name": "expressions",
+  "description": "Exercises the full CEL edge-predicate environment: output selection, run.params, the has() guard, and a loop condition.",
+  "params": {
+    "strict": {
+      "type": "boolean",
+      "required": true
+    },
+    "max_score": {
+      "type": "number"
+    }
+  },
+  "steps": [
+    {
+      "id": "draft",
+      "type": "llm",
+      "config": {
+        "model": "anthropic/claude-sonnet-5",
+        "prompt": "Draft a reply."
+      }
+    },
+    {
+      "id": "critique",
+      "type": "llm",
+      "config": {
+        "model": "anthropic/claude-sonnet-5",
+        "prompt": "Critique the draft."
+      }
+    },
+    {
+      "id": "publish",
+      "type": "noop"
+    },
+    {
+      "id": "escalate",
+      "type": "noop"
+    }
+  ],
+  "edges": [
+    {
+      "from": "draft",
+      "to": "critique"
+    },
+    {
+      "from": "critique",
+      "to": "draft",
+      "type": "loop",
+      "condition": "output.verdict == 'revise' && run.params.strict == true",
+      "max_iterations": 5
+    },
+    {
+      "from": "critique",
+      "to": "publish",
+      "when": "has(output.score) && output.score >= run.params.max_score"
+    },
+    {
+      "from": "critique",
+      "to": "escalate",
+      "when": "!has(output.score)"
+    }
+  ]
+}

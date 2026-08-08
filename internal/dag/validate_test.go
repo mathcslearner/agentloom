@@ -60,6 +60,13 @@ func decodeFixture(t *testing.T, parts ...string) *dag.Definition {
 	return def
 }
 
+// exprOfLen builds a compiling CEL predicate of exactly n bytes by padding
+// inside a string literal (n must leave room for the comparison scaffold).
+func exprOfLen(n int) string {
+	const scaffold = "output.x == ''"
+	return "output.x == '" + strings.Repeat("p", n-len(scaffold)) + "'"
+}
+
 // structuralCases maps every invalid_structural fixture to the exact set
 // of error-severity issues it must produce. The corpus-coverage test pins
 // this table to the fixture directory.
@@ -114,9 +121,22 @@ var structuralCases = map[string][]issueRef{
 	},
 	"name_too_long.json": {{dag.CodeLimitExceeded, "name"}},
 	"expr_too_long.json": {{dag.CodeLimitExceeded, "edges[0].when"}},
+	"when_syntax_error.json": {
+		{dag.CodeExprInvalid, "edges[0].when"},
+	},
+	"when_undeclared_ref.json": {
+		{dag.CodeExprInvalid, "edges[0].when"},
+	},
+	"when_not_boolean.json": {
+		{dag.CodeExprNotBool, "edges[0].when"},
+	},
+	"condition_syntax_error.json": {
+		{dag.CodeExprInvalid, "edges[1].condition"},
+	},
 	"multi_error_structural.json": {
 		{dag.CodeDuplicateStepID, "steps[1].id"},
 		{dag.CodeConfigFieldRequired, "steps[1].config.model"},
+		{dag.CodeExprInvalid, "edges[0].when"},
 		{dag.CodeBranchEdgeUnconditioned, "edges[1]"},
 		{dag.CodeUnknownEdgeEndpoint, "edges[2].to"},
 		{dag.CodeLoopFieldForbidden, "edges[2].max_iterations"},
@@ -291,13 +311,45 @@ func TestValidateTableDriven(t *testing.T) {
 			wantErrs: []issueRef{{dag.CodeLimitExceeded, "name"}},
 		},
 		{
+			// exprOfLen pads inside a string literal so the boundary-length
+			// expression still compiles now that Validate compiles predicates.
 			name: "when expression at 1024-byte limit",
-			def:  pair(dag.Edge{From: "a", To: "b", When: strings.Repeat("x", 1024)}),
+			def:  pair(dag.Edge{From: "a", To: "b", When: exprOfLen(1024)}),
 		},
 		{
 			name:     "when expression over 1024-byte limit",
-			def:      pair(dag.Edge{From: "a", To: "b", When: strings.Repeat("x", 1025)}),
+			def:      pair(dag.Edge{From: "a", To: "b", When: exprOfLen(1025)}),
 			wantErrs: []issueRef{{dag.CodeLimitExceeded, "edges[0].when"}},
+		},
+		{
+			name: "when compiles against output and run.params",
+			def:  pair(dag.Edge{From: "a", To: "b", When: "has(output.score) && run.params.strict == true"}),
+		},
+		{
+			name:     "when syntax error reported with position",
+			def:      pair(dag.Edge{From: "a", To: "b", When: "output.x =="}),
+			wantErrs: []issueRef{{dag.CodeExprInvalid, "edges[0].when"}},
+		},
+		{
+			name:     "when must be a boolean predicate",
+			def:      pair(dag.Edge{From: "a", To: "b", When: "size('abc')"}),
+			wantErrs: []issueRef{{dag.CodeExprNotBool, "edges[0].when"}},
+		},
+		{
+			name: "loop condition compile failure",
+			def: pair(
+				dag.Edge{From: "a", To: "b"},
+				dag.Edge{From: "b", To: "a", Type: dag.EdgeLoop, Condition: "nope == 1", MaxIterations: 3},
+			),
+			wantErrs: []issueRef{{dag.CodeExprInvalid, "edges[1].condition"}},
+		},
+		{
+			name: "one issue per CEL error in a single expression",
+			def:  pair(dag.Edge{From: "a", To: "b", When: "nope == 1 && also_nope == 2"}),
+			wantErrs: []issueRef{
+				{dag.CodeExprInvalid, "edges[0].when"},
+				{dag.CodeExprInvalid, "edges[0].when"},
+			},
 		},
 		{
 			name: "loop max_iterations at cap",
@@ -468,6 +520,29 @@ func TestValidateErrorShape(t *testing.T) {
 			t.Errorf("error does not contain %q; full error:\n%v", want, err)
 		}
 	}
+}
+
+// TestValidateExprPositionInfo is the ticket 1.5 acceptance check: an
+// invalid expression is rejected at definition-validation time and the
+// issue message carries the line:col source position.
+func TestValidateExprPositionInfo(t *testing.T) {
+	t.Parallel()
+
+	def := decodeFixture(t, "invalid_structural", "when_syntax_error.json")
+	issues, err := dag.Validate(def)
+	if err == nil {
+		t.Fatal("Validate: want error, got nil")
+	}
+	for _, i := range issues {
+		if i.Code != dag.CodeExprInvalid {
+			continue
+		}
+		if !strings.Contains(i.Msg, "1:") {
+			t.Errorf("expression issue lacks line:col position info: %q", i.Msg)
+		}
+		return
+	}
+	t.Fatalf("no %s issue reported; got %v", dag.CodeExprInvalid, issues)
 }
 
 func TestValidateNilDefinition(t *testing.T) {

@@ -25,7 +25,8 @@
   "edges": [
     {
       "from": "start",
-      "to": "route"
+      "to": "route",
+      "when": "not_declared == 'x'"
     },
     {
       "from": "route",
