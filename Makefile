@@ -1,7 +1,7 @@
-# NOTE: paths are quoted in recipes because the checkout path may contain spaces.
+# Keep in sync with the golangci-lint-action version in .github/workflows/ci.yml.
 GOLANGCI_LINT_VERSION := v2.12.2
 BIN_DIR := $(CURDIR)/bin
-GOLANGCI_LINT := "$(BIN_DIR)/golangci-lint"
+GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 
 .DEFAULT_GOAL := help
 
@@ -33,4 +33,4 @@ test-integration: ## Run integration tests (requires the Docker Compose stack; s
 .PHONY: tools
 tools: ## Install pinned golangci-lint into ./bin if missing or outdated
 	@$(GOLANGCI_LINT) version 2>/dev/null | grep -qF "$(patsubst v%,%,$(GOLANGCI_LINT_VERSION))" || \
-		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(BIN_DIR)" $(GOLANGCI_LINT_VERSION)
+		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(BIN_DIR) $(GOLANGCI_LINT_VERSION)

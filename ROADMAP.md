@@ -118,9 +118,9 @@ Initialize the monorepo: pick the project name and Go module path (placeholder `
 **Depends on:** 0.1
 GitHub Actions workflow: golangci-lint, `go vet`, unit tests with race detector, Go build cache. Runs on PRs and main. (Integration-test job with services arrives in 2.2; frontend job in 17.1.)
 **Done when:**
-- [ ] CI runs lint + `go test -race ./...` on every PR
+- [x] CI runs lint + `go test -race ./...` on every PR
 - [ ] A deliberately failing test fails the pipeline (verified once, then removed)
-- [ ] Status badge in README
+- [x] Status badge in README
 
 #### 0.3 — Architecture overview document
 **Depends on:** 0.1

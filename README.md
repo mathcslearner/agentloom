@@ -1,5 +1,7 @@
 # agentloom
 
+[![CI](https://github.com/mathcslearner/agentloom/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mathcslearner/agentloom/actions/workflows/ci.yml)
+
 **A distributed, durable execution engine purpose-built for AI agent workflows — Temporal-grade distributed-systems guarantees, AI-native orchestration semantics.**
 
 Define workflows as DAGs of steps (LLM calls, tool calls, conditionals, fan-out/fan-in, human approvals); agentloom distributes execution across independent worker processes, persists durable state so runs survive crashes and resume from the last completed step, and provides retries, timeouts, idempotency, and dead-lettering. It sits between **n8n/Zapier** (easy, not production-grade), **Temporal/Airflow** (production-grade, not AI-native), and **LangGraph** (great agent logic, but an in-process library with no distributed coordination or crash recovery) — with AI-native features as first-class primitives: semantic/self-correcting retries, dynamic runtime DAG expansion, cost-aware scheduling with budgets, context/memory management, multi-agent handoff, and human-in-the-loop approvals.

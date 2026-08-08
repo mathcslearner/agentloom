@@ -10,7 +10,7 @@ It sits between: **n8n/Zapier** (easy, not production-grade), **Temporal/Airflow
 
 ## Current status
 
-**M0 in progress.** Ticket 0.1 (repo scaffold & tooling) is done: project named **agentloom**, module path `github.com/mathcslearner/agentloom`, directory skeleton, `Makefile` (`lint` / `test` / `test-integration` / `fmt`, pinned golangci-lint auto-installed into `./bin`), golangci-lint v2 config, Apache-2.0 license, README. All further implementation happens by executing the roadmap; next ticket is 0.2 (CI pipeline).
+**M0 in progress.** Ticket 0.1 (repo scaffold & tooling) is done: project named **agentloom**, module path `github.com/mathcslearner/agentloom`, directory skeleton, `Makefile` (`lint` / `test` / `test-integration` / `fmt`, pinned golangci-lint auto-installed into `./bin`), golangci-lint v2 config, Apache-2.0 license, README. Ticket 0.2 (CI pipeline) is implemented: `.github/workflows/ci.yml` runs parallel lint (go vet + golangci-lint, version pinned in sync with the Makefile) and `go test -race` jobs on PRs and pushes to main, with setup-go caching and a README status badge; one acceptance box remains open until the red-path check (a deliberately failing test fails CI, verified once then removed) is done on GitHub. All further implementation happens by executing the roadmap; next ticket is 0.3 (architecture overview document).
 
 ## How to work on this project
 
