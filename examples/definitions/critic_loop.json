@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "name": "critic-loop",
+  "description": "Bounded writer↔critic refinement: a draft step feeds a critic, and a marked loop edge — the only sanctioned kind of cycle — sends the run back to the draft step while the critic asks for revisions, up to max_iterations. Demonstrates loop edges (condition + max_iterations, executed by unrolling) and a conditioned exit edge.",
+  "params": {
+    "brief": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "draft",
+      "type": "llm",
+      "config": {
+        "model": "anthropic/claude-sonnet-5",
+        "prompt": "Write an article for this brief. If the blackboard has critique notes, address every one of them.\n\n${{ run.params.brief }}",
+        "max_tokens": 2048
+      }
+    },
+    {
+      "id": "critique",
+      "type": "agent",
+      "config": {
+        "agent": "critic",
+        "prompt": "Review the latest draft against the brief. Output JSON like {\"verdict\": \"approve\"} or {\"verdict\": \"revise\", \"notes\": [\"...\"]}."
+      }
+    },
+    {
+      "id": "publish",
+      "type": "echo",
+      "config": {
+        "input": {
+          "status": "published"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "draft",
+      "to": "critique"
+    },
+    {
+      "from": "critique",
+      "to": "draft",
+      "type": "loop",
+      "condition": "output.verdict == 'revise'",
+      "max_iterations": 5
+    },
+    {
+      "from": "critique",
+      "to": "publish",
+      "when": "output.verdict == 'approve'"
+    }
+  ]
+}

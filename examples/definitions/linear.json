@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "name": "linear-pipeline",
+  "description": "The simplest possible workflow: a straight three-step chain with no conditions — fetch a page (tool), summarize it (llm), record the result (echo). Demonstrates sequential dependency edges and a required run parameter referenced from step config.",
+  "params": {
+    "url": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "fetch",
+      "type": "tool",
+      "config": {
+        "tool": "http_request",
+        "input": {
+          "method": "GET",
+          "url": "${{ run.params.url }}"
+        }
+      }
+    },
+    {
+      "id": "summarize",
+      "type": "llm",
+      "config": {
+        "model": "anthropic/claude-sonnet-5",
+        "prompt": "Summarize the following page in three bullet points:\n\n${{ steps.fetch.output.body }}",
+        "max_tokens": 512
+      }
+    },
+    {
+      "id": "store",
+      "type": "echo",
+      "config": {
+        "input": {
+          "summary": "${{ steps.summarize.output.text }}"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "fetch",
+      "to": "summarize"
+    },
+    {
+      "from": "summarize",
+      "to": "store"
+    }
+  ]
+}

@@ -198,13 +198,13 @@ Integrate cel-go: compile `when` expressions at validation time (syntax/typechec
 - [x] Eval unit tests: truthy/falsy routing, missing fields, type errors → typed eval-error
 - [x] Expression environment documented in `docs/expressions.md`
 
-#### 1.6 — Canonical example definitions & golden fixtures
+#### 1.6 — Canonical example definitions & golden fixtures ✅
 **Depends on:** 1.5
 Author `examples/definitions/`: linear pipeline, fan-out/fan-in, conditional branch, loop-marked critic cycle, and a kitchen-sink using every construct. These are the shared fixtures for engine tests, serialization round-trips (M17), and docs.
 **Done when:**
-- [ ] All examples pass validation; kitchen-sink exercises every step/edge type
-- [ ] Fixtures wired into the M1 test suites as golden files
-- [ ] Each example has a short header comment explaining what it demonstrates
+- [x] All examples pass validation; kitchen-sink exercises every step/edge type
+- [x] Fixtures wired into the M1 test suites as golden files
+- [x] Each example has a short header comment explaining what it demonstrates
 
 ---
 

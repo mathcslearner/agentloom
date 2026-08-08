@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "name": "conditional-branch",
+  "description": "Exclusive routing with a branch step: a classifier's output drives first-match-in-declaration-order routing across two `when`-conditioned edges plus a trailing default, and the three arms reconverge on a `join all` — the un-taken arms are skipped, and skipped parents satisfy the join (skip propagation). Demonstrates branch semantics, CEL `when` predicates, and conditional fan-in.",
+  "params": {
+    "message": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "classify",
+      "type": "llm",
+      "config": {
+        "model": "anthropic/claude-sonnet-5",
+        "prompt": "Classify this support message as one of: refund, complaint, other. Reply with JSON like {\"category\": \"refund\"}.\n\n${{ run.params.message }}",
+        "max_tokens": 64,
+        "temperature": 0
+      }
+    },
+    {
+      "id": "route",
+      "type": "branch",
+      "config": {}
+    },
+    {
+      "id": "refund_flow",
+      "type": "tool",
+      "config": {
+        "tool": "http_request",
+        "input": {
+          "method": "POST",
+          "url": "https://billing.example.com/api/refund-requests",
+          "body": {
+            "message": "${{ run.params.message }}"
+          }
+        }
+      }
+    },
+    {
+      "id": "complaint_flow",
+      "type": "agent",
+      "config": {
+        "agent": "support",
+        "prompt": "Draft an empathetic reply to the complaint on the blackboard."
+      }
+    },
+    {
+      "id": "generic_flow",
+      "type": "llm",
+      "config": {
+        "model": "anthropic/claude-sonnet-5",
+        "prompt": "Draft a short acknowledgement for this message: ${{ run.params.message }}",
+        "max_tokens": 256
+      }
+    },
+    {
+      "id": "merge",
+      "type": "join",
+      "config": {
+        "mode": "all"
+      }
+    },
+    {
+      "id": "send_reply",
+      "type": "echo",
+      "config": {
+        "input": {
+          "channel": "email"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "classify",
+      "to": "route"
+    },
+    {
+      "from": "route",
+      "to": "refund_flow",
+      "when": "output.category == 'refund'"
+    },
+    {
+      "from": "route",
+      "to": "complaint_flow",
+      "when": "output.category == 'complaint'"
+    },
+    {
+      "from": "route",
+      "to": "generic_flow"
+    },
+    {
+      "from": "refund_flow",
+      "to": "merge"
+    },
+    {
+      "from": "complaint_flow",
+      "to": "merge"
+    },
+    {
+      "from": "generic_flow",
+      "to": "merge"
+    },
+    {
+      "from": "merge",
+      "to": "send_reply"
+    }
+  ]
+}

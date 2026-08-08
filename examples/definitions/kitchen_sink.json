@@ -1,0 +1,251 @@
+{
+  "schema_version": 1,
+  "name": "kitchen-sink",
+  "description": "A research-and-publish pipeline that exercises every construct of the definition format: all 11 step types (noop, planner, retrieve, tool, map, join, llm, agent, branch, echo, human_approval), unconditioned parallel fan-out, `when`-conditioned edges with has() guards, a branch with conditioned arms plus a trailing default, both join modes (any and all), a marked loop edge, all five param types, and an engine-opaque ui block that round-trips byte-for-byte.",
+  "params": {
+    "goal": {
+      "type": "string",
+      "required": true
+    },
+    "max_sources": {
+      "type": "number"
+    },
+    "flags": {
+      "type": "object"
+    },
+    "tags": {
+      "type": "array"
+    },
+    "dry_run": {
+      "type": "boolean"
+    }
+  },
+  "steps": [
+    {
+      "id": "start",
+      "type": "noop"
+    },
+    {
+      "id": "plan",
+      "type": "planner",
+      "config": {
+        "model": "anthropic/claude-sonnet-5",
+        "prompt": "Break this goal into concrete research and writing steps: ${{ run.params.goal }}",
+        "max_tokens": 1024
+      }
+    },
+    {
+      "id": "search",
+      "type": "retrieve",
+      "config": {
+        "retriever": "pg_fulltext",
+        "query": "${{ run.params.goal }}",
+        "top_k": 8
+      }
+    },
+    {
+      "id": "fetch_sources",
+      "type": "tool",
+      "config": {
+        "tool": "http_request",
+        "input": {
+          "method": "GET",
+          "url": "https://sources.example.com/api/search?q=${{ run.params.goal }}&limit=${{ run.params.max_sources }}"
+        }
+      }
+    },
+    {
+      "id": "summarize_each",
+      "type": "map",
+      "config": {
+        "items": "${{ steps.search.output.docs }}",
+        "body": "summarize_source"
+      }
+    },
+    {
+      "id": "first_source",
+      "type": "join",
+      "config": {
+        "mode": "any"
+      }
+    },
+    {
+      "id": "draft",
+      "type": "llm",
+      "config": {
+        "model": "anthropic/claude-sonnet-5",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Draft an article for ${{ run.params.goal }} from the plan and source material on the blackboard. Address any critique notes."
+          }
+        ],
+        "max_tokens": 2048,
+        "temperature": 0
+      }
+    },
+    {
+      "id": "critique",
+      "type": "agent",
+      "config": {
+        "agent": "critic",
+        "prompt": "Review the latest draft. Output JSON like {\"verdict\": \"approve\", \"channel\": \"blog\"} or {\"verdict\": \"revise\", \"notes\": [\"...\"]}."
+      }
+    },
+    {
+      "id": "route",
+      "type": "branch",
+      "config": {
+        "input": {
+          "channel": "${{ steps.critique.output.channel }}"
+        }
+      }
+    },
+    {
+      "id": "blog_post",
+      "type": "echo",
+      "config": {
+        "input": {
+          "format": "markdown"
+        }
+      }
+    },
+    {
+      "id": "newsletter",
+      "type": "tool",
+      "config": {
+        "tool": "http_request",
+        "input": {
+          "method": "POST",
+          "url": "https://mailer.example.com/api/campaigns",
+          "body": {
+            "subject": "${{ run.params.goal }}"
+          }
+        }
+      }
+    },
+    {
+      "id": "archive",
+      "type": "noop"
+    },
+    {
+      "id": "gather",
+      "type": "join",
+      "config": {
+        "mode": "all"
+      }
+    },
+    {
+      "id": "approve",
+      "type": "human_approval",
+      "config": {
+        "prompt": "Content is formatted and ready. OK to publish?"
+      }
+    },
+    {
+      "id": "publish",
+      "type": "echo",
+      "config": {
+        "input": {
+          "status": "published"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "plan"
+    },
+    {
+      "from": "start",
+      "to": "search"
+    },
+    {
+      "from": "search",
+      "to": "summarize_each",
+      "when": "has(output.docs) && size(output.docs) > 0"
+    },
+    {
+      "from": "search",
+      "to": "fetch_sources"
+    },
+    {
+      "from": "summarize_each",
+      "to": "first_source"
+    },
+    {
+      "from": "fetch_sources",
+      "to": "first_source"
+    },
+    {
+      "from": "plan",
+      "to": "draft"
+    },
+    {
+      "from": "first_source",
+      "to": "draft"
+    },
+    {
+      "from": "draft",
+      "to": "critique"
+    },
+    {
+      "from": "critique",
+      "to": "draft",
+      "type": "loop",
+      "condition": "output.verdict == 'revise'",
+      "max_iterations": 3
+    },
+    {
+      "from": "critique",
+      "to": "route"
+    },
+    {
+      "from": "route",
+      "to": "blog_post",
+      "when": "output.channel == 'blog'"
+    },
+    {
+      "from": "route",
+      "to": "newsletter",
+      "when": "output.channel == 'newsletter'"
+    },
+    {
+      "from": "route",
+      "to": "archive"
+    },
+    {
+      "from": "blog_post",
+      "to": "gather"
+    },
+    {
+      "from": "newsletter",
+      "to": "gather"
+    },
+    {
+      "from": "archive",
+      "to": "gather"
+    },
+    {
+      "from": "gather",
+      "to": "approve",
+      "when": "!has(run.params.dry_run) || run.params.dry_run != true"
+    },
+    {
+      "from": "approve",
+      "to": "publish"
+    }
+  ],
+  "ui": {
+    "nodes": {
+      "start": {"position": {"x": 0, "y": 200}},
+      "plan": {"position": {"x": 180, "y": 80}},
+      "search": {"position": {"x": 180, "y": 320}},
+      "draft": {"position": {"x": 560.5, "y": 200}},
+      "critique": {"position": {"x": 740, "y": 200}}
+    },
+    "zoom": 0.8,
+    "builder_metadata_the_engine_must_round_trip": ["anything", {"goes": "here"}]
+  }
+}

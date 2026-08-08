@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "name": "fanout-fanin",
+  "description": "Parallel fan-out and fan-in: one entry step fans out to three independent research steps (multiple unconditioned out-edges run in parallel), which converge on a `join all` barrier before a final synthesis step. Demonstrates parallel execution and all-parents join semantics.",
+  "params": {
+    "topic": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "start",
+      "type": "noop"
+    },
+    {
+      "id": "search_docs",
+      "type": "retrieve",
+      "config": {
+        "retriever": "pg_fulltext",
+        "query": "${{ run.params.topic }}",
+        "top_k": 8
+      }
+    },
+    {
+      "id": "fetch_news",
+      "type": "tool",
+      "config": {
+        "tool": "http_request",
+        "input": {
+          "method": "GET",
+          "url": "https://news.example.com/api/search?q=${{ run.params.topic }}"
+        }
+      }
+    },
+    {
+      "id": "brainstorm",
+      "type": "llm",
+      "config": {
+        "model": "anthropic/claude-sonnet-5",
+        "prompt": "List five distinct angles for covering this topic: ${{ run.params.topic }}",
+        "max_tokens": 512
+      }
+    },
+    {
+      "id": "gather",
+      "type": "join",
+      "config": {
+        "mode": "all"
+      }
+    },
+    {
+      "id": "synthesize",
+      "type": "llm",
+      "config": {
+        "model": "anthropic/claude-sonnet-5",
+        "prompt": "Combine the retrieved documents, news results, and brainstormed angles into a single research brief on ${{ run.params.topic }}.",
+        "max_tokens": 1024
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "search_docs"
+    },
+    {
+      "from": "start",
+      "to": "fetch_news"
+    },
+    {
+      "from": "start",
+      "to": "brainstorm"
+    },
+    {
+      "from": "search_docs",
+      "to": "gather"
+    },
+    {
+      "from": "fetch_news",
+      "to": "gather"
+    },
+    {
+      "from": "brainstorm",
+      "to": "gather"
+    },
+    {
+      "from": "gather",
+      "to": "synthesize"
+    }
+  ]
+}

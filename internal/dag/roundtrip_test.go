@@ -21,9 +21,51 @@ func rawTopLevelField(t *testing.T, doc []byte, key string) json.RawMessage {
 	return m[key]
 }
 
-// TestRoundTrip is the ticket 1.2 acceptance test: decode→encode→decode is
-// lossless for every valid fixture, encoding is deterministic, and the ui
-// block survives byte-for-byte.
+// assertLosslessRoundTrip asserts the codec contract on one source
+// document: decode→encode→decode is lossless, encoding is deterministic,
+// and the ui block survives byte-for-byte. Shared by the testdata corpus
+// (ticket 1.2) and the examples/definitions corpus (ticket 1.6).
+func assertLosslessRoundTrip(t *testing.T, data []byte) {
+	t.Helper()
+
+	d1, err := dag.Decode(data)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	out1, err := dag.Encode(d1)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if !json.Valid(out1) {
+		t.Fatalf("Encode produced invalid JSON:\n%s", out1)
+	}
+	d2, err := dag.Decode(out1)
+	if err != nil {
+		t.Fatalf("Decode of encoded output: %v\noutput:\n%s", err, out1)
+	}
+	if !reflect.DeepEqual(d1, d2) {
+		t.Errorf("round trip not lossless:\nfirst decode:  %#v\nsecond decode: %#v", d1, d2)
+	}
+	out2, err := dag.Encode(d2)
+	if err != nil {
+		t.Fatalf("second Encode: %v", err)
+	}
+	if !bytes.Equal(out1, out2) {
+		t.Errorf("encoding is not deterministic:\nfirst:  %s\nsecond: %s", out1, out2)
+	}
+
+	wantUI := rawTopLevelField(t, data, "ui")
+	if !bytes.Equal(d1.UI, wantUI) {
+		t.Errorf("decoded ui differs from source:\nwant: %s\ngot:  %s", wantUI, d1.UI)
+	}
+	gotUI := rawTopLevelField(t, out1, "ui")
+	if !bytes.Equal(gotUI, wantUI) {
+		t.Errorf("encoded ui not byte-for-byte:\nwant: %s\ngot:  %s", wantUI, gotUI)
+	}
+}
+
+// TestRoundTrip is the ticket 1.2 acceptance test over the valid testdata
+// corpus.
 func TestRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -34,42 +76,7 @@ func TestRoundTrip(t *testing.T) {
 	for _, f := range files {
 		t.Run(filepath.Base(f), func(t *testing.T) {
 			t.Parallel()
-			data := readFixture(t, "valid", filepath.Base(f))
-
-			d1, err := dag.Decode(data)
-			if err != nil {
-				t.Fatalf("Decode: %v", err)
-			}
-			out1, err := dag.Encode(d1)
-			if err != nil {
-				t.Fatalf("Encode: %v", err)
-			}
-			if !json.Valid(out1) {
-				t.Fatalf("Encode produced invalid JSON:\n%s", out1)
-			}
-			d2, err := dag.Decode(out1)
-			if err != nil {
-				t.Fatalf("Decode of encoded output: %v\noutput:\n%s", err, out1)
-			}
-			if !reflect.DeepEqual(d1, d2) {
-				t.Errorf("round trip not lossless:\nfirst decode:  %#v\nsecond decode: %#v", d1, d2)
-			}
-			out2, err := dag.Encode(d2)
-			if err != nil {
-				t.Fatalf("second Encode: %v", err)
-			}
-			if !bytes.Equal(out1, out2) {
-				t.Errorf("encoding is not deterministic:\nfirst:  %s\nsecond: %s", out1, out2)
-			}
-
-			wantUI := rawTopLevelField(t, data, "ui")
-			if !bytes.Equal(d1.UI, wantUI) {
-				t.Errorf("decoded ui differs from source:\nwant: %s\ngot:  %s", wantUI, d1.UI)
-			}
-			gotUI := rawTopLevelField(t, out1, "ui")
-			if !bytes.Equal(gotUI, wantUI) {
-				t.Errorf("encoded ui not byte-for-byte:\nwant: %s\ngot:  %s", wantUI, gotUI)
-			}
+			assertLosslessRoundTrip(t, readFixture(t, "valid", filepath.Base(f)))
 		})
 	}
 }
