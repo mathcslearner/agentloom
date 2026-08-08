@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "name": "branch-default-not-last",
+  "steps": [
+    {
+      "id": "start",
+      "type": "noop"
+    },
+    {
+      "id": "route",
+      "type": "branch"
+    },
+    {
+      "id": "a",
+      "type": "noop"
+    },
+    {
+      "id": "b",
+      "type": "noop"
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "route"
+    },
+    {
+      "from": "route",
+      "to": "a"
+    },
+    {
+      "from": "route",
+      "to": "b",
+      "when": "output.x == 1"
+    }
+  ]
+}

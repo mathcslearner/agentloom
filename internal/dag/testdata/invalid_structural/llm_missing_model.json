@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "name": "llm-missing-model",
+  "steps": [
+    {
+      "id": "draft",
+      "type": "llm",
+      "config": {
+        "prompt": "hi"
+      }
+    }
+  ],
+  "edges": []
+}

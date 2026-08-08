@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "name": "normal-edge-loop-fields",
+  "steps": [
+    {
+      "id": "a",
+      "type": "noop"
+    },
+    {
+      "id": "b",
+      "type": "noop"
+    }
+  ],
+  "edges": [
+    {
+      "from": "a",
+      "to": "b",
+      "condition": "output.verdict == 'revise'",
+      "max_iterations": 3
+    }
+  ]
+}

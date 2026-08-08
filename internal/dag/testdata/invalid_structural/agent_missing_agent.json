@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "name": "agent-missing-agent",
+  "steps": [
+    {
+      "id": "crit",
+      "type": "agent",
+      "config": {
+        "prompt": "review"
+      }
+    }
+  ],
+  "edges": []
+}

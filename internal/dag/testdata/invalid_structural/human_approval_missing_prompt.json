@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "human-approval-missing-prompt",
+  "steps": [
+    {
+      "id": "gate",
+      "type": "human_approval",
+      "config": {}
+    }
+  ],
+  "edges": []
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "name": "loop-edge-with-when",
+  "steps": [
+    {
+      "id": "a",
+      "type": "noop"
+    },
+    {
+      "id": "b",
+      "type": "noop"
+    }
+  ],
+  "edges": [
+    {
+      "from": "a",
+      "to": "b"
+    },
+    {
+      "from": "b",
+      "to": "a",
+      "type": "loop",
+      "when": "output.ok",
+      "condition": "output.verdict == 'revise'",
+      "max_iterations": 3
+    }
+  ]
+}

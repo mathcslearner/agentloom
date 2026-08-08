@@ -174,13 +174,13 @@ Decide and document: step types (`llm`, `tool`, `retrieve`, `map`, `planner`, `a
 - [x] Unknown fields and wrong types produce path-qualified errors
 - [x] Generated JSON Schema committed under `docs/schema/` and drift-checked in CI
 
-#### 1.3 — Structural validation
+#### 1.3 — Structural validation ✅
 **Depends on:** 1.2
 Validate: unique IDs, edge endpoints exist, at least one entry step, no orphan/unreachable steps (warning vs error per ADR), per-type required config present, definition limits enforced. Multi-error reporting with stable error codes (machine-readable for the UI later).
 **Done when:**
-- [ ] Table-driven tests cover every rule with valid + invalid cases
-- [ ] All violations reported in one pass with error codes and JSON paths
-- [ ] Fixture corpus extended with one invalid fixture per rule
+- [x] Table-driven tests cover every rule with valid + invalid cases
+- [x] All violations reported in one pass with error codes and JSON paths
+- [x] Fixture corpus extended with one invalid fixture per rule (count/size limits are exercised with generated definitions instead of committed multi-hundred-KB files)
 
 #### 1.4 — Graph algorithms: cycles, topology, readiness
 **Depends on:** 1.3

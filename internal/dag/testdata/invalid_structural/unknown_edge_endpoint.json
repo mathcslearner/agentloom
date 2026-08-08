@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "name": "unknown-edge-endpoint",
+  "steps": [
+    {
+      "id": "start",
+      "type": "noop"
+    },
+    {
+      "id": "done",
+      "type": "noop"
+    }
+  ],
+  "edges": [
+    {
+      "from": "ghost",
+      "to": "done"
+    },
+    {
+      "from": "start",
+      "to": "phantom"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "name": "tool-missing-tool",
+  "steps": [
+    {
+      "id": "fetch",
+      "type": "tool",
+      "config": {
+        "input": {
+          "a": 1
+        }
+      }
+    }
+  ],
+  "edges": []
+}

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "llm-prompt-and-messages",
+  "steps": [
+    {
+      "id": "draft",
+      "type": "llm",
+      "config": {
+        "model": "anthropic/claude-sonnet-5",
+        "prompt": "hi",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ]
+      }
+    }
+  ],
+  "edges": []
+}

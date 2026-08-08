@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "name": "invalid-step-id",
+  "steps": [
+    {
+      "id": "Start",
+      "type": "noop"
+    },
+    {
+      "id": "9lives",
+      "type": "noop"
+    },
+    {
+      "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "type": "noop"
+    },
+    {
+      "id": "ok",
+      "type": "noop"
+    }
+  ],
+  "edges": [
+    {
+      "from": "Start",
+      "to": "9lives"
+    },
+    {
+      "from": "9lives",
+      "to": "ok"
+    },
+    {
+      "from": "Start",
+      "to": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    }
+  ]
+}

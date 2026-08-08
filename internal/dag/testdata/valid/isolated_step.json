@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "name": "isolated-step",
+  "description": "A disconnected noop: structurally valid, flagged with an isolated_step warning.",
+  "steps": [
+    {
+      "id": "start",
+      "type": "noop"
+    },
+    {
+      "id": "done",
+      "type": "noop"
+    },
+    {
+      "id": "stray",
+      "type": "noop"
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "done"
+    }
+  ]
+}

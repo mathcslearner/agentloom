@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "name": "planner-missing-model",
+  "steps": [
+    {
+      "id": "plan",
+      "type": "planner",
+      "config": {
+        "prompt": "go"
+      }
+    }
+  ],
+  "edges": []
+}

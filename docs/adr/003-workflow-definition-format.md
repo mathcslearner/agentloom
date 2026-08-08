@@ -395,6 +395,39 @@ The 10k-step ceiling is deliberately at the M1 exit-criteria benchmark
 by a measured performance envelope. Runtime expansion caps (`max_added_steps`,
 `max_depth`, `max_expansions`) are a separate concern owned by ADR-015 (M13).
 
+### Structural validation: severities, orphans, edge-field rules
+
+*Added 2026-08-08 while implementing ticket 1.3 — clarifies points the
+original text left open; no prior decision is changed.*
+
+- **Validation issues carry a severity and a stable code.** Structural
+  validation reports every violation in one pass; each issue has a
+  machine-readable `snake_case` code, a severity (`error` or `warning`), and
+  a JSON path. Errors reject the definition; warnings are surfaced to
+  callers (and later the builder UI) but do not block acceptance.
+- **Orphan steps are a warning, not an error.** An *isolated* step — no
+  incoming or outgoing edges, in a definition with more than one step — is
+  not dead code under the readiness rules above: having no incoming edges
+  makes it an entry step, so it executes in parallel with everything else.
+  It is, however, the classic shape of an unconnected builder node, so it
+  warrants a warning (`isolated_step`) rather than rejection.
+- **Reachability needs no dedicated rule in 1.3.** With loop edges removed
+  the graph must be a DAG (rule above), and in a DAG every node traces back
+  along incoming edges to some zero-in-degree entry step — so a step can
+  only be unreachable by sitting on a cycle, and all non-loop cycles are
+  rejected by 1.4's cycle detection. 1.3's degree-based isolated-step check
+  plus 1.4's cycle rejection together cover "no orphan/unreachable steps".
+- **Loop-only fields are rejected off loop edges, and vice versa.**
+  `condition` or `max_iterations` on a normal edge is a validation error,
+  as is `when` on a loop edge (its predicate is `condition`). Every decoded
+  field is either meaningful or rejected — mirroring the unknown-field
+  policy at the semantic level.
+- **The 1 MiB size limit is enforced at the top of `Decode`**, before any
+  parsing (validating a definition requires decoding it first, and the
+  point of a size cap is to reject oversized payloads cheaply). Like the
+  `schema_version` gate, it is reported alone. All other limits are
+  enforced in `Validate` and reported together with everything else.
+
 ### Enforcement points
 
 For conformance, the rules above land in specific tickets: **1.2** — strict

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "name": "multi-error-structural",
+  "steps": [
+    {
+      "id": "start",
+      "type": "noop"
+    },
+    {
+      "id": "start",
+      "type": "llm",
+      "config": {
+        "prompt": "hi"
+      }
+    },
+    {
+      "id": "route",
+      "type": "branch"
+    },
+    {
+      "id": "done",
+      "type": "noop"
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "route"
+    },
+    {
+      "from": "route",
+      "to": "done"
+    },
+    {
+      "from": "route",
+      "to": "ghost",
+      "when": "output.x == 1",
+      "max_iterations": 2
+    }
+  ]
+}

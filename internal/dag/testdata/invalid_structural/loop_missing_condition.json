@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "loop-missing-condition",
+  "steps": [
+    {
+      "id": "a",
+      "type": "noop"
+    },
+    {
+      "id": "b",
+      "type": "noop"
+    }
+  ],
+  "edges": [
+    {
+      "from": "a",
+      "to": "b"
+    },
+    {
+      "from": "b",
+      "to": "a",
+      "type": "loop",
+      "max_iterations": 3
+    }
+  ]
+}

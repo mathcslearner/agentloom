@@ -17,15 +17,24 @@ import (
 // one error. The `ui` subtree is the single exception: it is kept verbatim
 // and never inspected beyond being a JSON object.
 //
-// Decode gates on schema_version before anything else: a missing, non-
-// integer, or unsupported version is reported alone, since the rest of the
-// document cannot be meaningfully interpreted under an unknown format.
+// Decode gates on two things before anything else, each reported alone:
+// the serialized-size limit (ADR-003; an oversized document is rejected
+// before any parsing), and schema_version (a missing, non-integer, or
+// unsupported version means the rest of the document cannot be
+// meaningfully interpreted).
 //
 // Decode enforces the codec-level contract only. Graph-semantic rules —
 // ID uniqueness and syntax, endpoint existence, required per-type config
 // fields, limits — are structural validation (ticket 1.3).
 func Decode(data []byte) (*Definition, error) {
 	var errs errList
+	if len(data) > MaxDefinitionBytes {
+		errs.errs = append(errs.errs, &ValidationIssue{
+			Code: CodeLimitExceeded, Severity: SeverityError,
+			Msg: fmt.Sprintf("definition is %d bytes (max %d)", len(data), MaxDefinitionBytes),
+		})
+		return nil, errs.join()
+	}
 	if !json.Valid(data) {
 		var v any
 		err := json.Unmarshal(data, &v)

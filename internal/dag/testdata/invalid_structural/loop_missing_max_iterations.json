@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "loop-missing-max-iterations",
+  "steps": [
+    {
+      "id": "a",
+      "type": "noop"
+    },
+    {
+      "id": "b",
+      "type": "noop"
+    }
+  ],
+  "edges": [
+    {
+      "from": "a",
+      "to": "b"
+    },
+    {
+      "from": "b",
+      "to": "a",
+      "type": "loop",
+      "condition": "output.verdict == 'revise'"
+    }
+  ]
+}

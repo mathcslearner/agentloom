@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "name": "loop-max-iterations-range",
+  "steps": [
+    {
+      "id": "a",
+      "type": "noop"
+    },
+    {
+      "id": "b",
+      "type": "noop"
+    }
+  ],
+  "edges": [
+    {
+      "from": "a",
+      "to": "b"
+    },
+    {
+      "from": "b",
+      "to": "a",
+      "type": "loop",
+      "condition": "output.verdict == 'revise'",
+      "max_iterations": 101
+    }
+  ]
+}
