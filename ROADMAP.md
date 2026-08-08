@@ -122,13 +122,13 @@ GitHub Actions workflow: golangci-lint, `go vet`, unit tests with race detector,
 - [ ] A deliberately failing test fails the pipeline (verified once, then removed)
 - [x] Status badge in README
 
-#### 0.3 — Architecture overview document
+#### 0.3 — Architecture overview document ✅
 **Depends on:** 0.1
 Write `docs/architecture.md`: component diagram (API, workers, Postgres, Redis, providers, UI), the execution data flow (submit → instantiate → dispatch → claim → execute → complete → fan out), tech-stack justifications (condensed from this roadmap), glossary (run, step, attempt, lease, claim ID/fencing token, outbox, reconciler, blackboard, expansion, semantic retry, park). Mermaid diagrams.
 **Done when:**
-- [ ] All listed sections present; diagrams render on GitHub
-- [ ] Glossary terms match the vocabulary used in this roadmap
-- [ ] Doc index page `docs/README.md` links it
+- [x] All listed sections present; diagrams render on GitHub
+- [x] Glossary terms match the vocabulary used in this roadmap
+- [x] Doc index page `docs/README.md` links it
 
 #### 0.4 — ADR template, ADR-001 service boundaries, ADR-002 scheduling model
 **Depends on:** 0.3

@@ -48,7 +48,7 @@ internal/
   config/       env-driven configuration (planned)
 web/            Next.js builder + dashboard (planned)
 deploy/         helm/, terraform/, dockerfiles (planned)
-docs/           architecture.md, adr/, demos/, load/, examples/ (planned)
+docs/           architecture.md + doc index; adr/, demos/, load/ (planned)
 examples/       canonical workflow JSON fixtures (planned)
 test/           integration + chaos suites (planned)
 ```
