@@ -6,6 +6,7 @@
 - [`schema/`](schema/) — the generated workflow definition JSON Schema (do not edit by hand: regenerate with `make generate`; CI fails on drift).
 - [Canonical example definitions](../examples/definitions/README.md) (repo root, `examples/definitions/`) — the golden workflow fixture corpus: linear pipeline, fan-out/fan-in, conditional branch, critic loop, and a kitchen-sink exercising every construct.
 - [ROADMAP.md](../ROADMAP.md) (repo root) — the milestone/ticket build plan and source of truth for sequencing.
+- [Progress log](progress.md) — per-ticket implementation history: what each ticket delivered, non-obvious decisions, deferred quirks. Appended as tickets complete.
 
 Planned (arriving with later milestones):
 
