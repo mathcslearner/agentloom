@@ -18,7 +18,7 @@ UPDATE run_steps
 SET remaining_deps = remaining_deps - 1,
     fired_deps     = fired_deps + $1::int,
     updated_at     = $2::timestamptz
-WHERE run_id = $3 AND step_id = $4
+WHERE run_id = $3 AND step_id = $4 AND remaining_deps > 0
 RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at
 `
 
@@ -30,7 +30,10 @@ type ApplyEdgeResolutionParams struct {
 }
 
 // Counter side of an edge resolution, applied to the edge's target step:
-// one resolved incoming edge, fired or skipped (fired_delta 1 or 0).
+// one resolved incoming edge, fired or skipped (fired_delta 1 or 0). The
+// remaining_deps > 0 guard turns an underflow (an unresolved edge pointing
+// at a fully-drained step — graph corruption) into a diagnosable zero-row
+// result instead of a raw CHECK violation.
 func (q *Queries) ApplyEdgeResolution(ctx context.Context, arg ApplyEdgeResolutionParams) (RunStep, error) {
 	row := q.db.QueryRow(ctx, applyEdgeResolution,
 		arg.FiredDelta,

@@ -26,3 +26,10 @@ DELETE FROM runs WHERE id = $1;
 -- (ADR-004 event sequencing): the row lock serializes appends per run.
 -- name: AllocateEventSeq :one
 UPDATE runs SET next_seq = next_seq + 1 WHERE id = $1 RETURNING next_seq;
+
+-- LockRun acquires the run-row lock without writing anything. It is every
+-- transition's first statement (uniform run → step → edge lock ordering;
+-- see the transitions.go package comment) and doubles as the existence
+-- check — zero rows means the run is gone.
+-- name: LockRun :one
+SELECT id FROM runs WHERE id = $1 FOR UPDATE;

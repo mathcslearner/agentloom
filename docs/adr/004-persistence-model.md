@@ -33,9 +33,10 @@ Forces in tension:
   claims and readiness. One mechanism serving both (event sourcing) pulls
   toward replay machinery; two mechanisms pull toward drift.
 - **A schema that will grow.** Nearly every later milestone adds status
-  values (M5: `cancelling`, `cancelled`, `dead_lettered`; M5.6: `parked`;
-  M15: `awaiting_human`) and columns (retry state, cost aggregates). The
-  schema must evolve by additive migration, not rebuild.
+  values (M5: step `retrying`, `dead_lettered`, `cancelled`; M5.6: run
+  `cancelling`, `cancelled`, `parked`; M15: `awaiting_human`) and columns
+  (retry state, cost aggregates). The schema must evolve by additive
+  migration, not rebuild.
 - **Hot paths are known in advance.** Claiming ready steps, draining the
   outbox, rolling up run status, backfilling events — the indexes must
   serve these without speculative coverage of everything else.
@@ -134,8 +135,10 @@ from that milestone on; v1 rows are enforced from 2.6.
 | `running` | `ready` | reclaim after lease expiry: row's `claim_id` cleared so the zombie's write is fenced | M4 |
 | `running` | `awaiting_human` | approval executor parks; matching `claim_id`; queue message ACKed after commit | M15 |
 | `awaiting_human` | `ready` | decision recorded (single winner vs timeout under CAS) | M15 |
-| `failed` | `ready` | retry per policy (via delayed queue) or DLQ requeue | M5 |
+| `failed` | `retrying` | retry policy admits another attempt; backoff scheduled via the delayed queue | M5 |
+| `retrying` | `ready` | delayed-queue promotion re-dispatches the step | M5 |
 | `failed` | `dead_lettered` | retries exhausted / permanent class / poison | M5 |
+| `dead_lettered` | `ready` | manual DLQ requeue (`ctl`) | M5 |
 | any non-terminal | `cancelled` | run cancellation sweep | M5.6 |
 
 Terminal step states in v1: `succeeded`, `failed` (until M5 makes `failed`
@@ -181,8 +184,8 @@ Correspondence with `ReadySteps`, rule by rule:
 | Entry steps ready at creation | `remaining_deps = 0` at instantiation ⇒ created `ready` |
 | Non-join and `join all` ready: every incoming edge resolved, ≥ 1 fired | `remaining_deps = 0 AND fired_deps ≥ 1` |
 | `join any` ready on first fired edge; later firings absorbed | `fired_deps ≥ 1`; absorption is free — the step has already left `pending`, and `pending → ready` is the only transition this guard drives |
-| Skipped when all incoming edges resolved skipped | `remaining_deps = 0 AND fired_deps = 0` ⇒ `pending → skipped`, and the step's own out-edges then resolve skipped, propagating |
-| A failed parent permanently blocks (until ADR-006 policy) | its out-edges stay `unresolved`, so dependents' `remaining_deps` never reaches 0 — never ready, never skipped |
+| Skipped when all incoming edges resolved skipped | `remaining_deps = 0 AND fired_deps = 0` ⇒ `pending → skipped`, and the step's own out-edges then resolve skipped, propagating. Side condition: this form presumes ≥ 1 incoming normal edge — a zero-indegree step satisfies it vacuously but is created `ready` at instantiation and never `pending`, which M13's `ExpandRun` must preserve by inserting steps atomically with their incoming edges |
+| A failed parent permanently blocks (until ADR-006 policy) | its out-edges stay `unresolved`, so dependents' `remaining_deps` never reaches 0 — never ready, never skipped. Exception: a `join any` dependent still readies on any *other* parent's fired edge, since its guard ignores `remaining_deps` |
 | `when`-false / branch pass-over | edge resolves *skipped*: `remaining_deps` decrements, `fired_deps` does not |
 
 `ExpandRun` (M13) computes the same two counters for spliced-in steps at
@@ -199,6 +202,15 @@ run row for aggregate counters, so the row lock adds no new contention
 point — and it gives gap-free, run-scoped ordering that the WS protocol
 (M16: snapshot → backfill from `last_seq` → live tail) depends on.
 Cross-run ordering is explicitly not provided and not needed.
+
+Two ordering rules keep the log gap-free and composed transactions
+deadlock-free (2.6): every transition **first acquires the run-row lock**
+(a `FOR UPDATE` read — uniform run → step → edge lock ordering), and the
+seq is allocated **only after the guarded CAS succeeds**. A rejected
+transition therefore writes nothing, so a composed completion transaction
+(M4.3) may drop a typed conflict — a lost claim race, a join-any late
+firing, a premature rollup — and still commit without burning a sequence
+number.
 
 `type` is free-form `TEXT` in v1 (2.5/2.6 write `run_created`,
 `step_ready`, `step_claimed`, `step_succeeded`, `step_failed`,
@@ -284,7 +296,7 @@ ACK-and-drop.
 | Path | Index |
 |---|---|
 | Reconciler: find stuck / claimable work | partial index on `run_steps (status, updated_at)` `WHERE status IN ('ready','running')` — small (only in-flight steps), serves "ready longer than X" and "running with expired lease" scans |
-| Run listing / status rollup | `runs (status, created_at DESC)` |
+| Run listing filtered by status | `runs (status, created_at DESC)`; unfiltered newest-first listing is a heap scan until a measured need says otherwise (M19) |
 | Idempotent submission | unique partial index on `runs (idempotency_token) WHERE idempotency_token IS NOT NULL` |
 | Definition registry lookup | unique `workflow_definitions (name, version)` |
 | Outbox drain | primary key (ascending id order) |
@@ -301,7 +313,12 @@ invariant); they are key columns here and log fields elsewhere.
 operational metadata, not logic inputs. All **lifecycle** times
 (`started_at`, `finished_at`, `updated_at` on `run_steps`) are written by
 the application from its injected clock (project invariant: time is
-injectable — tests control it). No `ON UPDATE` triggers.
+injectable — tests control it), on insert as well as on every transition —
+`run_steps.updated_at` feeds the reconciler's staleness scans, so a
+database-written value would put freshly created steps outside the test
+clock's control. (The column keeps a `now()` schema default as a fallback,
+but the store layer always supplies the value and rejects a zero one.) No
+`ON UPDATE` triggers.
 
 ### Referential integrity
 
@@ -445,6 +462,11 @@ Negative:
 - **No FK on `run_edges` endpoints or `task_outbox`** trades declarative
   integrity for expansion/drain simplicity; the reconciler and in-tx
   revalidation carry the burden instead.
+- **Step transitions carry no run-status guard.** A step that was already
+  claimed when its run turned `failed` can still complete, bumping
+  aggregates and appending events on a terminal run. Accepted for v1: the
+  quiescing sweep is M5.6's cancellation machinery; until then the state
+  is observable but harmless (the run's terminal status never regresses).
 
 ## Alternatives considered
 

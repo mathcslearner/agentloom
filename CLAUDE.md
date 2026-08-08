@@ -11,8 +11,8 @@ It sits between: **n8n/Zapier** (easy, not production-grade), **Temporal/Airflow
 ## Current status
 
 - **Position:** M2 (durable state: Postgres persistence) complete (2.1–2.6). **Next ticket: 3.1** (ADR-005: dispatch & lease protocol) — opening Milestone 3, the queue & lease layer on Redis Streams.
-- **Complete:** M0 foundation (0.1–0.5; one loose end below), all of M1 (workflow definition core: JSON contract per ADR-003, strict codec, validation, graph algorithms + readiness, CEL edge conditions, canonical examples — plus a post-M1 audit/hardening pass), and all of M2 (compose stack, migrations + integration harness, ADR-004 schema v1, store layer, atomic run instantiation, guarded CAS transitions).
-- **Open loose ends:** the one-time CI red-path verification on GitHub (ticket 0.2); a deferred cosmetic quirk in loop-edge `max_iterations: 0` error reporting (see the progress log).
+- **Complete:** M0 foundation (0.1–0.5; one loose end below), all of M1 (workflow definition core: JSON contract per ADR-003, strict codec, validation, graph algorithms + readiness, CEL edge conditions, canonical examples — plus a post-M1 audit/hardening pass), and all of M2 (compose stack, migrations + integration harness, ADR-004 schema v1, store layer, atomic run instantiation, guarded CAS transitions — plus a post-M2 audit/hardening pass: seq-after-CAS + uniform run-lock ordering in transitions, app-written `updated_at`, CI integration job boots the compose stack).
+- **Open loose ends:** the one-time CI verification on GitHub — ticket 0.2's red path plus the reworked compose-based integration job from the post-M2 pass; a deferred cosmetic quirk in loop-edge `max_iterations: 0` error reporting; the thrice-deferred storetest template-database fast path (see the progress log).
 - **Per-ticket history lives in [`docs/progress.md`](docs/progress.md)** — what each ticket delivered, non-obvious decisions, deferred quirks. Read the sections relevant to the code you're about to touch before starting a ticket that builds on earlier work.
 
 ## How to work on this project

@@ -46,7 +46,25 @@ func run(args []string) error {
 		if len(rest) != 1 {
 			return fmt.Errorf("usage: migrate new <name> (e.g. migrate new add_runs_table)")
 		}
-		return newMigration(rest[0])
+		return newMigration(migrationsDir, rest[0])
+	}
+
+	// Validate the command (and force's argument) before touching the
+	// database — an unknown command must not require a reachable Postgres.
+	var forceVersion int
+	switch cmd {
+	case "up", "down", "status":
+	case "force":
+		if len(rest) != 1 {
+			return fmt.Errorf("usage: migrate force <version>")
+		}
+		v, err := strconv.Atoi(rest[0])
+		if err != nil {
+			return fmt.Errorf("force: version must be an integer, got %q", rest[0])
+		}
+		forceVersion = v
+	default:
+		return usageError()
 	}
 
 	cfg, err := config.LoadFromEnv()
@@ -72,20 +90,11 @@ func run(args []string) error {
 		return printStatus(mg, "down complete (one step)")
 	case "status":
 		return printStatus(mg, "")
-	case "force":
-		if len(rest) != 1 {
-			return fmt.Errorf("usage: migrate force <version>")
-		}
-		version, err := strconv.Atoi(rest[0])
-		if err != nil {
-			return fmt.Errorf("force: version must be an integer, got %q", rest[0])
-		}
-		if err := mg.Force(version); err != nil {
+	default: // "force" — validated above
+		if err := mg.Force(forceVersion); err != nil {
 			return err
 		}
 		return printStatus(mg, "dirty flag cleared")
-	default:
-		return usageError()
 	}
 }
 
@@ -115,15 +124,17 @@ func printStatus(mg *store.Migrator, prefix string) error {
 // migrationName restricts names to snake_case so file names stay uniform.
 var migrationName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
-// newMigration creates an empty NNNN_<name>.up.sql / .down.sql pair using the
-// next sequence number after the highest one present.
-func newMigration(name string) error {
+// newMigration creates an empty NNNN_<name>.up.sql / .down.sql pair in dir
+// using the next sequence number after the highest one present. dir is a
+// parameter so tests can point it at a temp directory; production passes
+// migrationsDir.
+func newMigration(dir, name string) error {
 	if !migrationName.MatchString(name) {
 		return fmt.Errorf("new: name must be snake_case ([a-z][a-z0-9_]*), got %q", name)
 	}
-	entries, err := os.ReadDir(migrationsDir)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("new: reading %s (run from the repo root): %w", migrationsDir, err)
+		return fmt.Errorf("new: reading %s (run from the repo root): %w", dir, err)
 	}
 	next := 1
 	seq := regexp.MustCompile(`^(\d+)_`)
@@ -139,9 +150,9 @@ func newMigration(name string) error {
 	}
 	for _, suffix := range []string{"up", "down"} {
 		// name is constrained to snake_case by migrationName above, so the
-		// joined path cannot escape migrationsDir.
-		path := filepath.Join(migrationsDir, fmt.Sprintf("%04d_%s.%s.sql", next, name, suffix))
-		if err := os.WriteFile(path, []byte("-- Write the "+suffix+" migration here.\n"), fs.FileMode(0o644)); err != nil { //nolint:gosec // G703: name is regexp-validated above
+		// joined path cannot escape dir.
+		path := filepath.Join(dir, fmt.Sprintf("%04d_%s.%s.sql", next, name, suffix))
+		if err := os.WriteFile(path, []byte("-- Write the "+suffix+" migration here.\n"), fs.FileMode(0o644)); err != nil { //nolint:gosec // G306: migration stubs are world-readable source files, not secrets
 			return fmt.Errorf("new: %w", err)
 		}
 		fmt.Println("created", path)

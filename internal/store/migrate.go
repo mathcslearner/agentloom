@@ -97,6 +97,12 @@ func (mg *Migrator) Up() error {
 // Down rolls back the most recent migration (one step, not all the way).
 func (mg *Migrator) Down() error {
 	if err := mg.m.Steps(-1); err != nil {
+		// golang-migrate reports "nothing applied" as ErrNilVersion or, via
+		// the iofs source, fs.ErrNotExist ("file does not exist"). Name the
+		// situation instead of leaking either.
+		if errors.Is(err, migrate.ErrNilVersion) || errors.Is(err, fs.ErrNotExist) {
+			return errors.New("store: migrate down: nothing to roll back (no migrations applied)")
+		}
 		return fmt.Errorf("store: migrate down: %w", wrapDirty(err))
 	}
 	return nil

@@ -245,7 +245,7 @@ func TestRunDeleteCascadesSubtree(t *testing.T) {
 
 	run := mustCreateRun(t, s, nil)
 	step, err := s.Steps().Create(ctx, gen.CreateRunStepParams{
-		RunID: run.ID, StepID: "a", StepType: "llm", Status: store.StepStatusReady,
+		RunID: run.ID, StepID: "a", StepType: "llm", Status: store.StepStatusReady, UpdatedAt: testNow,
 	})
 	if err != nil {
 		t.Fatalf("create step: %v", err)
@@ -296,6 +296,7 @@ func TestGraphRoundTrip(t *testing.T) {
 	// Repo defaults: empty status → pending, zero graph_version → 1.
 	stepA, err := s.Steps().Create(ctx, gen.CreateRunStepParams{
 		RunID: run.ID, StepID: "a", StepType: "llm", Config: json.RawMessage(`{"model":"mock"}`),
+		UpdatedAt: testNow,
 	})
 	if err != nil {
 		t.Fatalf("create step a: %v", err)
@@ -305,11 +306,12 @@ func TestGraphRoundTrip(t *testing.T) {
 	}
 	if _, err := s.Steps().Create(ctx, gen.CreateRunStepParams{
 		RunID: run.ID, StepID: "b", StepType: "tool", RemainingDeps: 2, FiredDeps: 0,
+		UpdatedAt: testNow,
 	}); err != nil {
 		t.Fatalf("create step b: %v", err)
 	}
 	// Duplicate step id in the same run conflicts on the primary key.
-	_, err = s.Steps().Create(ctx, gen.CreateRunStepParams{RunID: run.ID, StepID: "a", StepType: "llm"})
+	_, err = s.Steps().Create(ctx, gen.CreateRunStepParams{RunID: run.ID, StepID: "a", StepType: "llm", UpdatedAt: testNow})
 	var conflict *store.ConflictError
 	if !errors.As(err, &conflict) {
 		t.Fatalf("duplicate step: got %v, want ConflictError", err)
@@ -376,7 +378,7 @@ func TestAttemptsRoundTrip(t *testing.T) {
 	ctx := t.Context()
 	run := mustCreateRun(t, s, nil)
 	if _, err := s.Steps().Create(ctx, gen.CreateRunStepParams{
-		RunID: run.ID, StepID: "a", StepType: "llm",
+		RunID: run.ID, StepID: "a", StepType: "llm", UpdatedAt: testNow,
 	}); err != nil {
 		t.Fatalf("create step: %v", err)
 	}

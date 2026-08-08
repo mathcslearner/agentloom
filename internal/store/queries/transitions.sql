@@ -58,13 +58,16 @@ RETURNING *;
 SELECT * FROM run_edges WHERE run_id = @run_id AND ordinal = @ordinal;
 
 -- Counter side of an edge resolution, applied to the edge's target step:
--- one resolved incoming edge, fired or skipped (fired_delta 1 or 0).
+-- one resolved incoming edge, fired or skipped (fired_delta 1 or 0). The
+-- remaining_deps > 0 guard turns an underflow (an unresolved edge pointing
+-- at a fully-drained step — graph corruption) into a diagnosable zero-row
+-- result instead of a raw CHECK violation.
 -- name: ApplyEdgeResolution :one
 UPDATE run_steps
 SET remaining_deps = remaining_deps - 1,
     fired_deps     = fired_deps + @fired_delta::int,
     updated_at     = @now::timestamptz
-WHERE run_id = @run_id AND step_id = @step_id
+WHERE run_id = @run_id AND step_id = @step_id AND remaining_deps > 0
 RETURNING *;
 
 -- Readiness: pending → ready when the ADR-004 counter guard holds.

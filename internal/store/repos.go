@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 
@@ -132,10 +134,11 @@ func (r runRepo) AllocateEventSeq(ctx context.Context, runID uuid.UUID) (int64, 
 // graph.
 type StepRepo interface {
 	// Create inserts a step row. An empty arg.Status becomes pending; a
-	// zero arg.GraphVersion becomes 1.
+	// zero arg.GraphVersion becomes 1. arg.UpdatedAt is required (injected
+	// clock — the reconciler's staleness scan reads it): zero is an error.
 	Create(ctx context.Context, arg gen.CreateRunStepParams) (gen.RunStep, error)
 	// CreateBatch inserts step rows in one COPY, with the same per-row
-	// defaulting as Create.
+	// defaulting and UpdatedAt requirement as Create.
 	CreateBatch(ctx context.Context, args []gen.CreateRunStepsParams) (int64, error)
 	Get(ctx context.Context, runID uuid.UUID, stepID string) (gen.RunStep, error)
 	ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.RunStep, error)
@@ -153,6 +156,9 @@ type StepRepo interface {
 type stepRepo struct{ q *gen.Queries }
 
 func (r stepRepo) Create(ctx context.Context, arg gen.CreateRunStepParams) (gen.RunStep, error) {
+	if arg.UpdatedAt.IsZero() {
+		return gen.RunStep{}, errors.New("store: create run step: zero UpdatedAt — pass the injected current time")
+	}
 	if arg.Status == "" {
 		arg.Status = StepStatusPending
 	}
@@ -165,6 +171,9 @@ func (r stepRepo) Create(ctx context.Context, arg gen.CreateRunStepParams) (gen.
 
 func (r stepRepo) CreateBatch(ctx context.Context, args []gen.CreateRunStepsParams) (int64, error) {
 	for i := range args {
+		if args[i].UpdatedAt.IsZero() {
+			return 0, fmt.Errorf("store: create run steps: step %q: zero UpdatedAt — pass the injected current time", args[i].StepID)
+		}
 		if args[i].Status == "" {
 			args[i].Status = StepStatusPending
 		}

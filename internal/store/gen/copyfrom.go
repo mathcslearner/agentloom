@@ -79,6 +79,7 @@ func (r iteratorForCreateRunSteps) Values() ([]interface{}, error) {
 		r.rows[0].RemainingDeps,
 		r.rows[0].FiredDeps,
 		r.rows[0].GraphVersion,
+		r.rows[0].UpdatedAt,
 	}, nil
 }
 
@@ -89,5 +90,5 @@ func (r iteratorForCreateRunSteps) Err() error {
 // CreateRunSteps is the batch (COPY) form for run instantiation (2.5) and
 // expansion (M13), which write whole graphs at once.
 func (q *Queries) CreateRunSteps(ctx context.Context, arg []CreateRunStepsParams) (int64, error) {
-	return q.db.CopyFrom(ctx, []string{"run_steps"}, []string{"run_id", "step_id", "step_type", "config", "status", "remaining_deps", "fired_deps", "graph_version"}, &iteratorForCreateRunSteps{rows: arg})
+	return q.db.CopyFrom(ctx, []string{"run_steps"}, []string{"run_id", "step_id", "step_type", "config", "status", "remaining_deps", "fired_deps", "graph_version", "updated_at"}, &iteratorForCreateRunSteps{rows: arg})
 }

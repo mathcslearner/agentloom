@@ -152,6 +152,31 @@ func TestWithTxCancelledContext(t *testing.T) {
 	}
 }
 
+// TestWithTxCancelledMidCallback exercises the context.WithoutCancel
+// rollback path — the reason that call exists: the caller's context dies
+// after the callback has written, the commit fails, and the rollback must
+// still leave nothing behind despite running under a cancelled context.
+func TestWithTxCancelledMidCallback(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	runID := uuid.New()
+
+	cancellable, cancel := context.WithCancel(t.Context())
+	err := s.WithTx(cancellable, func(ctx context.Context, q store.Querier) error {
+		if err := txRun(ctx, q, runID); err != nil {
+			return err
+		}
+		cancel() // the caller's deadline fires mid-transaction
+		return nil
+	})
+	if err == nil {
+		t.Fatal("WithTx committed under a context cancelled mid-callback")
+	}
+	if _, err := s.Runs().Get(t.Context(), runID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("run visible after cancelled-mid-callback tx: %v, want ErrNotFound", err)
+	}
+}
+
 func TestWithTxComposesRepos(t *testing.T) {
 	t.Parallel()
 	s := newStore(t)
@@ -166,6 +191,7 @@ func TestWithTxComposesRepos(t *testing.T) {
 		}
 		if _, err := q.Steps().Create(ctx, gen.CreateRunStepParams{
 			RunID: runID, StepID: "a", StepType: "llm", Status: store.StepStatusReady,
+			UpdatedAt: testNow,
 		}); err != nil {
 			return err
 		}

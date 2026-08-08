@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,16 +29,19 @@ const (
 	stageAfterSteps     = "after_steps"
 	stageAfterEdges     = "after_edges"
 	stageAfterEvents    = "after_events"
+	stageAfterOutbox    = "after_outbox"
 )
 
 // instantiateFailpoint, when non-nil, is called with each stage name inside
 // the instantiation transaction; a non-nil return aborts it. Installed only
-// by tests (export_test.go), nil in production.
-var instantiateFailpoint func(stage string) error
+// by tests (export_test.go), nil in production. An atomic.Pointer so an
+// arming test racing another CreateRun caller is a logic hazard the test
+// must avoid, not a data race.
+var instantiateFailpoint atomic.Pointer[func(stage string) error]
 
 func failpoint(stage string) error {
-	if instantiateFailpoint != nil {
-		return instantiateFailpoint(stage)
+	if fn := instantiateFailpoint.Load(); fn != nil {
+		return (*fn)(stage)
 	}
 	return nil
 }
@@ -59,7 +63,11 @@ type CreateRunArgs struct {
 	Params json.RawMessage
 	// IdempotencyToken makes submission idempotent: a second CreateRun with
 	// the same token returns the original run instead of creating another.
-	// Empty means not idempotent.
+	// Empty means not idempotent. The token is the sole identity — the
+	// submitted Definition is NOT compared against the original's snapshot,
+	// so reusing a token with a different workflow silently returns the old
+	// run (the returned EntrySteps always reflect the stored snapshot).
+	// Token scoping/validation policy is the submission API's (M6).
 	IdempotencyToken string
 	// Now is the injected current time (project invariant: no bare
 	// time.Now in logic under test); it becomes the run's started_at.
@@ -248,6 +256,7 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 			Status:        status,
 			RemainingDeps: p.remaining[step.ID],
 			GraphVersion:  1,
+			UpdatedAt:     args.Now,
 		}
 	}
 	if _, err := q.Steps().CreateBatch(ctx, steps); err != nil {
@@ -303,6 +312,9 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		if _, err := q.Outbox().Create(ctx, run.ID, id, OutboxReasonStepReady); err != nil {
 			return gen.Run{}, err
 		}
+	}
+	if err := failpoint(stageAfterOutbox); err != nil {
+		return gen.Run{}, err
 	}
 	return run, nil
 }

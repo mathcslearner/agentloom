@@ -2,18 +2,21 @@
 -- Inserts and reads only — status transitions and dependency-counter
 -- updates are the guarded CAS queries in transitions.sql.
 
+-- updated_at is app-written from the injected clock, here and in every
+-- transition (ADR-004 timestamp policy) — the reconciler's staleness scan
+-- reads it, so tests must be able to control it.
 -- name: CreateRunStep :one
 INSERT INTO run_steps (run_id, step_id, step_type, config, status,
-                       remaining_deps, fired_deps, graph_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                       remaining_deps, fired_deps, graph_version, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- CreateRunSteps is the batch (COPY) form for run instantiation (2.5) and
 -- expansion (M13), which write whole graphs at once.
 -- name: CreateRunSteps :copyfrom
 INSERT INTO run_steps (run_id, step_id, step_type, config, status,
-                       remaining_deps, fired_deps, graph_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+                       remaining_deps, fired_deps, graph_version, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- name: GetRunStep :one
 SELECT * FROM run_steps WHERE run_id = $1 AND step_id = $2;

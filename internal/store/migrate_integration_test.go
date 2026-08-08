@@ -41,9 +41,13 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 	}
 	defer mg.Close() //nolint:errcheck // best-effort cleanup in tests
 
-	// Fresh database: no version yet.
+	// Fresh database: no version yet, and Down names the situation instead
+	// of leaking golang-migrate's ErrNilVersion.
 	if _, _, applied, err := mg.Version(); err != nil || applied {
 		t.Fatalf("Version on fresh database = applied %v, err %v; want not applied, nil", applied, err)
+	}
+	if err := mg.Down(); err == nil || !strings.Contains(err.Error(), "nothing to roll back") {
+		t.Fatalf("Down on fresh database: %v, want the nothing-to-roll-back error", err)
 	}
 
 	// Up applies everything; the latest migration's tables exist, clean.

@@ -372,6 +372,7 @@ func TestStepTransitionMatrix(t *testing.T) {
 					if _, err := s.Steps().Create(ctx, gen.CreateRunStepParams{
 						RunID: run.ID, StepID: stepID, StepType: "noop",
 						Status: status, RemainingDeps: rem, FiredDeps: fired,
+						UpdatedAt: testNow,
 					}); err != nil {
 						t.Fatalf("seeding %s step: %v", from, err)
 					}
@@ -453,6 +454,7 @@ func TestStepGuardsAndFencing(t *testing.T) {
 			if _, err := s.Steps().Create(ctx, gen.CreateRunStepParams{
 				RunID: run.ID, StepID: tc.stepID, StepType: "noop",
 				Status: store.StepStatusPending, RemainingDeps: tc.remaining, FiredDeps: tc.fired,
+				UpdatedAt: testNow,
 			}); err != nil {
 				t.Fatalf("seeding: %v", err)
 			}
@@ -467,6 +469,7 @@ func TestStepGuardsAndFencing(t *testing.T) {
 		if _, err := s.Steps().Create(ctx, gen.CreateRunStepParams{
 			RunID: run.ID, StepID: "s", StepType: "noop",
 			Status: store.StepStatusPending, RemainingDeps: 0, FiredDeps: 1,
+			UpdatedAt: testNow,
 		}); err != nil {
 			t.Fatalf("seeding: %v", err)
 		}
@@ -479,6 +482,7 @@ func TestStepGuardsAndFencing(t *testing.T) {
 		run := mustCreateRun(t, s, nil)
 		if _, err := s.Steps().Create(ctx, gen.CreateRunStepParams{
 			RunID: run.ID, StepID: "s", StepType: "noop", Status: store.StepStatusReady,
+			UpdatedAt: testNow,
 		}); err != nil {
 			t.Fatalf("seeding: %v", err)
 		}
@@ -517,23 +521,43 @@ func TestStepGuardsAndFencing(t *testing.T) {
 }
 
 // TestRunTransitionMatrix drives SucceedRun/FailRun through their guards
-// and illegal from-statuses.
+// and illegal from-statuses. Every rejection also asserts the run row is
+// untouched and no event was appended — the same bar the step matrix holds.
 func TestRunTransitionMatrix(t *testing.T) {
 	t.Parallel()
 	s := newStore(t)
 	ctx := t.Context()
 
+	// assertRunUnchanged re-reads the run after a rejected transition and
+	// verifies status and event log are exactly as before.
+	assertRunUnchanged := func(t *testing.T, runID uuid.UUID, wantStatus string, eventsBefore int) {
+		t.Helper()
+		got, err := s.Runs().Get(ctx, runID)
+		if err != nil {
+			t.Fatalf("re-reading run: %v", err)
+		}
+		if got.Status != wantStatus {
+			t.Errorf("rejected transition changed run status to %q, want %q", got.Status, wantStatus)
+		}
+		if n := len(eventTypes(t, s, runID)); n != eventsBefore {
+			t.Errorf("rejected transition appended %d event(s)", n-eventsBefore)
+		}
+	}
+
 	t.Run("succeed guard", func(t *testing.T) {
 		t.Parallel()
 		// Outstanding steps → guard_failed.
 		run := mustCreateRun(t, s, func(p *gen.CreateRunParams) { p.StepsTotal = 2 })
+		eventsBefore := len(eventTypes(t, s, run.ID))
 		_, err := succeedRun(t, s, run.ID)
 		wantConflict(t, err, store.ConflictGuardFailed)
+		assertRunUnchanged(t, run.ID, store.RunStatusRunning, eventsBefore)
 
 		// All steps terminal and none failed → succeeds.
 		done := mustCreateRun(t, s, func(p *gen.CreateRunParams) { p.StepsTotal = 1 })
 		if _, err := s.Steps().Create(ctx, gen.CreateRunStepParams{
 			RunID: done.ID, StepID: "s", StepType: "noop", Status: store.StepStatusReady,
+			UpdatedAt: testNow,
 		}); err != nil {
 			t.Fatalf("seeding: %v", err)
 		}
@@ -547,23 +571,29 @@ func TestRunTransitionMatrix(t *testing.T) {
 			t.Errorf("run = status %q finished %v, want succeeded at %v", got.Status, got.FinishedAt, testNow)
 		}
 
-		// Terminal run rejects both transitions.
+		// Terminal (succeeded) run rejects both transitions untouched.
+		eventsDone := len(eventTypes(t, s, done.ID))
 		_, err = succeedRun(t, s, done.ID)
 		wantConflict(t, err, store.ConflictWrongStatus)
+		assertRunUnchanged(t, done.ID, store.RunStatusSucceeded, eventsDone)
 		_, err = failRun(t, s, done.ID)
 		wantConflict(t, err, store.ConflictWrongStatus)
+		assertRunUnchanged(t, done.ID, store.RunStatusSucceeded, eventsDone)
 	})
 
 	t.Run("fail guard", func(t *testing.T) {
 		t.Parallel()
 		// No failed step → guard_failed.
 		run := mustCreateRun(t, s, func(p *gen.CreateRunParams) { p.StepsTotal = 1 })
+		eventsBefore := len(eventTypes(t, s, run.ID))
 		_, err := failRun(t, s, run.ID)
 		wantConflict(t, err, store.ConflictGuardFailed)
+		assertRunUnchanged(t, run.ID, store.RunStatusRunning, eventsBefore)
 
 		// A failed step unlocks the transition.
 		if _, err := s.Steps().Create(ctx, gen.CreateRunStepParams{
 			RunID: run.ID, StepID: "s", StepType: "noop", Status: store.StepStatusReady,
+			UpdatedAt: testNow,
 		}); err != nil {
 			t.Fatalf("seeding: %v", err)
 		}
@@ -578,6 +608,15 @@ func TestRunTransitionMatrix(t *testing.T) {
 		if got.Status != store.RunStatusFailed || got.StepsFailed != 1 {
 			t.Errorf("run = status %q steps_failed %d, want failed/1", got.Status, got.StepsFailed)
 		}
+
+		// Terminal (failed) run rejects both transitions untouched.
+		eventsFailed := len(eventTypes(t, s, run.ID))
+		_, err = succeedRun(t, s, run.ID)
+		wantConflict(t, err, store.ConflictWrongStatus)
+		assertRunUnchanged(t, run.ID, store.RunStatusFailed, eventsFailed)
+		_, err = failRun(t, s, run.ID)
+		wantConflict(t, err, store.ConflictWrongStatus)
+		assertRunUnchanged(t, run.ID, store.RunStatusFailed, eventsFailed)
 	})
 
 	t.Run("missing run", func(t *testing.T) {
@@ -626,6 +665,67 @@ func TestTransitionAtomicity(t *testing.T) {
 	}
 	if types := eventTypes(t, s, run.ID); len(types) != int(seqBefore) {
 		t.Errorf("rollback left events: %v", types)
+	}
+}
+
+// TestDroppedConflictKeepsLogGapFree pins the composed-transaction
+// contract the package comment promises: a rejected transition writes
+// nothing — not even a consumed next_seq — so a caller may drop the typed
+// conflict (the join-any late-firing absorption, the completion-tx
+// ACK-and-drop) and still commit a gap-free event log. This is the exact
+// shape of M4.3's completion transaction.
+func TestDroppedConflictKeepsLogGapFree(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := t.Context()
+	run := instantiate(t, s, loadFixture(t, "fanout.json"))
+
+	claim := *mustClaim(t, s, run.ID, "start").ClaimID
+	err := s.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+		if _, err := store.SucceedStep(ctx, q, store.SucceedStepArgs{
+			RunID: run.ID, StepID: "start", ClaimID: claim,
+			Output: json.RawMessage(`{"ok":true}`), Now: testNow,
+		}); err != nil {
+			return err
+		}
+		if _, err := store.ResolveEdge(ctx, q, store.ResolveEdgeArgs{
+			RunID: run.ID, Ordinal: 0, Fired: true, Now: testNow,
+		}); err != nil {
+			return err
+		}
+		if _, err := store.ReadyStep(ctx, q, store.ReadyStepArgs{
+			RunID: run.ID, StepID: "search_docs", Now: testNow,
+		}); err != nil {
+			return err
+		}
+		// Three rejected transitions, all deliberately dropped: a repeat
+		// promotion (wrong_status — the join-any absorption shape), a
+		// premature join-all promotion, and a premature rollup (both
+		// guard_failed).
+		_, err := store.ReadyStep(ctx, q, store.ReadyStepArgs{
+			RunID: run.ID, StepID: "search_docs", Now: testNow,
+		})
+		wantConflict(t, err, store.ConflictWrongStatus)
+		_, err = store.ReadyStep(ctx, q, store.ReadyStepArgs{
+			RunID: run.ID, StepID: "gather", Now: testNow,
+		})
+		wantConflict(t, err, store.ConflictGuardFailed)
+		_, err = store.SucceedRun(ctx, q, store.SucceedRunArgs{RunID: run.ID, Now: testNow})
+		wantConflict(t, err, store.ConflictGuardFailed)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("composed tx with dropped conflicts: %v", err)
+	}
+
+	// run_created, step_ready(start), step_claimed, step_succeeded,
+	// step_ready(search_docs) — and nothing from the dropped rejections.
+	types := eventTypes(t, s, run.ID) // asserts seq contiguous from 1
+	if len(types) != 5 || types[3] != store.EventStepSucceeded || types[4] != store.EventStepReady {
+		t.Errorf("event log = %v, want 5 events ending step_succeeded, step_ready", types)
+	}
+	if seq := mustCreateRunSeq(t, s, run.ID); seq != int64(len(types)) {
+		t.Errorf("next_seq = %d but %d events exist — dropped conflicts burned sequence numbers", seq, len(types))
 	}
 }
 
@@ -939,6 +1039,30 @@ func TestResolveEdgeRejections(t *testing.T) {
 		_, err := resolveEdge(t, s, run.ID, 0, true)
 		if !errors.Is(err, store.ErrNotFound) || !strings.Contains(err.Error(), "ghost") {
 			t.Errorf("dangling target: %v, want ErrNotFound naming the step", err)
+		}
+	})
+
+	t.Run("counter underflow", func(t *testing.T) {
+		t.Parallel()
+		// An unresolved edge pointing at a step whose remaining_deps is
+		// already 0 is corrupted bookkeeping (the two ADR-004
+		// representations disagree). It must surface as a typed diagnosis,
+		// not a raw CHECK violation.
+		run := mustCreateRun(t, s, nil)
+		if _, err := s.Steps().Create(ctx, gen.CreateRunStepParams{
+			RunID: run.ID, StepID: "drained", StepType: "noop",
+			RemainingDeps: 0, UpdatedAt: testNow,
+		}); err != nil {
+			t.Fatalf("seeding step: %v", err)
+		}
+		if _, err := s.Steps().CreateEdge(ctx, gen.CreateRunEdgeParams{
+			RunID: run.ID, Ordinal: 0, FromStep: "x", ToStep: "drained",
+		}); err != nil {
+			t.Fatalf("seeding edge: %v", err)
+		}
+		_, err := resolveEdge(t, s, run.ID, 0, true)
+		if err == nil || !strings.Contains(err.Error(), "bookkeeping corrupted") {
+			t.Errorf("counter underflow: %v, want the corruption diagnosis", err)
 		}
 	})
 }

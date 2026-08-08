@@ -8,6 +8,7 @@ package gen
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -74,8 +75,8 @@ type CreateRunEdgesParams struct {
 const createRunStep = `-- name: CreateRunStep :one
 
 INSERT INTO run_steps (run_id, step_id, step_type, config, status,
-                       remaining_deps, fired_deps, graph_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                       remaining_deps, fired_deps, graph_version, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at
 `
 
@@ -88,11 +89,15 @@ type CreateRunStepParams struct {
 	RemainingDeps int32
 	FiredDeps     int32
 	GraphVersion  int32
+	UpdatedAt     time.Time
 }
 
 // Per-run graph copy: run_steps (node side) and run_edges (edge side).
 // Inserts and reads only — status transitions and dependency-counter
 // updates are the guarded CAS queries in transitions.sql.
+// updated_at is app-written from the injected clock, here and in every
+// transition (ADR-004 timestamp policy) — the reconciler's staleness scan
+// reads it, so tests must be able to control it.
 func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (RunStep, error) {
 	row := q.db.QueryRow(ctx, createRunStep,
 		arg.RunID,
@@ -103,6 +108,7 @@ func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (R
 		arg.RemainingDeps,
 		arg.FiredDeps,
 		arg.GraphVersion,
+		arg.UpdatedAt,
 	)
 	var i RunStep
 	err := row.Scan(
@@ -135,6 +141,7 @@ type CreateRunStepsParams struct {
 	RemainingDeps int32
 	FiredDeps     int32
 	GraphVersion  int32
+	UpdatedAt     time.Time
 }
 
 const getRunStep = `-- name: GetRunStep :one

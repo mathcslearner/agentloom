@@ -158,6 +158,12 @@ func TestCreateRunFanout(t *testing.T) {
 		if step.GraphVersion != 1 {
 			t.Errorf("step %q graph_version = %d, want 1", id, step.GraphVersion)
 		}
+		// updated_at is app-written from the injected clock (ADR-004
+		// timestamp policy) — the reconciler's staleness scan depends on
+		// tests being able to control it, so a database now() here is a bug.
+		if !step.UpdatedAt.Equal(testNow) {
+			t.Errorf("step %q updated_at = %v, want the injected %v", id, step.UpdatedAt, testNow)
+		}
 	}
 	if byID["gather"].StepType != string(dag.StepJoin) {
 		t.Errorf("gather step_type = %q, want join", byID["gather"].StepType)
@@ -412,7 +418,7 @@ func TestCreateRunAllOrNothing(t *testing.T) {
 
 	stages := []string{
 		store.StageAfterRunInsert, store.StageAfterSteps,
-		store.StageAfterEdges, store.StageAfterEvents,
+		store.StageAfterEdges, store.StageAfterEvents, store.StageAfterOutbox,
 	}
 	for _, stage := range stages {
 		t.Run(stage, func(t *testing.T) {

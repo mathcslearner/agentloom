@@ -12,11 +12,15 @@ package store
 //
 // Callers must run inside WithTx and pass the Querier its callback
 // received; anything else fails fast with ErrNoTx. Lock ordering: every
-// transition's first statement is its event-seq allocation, an UPDATE on
-// the run row — so all per-run transitions acquire the run-row lock first
-// and then step/edge rows, making composed transactions deadlock-free by
-// uniform ordering (the per-run serialization this implies is an accepted
-// ADR-004 trade).
+// function here — ResolveEdge included — first acquires the run-row lock
+// (LockRun, a FOR UPDATE read), then touches step/edge rows, making
+// composed transactions deadlock-free by uniform ordering (the per-run
+// serialization this implies is an accepted ADR-004 trade). The event seq
+// is allocated only after the guarded CAS succeeds, so a rejected
+// transition writes nothing: callers may drop a typed conflict (the
+// join-any late-firing absorption, the completion-tx ACK-and-drop) and
+// commit the surrounding transaction without burning a seq — the event
+// log stays gap-free by construction, not by rollback.
 
 import (
 	"context"
@@ -65,8 +69,7 @@ func ClaimStep(ctx context.Context, q Querier, args ClaimStepArgs) (gen.RunStep,
 	if err != nil {
 		return gen.RunStep{}, err
 	}
-	seq, err := allocateSeq(ctx, gq, op, args.RunID)
-	if err != nil {
+	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.RunStep{}, err
 	}
 	claimID := uuid.New()
@@ -88,7 +91,7 @@ func ClaimStep(ctx context.Context, q Querier, args ClaimStepArgs) (gen.RunStep,
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op+": insert attempt", err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, seq, EventStepClaimed, stepClaimedPayload{
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepClaimed, stepClaimedPayload{
 		StepID: args.StepID, ClaimID: claimID.String(), AttemptNo: step.AttemptCount,
 	}); err != nil {
 		return gen.RunStep{}, err
@@ -123,8 +126,7 @@ func SucceedStep(ctx context.Context, q Querier, args SucceedStepArgs) (gen.RunS
 	if err != nil {
 		return gen.RunStep{}, err
 	}
-	seq, err := allocateSeq(ctx, gq, op, args.RunID)
-	if err != nil {
+	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.RunStep{}, err
 	}
 	step, err := gq.SucceedRunStep(ctx, gen.SucceedRunStepParams{
@@ -145,7 +147,7 @@ func SucceedStep(ctx context.Context, q Querier, args SucceedStepArgs) (gen.RunS
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DSucceeded: 1}); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, seq, EventStepSucceeded, stepFinishedPayload{
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepSucceeded, stepFinishedPayload{
 		StepID: args.StepID, AttemptNo: step.AttemptCount,
 	}); err != nil {
 		return gen.RunStep{}, err
@@ -179,8 +181,7 @@ func FailStep(ctx context.Context, q Querier, args FailStepArgs) (gen.RunStep, e
 	if err != nil {
 		return gen.RunStep{}, err
 	}
-	seq, err := allocateSeq(ctx, gq, op, args.RunID)
-	if err != nil {
+	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.RunStep{}, err
 	}
 	step, err := gq.FailRunStep(ctx, gen.FailRunStepParams{
@@ -201,7 +202,7 @@ func FailStep(ctx context.Context, q Querier, args FailStepArgs) (gen.RunStep, e
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DFailed: 1}); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, seq, EventStepFailed, stepFinishedPayload{
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepFailed, stepFinishedPayload{
 		StepID: args.StepID, AttemptNo: step.AttemptCount,
 	}); err != nil {
 		return gen.RunStep{}, err
@@ -242,13 +243,17 @@ type ResolveEdgeResult struct {
 // ResolveEdge records how a normal edge resolved and applies the counter
 // side to its target step: remaining_deps decrements exactly once, and
 // fired_deps increments iff the edge fired (ADR-004 dependency
-// bookkeeping). It is not a status transition and appends no event.
+// bookkeeping). It is not a status transition and appends no event, but it
+// follows the same run-lock-first ordering as every other function here.
 // Re-resolving to the same verdict is a no-op; a conflicting verdict, a
 // loop edge, or a missing edge is an error.
 func ResolveEdge(ctx context.Context, q Querier, args ResolveEdgeArgs) (ResolveEdgeResult, error) {
 	const op = "resolve edge"
 	gq, err := transitionQueries(ctx, q, op, args.Now)
 	if err != nil {
+		return ResolveEdgeResult{}, err
+	}
+	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return ResolveEdgeResult{}, err
 	}
 	resolution := EdgeResolutionSkipped
@@ -272,10 +277,20 @@ func ResolveEdge(ctx context.Context, q Querier, args ResolveEdgeArgs) (ResolveE
 		RunID: args.RunID, StepID: edge.ToStep, FiredDelta: firedDelta, Now: args.Now,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		// No FK guards edge endpoints (ADR-004); a dangling target is a
-		// graph-integrity bug, not a caller race.
-		return ResolveEdgeResult{}, fmt.Errorf("store: %s: target step %q of edge %d: %w",
-			op, edge.ToStep, args.Ordinal, ErrNotFound)
+		// Zero rows is a graph-integrity bug either way, never a caller
+		// race: the target is missing (no FK guards edge endpoints,
+		// ADR-004) or its remaining_deps already drained to 0 while this
+		// edge was still unresolved.
+		if _, gerr := gq.GetRunStep(ctx, gen.GetRunStepParams{RunID: args.RunID, StepID: edge.ToStep}); gerr != nil {
+			if errors.Is(gerr, pgx.ErrNoRows) {
+				return ResolveEdgeResult{}, fmt.Errorf("store: %s: target step %q of edge %d: %w",
+					op, edge.ToStep, args.Ordinal, ErrNotFound)
+			}
+			return ResolveEdgeResult{}, wrapErr(op, gerr)
+		}
+		return ResolveEdgeResult{}, fmt.Errorf(
+			"store: %s: target step %q of edge %d has remaining_deps 0 with this edge unresolved — dependency bookkeeping corrupted",
+			op, edge.ToStep, args.Ordinal)
 	}
 	if err != nil {
 		return ResolveEdgeResult{}, wrapErr(op+": apply counters", err)
@@ -324,15 +339,16 @@ type ReadyStepArgs struct {
 // is composed by the caller (M4.3), matching instantiation (2.5), unpark
 // (M5.6), and the reconciler (M4.4), which all outbox ready steps outside
 // any transition. Later firings into an already-ready `join any` step are
-// absorbed as ErrConflict (wrong_status) — the caller drops them.
+// absorbed as ErrConflict (wrong_status) — the caller drops them, which is
+// safe inside a composed transaction: a rejected transition writes nothing
+// (see the package comment).
 func ReadyStep(ctx context.Context, q Querier, args ReadyStepArgs) (gen.RunStep, error) {
 	const op = "ready step"
 	gq, err := transitionQueries(ctx, q, op, args.Now)
 	if err != nil {
 		return gen.RunStep{}, err
 	}
-	seq, err := allocateSeq(ctx, gq, op, args.RunID)
-	if err != nil {
+	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.RunStep{}, err
 	}
 	step, err := gq.ReadyRunStep(ctx, gen.ReadyRunStepParams{
@@ -346,9 +362,11 @@ func ReadyStep(ctx context.Context, q Querier, args ReadyStepArgs) (gen.RunStep,
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, seq, EventStepReady, stepIDPayload{StepID: args.StepID}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepReady, stepIDPayload{StepID: args.StepID}); err != nil {
 		return gen.RunStep{}, err
 	}
+	log.From(ctx).DebugContext(ctx, "step ready",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID))
 	return step, nil
 }
 
@@ -371,8 +389,7 @@ func SkipStep(ctx context.Context, q Querier, args SkipStepArgs) (gen.RunStep, e
 	if err != nil {
 		return gen.RunStep{}, err
 	}
-	seq, err := allocateSeq(ctx, gq, op, args.RunID)
-	if err != nil {
+	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.RunStep{}, err
 	}
 	step, err := gq.SkipRunStep(ctx, gen.SkipRunStepParams{
@@ -389,9 +406,11 @@ func SkipStep(ctx context.Context, q Querier, args SkipStepArgs) (gen.RunStep, e
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DSkipped: 1}); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, seq, EventStepSkipped, stepIDPayload{StepID: args.StepID}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepSkipped, stepIDPayload{StepID: args.StepID}); err != nil {
 		return gen.RunStep{}, err
 	}
+	log.From(ctx).DebugContext(ctx, "step skipped",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID))
 	return step, nil
 }
 
@@ -414,8 +433,7 @@ func SucceedRun(ctx context.Context, q Querier, args SucceedRunArgs) (gen.Run, e
 	if err != nil {
 		return gen.Run{}, err
 	}
-	seq, err := allocateSeq(ctx, gq, op, args.RunID)
-	if err != nil {
+	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.Run{}, err
 	}
 	run, err := gq.SucceedRun(ctx, gen.SucceedRunParams{RunID: args.RunID, Now: args.Now})
@@ -425,7 +443,7 @@ func SucceedRun(ctx context.Context, q Querier, args SucceedRunArgs) (gen.Run, e
 	if err != nil {
 		return gen.Run{}, wrapErr(op, err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, seq, EventRunSucceeded, struct{}{}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, EventRunSucceeded, struct{}{}); err != nil {
 		return gen.Run{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "run succeeded", log.RunID(args.RunID.String()))
@@ -448,8 +466,7 @@ func FailRun(ctx context.Context, q Querier, args FailRunArgs) (gen.Run, error) 
 	if err != nil {
 		return gen.Run{}, err
 	}
-	seq, err := allocateSeq(ctx, gq, op, args.RunID)
-	if err != nil {
+	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.Run{}, err
 	}
 	run, err := gq.FailRun(ctx, gen.FailRunParams{RunID: args.RunID, Now: args.Now})
@@ -459,7 +476,7 @@ func FailRun(ctx context.Context, q Querier, args FailRunArgs) (gen.Run, error) 
 	if err != nil {
 		return gen.Run{}, wrapErr(op, err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, seq, EventRunFailed, struct{}{}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, EventRunFailed, struct{}{}); err != nil {
 		return gen.Run{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "run failed", log.RunID(args.RunID.String()))
@@ -484,23 +501,30 @@ func transitionQueries(ctx context.Context, q Querier, op string, now time.Time)
 	return r.q, nil
 }
 
-// allocateSeq reserves the transition's event sequence number. Being an
-// UPDATE on the run row, it doubles as the run-row lock acquisition every
-// transition performs first (see the package comment on lock ordering) and
-// surfaces a missing run as ErrNotFound before any other work.
-func allocateSeq(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUID) (int64, error) {
-	seq, err := gq.AllocateEventSeq(ctx, runID)
-	if err != nil {
-		return 0, wrapErr(op+": allocate event seq", err)
+// lockRun acquires the run-row lock — the first statement of every
+// transition (uniform run → step → edge ordering; see the package
+// comment) — and surfaces a missing run as ErrNotFound before any other
+// work. A FOR UPDATE read, not a write: a transition rejected after it
+// leaves no trace.
+func lockRun(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUID) error {
+	if _, err := gq.LockRun(ctx, runID); err != nil {
+		return wrapErr(op+": lock run", err)
 	}
-	return seq, nil
+	return nil
 }
 
-// appendEvent writes the transition's event row under a pre-allocated seq.
-func appendEvent(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUID, seq int64, typ string, payload any) error {
+// appendEvent allocates the transition's event seq and writes the event
+// row. Called only after the guarded CAS succeeded, so next_seq advances
+// iff an event lands under it — gap-free even when callers swallow
+// conflicts from other transitions in the same transaction.
+func appendEvent(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUID, typ string, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("store: %s: marshaling %s payload: %w", op, typ, err)
+	}
+	seq, err := gq.AllocateEventSeq(ctx, runID)
+	if err != nil {
+		return wrapErr(op+": allocate event seq", err)
 	}
 	_, err = gq.AppendEvent(ctx, gen.AppendEventParams{RunID: runID, Seq: seq, Type: typ, Payload: body})
 	return wrapErr(op+": append event", err)
@@ -524,7 +548,7 @@ func finishAttempt(ctx context.Context, gq *gen.Queries, op string, step gen.Run
 }
 
 // bumpCounters applies a step transition's aggregate delta to the run row.
-// The row is known to exist (allocateSeq found it), so zero rows cannot
+// The row is known to exist (lockRun found it), so zero rows cannot
 // happen short of a concurrent delete, which the row lock excludes.
 func bumpCounters(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUID, params gen.BumpRunStepCountersParams) error {
 	params.RunID = runID

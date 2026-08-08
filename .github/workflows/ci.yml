@@ -45,35 +45,16 @@ jobs:
 
   test-integration:
     runs-on: ubuntu-latest
-    services:
-      # Keep images and credentials in sync with docker-compose.yml so tests
-      # behave identically against CI services and the local dev stack.
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: agentloom
-          POSTGRES_PASSWORD: agentloom
-          POSTGRES_DB: agentloom
-        ports:
-          - "5432:5432"
-        options: >-
-          --health-cmd "pg_isready -U agentloom -d agentloom"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 15
-      redis:
-        image: redis:7-alpine
-        ports:
-          - "6379:6379"
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      - name: boot the compose dev stack
+        # The same docker-compose.yml as local dev, so images, credentials,
+        # healthchecks, and Redis AOF are mirrored by construction (GH
+        # Actions service containers can't pass a command, so they couldn't
+        # enable AOF). `make up` gates on the healthchecks via --wait.
+        run: make up
       - name: go test (integration)
         run: go test -race -tags integration ./...

@@ -77,7 +77,7 @@ internal/
   version/      build version of agentloom binaries
   config/       env-driven configuration (defaults < env, fail-fast validation)
   dag/          definition types, validation, graph algorithms, CEL
-  store/        Postgres persistence: migrations + migrator, storetest/ harness; repositories (planned)
+  store/        Postgres persistence: migrations + migrator, storetest/ harness, sqlc repositories, WithTx, atomic run instantiation, guarded CAS transitions
   queue/        Redis Streams, leases, delayed delivery (planned)
   engine/       claim/execute/complete pipeline, outbox, reconciler (planned)
   exec/         executor SPI, registry, middleware, side-effect journal (planned)

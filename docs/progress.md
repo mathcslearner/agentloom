@@ -593,3 +593,77 @@ representations agree after every flow (the desync risk its Consequences
 section flags).
 
 Deferred (again): the storetest template-database fast path from 2.2.
+
+### Post-M2 audit & hardening pass (2026-08-08)
+
+Verified every 2.1–2.6 acceptance criterion and exit criterion against the
+code (including a live `make down && make up` durability check), then
+landed a hardening pass. The headline fix is a **latent event-log
+corruption in the 2.6 transitions**: the event seq was allocated *before*
+the guarded CAS, so a conflict swallowed inside a composed transaction —
+which `ReadyStep`'s own doc comment invites for join-any late firings, and
+which M4.3's completion transaction is shaped to do — would have committed
+an advanced `next_seq` with no event row, a permanent backfill gap. Every
+transition now takes the run-row lock first via a new `LockRun`
+(`SELECT … FOR UPDATE`) and allocates the seq **after** the CAS succeeds
+(inside `appendEvent`), so a rejected transition writes nothing and
+dropping typed conflicts is safe by construction;
+`TestDroppedConflictKeepsLogGapFree` pins the contract with an M4.3-shaped
+transaction. The same change brought `ResolveEdge` — previously the one
+function skipping the run lock, a latent deadlock against concurrent
+claims for any caller that didn't happen to hold the lock already — under
+the uniform run → step → edge ordering. ADR-004's event-sequencing section
+now records both rules.
+
+**`run_steps.updated_at` is now app-written on insert** (new column in the
+`CreateRunStep`/`CreateRunSteps` queries; the repos reject a zero
+`UpdatedAt` like transitions reject a zero `Now`): it previously fell to
+the schema's `now()` default, which put freshly instantiated steps outside
+the test clock's control — and that column feeds the reconciler's
+staleness index (M4.4). ADR-004's timestamp section documents the policy.
+
+**Smaller hardening:** `ApplyEdgeResolution` gained a `remaining_deps > 0`
+guard so a counter underflow (unresolved edge into a drained step — graph
+corruption) surfaces as a typed diagnosis instead of a raw CHECK
+violation; the instantiation failpoint is an `atomic.Pointer` and gained
+the missing `after_outbox` stage; `Migrator.Down` on an unmigrated
+database says "nothing to roll back" instead of leaking golang-migrate's
+internals (which surface as `fs.ErrNotExist`, not only `ErrNilVersion`);
+`cmd/migrate` validates the command and `force`'s argument *before*
+opening a database connection; `ReadyStep`/`SkipStep` log like the other
+transitions; `CreateRunArgs.IdempotencyToken` documents that the token is
+the sole identity (the definition is not compared).
+
+**Tests closing audit gaps:** the run transition matrix now asserts
+unchanged status *and* no event on every rejection and exercises the
+`failed` from-status; `WithTx` has a cancel-mid-callback test (the
+`context.WithoutCancel` rollback path); `store.Open` is tested (parse
+failure and ping failure never echo credentials; live round-trip);
+`toMigrateDSN` has table-driven unit tests; `cmd/migrate` has unit tests
+for usage errors and `newMigration` (dir now injected).
+
+**CI:** the integration job's service containers were replaced with
+`make up` — GH Actions services can't pass a container command, so CI
+Redis silently ran without AOF and Postgres without `start_period`;
+booting the actual compose file mirrors local dev by construction. Needs
+the one-time GitHub verification (same errand as ticket 0.2's red-path
+check).
+
+**Doc corrections (ADR-004):** `retrying` was reserved but had no matrix
+rows — added `failed → retrying → ready` and `dead_lettered → ready` (M5);
+the three milestone-tag listings for reserved statuses now agree (M5 =
+step statuses, M5.6 = run statuses); the failed-parent blocking rule
+records its `join any` exception; the skip counter form records its
+zero-indegree side condition (matters for M13 expansion); the
+`runs (status, created_at DESC)` index no longer claims to serve
+unfiltered listing; a new consequence records that step transitions carry
+no run-status guard until M5.6's cancellation sweep. README's layout
+section caught up with 2.4–2.6; the `cmd/migrate` nolint cites the real
+gosec rule (G306, not the nonexistent "G703").
+
+**Still deferred, deliberately:** the storetest template-database fast
+path (third deferral) — the full integration suite runs in ~4s, and
+cross-process template lifecycle management (hash-keyed templates,
+stale-template cleanup, no-connections-during-clone) is real flake surface
+for a modest win; revisit when suite time actually hurts. The 1.5
+`max_iterations: 0` message quirk stands.

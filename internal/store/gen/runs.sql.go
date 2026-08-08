@@ -229,3 +229,17 @@ func (q *Queries) ListRunsByStatus(ctx context.Context, arg ListRunsByStatusPara
 	}
 	return items, nil
 }
+
+const lockRun = `-- name: LockRun :one
+SELECT id FROM runs WHERE id = $1 FOR UPDATE
+`
+
+// LockRun acquires the run-row lock without writing anything. It is every
+// transition's first statement (uniform run → step → edge lock ordering;
+// see the transitions.go package comment) and doubles as the existence
+// check — zero rows means the run is gone.
+func (q *Queries) LockRun(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, lockRun, id)
+	err := row.Scan(&id)
+	return id, err
+}
