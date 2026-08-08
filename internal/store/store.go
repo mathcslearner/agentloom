@@ -5,8 +5,9 @@
 //
 // The sqlc-generated row and params types are the store's domain types —
 // there is deliberately no hand-written mapping layer on top of them.
-// Status/counter mutations are absent from this surface on purpose: every
-// state transition is a guarded CAS owned by ticket 2.6.
+// Status/counter mutations are absent from the repository surface on
+// purpose: every state transition is a guarded CAS in transitions.go
+// (ticket 2.6), the only path that appends the transition's event.
 package store
 
 import (

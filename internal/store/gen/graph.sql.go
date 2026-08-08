@@ -92,7 +92,7 @@ type CreateRunStepParams struct {
 
 // Per-run graph copy: run_steps (node side) and run_edges (edge side).
 // Inserts and reads only — status transitions and dependency-counter
-// updates are 2.6's guarded CAS.
+// updates are the guarded CAS queries in transitions.sql.
 func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (RunStep, error) {
 	row := q.db.QueryRow(ctx, createRunStep,
 		arg.RunID,

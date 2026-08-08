@@ -504,3 +504,92 @@ use `make test-integration` (the Makefile exports it) or source `.env`
 when a host Postgres squats on 5432.
 
 Deferred (again): the storetest template-database fast path from 2.2.
+
+### 2.6 — Guarded state transitions (CAS) ✅
+
+**API.** `internal/store/transitions.go`: package-level functions — one per
+ADR-004 matrix row owned by 2.6 — each taking the `Querier` a `WithTx`
+callback received plus an args struct with a required injected `Now`:
+`ClaimStep` (ready → running: fresh `claim_id` generated inside and
+returned on the row, `attempt_count`++, attempt row inserted,
+`started_at` stamped on first claim only via COALESCE), `SucceedStep` /
+`FailStep` (running → terminal, **fenced by `claim_id`**; output/error
+persisted, attempt closed via new `FinishStepAttempt` query, run
+aggregate bumped), `ResolveEdge` (bookkeeping, below), `ReadyStep`
+(pending → ready; guard `fired_deps ≥ 1 AND (remaining_deps = 0 OR
+join_any)`), `SkipStep` (pending → skipped; `remaining = fired = 0`),
+`SucceedRun` (guard on aggregates: `succeeded + skipped = total AND
+failed = 0` — a `COUNT(*)` scan was rejected as hot-path cost; the
+counters are maintained by these same transitions in the same txs),
+`FailRun` (v1 minimum guard `steps_failed ≥ 1`; *when* to halt is
+ADR-006/M5 policy). Queries live in `queries/transitions.sql` and are
+**deliberately absent from the public repo interfaces** — same reasoning
+as 2.4's no-generic-Update rule: a repo-level raw CAS would let callers
+skip the event append. Transitions are the only mutation surface.
+
+**Design decisions.** (1) **In-tx execution is enforced dynamically**:
+each function checks the `txMarker` ctx (installed by `WithTx`) and
+type-asserts the Querier to the unexported `repos` value only `WithTx`
+hands out; a pool-backed `*Store` or a bypassed Querier fails fast with
+`ErrNoTx`. Atomicity of CAS + attempt + aggregates + event is structural,
+not conventional. (2) **Lock ordering: run row first.** Every
+transition's first statement is its event-seq allocation
+(`AllocateEventSeq`, an UPDATE on the run row) — without this, a claim
+(step → run lock order) racing a composed completion fan-out (run → step)
+deadlocks. Uniform run → step → edge ordering makes M4.3's composed
+transactions deadlock-free by construction; the per-run serialization it
+implies is the trade ADR-004 already accepted. A rolled-back transition
+returns its seq (the increment rolls back too), so the log stays
+gap-free. (3) **`ReadyStep` takes `JoinAny` from the caller** rather than
+parsing `config` JSONB in SQL — the engine holds the decoded definition;
+the store stays dumb about step semantics. (4) **`ReadyStep` writes no
+outbox row**: instantiation (2.5), unpark (M5.6), and the reconciler
+(M4.4) all outbox `ready` steps outside any transition, so dispatch
+composes at the caller. (5) **CEL evaluation stays out**: `ResolveEdge`
+takes the fired/skipped verdict; evaluation and the branch first-match
+rule are M4.3's.
+
+**Typed errors** (`errors.go`): sentinel `ErrConflict`;
+`*TransitionError` unwraps to it carrying entity, from/to, and a
+`ConflictReason` — `wrong_status` (illegal edge or lost race),
+`claim_mismatch` (fencing; carries **both** claim IDs for M4.5's zombie
+logging), `guard_failed` (status matched, predicate didn't — e.g.
+premature rollup). Diagnosis = re-read the row in the same tx after a
+0-row UPDATE; missing row/run → `ErrNotFound` (the run check falls out of
+seq allocation). New sentinel `ErrNoTx`.
+
+**ResolveEdge bookkeeping.** `resolution = 'unresolved'` in the WHERE is
+the idempotency mechanism (ADR-004): re-resolving to the same verdict is
+a **no-op success** (`Resolved: false`, counters untouched — retried
+completion txs can't double-decrement); a *conflicting* verdict is an
+error (retries must be deterministic); loop edges and missing edges
+error; a dangling `to_step` (edges have no FK) surfaces as `ErrNotFound`,
+not silent success. On success the dependent's updated row comes back so
+the caller can decide ready/skip next. No event — edge resolution isn't
+in the matrix or the v1 event vocabulary.
+
+**Events.** Six new type constants (`step_claimed`, `step_succeeded`,
+`step_failed`, `step_skipped`, `run_succeeded`, `run_failed`); payloads
+v1-minimal (`{step_id, claim_id, attempt_no}` / `{step_id, attempt_no}` /
+`{step_id}` / `{}`); 2.5's `stepReadyPayload` renamed `stepIDPayload`
+(shared with `step_skipped`).
+
+**Tests** (`transitions_integration_test.go`, +`errors_test.go` unit):
+16-goroutine claim race (one winner, losers typed `wrong_status`, one
+attempt/claim/event); full step matrix (5 transitions × 6 statuses,
+illegal cells assert unchanged status *and* no event); run matrix +
+guards; fencing (stale claim → `claim_mismatch` with both IDs; duplicate
+completion after real completion → `wrong_status` = ACK-and-drop);
+atomicity from outside (transition inside a tx that then errors leaves
+zero trace, `next_seq` unwound); fanout lifecycle end-to-end **including
+one 4.3-shaped composed transaction** (succeed + 3×resolve + 3×ready in
+one `WithTx`), idempotent re-resolve, join-all gating, final aggregates
+(6,0,0) and gap-free event log; skip propagation a→b→c with all-skipped
+tail still `SucceedRun`-able; join-any readiness + late-firing absorption;
+ResolveEdge rejections (loop edge, conflicting verdict, missing, dangling
+target); `ErrNoTx` / zero-`Now` rejection. Shared helper
+`assertCountersMatchEdges` checks the two ADR-004 bookkeeping
+representations agree after every flow (the desync risk its Consequences
+section flags).
+
+Deferred (again): the storetest template-database fast path from 2.2.

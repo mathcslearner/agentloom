@@ -1,5 +1,5 @@
 -- Run rows. Inserts and reads only: status/counter mutations are guarded
--- CAS transitions owned by ticket 2.6 — no generic UPDATE here by design.
+-- CAS transitions (transitions.sql) — no generic UPDATE here by design.
 
 -- name: CreateRun :one
 INSERT INTO runs (id, definition_id, definition, status, params,

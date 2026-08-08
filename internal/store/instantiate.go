@@ -85,7 +85,9 @@ type runCreatedPayload struct {
 	StepsTotal int    `json:"steps_total"`
 }
 
-type stepReadyPayload struct {
+// stepIDPayload serves the events whose payload is just the step:
+// step_ready and step_skipped.
+type stepIDPayload struct {
 	StepID string `json:"step_id"`
 }
 
@@ -289,7 +291,7 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		return gen.Run{}, err
 	}
 	for _, id := range p.entry {
-		if err := p.appendEvent(ctx, q, run.ID, EventStepReady, stepReadyPayload{StepID: id}); err != nil {
+		if err := p.appendEvent(ctx, q, run.ID, EventStepReady, stepIDPayload{StepID: id}); err != nil {
 			return gen.Run{}, err
 		}
 	}

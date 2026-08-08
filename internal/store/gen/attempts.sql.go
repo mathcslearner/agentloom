@@ -7,6 +7,7 @@ package gen
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,8 +29,7 @@ type CreateStepAttemptParams struct {
 }
 
 // One row per execution try. Outcome/error/finished_at are written by the
-// completion transitions (2.6); v1 records them at insert only when the
-// caller already knows them (tests, backfills).
+// completion transitions (transitions.go, ticket 2.6).
 func (q *Queries) CreateStepAttempt(ctx context.Context, arg CreateStepAttemptParams) (StepAttempt, error) {
 	row := q.db.QueryRow(ctx, createStepAttempt,
 		arg.RunID,
@@ -50,6 +50,38 @@ func (q *Queries) CreateStepAttempt(ctx context.Context, arg CreateStepAttemptPa
 		&i.FinishedAt,
 	)
 	return i, err
+}
+
+const finishStepAttempt = `-- name: FinishStepAttempt :execrows
+UPDATE step_attempts
+SET outcome = $1, error = $2, finished_at = $3::timestamptz
+WHERE run_id = $4 AND step_id = $5 AND attempt_no = $6
+`
+
+type FinishStepAttemptParams struct {
+	Outcome    *string
+	Error      json.RawMessage
+	FinishedAt time.Time
+	RunID      uuid.UUID
+	StepID     string
+	AttemptNo  int32
+}
+
+// FinishStepAttempt closes an attempt with its outcome; called by the
+// completion transitions in the same transaction as the step CAS.
+func (q *Queries) FinishStepAttempt(ctx context.Context, arg FinishStepAttemptParams) (int64, error) {
+	result, err := q.db.Exec(ctx, finishStepAttempt,
+		arg.Outcome,
+		arg.Error,
+		arg.FinishedAt,
+		arg.RunID,
+		arg.StepID,
+		arg.AttemptNo,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const listStepAttempts = `-- name: ListStepAttempts :many

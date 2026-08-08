@@ -258,13 +258,13 @@ golang-migrate with migrations embedded via `embed.FS`; `make migrate-up/down/ne
 - [x] Duplicate submission with the same token returns the original run (no second run)
 - [x] Fan-out fixture instantiates with correct `remaining_deps` on join steps
 
-#### 2.6 — Guarded state transitions (CAS)
+#### 2.6 — Guarded state transitions (CAS) ✅
 **Depends on:** 2.5
 Transition functions as conditional UPDATEs: e.g., claim = `ready → running` only if status matches *and* sets a fresh `claim_id` + attempt row; completion requires matching `claim_id`. Illegal transitions return typed errors; every transition appends an event. This is the substrate for lease fencing (M4).
 **Done when:**
-- [ ] Concurrency test: N goroutines race to claim one step; exactly one wins, losers get typed `ErrConflict`
-- [ ] Transition matrix from ADR-004 enforced by tests (every illegal edge rejected)
-- [ ] Events appended atomically with their transition (same tx)
+- [x] Concurrency test: N goroutines race to claim one step; exactly one wins, losers get typed `ErrConflict`
+- [x] Transition matrix from ADR-004 enforced by tests (every illegal edge rejected)
+- [x] Events appended atomically with their transition (same tx)
 
 ---
 

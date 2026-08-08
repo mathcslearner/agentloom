@@ -39,10 +39,17 @@ const (
 // the task envelope reasons are carried into.
 const OutboxReasonStepReady = "step_ready"
 
-// Event types written by run instantiation (2.5). Transition events join in
-// 2.6; ADR-018 (M16) owns formalizing the envelope. `events.type` is
-// free-form TEXT in schema v1, so these constants are the vocabulary.
+// Event types written by run instantiation (2.5) and the guarded
+// transitions (2.6); ADR-018 (M16) owns formalizing the envelope.
+// `events.type` is free-form TEXT in schema v1, so these constants are the
+// vocabulary.
 const (
-	EventRunCreated = "run_created"
-	EventStepReady  = "step_ready"
+	EventRunCreated    = "run_created"
+	EventStepReady     = "step_ready"
+	EventStepClaimed   = "step_claimed"
+	EventStepSucceeded = "step_succeeded"
+	EventStepFailed    = "step_failed"
+	EventStepSkipped   = "step_skipped"
+	EventRunSucceeded  = "run_succeeded"
+	EventRunFailed     = "run_failed"
 )

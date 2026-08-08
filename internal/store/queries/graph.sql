@@ -1,6 +1,6 @@
 -- Per-run graph copy: run_steps (node side) and run_edges (edge side).
 -- Inserts and reads only — status transitions and dependency-counter
--- updates are 2.6's guarded CAS.
+-- updates are the guarded CAS queries in transitions.sql.
 
 -- name: CreateRunStep :one
 INSERT INTO run_steps (run_id, step_id, step_type, config, status,

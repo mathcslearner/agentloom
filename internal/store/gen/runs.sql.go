@@ -46,7 +46,7 @@ type CreateRunParams struct {
 }
 
 // Run rows. Inserts and reads only: status/counter mutations are guarded
-// CAS transitions owned by ticket 2.6 — no generic UPDATE here by design.
+// CAS transitions (transitions.sql) — no generic UPDATE here by design.
 func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, error) {
 	row := q.db.QueryRow(ctx, createRun,
 		arg.ID,
