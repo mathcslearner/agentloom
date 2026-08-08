@@ -67,6 +67,17 @@ func exprOfLen(n int) string {
 	return "output.x == '" + strings.Repeat("p", n-len(scaffold)) + "'"
 }
 
+// structuralWarnCases lists the warning-severity issues a structural
+// fixture additionally produces; fixtures absent here must produce none.
+var structuralWarnCases = map[string][]issueRef{
+	// Both edges have an unresolved endpoint, so neither step has a valid
+	// edge: the resolved endpoints still warn as isolated.
+	"unknown_edge_endpoint.json": {
+		{dag.CodeIsolatedStep, "steps[0]"},
+		{dag.CodeIsolatedStep, "steps[1]"},
+	},
+}
+
 // structuralCases maps every invalid_structural fixture to the exact set
 // of error-severity issues it must produce. The corpus-coverage test pins
 // this table to the fixture directory.
@@ -158,7 +169,7 @@ func TestValidateInvalidStructuralFixtures(t *testing.T) {
 			if err == nil {
 				t.Fatal("Validate: want error, got nil")
 			}
-			wantIssues(t, issues, want, nil)
+			wantIssues(t, issues, want, structuralWarnCases[name])
 		})
 	}
 }
@@ -398,6 +409,30 @@ func TestValidateTableDriven(t *testing.T) {
 				},
 			},
 			wantErrs: []issueRef{{dag.CodeLoopEdgeNotAncestor, "edges[1]"}},
+		},
+		{
+			// An edge naming a ghost endpoint is reported once and does not
+			// exist for the degree rules: `a` keeps its entry-step status
+			// instead of a factually wrong no_entry_step cascade.
+			name: "unknown edge source does not cascade into no_entry_step",
+			def: &dag.Definition{
+				SchemaVersion: dag.CurrentSchemaVersion,
+				Name:          "t",
+				Steps:         []dag.Step{noop("a")},
+				Edges:         []dag.Edge{{From: "ghost", To: "a"}},
+			},
+			wantErrs: []issueRef{{dag.CodeUnknownEdgeEndpoint, "edges[0].from"}},
+		},
+		{
+			// The unresolved edge also does not "touch" its resolved
+			// endpoint, so the isolated-step warning is not suppressed.
+			name:     "step touched only by an unresolved edge still warns isolated",
+			def:      pair(dag.Edge{From: "ghost", To: "b"}),
+			wantErrs: []issueRef{{dag.CodeUnknownEdgeEndpoint, "edges[0].from"}},
+			wantWarns: []issueRef{
+				{dag.CodeIsolatedStep, "steps[0]"},
+				{dag.CodeIsolatedStep, "steps[1]"},
+			},
 		},
 		{
 			name:      "isolated step warns without failing",

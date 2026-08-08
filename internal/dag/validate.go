@@ -106,7 +106,7 @@ func Validate(def *Definition) (issues []*ValidationIssue, err error) {
 	v.checkLimits(def)
 	stepIndex := v.checkSteps(def)
 	v.checkEdges(def, stepIndex)
-	v.checkGraph(def)
+	v.checkGraph(def, stepIndex)
 	if !v.has(CodeDuplicateStepID, CodeUnknownEdgeEndpoint) {
 		v.checkGraphSemantics(def)
 	}
@@ -357,22 +357,35 @@ func flatten(err error) []error {
 // checkGraph runs the degree-based graph rules: at least one entry step,
 // isolated-step warnings, and the branch out-edge firing-rule shape.
 // Loop edges never count toward readiness degrees (ADR-003), but any edge
-// — loop included — connects a step for the isolated-step check.
-func (v *validator) checkGraph(def *Definition) {
+// — loop included — connects a step for the isolated-step check. An edge
+// with an unresolved endpoint (already reported as unknown_edge_endpoint)
+// does not exist for the degree rules, so a ghost endpoint cannot cascade
+// into a spurious no_entry_step or suppress an isolated-step warning; the
+// branch firing-rule shape still covers every declared out-edge, since it
+// concerns `when` placement, not graph connectivity.
+func (v *validator) checkGraph(def *Definition, stepIndex map[string]int) {
 	if len(def.Steps) == 0 {
 		return // no_steps already reported; nothing graph-shaped to check
 	}
-	inDegree := make(map[string]int)   // normal edges only
-	touched := make(map[string]bool)   // any edge, loop included
+	inDegree := make(map[string]int)   // resolved normal edges only
+	touched := make(map[string]bool)   // any resolved edge, loop included
 	outEdges := make(map[string][]int) // normal out-edge indices per source, declaration order
 	for i, e := range def.Edges {
-		touched[e.From] = true
-		touched[e.To] = true
+		_, fromOK := stepIndex[e.From]
+		_, toOK := stepIndex[e.To]
+		if fromOK && toOK {
+			touched[e.From] = true
+			touched[e.To] = true
+		}
 		if e.IsLoop() {
 			continue
 		}
-		inDegree[e.To]++
-		outEdges[e.From] = append(outEdges[e.From], i)
+		if fromOK {
+			outEdges[e.From] = append(outEdges[e.From], i)
+		}
+		if fromOK && toOK {
+			inDegree[e.To]++
+		}
 	}
 
 	entry := false

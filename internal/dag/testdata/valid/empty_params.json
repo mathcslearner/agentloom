@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "name": "empty-params",
+  "params": {},
+  "steps": [{"id": "start", "type": "noop"}],
+  "edges": []
+}

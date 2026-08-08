@@ -191,6 +191,12 @@ func TestReadyStepsProperties(t *testing.T) {
 				case act <= 7:
 					failed[id] = true
 					acted = true
+				case act == 8:
+					// The engine seeds runtime when-false/branch outcomes by
+					// skipping a ready step (ADR-003), so the generator must
+					// reach states where a skipped step has completed parents.
+					skipped[id] = true
+					acted = true
 				default:
 					deferred[id] = true
 				}

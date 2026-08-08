@@ -13,10 +13,12 @@ Language) predicates to route execution along edges:
   completes; `true` means "iterate again" (bounded by `max_iterations`).
 
 Both are compiled and typechecked when the definition is validated —
-before anything runs. A definition with a syntactically invalid,
-ill-typed, or non-boolean expression is rejected with the `line:col`
-position inside the expression (`invalid_expression` /
-`expression_not_boolean` validation codes).
+before anything runs. A syntactically invalid or ill-typed expression is
+rejected with `invalid_expression` issues carrying the `line:col`
+position inside the expression; an expression whose checked type is not
+boolean is rejected with `expression_not_boolean`, which reports the
+offending type but no position (the finding is about the expression as a
+whole).
 
 A future step type will also take CEL expressions (`map.items`, arriving
 with runtime expansion in M13); this document will grow with it.

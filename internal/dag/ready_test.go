@@ -210,6 +210,48 @@ func TestReadyStepsInputErrors(t *testing.T) {
 	}
 }
 
+// TestReadyStepsJoinMissingConfigFallsBackToAll pins the documented
+// fallback in joinMode: a join step whose config is absent (possible on
+// hand-built definitions; Validate flags it separately) gets the stricter
+// all-shaped readiness rule, not join-any.
+func TestReadyStepsJoinMissingConfigFallsBackToAll(t *testing.T) {
+	t.Parallel()
+
+	g, err := dag.NewGraph(mkDef(
+		[]dag.Step{
+			{ID: "a", Type: dag.StepNoop},
+			{ID: "b", Type: dag.StepNoop},
+			{ID: "j", Type: dag.StepJoin}, // no config
+		},
+		dag.Edge{From: "a", To: "j"},
+		dag.Edge{From: "b", To: "j"},
+	))
+	if err != nil {
+		t.Fatalf("NewGraph: %v", err)
+	}
+
+	// One parent fired, one pending: join-any would fire; the config-less
+	// join must wait like join-all. Only the untouched entry step is ready.
+	ready, newlySkipped, err := g.ReadySteps(set("a"), nil, nil)
+	if err != nil {
+		t.Fatalf("ReadySteps: %v", err)
+	}
+	if want := []string{"b"}; !slices.Equal(ready, want) {
+		t.Errorf("ready = %v, want %v", ready, want)
+	}
+	if len(newlySkipped) != 0 {
+		t.Errorf("newlySkipped = %v, want none", newlySkipped)
+	}
+
+	ready, _, err = g.ReadySteps(set("a", "b"), nil, nil)
+	if err != nil {
+		t.Fatalf("ReadySteps: %v", err)
+	}
+	if want := []string{"j"}; !slices.Equal(ready, want) {
+		t.Errorf("ready after both parents = %v, want %v", ready, want)
+	}
+}
+
 func TestReadyStepsCyclicGraphError(t *testing.T) {
 	t.Parallel()
 

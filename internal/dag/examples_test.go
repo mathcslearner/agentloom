@@ -3,6 +3,7 @@ package dag_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mathcslearner/agentloom/internal/dag"
@@ -140,9 +141,12 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 		}
 	}
 
-	var loopEdge, conditionedEdge bool
+	var loopEdge, conditionedEdge, hasGuard bool
 	outEdges := make(map[string][]dag.Edge) // normal out-edges, declaration order
 	for _, e := range def.Edges {
+		if strings.Contains(e.When, "has(") || strings.Contains(e.Condition, "has(") {
+			hasGuard = true
+		}
 		if e.IsLoop() {
 			loopEdge = true
 			continue
@@ -157,6 +161,9 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	}
 	if !conditionedEdge {
 		t.Error("no when-conditioned non-branch edge in kitchen_sink.json")
+	}
+	if !hasGuard {
+		t.Error("no has() guard in any kitchen_sink.json predicate")
 	}
 
 	var fanOut bool

@@ -113,7 +113,10 @@ func (g *Graph) topoOrder() (order []int, ok bool) {
 
 // Ancestors returns the set of step IDs with a non-empty normal-edge path
 // to stepID. A step is never its own ancestor (normal-edge cycles are
-// rejected by Validate before ancestry is meaningful).
+// rejected by Validate before ancestry is meaningful). Validation's
+// loop-ancestry check uses the equivalent short-circuiting reaches;
+// Ancestors is the full-set query kept for runtime expansion (M13/M14),
+// which needs whole ancestor sets, not a single reachability answer.
 func (g *Graph) Ancestors(stepID string) (map[string]bool, error) {
 	start, ok := g.index[stepID]
 	if !ok {

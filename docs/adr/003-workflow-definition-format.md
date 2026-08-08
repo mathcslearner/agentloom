@@ -356,6 +356,12 @@ resolve the other two edges.
   offender** — top level, steps, edges, and per-type `config` alike. A
   definition that decodes is exactly understood. The single exception is the
   `ui` subtree.
+- **Duplicate keys within one JSON object are not detected** — per
+  `encoding/json`, the last occurrence silently wins. Strictness here targets
+  unknown and mistyped fields; catching duplicates would require a
+  token-level rescan of every object, and the builder (M17) and canonical
+  encoder never emit them. Accepted limitation, recorded during the post-M1
+  audit.
 
 #### The `ui` block
 

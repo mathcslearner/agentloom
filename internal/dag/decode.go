@@ -114,7 +114,9 @@ func Decode(data []byte) (*Definition, error) {
 // decodeParams decodes the top-level params declaration map.
 func decodeParams(raw json.RawMessage, errs *errList) map[string]ParamSpec {
 	m, ok := decodeObjectMap(raw, "params", errs)
-	if !ok {
+	if !ok || len(m) == 0 {
+		// An empty params object decodes to nil, matching Encode's omission
+		// of empty params, so decode→encode→decode stays lossless.
 		return nil
 	}
 	params := make(map[string]ParamSpec, len(m))
