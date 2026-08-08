@@ -106,45 +106,45 @@ The AI-native layer lands immediately after the engine core and *before* any UI 
 
 **Exit criteria:** clean checkout → `make lint test` green in CI; architecture doc + ADR-001/002 merged; a demo binary emits structured JSON logs configured from env.
 
-#### 0.1 — Repo scaffold & tooling
+#### 0.1 — Repo scaffold & tooling ✅
 **Depends on:** —
 Initialize the monorepo: pick the project name and Go module path (placeholder `github.com/OWNER/NAME` until decided), `go.mod`, directory skeleton (`cmd/`, `internal/`, `web/` placeholder, `deploy/`, `docs/`, `examples/`, `test/`), `Makefile` (`lint`, `test`, `test-integration`, `fmt`), golangci-lint config, `.editorconfig`, `.gitignore`, Apache-2.0 `LICENSE`, README stub with one-paragraph positioning.
 **Done when:**
-- [ ] `make lint` and `make test` pass on the empty skeleton
-- [ ] Directory layout documented in README and matches CLAUDE.md
-- [ ] Module path finalized; name recorded in README
+- [x] `make lint` and `make test` pass on the empty skeleton
+- [x] Directory layout documented in README and matches CLAUDE.md
+- [x] Module path finalized; name recorded in README (`agentloom`, `github.com/mathcslearner/agentloom`)
 
 #### 0.2 — CI pipeline (lint + unit tests)
 **Depends on:** 0.1
 GitHub Actions workflow: golangci-lint, `go vet`, unit tests with race detector, Go build cache. Runs on PRs and main. (Integration-test job with services arrives in 2.2; frontend job in 17.1.)
 **Done when:**
-- [ ] CI runs lint + `go test -race ./...` on every PR
+- [x] CI runs lint + `go test -race ./...` on every PR
 - [ ] A deliberately failing test fails the pipeline (verified once, then removed)
-- [ ] Status badge in README
+- [x] Status badge in README
 
-#### 0.3 — Architecture overview document
+#### 0.3 — Architecture overview document ✅
 **Depends on:** 0.1
 Write `docs/architecture.md`: component diagram (API, workers, Postgres, Redis, providers, UI), the execution data flow (submit → instantiate → dispatch → claim → execute → complete → fan out), tech-stack justifications (condensed from this roadmap), glossary (run, step, attempt, lease, claim ID/fencing token, outbox, reconciler, blackboard, expansion, semantic retry, park). Mermaid diagrams.
 **Done when:**
-- [ ] All listed sections present; diagrams render on GitHub
-- [ ] Glossary terms match the vocabulary used in this roadmap
-- [ ] Doc index page `docs/README.md` links it
+- [x] All listed sections present; diagrams render on GitHub
+- [x] Glossary terms match the vocabulary used in this roadmap
+- [x] Doc index page `docs/README.md` links it
 
-#### 0.4 — ADR template, ADR-001 service boundaries, ADR-002 scheduling model
+#### 0.4 — ADR template, ADR-001 service boundaries, ADR-002 scheduling model ✅
 **Depends on:** 0.3
 Create `docs/adr/` with a template. **ADR-001:** exactly two long-running deployables — API server and worker; everything else (DAG model, leasing, retries, cost, context, cache, plugins) is shared internal Go packages; rationale + rejected alternatives (microservices, embedded single binary). **ADR-002:** event-driven scheduling with *no central scheduler* — completing workers compute successor readiness transactionally and dispatch via an outbox; every worker participates in dispatch; document the escape criteria that would justify a dedicated scheduler service (e.g., cross-run fairness policies that can't be expressed at claim time) and the planned scale lever (sharded streams, see M19).
 **Done when:**
-- [ ] Both ADRs merged with context/decision/consequences/alternatives sections
-- [ ] ADR-002 explicitly addresses "why no scheduler bottleneck" and names the sharding lever
-- [ ] ADR index in `docs/adr/README.md`
+- [x] Both ADRs merged with context/decision/consequences/alternatives sections
+- [x] ADR-002 explicitly addresses "why no scheduler bottleneck" and names the sharding lever
+- [x] ADR index in `docs/adr/README.md`
 
-#### 0.5 — Config & structured logging foundation
+#### 0.5 — Config & structured logging foundation ✅
 **Depends on:** 0.1
 `internal/config`: env-driven config with defaults, validation, and typed sub-configs per component (fail fast on bad config). `internal/obs/log`: `slog` JSON logger factory, canonical field names (`run_id`, `step_id`, `attempt`, `worker_id`, `trace_id`), context-carried logger helpers. A `cmd/demo` throwaway (deleted in M4) proves wiring.
 **Done when:**
-- [ ] Config precedence (default < env) unit-tested; invalid config errors are actionable
-- [ ] Log output is one JSON object per line with canonical fields
-- [ ] Logger retrievable from `context.Context`; nil-safe
+- [x] Config precedence (default < env) unit-tested; invalid config errors are actionable
+- [x] Log output is one JSON object per line with canonical fields
+- [x] Logger retrievable from `context.Context`; nil-safe
 
 ---
 
