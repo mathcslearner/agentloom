@@ -242,13 +242,13 @@ golang-migrate with migrations embedded via `embed.FS`; `make migrate-up/down/ne
 - [x] Transition matrix enumerates every legal `(from, to, guard)` for runs and steps
 - [x] `remaining_deps`/join bookkeeping design matches M1 readiness semantics
 
-#### 2.4 — Store layer & transaction helpers
+#### 2.4 — Store layer & transaction helpers ✅
 **Depends on:** 2.3
 `internal/store`: pgxpool wiring, sqlc-generated queries, repository interfaces (definitions, runs, steps, attempts, events, outbox) with a Postgres implementation, `WithTx(ctx, fn)` helper with correct rollback/commit semantics and error wrapping.
 **Done when:**
-- [ ] CRUD integration tests for definitions and runs pass
-- [ ] Tx helper tested: panic and error paths roll back; nested use rejected or documented
-- [ ] sqlc generation wired into `make generate` with CI drift check
+- [x] CRUD integration tests for definitions and runs pass
+- [x] Tx helper tested: panic and error paths roll back; nested use rejected or documented
+- [x] sqlc generation wired into `make generate` with CI drift check
 
 #### 2.5 — Atomic run instantiation
 **Depends on:** 2.4, 1.4

@@ -20,11 +20,18 @@ linters:
       excludes:
         # G104 duplicates errcheck.
         - G104
+  exclusions:
+    paths:
+      # sqlc-generated code (make generate) is not held to hand-written style.
+      - internal/store/gen
 
 formatters:
   enable:
     - gofumpt
     - gci
+  exclusions:
+    paths:
+      - internal/store/gen
   settings:
     gci:
       sections:

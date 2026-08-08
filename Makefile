@@ -8,6 +8,8 @@ endif
 
 # Keep in sync with the golangci-lint-action version in .github/workflows/ci.yml.
 GOLANGCI_LINT_VERSION := v2.12.2
+# sqlc is run via `go run` so the pin lives here, not in a global install.
+SQLC_VERSION := v1.30.0
 BIN_DIR := $(CURDIR)/bin
 GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 
@@ -27,8 +29,9 @@ lint: tools ## Run golangci-lint
 	$(GOLANGCI_LINT) run ./...
 
 .PHONY: generate
-generate: ## Regenerate derived artifacts (workflow definition JSON Schema under docs/schema/)
+generate: ## Regenerate derived artifacts (workflow definition JSON Schema, sqlc store code)
 	go run ./internal/dag/gen -out docs/schema/workflow-definition.v1.json
+	go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION) generate
 
 .PHONY: test
 test: ## Run unit tests with the race detector

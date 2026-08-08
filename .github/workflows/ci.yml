@@ -31,7 +31,7 @@ jobs:
       - name: generated artifacts are current
         run: |
           make generate
-          git diff --exit-code -- docs/schema
+          git diff --exit-code -- docs/schema internal/store/gen
 
   test:
     runs-on: ubuntu-latest

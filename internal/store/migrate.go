@@ -1,6 +1,3 @@
-// Package store owns agentloom's Postgres persistence layer. As of ticket
-// 2.2 that is schema migrations (embedded, applied via golang-migrate);
-// repositories, sqlc queries, and transaction helpers arrive in ticket 2.4.
 package store
 
 import (

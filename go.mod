@@ -5,7 +5,9 @@ go 1.26
 require (
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/cel-go v0.31.0
+	github.com/google/uuid v1.6.0
 	github.com/invopop/jsonschema v0.14.0
+	github.com/jackc/pgerrcode v0.0.0-20220416144525-469b46aa5efa
 	github.com/jackc/pgx/v5 v5.10.0
 	pgregory.net/rapid v1.3.0
 )
@@ -15,7 +17,6 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
-	github.com/jackc/pgerrcode v0.0.0-20220416144525-469b46aa5efa // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect

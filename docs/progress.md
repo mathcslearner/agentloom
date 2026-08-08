@@ -356,3 +356,76 @@ the whole subtree, definition-with-runs delete RESTRICTed. The
 `schema_baseline` marker table from 0001 stays (storetest's isolation
 canary). Deferred: the storetest template-database fast path noted in 2.2
 (worth doing now that per-test migration applies a real schema).
+
+### 2.4 — Store layer & transaction helpers ✅
+
+**sqlc.** Pinned via `go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)`
+(v1.30.0, Makefile var — no global install), configured in root `sqlc.yaml`:
+schema = the migrations directory (sqlc understands golang-migrate naming and
+skips `.down.sql`), queries in `internal/store/queries/*.sql`, output package
+`internal/store/gen`. Type overrides keep `pgtype` entirely out of the store
+API: `uuid` → `github.com/google/uuid.UUID` (nullable → pointer), `jsonb` →
+`json.RawMessage` (nil ⇔ NULL), `timestamptz` → `time.Time` / `*time.Time`
+(the override db_type must be spelled bare `timestamptz`;
+`pg_catalog.timestamptz` silently doesn't match), plus
+`emit_pointers_for_null_types` for the remaining nullable scalars. No pgx
+UUID codec is registered — `uuid.UUID`'s `sql.Scanner`/`driver.Valuer`
+fallback is correct; native-codec registration is a measured-need
+optimization (M19). `make generate` runs sqlc after the JSON-Schema gen; the
+CI drift step's diff now also covers `internal/store/gen`; the gen directory
+is excluded from golangci-lint linters *and* formatters.
+
+**Design decisions.** (1) **Generated types are the domain types** — repos
+return `gen.Run`, `gen.WorkflowDefinition`, etc. directly; a parallel
+hand-written struct set would be pure duplication today. (2) **No generic
+Update methods**: the "U" of CRUD is deliberately absent from runs/steps —
+every status/counter mutation must be a 2.6 guarded CAS, and a plain
+`UpdateRunStatus` would be exactly the unguarded write path the invariants
+forbid. `events` has no update *or* delete queries (append-only enforced by
+API surface, per ADR-004). (3) The ticket's list names six repos but the
+schema has seven tables — **run_edges lives on `StepRepo`**
+(CreateEdge/ListEdgesByRun): instantiation and expansion always write steps
+and edges as one graph. (4) Named sqlc args (`@ids::bigint[]`,
+`@token::text`) where positional inference produced `dollar_1` or pointer
+params.
+
+**Layer.** `Store` = pgxpool + embedded `repos`; `Open(ctx, dsn)` (parse →
+pool → ping; parse errors never echo the DSN — it can embed credentials) and
+`NewFromPool` (what tests use over storetest pools). `Querier` interface
+bundles the six repo accessors and is implemented by both `Store` (pool
+execution) and the handle `WithTx` passes its callback (tx execution) via
+one `repos` struct over `gen.Queries`. Repos map errors through one
+`wrapErr`: `pgx.ErrNoRows` → `ErrNotFound` (also deletes that matched
+nothing), unique/FK violations → `*ConflictError` carrying the constraint
+name (`pgerrcode` promoted to a direct dep). Creation ergonomics: zero run
+ID → random UUID; nil params/payload → `{}` (explicit INSERT would bypass
+the column defaults); empty step status → `pending`; zero graph_version →
+1; empty edge_type → `normal`. `status.go` mirrors the ADR-004 v1 status
+vocabulary as constants (CHECK constraints stay authoritative).
+`RunRepo.AllocateEventSeq` is the ADR-004 seq primitive
+(`UPDATE … RETURNING next_seq`) for 2.5/2.6 to call in-tx with `Append`.
+
+**WithTx.** `WithTx(ctx, fn func(ctx, Querier) error)`: commit iff fn nil;
+fn error → rollback, error wrapped with `%w` (typed errors survive —
+tested through a ConflictError); panic → rollback via the deferred
+safety-net then propagate. Rollback contexts use `context.WithoutCancel` so
+a context cancelled mid-fn can't also doom the rollback. **Nested use is
+rejected**, not savepointed: the callback ctx carries a marker and a nested
+call fails fast with `ErrNestedTx` (without harming the outer tx);
+composing code shares the outer Querier.
+
+**Tests** (integration tag, per-test DBs via storetest): definitions CRUD
+(round-trip, duplicate name+version, RESTRICT delete with runs on record,
+double-delete → ErrNotFound), runs CRUD (token lookup + duplicate-token
+conflict, caller-supplied id honored, newest-first list, cascade delete of
+the whole subtree), graph round-trip (repo defaults, ordinal-ordered edge
+list, loop-edge predicates, duplicate step PK conflict), attempts
+(attempt_no ordering, attempt-without-step FK conflict), event seq
+allocation (1,2,3…; missing run → ErrNotFound; duplicate seq conflict;
+backfill-from-last_seq shape), outbox (drain order, delete-as-drain), and
+the WithTx matrix (commit, error rollback, panic rollback+propagate,
+nested rejection, cancelled ctx, and a 2.5-in-miniature composed tx:
+run+step+seq+event+outbox atomically). Gotcha worth remembering: Postgres
+jsonb does not preserve formatting/key order, so JSON round-trip
+assertions must compare semantically, not byte-wise. Deferred (again): the
+storetest template-database fast path from 2.2.
