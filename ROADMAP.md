@@ -130,13 +130,13 @@ Write `docs/architecture.md`: component diagram (API, workers, Postgres, Redis, 
 - [x] Glossary terms match the vocabulary used in this roadmap
 - [x] Doc index page `docs/README.md` links it
 
-#### 0.4 — ADR template, ADR-001 service boundaries, ADR-002 scheduling model
+#### 0.4 — ADR template, ADR-001 service boundaries, ADR-002 scheduling model ✅
 **Depends on:** 0.3
 Create `docs/adr/` with a template. **ADR-001:** exactly two long-running deployables — API server and worker; everything else (DAG model, leasing, retries, cost, context, cache, plugins) is shared internal Go packages; rationale + rejected alternatives (microservices, embedded single binary). **ADR-002:** event-driven scheduling with *no central scheduler* — completing workers compute successor readiness transactionally and dispatch via an outbox; every worker participates in dispatch; document the escape criteria that would justify a dedicated scheduler service (e.g., cross-run fairness policies that can't be expressed at claim time) and the planned scale lever (sharded streams, see M19).
 **Done when:**
-- [ ] Both ADRs merged with context/decision/consequences/alternatives sections
-- [ ] ADR-002 explicitly addresses "why no scheduler bottleneck" and names the sharding lever
-- [ ] ADR index in `docs/adr/README.md`
+- [x] Both ADRs merged with context/decision/consequences/alternatives sections
+- [x] ADR-002 explicitly addresses "why no scheduler bottleneck" and names the sharding lever
+- [x] ADR index in `docs/adr/README.md`
 
 #### 0.5 — Config & structured logging foundation
 **Depends on:** 0.1

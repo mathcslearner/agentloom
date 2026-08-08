@@ -4,11 +4,11 @@ agentloom is a distributed, durable execution engine purpose-built for AI agent 
 
 It sits deliberately between three categories: **n8n / Zapier** (easy visual automation, not production-grade), **Temporal / Airflow** (production-grade durable execution, not AI-native), and **LangGraph** (excellent agent logic, but an in-process library with no distributed coordination or crash recovery). The AI-native capabilities — semantic/self-correcting retries, dynamic runtime DAG generation, cost-aware scheduling with budgets, context/memory management, multi-agent handoff, human-in-the-loop approvals, and a pluggable tool/agent/retrieval SPI — are core features of the engine, not add-ons. See the [README](../README.md) for positioning and [ROADMAP.md](../ROADMAP.md) for the full build plan.
 
-This document is the system overview: components, the execution data flow, tech-stack rationale, and the project glossary. Individual design decisions are governed by ADRs in [`docs/adr/`](adr/) (scaffolded in ticket 0.4).
+This document is the system overview: components, the execution data flow, tech-stack rationale, and the project glossary. Individual design decisions are governed by ADRs in [`docs/adr/`](adr/README.md).
 
 ## System components
 
-There are exactly **two long-running deployables** — the API server and the worker — plus two data stores and a set of clients. Everything else (DAG model, leasing, retries, cost, context, caching, plugins) lives in shared internal Go packages compiled into both binaries. This boundary is formalized in ADR-001 (ticket 0.4).
+There are exactly **two long-running deployables** — the API server and the worker — plus two data stores and a set of clients. Everything else (DAG model, leasing, retries, cost, context, caching, plugins) lives in shared internal Go packages compiled into both binaries. This boundary is formalized in [ADR-001](adr/001-service-boundaries.md).
 
 ```mermaid
 flowchart LR
@@ -143,7 +143,7 @@ stateDiagram-v2
 
 ## Scheduling model: no central scheduler
 
-There is no scheduler service. Scheduling is **event-driven and worker-embedded**: the worker completing a step computes successor readiness inside its completion transaction and dispatches via the outbox, and every worker participates in outbox draining and reconciliation. Adding workers adds both execution *and* dispatch capacity — no single-process bottleneck, no scheduler HA story. The decision, its escape criteria (what would justify a dedicated scheduler), and the scale lever (sharded streams) are documented in ADR-002 (ticket 0.4).
+There is no scheduler service. Scheduling is **event-driven and worker-embedded**: the worker completing a step computes successor readiness inside its completion transaction and dispatches via the outbox, and every worker participates in outbox draining and reconciliation. Adding workers adds both execution *and* dispatch capacity — no single-process bottleneck, no scheduler HA story. The decision, its escape criteria (what would justify a dedicated scheduler), and the scale lever (sharded streams) are documented in [ADR-002](adr/002-scheduling-model.md).
 
 ## Tech stack
 
