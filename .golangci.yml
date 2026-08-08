@@ -1,5 +1,11 @@
 version: "2"
 
+run:
+  # Lint the integration-tagged files too; without this they'd never be
+  # analyzed (the tag only ever gates test files, so this is always safe).
+  build-tags:
+    - integration
+
 linters:
   # Standard set: errcheck, govet, ineffassign, staticcheck, unused.
   default: standard

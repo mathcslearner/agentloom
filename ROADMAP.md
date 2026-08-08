@@ -226,13 +226,13 @@ Root `docker-compose.yml`: Postgres 16 + Redis 7 with named volumes, healthcheck
 - [x] Data survives `make down && make up`; `make nuke` documented as destructive
 - [x] README quickstart section updated
 
-#### 2.2 — Migration tooling & integration-test harness
+#### 2.2 — Migration tooling & integration-test harness ✅
 **Depends on:** 2.1, 0.2
 golang-migrate with migrations embedded via `embed.FS`; `make migrate-up/down/new`. CI gains an integration job (build tag `integration`) that boots Postgres+Redis as services and runs tagged tests. Test helper package provides a per-test isolated schema/database.
 **Done when:**
-- [ ] Up/down migrations tested in CI; dirty-state detection surfaces a clear error
-- [ ] `make test-integration` works locally against the compose stack
-- [ ] Parallel tests are isolated (no cross-test data bleed)
+- [x] Up/down migrations tested in CI; dirty-state detection surfaces a clear error
+- [x] `make test-integration` works locally against the compose stack
+- [x] Parallel tests are isolated (no cross-test data bleed)
 
 #### 2.3 — ADR-004 & core schema v1
 **Depends on:** 2.2, 1.1

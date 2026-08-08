@@ -228,3 +228,66 @@ locally: clean boot to healthy, data survives `make down && make up`
 (Postgres row + Redis key), nuke decline/accept paths, post-nuke boot is
 empty, and port overrides work. No api/worker services yet — those join the
 compose file in M4.
+
+### 2.2 — Migration tooling & integration-test harness ✅
+
+**Migrations.** golang-migrate v4 as a library (iofs source over `embed.FS`,
+pgx/v5 database driver) wrapped in `internal/store/migrate.go`: `Migrator`
+with `Up` (all pending; nothing-pending is a no-op), `Down` (**one step**,
+via `Steps(-1)` — not golang-migrate's roll-back-everything `Down`), `Force`
+(recovery; -1 = "nothing applied"), `Version` (with an explicit `applied`
+bool instead of leaking `ErrNilVersion`), `Close`. Migration files live in
+`internal/store/migrations/` with sequential `NNNN_` numbering; ships
+`0001_baseline` (a `schema_baseline` marker table) purely to prove the
+machinery — schema v1 arrives in 2.3. Non-obvious: golang-migrate's pgx/v5
+driver registers URL scheme **`pgx5`**, so `toMigrateDSN` rewrites
+`postgres://` → `pgx5://` (the driver restores it before connecting);
+keyword/value DSNs are rejected with a clear error, and errors never echo
+the DSN (it can embed credentials). Dirty state is surfaced as typed
+`*store.DirtyError` naming the version and the `migrate force` recovery
+path. Constructor `NewMigratorFS` takes an injected `fs.FS` so tests can
+feed broken migrations.
+
+**CLI.** `cmd/migrate` (plain flag parsing; cobra waits for `ctl` in M6):
+`up` / `down` / `status` / `force <ver>` / `new <name>` (snake_case-enforced,
+next sequence number, writes the `.up.sql`/`.down.sql` pair — must run from
+the repo root). Target DSN from new config sub-config
+`PostgresConfig{DSN}` (`AGENTLOOM_POSTGRES_DSN`, default = compose stack;
+passed through opaquely — the driver produces better errors than any
+up-front validation). Make targets `migrate-up`, `migrate-down`,
+`migrate-new name=...`.
+
+**Harness.** `internal/store/storetest`: `NewDB(tb)` (fresh database,
+migrated, pooled) and `NewEmptyDB(tb)` (no migrations; returns the DSN too,
+for the migration tests themselves); databases are named
+`agentloom_test_<random>` and dropped on cleanup with
+`DROP DATABASE ... WITH (FORCE)`. Non-obvious: `CREATE DATABASE` is
+serialized via a Postgres **advisory lock**, because concurrent creates
+cloning template1 can fail and `go test` runs packages as separate OS
+processes — a Go mutex can't cover that. Admin DSN from
+`AGENTLOOM_TEST_POSTGRES_DSN` (deliberately *not* `AGENTLOOM_POSTGRES_DSN`,
+so re-pointing dev tools never silently redirects tests), default = compose
+stack; unreachable Postgres **fails** with a `make up` hint rather than
+skipping, since `-tags integration` is explicit opt-in. Per-test migration
+is fast while the schema is tiny; a template-database fast path is the noted
+optimization once 2.3's schema lands.
+
+**Wiring.** `make test-integration` = `go test -race -tags integration ./...`
+(tagged tests live next to their code; `test/` keeps cross-cutting suites —
+currently `test/smoke`, a dependency-free Redis `PING` over TCP so a broken
+service definition is caught before M3). CI gains a `test-integration` job
+with postgres:16-alpine + redis:7-alpine **service containers** (images,
+credentials, and healthchecks mirroring docker-compose.yml).
+`.golangci.yml` sets `run.build-tags: [integration]` so tagged files are
+linted. The Makefile now **auto-loads `.env`** (`include .env` + `export`)
+so compose and the Go tooling agree on one override file; `.env.example`
+documents the three new vars (`AGENTLOOM_POSTGRES_DSN`,
+`AGENTLOOM_TEST_POSTGRES_DSN`, `AGENTLOOM_TEST_REDIS_ADDR`).
+
+Verified locally against the compose stack: migrate round-trip
+(up → no-op up → down → up), dirty-state error + `force -1` recovery, CLI
+paths (status/up/down/new, valid and invalid), parallel-isolation test, no
+leftover test databases, and the full suite green with a host Postgres
+squatting on 5432 via `.env` port overrides (which is also what surfaced
+the need for Makefile `.env` loading). Integration tests double-run unit
+tests under the tag — accepted redundancy for a simple `./...` invocation.

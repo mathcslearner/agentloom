@@ -10,7 +10,7 @@ It sits between: **n8n/Zapier** (easy, not production-grade), **Temporal/Airflow
 
 ## Current status
 
-- **Position:** M2 (durable state: Postgres persistence) in progress; 2.1 (Docker Compose dev stack) done. **Next ticket: 2.2** (migration tooling & integration-test harness).
+- **Position:** M2 (durable state: Postgres persistence) in progress; 2.1 (Docker Compose dev stack) and 2.2 (migration tooling & integration-test harness) done. **Next ticket: 2.3** (ADR-004 & core schema v1).
 - **Complete:** M0 foundation (0.1–0.5; one loose end below) and all of M1 (workflow definition core: JSON contract per ADR-003, strict codec, validation, graph algorithms + readiness, CEL edge conditions, canonical examples — plus a post-M1 audit/hardening pass).
 - **Open loose ends:** the one-time CI red-path verification on GitHub (ticket 0.2); a deferred cosmetic quirk in loop-edge `max_iterations: 0` error reporting (see the progress log).
 - **Per-ticket history lives in [`docs/progress.md`](docs/progress.md)** — what each ticket delivered, non-obvious decisions, deferred quirks. Read the sections relevant to the code you're about to touch before starting a ticket that builds on earlier work.

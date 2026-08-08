@@ -23,7 +23,8 @@ type LookupFunc func(key string) (string, bool)
 // Config is the root configuration for agentloom binaries, composed of one
 // typed sub-config per component.
 type Config struct {
-	Log LogConfig
+	Log      LogConfig
+	Postgres PostgresConfig
 }
 
 // Load builds a Config by applying environment overrides from lookup on top
@@ -31,9 +32,13 @@ type Config struct {
 // the returned Config is the zero value in that case.
 func Load(lookup LookupFunc) (Config, error) {
 	cfg := Config{
-		Log: defaultLogConfig(),
+		Log:      defaultLogConfig(),
+		Postgres: defaultPostgresConfig(),
 	}
-	if err := errors.Join(cfg.Log.applyEnv(lookup)...); err != nil {
+	var errs []error
+	errs = append(errs, cfg.Log.applyEnv(lookup)...)
+	errs = append(errs, cfg.Postgres.applyEnv(lookup)...)
+	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration:\n%w", err)
 	}
 	return cfg, nil

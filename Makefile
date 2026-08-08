@@ -1,3 +1,11 @@
+# Auto-load .env (the compose override file, see .env.example) so the Go
+# tooling run through make — cmd/migrate, the integration-test harness —
+# sees the same overrides Docker Compose does.
+ifneq (,$(wildcard .env))
+include .env
+export
+endif
+
 # Keep in sync with the golangci-lint-action version in .github/workflows/ci.yml.
 GOLANGCI_LINT_VERSION := v2.12.2
 BIN_DIR := $(CURDIR)/bin
@@ -27,12 +35,21 @@ test: ## Run unit tests with the race detector
 	go test -race ./...
 
 .PHONY: test-integration
-test-integration: ## Run integration tests (requires the Docker Compose stack; see ticket 2.2)
-	@if [ -n "$$(find test -name '*.go' -print -quit)" ]; then \
-		go test -race -tags integration ./test/...; \
-	else \
-		echo "no integration tests yet (suite arrives with ticket 2.2)"; \
-	fi
+test-integration: ## Run integration tests (requires the Docker Compose stack: make up)
+	go test -race -tags integration ./...
+
+.PHONY: migrate-up
+migrate-up: ## Apply all pending schema migrations (AGENTLOOM_POSTGRES_DSN overrides the target)
+	go run ./cmd/migrate up
+
+.PHONY: migrate-down
+migrate-down: ## Roll back the most recent schema migration (one step)
+	go run ./cmd/migrate down
+
+.PHONY: migrate-new
+migrate-new: ## Create a new migration pair: make migrate-new name=add_runs_table
+	@test -n "$(name)" || { echo "usage: make migrate-new name=<snake_case_name>"; exit 1; }
+	go run ./cmd/migrate new $(name)
 
 COMPOSE := docker compose
 

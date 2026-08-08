@@ -27,6 +27,22 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Log != want {
 		t.Errorf("default Log config = %+v, want %+v", cfg.Log, want)
 	}
+	if cfg.Postgres.DSN != config.DefaultPostgresDSN {
+		t.Errorf("default Postgres DSN = %q, want %q", cfg.Postgres.DSN, config.DefaultPostgresDSN)
+	}
+}
+
+func TestLoadPostgresDSNOverride(t *testing.T) {
+	t.Parallel()
+
+	const dsn = "postgres://other:other@dbhost:5433/otherdb" //nolint:gosec // G101: made-up test value
+	cfg, err := config.Load(lookupFrom(map[string]string{config.EnvPostgresDSN: dsn}))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	if cfg.Postgres.DSN != dsn {
+		t.Errorf("Postgres DSN = %q, want %q", cfg.Postgres.DSN, dsn)
+	}
 }
 
 func TestLoadEnvOverridesDefaults(t *testing.T) {
