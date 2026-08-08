@@ -1,0 +1,412 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/Definition",
+  "$defs": {
+    "AgentConfig": {
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "BranchConfig": {
+      "properties": {
+        "input": true
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "Definition": {
+      "properties": {
+        "schema_version": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ParamSpec"
+          },
+          "type": "object"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/Step"
+          },
+          "type": "array"
+        },
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/Edge"
+          },
+          "type": "array"
+        },
+        "ui": {
+          "type": "object",
+          "description": "Engine-opaque builder state: never validated or interpreted, round-tripped byte-for-byte."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "schema_version",
+        "name",
+        "steps",
+        "edges"
+      ]
+    },
+    "EchoConfig": {
+      "properties": {
+        "input": true
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "Edge": {
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "when": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/EdgeType"
+        },
+        "condition": {
+          "type": "string"
+        },
+        "max_iterations": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "EdgeType": {
+      "type": "string",
+      "enum": [
+        "normal",
+        "loop"
+      ]
+    },
+    "HumanApprovalConfig": {
+      "properties": {
+        "prompt": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "JoinConfig": {
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/JoinMode"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "JoinMode": {
+      "type": "string",
+      "enum": [
+        "all",
+        "any"
+      ]
+    },
+    "LLMConfig": {
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/LLMMessage"
+          },
+          "type": "array"
+        },
+        "max_tokens": {
+          "type": "integer"
+        },
+        "temperature": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "LLMMessage": {
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "MapConfig": {
+      "properties": {
+        "items": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "NoopConfig": {
+      "properties": {},
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "ParamSpec": {
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/ParamType"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type"
+      ]
+    },
+    "ParamType": {
+      "type": "string",
+      "enum": [
+        "string",
+        "number",
+        "boolean",
+        "object",
+        "array"
+      ]
+    },
+    "PlannerConfig": {
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/LLMMessage"
+          },
+          "type": "array"
+        },
+        "max_tokens": {
+          "type": "integer"
+        },
+        "temperature": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "RetrieveConfig": {
+      "properties": {
+        "retriever": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "top_k": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "Step": {
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "llm"
+            },
+            "config": {
+              "$ref": "#/$defs/LLMConfig"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "tool"
+            },
+            "config": {
+              "$ref": "#/$defs/ToolConfig"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "retrieve"
+            },
+            "config": {
+              "$ref": "#/$defs/RetrieveConfig"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "map"
+            },
+            "config": {
+              "$ref": "#/$defs/MapConfig"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "planner"
+            },
+            "config": {
+              "$ref": "#/$defs/PlannerConfig"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "agent"
+            },
+            "config": {
+              "$ref": "#/$defs/AgentConfig"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "human_approval"
+            },
+            "config": {
+              "$ref": "#/$defs/HumanApprovalConfig"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "join"
+            },
+            "config": {
+              "$ref": "#/$defs/JoinConfig"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "branch"
+            },
+            "config": {
+              "$ref": "#/$defs/BranchConfig"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "noop"
+            },
+            "config": {
+              "$ref": "#/$defs/NoopConfig"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "echo"
+            },
+            "config": {
+              "$ref": "#/$defs/EchoConfig"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/StepType"
+        },
+        "config": {
+          "type": "object",
+          "description": "Typed per step type; Step's oneOf variants bind each type to its config shape."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "type"
+      ]
+    },
+    "StepType": {
+      "type": "string",
+      "enum": [
+        "llm",
+        "tool",
+        "retrieve",
+        "map",
+        "planner",
+        "agent",
+        "human_approval",
+        "join",
+        "branch",
+        "noop",
+        "echo"
+      ]
+    },
+    "ToolConfig": {
+      "properties": {
+        "tool": {
+          "type": "string"
+        },
+        "input": true
+      },
+      "additionalProperties": false,
+      "type": "object"
+    }
+  },
+  "title": "agentloom workflow definition",
+  "description": "Workflow definition format, schema_version 1 (ADR-003). Unknown fields are rejected everywhere except the engine-opaque ui block."
+}

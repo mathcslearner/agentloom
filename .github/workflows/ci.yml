@@ -28,6 +28,10 @@ jobs:
         with:
           # Keep in sync with GOLANGCI_LINT_VERSION in the Makefile.
           version: v2.12.2
+      - name: generated artifacts are current
+        run: |
+          make generate
+          git diff --exit-code -- docs/schema
 
   test:
     runs-on: ubuntu-latest

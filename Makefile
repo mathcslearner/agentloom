@@ -18,6 +18,10 @@ fmt: tools ## Format code (gofumpt + gci) and tidy go.mod
 lint: tools ## Run golangci-lint
 	$(GOLANGCI_LINT) run ./...
 
+.PHONY: generate
+generate: ## Regenerate derived artifacts (workflow definition JSON Schema under docs/schema/)
+	go run ./internal/dag/gen -out docs/schema/workflow-definition.v1.json
+
 .PHONY: test
 test: ## Run unit tests with the race detector
 	go test -race ./...

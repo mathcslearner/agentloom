@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "name": "ui-formatting",
+  "steps": [{"id": "start", "type": "noop"}],
+  "edges": [],
+  "ui": {
+        "oddly":    "spaced",
+    "nested": {
+                "deeply": [1,   2,
+        3]
+    },
+    "unicode": "café ☕ <tag> & ampersand"
+  }
+}

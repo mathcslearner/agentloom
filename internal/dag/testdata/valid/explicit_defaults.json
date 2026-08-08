@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "explicit-defaults",
+  "description": "Spells out values the canonical encoding omits: normal edge type, required:false, empty configs, temperature 0.",
+  "params": {
+    "tone": {"type": "string", "required": false}
+  },
+  "steps": [
+    {"id": "start", "type": "noop", "config": {}},
+    {"id": "draft", "type": "llm", "config": {"model": "anthropic/claude-sonnet-5", "prompt": "hi", "temperature": 0}},
+    {"id": "route", "type": "branch", "config": {}},
+    {"id": "done", "type": "noop"}
+  ],
+  "edges": [
+    {"from": "start", "to": "draft", "type": "normal"},
+    {"from": "draft", "to": "route"},
+    {"from": "route", "to": "done", "when": "output.ok == true", "type": "normal"}
+  ]
+}

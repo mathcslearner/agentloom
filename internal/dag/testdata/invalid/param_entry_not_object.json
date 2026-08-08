@@ -1,0 +1,1 @@
+{"schema_version": 1, "name": "x", "params": {"goal": "string"}, "steps": [{"id": "a", "type": "noop"}], "edges": []}

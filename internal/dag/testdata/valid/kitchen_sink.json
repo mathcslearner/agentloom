@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "name": "kitchen-sink",
+  "description": "Exercises every step type, edge feature, and the ui block.",
+  "params": {
+    "goal": {"type": "string", "required": true},
+    "budget": {"type": "number", "required": false},
+    "flags": {"type": "object"},
+    "tags": {"type": "array"},
+    "dry_run": {"type": "boolean"}
+  },
+  "steps": [
+    {"id": "start", "type": "noop"},
+    {"id": "fetch", "type": "tool", "config": {"tool": "http_request", "input": {"method": "GET", "url": "https://example.internal/api?a=1&b=2"}}},
+    {"id": "find_similar", "type": "retrieve", "config": {"retriever": "pg_fulltext", "query": "${{ run.params.goal }}", "top_k": 5}},
+    {"id": "plan", "type": "planner", "config": {"model": "anthropic/claude-sonnet-5", "prompt": "Break down: ${{ run.params.goal }}"}},
+    {"id": "draft", "type": "llm", "config": {"model": "anthropic/claude-sonnet-5", "messages": [{"role": "user", "content": "Draft it if x < 3 & y > 2"}], "max_tokens": 1024, "temperature": 0}},
+    {"id": "summarize_each", "type": "map", "config": {"items": "${{ steps.find_similar.output.docs }}", "body": "summarize_one"}},
+    {"id": "critique", "type": "agent", "config": {"agent": "critic", "prompt": "Review the draft on the blackboard."}},
+    {"id": "route", "type": "branch", "config": {}},
+    {"id": "refund_flow", "type": "echo", "config": {"input": {"hello": "world"}}},
+    {"id": "generic_flow", "type": "noop"},
+    {"id": "gather", "type": "join", "config": {"mode": "all"}},
+    {"id": "approve", "type": "human_approval", "config": {"prompt": "OK to send?"}}
+  ],
+  "edges": [
+    {"from": "start", "to": "fetch"},
+    {"from": "start", "to": "find_similar"},
+    {"from": "fetch", "to": "plan"},
+    {"from": "find_similar", "to": "summarize_each"},
+    {"from": "plan", "to": "draft"},
+    {"from": "draft", "to": "critique"},
+    {"from": "critique", "to": "route"},
+    {"from": "route", "to": "refund_flow", "when": "output.category == 'refund'"},
+    {"from": "route", "to": "generic_flow"},
+    {"from": "refund_flow", "to": "gather"},
+    {"from": "generic_flow", "to": "gather"},
+    {"from": "summarize_each", "to": "gather"},
+    {"from": "gather", "to": "approve"},
+    {"from": "critique", "to": "draft", "type": "loop", "condition": "output.verdict == 'revise'", "max_iterations": 3}
+  ],
+  "ui": {
+    "nodes": {
+      "start": {"position": {"x": 120, "y": 240}},
+      "draft": {"position": {"x": 300.5, "y": -40}}
+    },
+    "zoom": 0.75,
+    "junk_the_engine_must_keep": ["anything", {"goes": "here"}]
+  }
+}

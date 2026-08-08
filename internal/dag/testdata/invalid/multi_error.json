@@ -1,0 +1,1 @@
+{"schema_version": 1, "name": 7, "steps": [{"id": "a", "type": "llmz"}, {"id": "b", "type": "llm", "retires": 1, "config": {"modle": "m", "max_tokens": "many"}}], "edges": [{"to": "a", "whenever": "x"}], "extra": true}

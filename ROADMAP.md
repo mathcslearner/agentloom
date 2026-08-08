@@ -166,13 +166,13 @@ Decide and document: step types (`llm`, `tool`, `retrieve`, `map`, `planner`, `a
 - [x] Skip-propagation and join semantics for conditional branches specified
 - [x] Versioning and unknown-field policy (strict reject) decided and recorded
 
-#### 1.2 — Definition types & JSON codec
+#### 1.2 — Definition types & JSON codec ✅
 **Depends on:** 1.1
 `internal/dag`: Go structs for the definition, strict decoding (unknown fields rejected), canonical encoding, `schema_version` handling, and JSON Schema generation wired into `make generate` with a CI drift check.
 **Done when:**
-- [ ] Round-trip (decode→encode→decode) is lossless for all fixtures, including the `ui` block
-- [ ] Unknown fields and wrong types produce path-qualified errors
-- [ ] Generated JSON Schema committed under `docs/schema/` and drift-checked in CI
+- [x] Round-trip (decode→encode→decode) is lossless for all fixtures, including the `ui` block
+- [x] Unknown fields and wrong types produce path-qualified errors
+- [x] Generated JSON Schema committed under `docs/schema/` and drift-checked in CI
 
 #### 1.3 — Structural validation
 **Depends on:** 1.2

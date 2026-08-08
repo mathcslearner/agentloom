@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "name": "payloads",
+  "description": "Opaque payload fields (tool/echo/branch input) with loose whitespace, normalized to compact form on decode.",
+  "steps": [
+    {"id": "fetch", "type": "tool", "config": {"tool": "http_request", "input": {  "method" : "POST",
+      "body": {"deep":  [1, 2, {"k": null}]}  }}},
+    {"id": "mirror", "type": "echo", "config": {"input": [ "a" ,  "b" ]}},
+    {"id": "route", "type": "branch", "config": {"input": { "verdict" : "output.ok" }}},
+    {"id": "sink", "type": "join", "config": {"mode": "any"}}
+  ],
+  "edges": [
+    {"from": "fetch", "to": "route"},
+    {"from": "mirror", "to": "route"},
+    {"from": "route", "to": "sink", "when": "output.verdict == 'yes'"},
+    {"from": "route", "to": "sink"}
+  ]
+}
