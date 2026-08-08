@@ -55,6 +55,8 @@ const (
 	CodeLoopFieldRequired       ValidationCode = "loop_field_required"
 	CodeLoopFieldForbidden      ValidationCode = "loop_field_forbidden"
 	CodeLimitExceeded           ValidationCode = "limit_exceeded"
+	CodeCycle                   ValidationCode = "cycle_detected"
+	CodeLoopEdgeNotAncestor     ValidationCode = "loop_edge_not_ancestor"
 )
 
 // ValidationIssue is one structural problem in a definition, qualified by
@@ -88,8 +90,10 @@ func (i *ValidationIssue) Error() string {
 // Validate assumes codec-level integrity (Decode's job) but tolerates
 // hand-built definitions: a nil or wrongly-typed Config is reported as
 // missing required fields, an unregistered step type as unknown_step_type.
-// Graph-semantic rules — cycles, loop-edge ancestry, reachability — are
-// ticket 1.4.
+// The graph-semantic rules (ticket 1.4) — no cycles except marked loop
+// edges, loop-edge ancestry — run last and only when the graph is
+// well-formed (no duplicate IDs, no unknown edge endpoints), so a broken
+// endpoint does not cascade into spurious cycle reports.
 func Validate(def *Definition) (issues []*ValidationIssue, err error) {
 	if def == nil {
 		return nil, errors.New("dag: Validate called with nil definition")
@@ -100,6 +104,9 @@ func Validate(def *Definition) (issues []*ValidationIssue, err error) {
 	stepIndex := v.checkSteps(def)
 	v.checkEdges(def, stepIndex)
 	v.checkGraph(def)
+	if !v.has(CodeDuplicateStepID, CodeUnknownEdgeEndpoint) {
+		v.checkGraphSemantics(def)
+	}
 
 	return v.issues, v.err()
 }
@@ -121,6 +128,18 @@ func (v *validator) warn(code ValidationCode, path, format string, args ...any) 
 	v.issues = append(v.issues, &ValidationIssue{
 		Code: code, Severity: SeverityWarning, Path: path, Msg: fmt.Sprintf(format, args...),
 	})
+}
+
+// has reports whether any recorded issue carries one of the given codes.
+func (v *validator) has(codes ...ValidationCode) bool {
+	for _, i := range v.issues {
+		for _, c := range codes {
+			if i.Code == c {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // err joins the error-severity issues into one error, or nil if there are
@@ -350,6 +369,30 @@ func (v *validator) checkGraph(def *Definition) {
 				v.add(CodeBranchEdgeUnconditioned, fmt.Sprintf("edges[%d]", ei),
 					"unconditioned out-edge of branch %q must be the single trailing default", s.ID)
 			}
+		}
+	}
+}
+
+// checkGraphSemantics runs the ticket 1.4 rules from ADR-003 "Loop edges":
+// the graph with all loop edges removed must be acyclic (marked loop edges
+// are the only sanctioned cycles), and each loop edge's `to` must be an
+// ancestor of its `from` in that acyclic graph — the `to`→`from` paths are
+// the loop body M14 clones per iteration. Only called once the graph is
+// well-formed (unique IDs, endpoints resolve), so NewGraph cannot fail.
+func (v *validator) checkGraphSemantics(def *Definition) {
+	g, err := NewGraph(def)
+	if err != nil {
+		return // unreachable given the gate in Validate; stay defensive
+	}
+	for _, c := range g.findCycles() {
+		v.add(CodeCycle, fmt.Sprintf("edges[%d]", c.edgeIdx),
+			"edge closes the cycle %s (mark a loop edge instead: only loop edges may form cycles)", c.pathString())
+	}
+	for _, ei := range g.loopEdges {
+		e := def.Edges[ei]
+		if !g.reaches(g.index[e.To], g.index[e.From]) {
+			v.add(CodeLoopEdgeNotAncestor, fmt.Sprintf("edges[%d]", ei),
+				"loop edge target %q is not an ancestor of source %q (no loop body to iterate)", e.To, e.From)
 		}
 	}
 }

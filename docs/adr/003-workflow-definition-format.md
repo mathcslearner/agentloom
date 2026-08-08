@@ -428,6 +428,32 @@ original text left open; no prior decision is changed.*
   `schema_version` gate, it is reported alone. All other limits are
   enforced in `Validate` and reported together with everything else.
 
+### Graph algorithms: cycle reporting, readiness API shape
+
+*Added 2026-08-08 while implementing ticket 1.4 — clarifies points the
+original text left open; no prior decision is changed.*
+
+- **Cycle and ancestry violations join the one-pass report.** The 1.4 rules
+  run inside `Validate` as its final phase, gated on a well-formed graph
+  (no duplicate IDs, no unknown edge endpoints) so a broken endpoint never
+  cascades into spurious cycle reports. Two codes: `cycle_detected` (path =
+  the edge that closes the cycle; the message carries the full step path,
+  e.g. `a -> b -> a`; one issue per back edge found in a deterministic DFS,
+  so independent cycles each get reported) and `loop_edge_not_ancestor`
+  (path = the offending loop edge).
+- **`ReadySteps` takes step-level state; per-edge outcomes are the engine's
+  seam.** The pure library computes readiness from three disjoint step-ID
+  sets — `completed`, `skipped`, `failed` — deriving edge resolutions as:
+  out-edges of completed steps *fired*, of skipped steps *skipped*, of
+  failed or pending steps *unresolved*. Runtime `when`-false and
+  branch-pass-over outcomes (1.5/M4) enter by seeding the `skipped` set of
+  the passed-over steps; the completion transaction owns per-edge CEL
+  evaluation. `ReadySteps` returns both the ready frontier and the steps
+  skip propagation newly resolved, which the engine persists and feeds back.
+- **A ready step stays ready until it enters a terminal set.** The function
+  is a pure, repeatable computation over run state; dispatch bookkeeping
+  (claimed/running steps) is the engine's concern, not the graph library's.
+
 ### Enforcement points
 
 For conformance, the rules above land in specific tickets: **1.2** — strict

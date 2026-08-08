@@ -2,7 +2,10 @@ module github.com/mathcslearner/agentloom
 
 go 1.26
 
-require github.com/invopop/jsonschema v0.14.0
+require (
+	github.com/invopop/jsonschema v0.14.0
+	pgregory.net/rapid v1.3.0
+)
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect

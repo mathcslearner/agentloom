@@ -5,8 +5,11 @@
 // byte-for-byte), and JSON Schema generation for docs and UI forms.
 //
 // The package is a pure, IO-free library. Validate (ticket 1.3) enforces
-// ADR-003's structural rules on decoded definitions; graph algorithms
-// (1.4) and CEL compilation (1.5) build on these types.
+// ADR-003's structural rules on decoded definitions, including the graph
+// rules (1.4: only marked loop edges may form cycles, loop-edge ancestry);
+// Graph (1.4) provides adjacency, topological order, reachability, and
+// ReadySteps — ADR-003's readiness, skip-propagation, and join semantics.
+// CEL compilation (1.5) builds on these types next.
 package dag
 
 import "encoding/json"

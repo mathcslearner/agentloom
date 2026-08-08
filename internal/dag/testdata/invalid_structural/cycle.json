@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "name": "cycle",
+  "steps": [
+    {
+      "id": "start",
+      "type": "noop"
+    },
+    {
+      "id": "a",
+      "type": "noop"
+    },
+    {
+      "id": "b",
+      "type": "noop"
+    },
+    {
+      "id": "c",
+      "type": "noop"
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "a"
+    },
+    {
+      "from": "a",
+      "to": "b"
+    },
+    {
+      "from": "b",
+      "to": "c"
+    },
+    {
+      "from": "c",
+      "to": "a"
+    }
+  ]
+}

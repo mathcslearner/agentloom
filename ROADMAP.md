@@ -182,13 +182,13 @@ Validate: unique IDs, edge endpoints exist, at least one entry step, no orphan/u
 - [x] All violations reported in one pass with error codes and JSON paths
 - [x] Fixture corpus extended with one invalid fixture per rule (count/size limits are exercised with generated definitions instead of committed multi-hundred-KB files)
 
-#### 1.4 — Graph algorithms: cycles, topology, readiness
+#### 1.4 — Graph algorithms: cycles, topology, readiness ✅
 **Depends on:** 1.3
 Adjacency construction, cycle detection that rejects all cycles *except* marked loop edges, topological ordering, reachability, and `ReadySteps(completed, skipped, failed)` implementing join modes and skip propagation (a step whose upstreams are all skipped is skipped; `join all` treats skipped parents per ADR-003; `join any` fires on first success). Property-based tests (rapid) for invariants; benchmark on synthetic 10k-node graphs.
 **Done when:**
-- [ ] Loop-marked cycles accepted; any other cycle rejected with the offending path in the error
-- [ ] Property tests: readiness is monotonic, never returns a step with unmet deps, skip propagation terminates
-- [ ] Benchmark: 10k nodes validated + readiness computed <100ms
+- [x] Loop-marked cycles accepted; any other cycle rejected with the offending path in the error
+- [x] Property tests: readiness is monotonic, never returns a step with unmet deps, skip propagation terminates
+- [x] Benchmark: 10k nodes validated + readiness computed <100ms
 
 #### 1.5 — CEL edge conditions
 **Depends on:** 1.4

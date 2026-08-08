@@ -74,9 +74,14 @@ var structuralCases = map[string][]issueRef{
 		{dag.CodeUnknownEdgeEndpoint, "edges[0].from"},
 		{dag.CodeUnknownEdgeEndpoint, "edges[1].to"},
 	},
-	"no_entry_step.json":     {{dag.CodeNoEntryStep, ""}},
-	"no_steps.json":          {{dag.CodeNoSteps, "steps"}},
-	"llm_missing_model.json": {{dag.CodeConfigFieldRequired, "steps[0].config.model"}},
+	"no_entry_step.json": {
+		{dag.CodeNoEntryStep, ""},
+		{dag.CodeCycle, "edges[1]"}, // a⇄b: no entry step implies a cycle
+	},
+	"no_steps.json":               {{dag.CodeNoSteps, "steps"}},
+	"cycle.json":                  {{dag.CodeCycle, "edges[3]"}},
+	"loop_edge_not_ancestor.json": {{dag.CodeLoopEdgeNotAncestor, "edges[2]"}},
+	"llm_missing_model.json":      {{dag.CodeConfigFieldRequired, "steps[0].config.model"}},
 	"llm_prompt_and_messages.json": {
 		{dag.CodeConfigFieldConflict, "steps[0].config"},
 	},
@@ -327,6 +332,9 @@ func TestValidateTableDriven(t *testing.T) {
 			},
 		},
 		{
+			// A valid loop edge's endpoints always sit on normal paths, so a
+			// step touched only by a loop edge implies an ancestry violation —
+			// but it still must not be warned as isolated.
 			name: "step touched only by a loop edge is not isolated",
 			def: &dag.Definition{
 				SchemaVersion: dag.CurrentSchemaVersion,
@@ -337,6 +345,7 @@ func TestValidateTableDriven(t *testing.T) {
 					{From: "b", To: "c", Type: dag.EdgeLoop, Condition: "output.go", MaxIterations: 3},
 				},
 			},
+			wantErrs: []issueRef{{dag.CodeLoopEdgeNotAncestor, "edges[1]"}},
 		},
 		{
 			name:      "isolated step warns without failing",
