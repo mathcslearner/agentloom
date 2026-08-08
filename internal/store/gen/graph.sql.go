@@ -59,6 +59,18 @@ func (q *Queries) CreateRunEdge(ctx context.Context, arg CreateRunEdgeParams) (R
 	return i, err
 }
 
+type CreateRunEdgesParams struct {
+	RunID         uuid.UUID
+	Ordinal       int32
+	FromStep      string
+	ToStep        string
+	EdgeType      string
+	WhenExpr      *string
+	Condition     *string
+	MaxIterations *int32
+	GraphVersion  int32
+}
+
 const createRunStep = `-- name: CreateRunStep :one
 
 INSERT INTO run_steps (run_id, step_id, step_type, config, status,
@@ -80,7 +92,7 @@ type CreateRunStepParams struct {
 
 // Per-run graph copy: run_steps (node side) and run_edges (edge side).
 // Inserts and reads only — status transitions and dependency-counter
-// updates are 2.6's guarded CAS; batch instantiation is 2.5's.
+// updates are 2.6's guarded CAS.
 func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (RunStep, error) {
 	row := q.db.QueryRow(ctx, createRunStep,
 		arg.RunID,
@@ -112,6 +124,17 @@ func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (R
 		&i.FinishedAt,
 	)
 	return i, err
+}
+
+type CreateRunStepsParams struct {
+	RunID         uuid.UUID
+	StepID        string
+	StepType      string
+	Config        json.RawMessage
+	Status        string
+	RemainingDeps int32
+	FiredDeps     int32
+	GraphVersion  int32
 }
 
 const getRunStep = `-- name: GetRunStep :one

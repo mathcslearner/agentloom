@@ -38,3 +38,11 @@ const (
 // OutboxReasonStepReady is the v1 outbox enqueue reason; ADR-005 (M3) owns
 // the task envelope reasons are carried into.
 const OutboxReasonStepReady = "step_ready"
+
+// Event types written by run instantiation (2.5). Transition events join in
+// 2.6; ADR-018 (M16) owns formalizing the envelope. `events.type` is
+// free-form TEXT in schema v1, so these constants are the vocabulary.
+const (
+	EventRunCreated = "run_created"
+	EventStepReady  = "step_ready"
+)

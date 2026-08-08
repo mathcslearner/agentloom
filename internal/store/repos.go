@@ -129,16 +129,22 @@ func (r runRepo) AllocateEventSeq(ctx context.Context, runID uuid.UUID) (int64, 
 
 // StepRepo stores the per-run graph copy: run_steps and run_edges together,
 // because instantiation (2.5) and expansion (M13) always write them as one
-// graph. Single-row inserts only — batch instantiation arrives in 2.5.
+// graph.
 type StepRepo interface {
 	// Create inserts a step row. An empty arg.Status becomes pending; a
 	// zero arg.GraphVersion becomes 1.
 	Create(ctx context.Context, arg gen.CreateRunStepParams) (gen.RunStep, error)
+	// CreateBatch inserts step rows in one COPY, with the same per-row
+	// defaulting as Create.
+	CreateBatch(ctx context.Context, args []gen.CreateRunStepsParams) (int64, error)
 	Get(ctx context.Context, runID uuid.UUID, stepID string) (gen.RunStep, error)
 	ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.RunStep, error)
 	// CreateEdge inserts an edge row. An empty arg.EdgeType becomes
 	// normal; a zero arg.GraphVersion becomes 1.
 	CreateEdge(ctx context.Context, arg gen.CreateRunEdgeParams) (gen.RunEdge, error)
+	// CreateEdgeBatch inserts edge rows in one COPY, with the same per-row
+	// defaulting as CreateEdge.
+	CreateEdgeBatch(ctx context.Context, args []gen.CreateRunEdgesParams) (int64, error)
 	// ListEdgesByRun returns edges in ordinal (declaration) order — the
 	// order the branch first-match rule evaluates them in.
 	ListEdgesByRun(ctx context.Context, runID uuid.UUID) ([]gen.RunEdge, error)
@@ -155,6 +161,19 @@ func (r stepRepo) Create(ctx context.Context, arg gen.CreateRunStepParams) (gen.
 	}
 	step, err := r.q.CreateRunStep(ctx, arg)
 	return step, wrapErr("create run step", err)
+}
+
+func (r stepRepo) CreateBatch(ctx context.Context, args []gen.CreateRunStepsParams) (int64, error) {
+	for i := range args {
+		if args[i].Status == "" {
+			args[i].Status = StepStatusPending
+		}
+		if args[i].GraphVersion == 0 {
+			args[i].GraphVersion = 1
+		}
+	}
+	rows, err := r.q.CreateRunSteps(ctx, args)
+	return rows, wrapErr("create run steps", err)
 }
 
 func (r stepRepo) Get(ctx context.Context, runID uuid.UUID, stepID string) (gen.RunStep, error) {
@@ -176,6 +195,19 @@ func (r stepRepo) CreateEdge(ctx context.Context, arg gen.CreateRunEdgeParams) (
 	}
 	edge, err := r.q.CreateRunEdge(ctx, arg)
 	return edge, wrapErr("create run edge", err)
+}
+
+func (r stepRepo) CreateEdgeBatch(ctx context.Context, args []gen.CreateRunEdgesParams) (int64, error) {
+	for i := range args {
+		if args[i].EdgeType == "" {
+			args[i].EdgeType = EdgeTypeNormal
+		}
+		if args[i].GraphVersion == 0 {
+			args[i].GraphVersion = 1
+		}
+	}
+	rows, err := r.q.CreateRunEdges(ctx, args)
+	return rows, wrapErr("create run edges", err)
 }
 
 func (r stepRepo) ListEdgesByRun(ctx context.Context, runID uuid.UUID) ([]gen.RunEdge, error) {

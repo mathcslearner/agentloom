@@ -1,12 +1,19 @@
 -- Per-run graph copy: run_steps (node side) and run_edges (edge side).
 -- Inserts and reads only — status transitions and dependency-counter
--- updates are 2.6's guarded CAS; batch instantiation is 2.5's.
+-- updates are 2.6's guarded CAS.
 
 -- name: CreateRunStep :one
 INSERT INTO run_steps (run_id, step_id, step_type, config, status,
                        remaining_deps, fired_deps, graph_version)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
+
+-- CreateRunSteps is the batch (COPY) form for run instantiation (2.5) and
+-- expansion (M13), which write whole graphs at once.
+-- name: CreateRunSteps :copyfrom
+INSERT INTO run_steps (run_id, step_id, step_type, config, status,
+                       remaining_deps, fired_deps, graph_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: GetRunStep :one
 SELECT * FROM run_steps WHERE run_id = $1 AND step_id = $2;
@@ -19,6 +26,13 @@ INSERT INTO run_edges (run_id, ordinal, from_step, to_step, edge_type,
                        when_expr, condition, max_iterations, graph_version)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
+
+-- CreateRunEdges is the batch (COPY) form for run instantiation (2.5) and
+-- expansion (M13).
+-- name: CreateRunEdges :copyfrom
+INSERT INTO run_edges (run_id, ordinal, from_step, to_step, edge_type,
+                       when_expr, condition, max_iterations, graph_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- ordinal order is semantic: the branch first-match rule evaluates
 -- out-edges in declaration order (ADR-004).

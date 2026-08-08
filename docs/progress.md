@@ -429,3 +429,78 @@ run+step+seq+event+outbox atomically). Gotcha worth remembering: Postgres
 jsonb does not preserve formatting/key order, so JSON round-trip
 assertions must compare semantically, not byte-wise. Deferred (again): the
 storetest template-database fast path from 2.2.
+
+### 2.5 — Atomic run instantiation ✅
+
+**API.** `Store.CreateRun(ctx, CreateRunArgs)` in
+`internal/store/instantiate.go`: takes a decoded `*dag.Definition`
+(CreateRun runs `dag.Validate` itself and rejects error-severity issues
+before opening the transaction — instantiation's correctness rests on the
+structural invariants Validate proves), optional `RunID`/`DefinitionID`,
+opaque `Params`, optional `IdempotencyToken`, and a **required injected
+`Now`** (becomes `started_at`; runs are created directly as `running` per
+ADR-004, so creation is the start — no clock field on Store, time flows in
+per call). Returns `CreateRunResult{Run, EntrySteps, Reused}`.
+Param-*value* validation against the definition's ParamSpecs is
+**deferred to M6** (the submission API); 2.5 stores params opaquely.
+
+**Planning before the tx.** All derivation is pure and precedes the
+transaction: snapshot via `dag.Encode`; **entry steps via
+`dag.NewGraph` + `ReadySteps(nil, nil, nil)`** — the reference
+implementation ADR-004's counters must mirror, not a hand-rolled
+"no incoming normal edges" count (a defensive check errors if ReadySteps
+ever reports newly-skipped steps at instantiation); `remaining_deps` =
+incoming **normal**-edge count (loop edges excluded, so a step whose only
+incoming edge is a loop edge — critic_loop's `draft` — is an entry step).
+
+**The transaction** (via `WithTx`): run row (status `running`,
+`steps_total`, snapshot, token, `started_at`) → batch `run_steps`
+(entry steps `ready`, others `pending`; `config` materialized by
+`json.Marshal` of the typed step config, nil ⇒ NULL) → batch `run_edges`
+(`ordinal` = declaration index; empty `when`/`condition`/zero
+`max_iterations` ⇒ NULL) → events (`run_created` seq 1, payload
+`{name, steps_total}`, then `step_ready` per entry step in declaration
+order, payload `{step_id}`, each seq via `AllocateEventSeq` in-tx) →
+one `task_outbox` row per entry step (reason `step_ready`). Batch inserts
+are new sqlc **`:copyfrom`** queries `CreateRunSteps`/`CreateRunEdges`
+(pgx binary COPY; regenerating added `CopyFrom` to the gen `DBTX`
+interface), surfaced as `StepRepo.CreateBatch`/`CreateEdgeBatch` with the
+same per-row defaulting as the single-row methods. New event-type
+constants `EventRunCreated`/`EventStepReady` in `status.go`. One `slog`
+info line on success (`run_id` via the canonical field helper;
+steps_total/entry_steps as plain ints).
+
+**Idempotency.** Token present → pre-check `GetByIdempotencyToken`
+(round-trip saver only); the **unique partial index is the authority**: a
+racing insert loses with a `ConflictError` naming
+`runs_idempotency_token_key`, which CreateRun catches, re-fetches by
+token, and returns as the sequential path would. `Reused: true` marks
+both paths; `EntrySteps` on the reused path is **re-derived from the
+stored snapshot** (not the submitted definition), so the result shape
+doesn't depend on which racer won. Conflicts on other constraints
+propagate untouched.
+
+**Failure injection.** Unexported package hook
+`instantiateFailpoint func(stage) error` consulted after each tx phase
+(`after_run_insert`/`after_steps`/`after_edges`/`after_events`); nil in
+production, armed via `SetInstantiateFailpoint(tb, fn)` in
+`export_test.go` (which also re-exports the stage names). The hook is a
+package global — tests arming it must not run parallel with other
+CreateRun callers, so `TestCreateRunAllOrNothing` is deliberately not
+`t.Parallel()` (Go runs sequential top-level tests to completion while
+parallel ones are still suspended).
+
+**Tests** (`instantiate_integration_test.go`): fanout fixture end-to-end
+(counters `start:0, branches:1, gather:3, synthesize:1`, entry-only ready,
+snapshot round-trip, ordinal-ordered edges all `unresolved`, event
+seq/payloads, single outbox row); loop-edge exclusion + predicate
+materialization via critic_loop; all five canonical fixtures instantiate;
+sequential + racing idempotency (8 goroutines, exactly one non-Reused
+winner, one run row); all-or-nothing at every failpoint stage plus a
+panic variant (zero rows across all five tables) and a recovery check;
+rejections (nil definition, zero Now, invalid definition) write nothing.
+Local-dev gotcha: bare `go test -tags integration` doesn't load `.env` —
+use `make test-integration` (the Makefile exports it) or source `.env`
+when a host Postgres squats on 5432.
+
+Deferred (again): the storetest template-database fast path from 2.2.

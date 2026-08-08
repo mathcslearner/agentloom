@@ -250,13 +250,13 @@ golang-migrate with migrations embedded via `embed.FS`; `make migrate-up/down/ne
 - [x] Tx helper tested: panic and error paths roll back; nested use rejected or documented
 - [x] sqlc generation wired into `make generate` with CI drift check
 
-#### 2.5 — Atomic run instantiation
+#### 2.5 — Atomic run instantiation ✅
 **Depends on:** 2.4, 1.4
 `CreateRun`: in a single transaction — snapshot the definition, materialize `run_steps`/`run_edges` with `remaining_deps` computed, mark entry steps `ready`, write `task_outbox` rows for them, append `run_created`/`step_ready` events. Idempotent submission via a client-supplied token (unique index).
 **Done when:**
-- [ ] Injected mid-transaction failure leaves zero rows (all-or-nothing verified in test)
-- [ ] Duplicate submission with the same token returns the original run (no second run)
-- [ ] Fan-out fixture instantiates with correct `remaining_deps` on join steps
+- [x] Injected mid-transaction failure leaves zero rows (all-or-nothing verified in test)
+- [x] Duplicate submission with the same token returns the original run (no second run)
+- [x] Fan-out fixture instantiates with correct `remaining_deps` on join steps
 
 #### 2.6 — Guarded state transitions (CAS)
 **Depends on:** 2.5
