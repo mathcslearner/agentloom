@@ -1,0 +1,44 @@
+# agentloom local dev stack: Postgres (source of truth) + Redis (queue,
+# leases, cache, pub/sub). Used by local development and, from ticket 2.2 on,
+# the integration-test suite. The api and worker services join in M4.
+#
+# Defaults are dev-only and inline so `make up` works on a clean checkout;
+# override them by copying .env.example to .env (auto-loaded by Compose).
+name: agentloom
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentloom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentloom}
+      POSTGRES_DB: ${POSTGRES_DB:-agentloom}
+    ports:
+      - "${AGENTLOOM_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      # First boot runs initdb; don't count those probes as failures.
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    # AOF so durability across down/up doesn't depend on RDB snapshot timing.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${AGENTLOOM_REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  postgres-data:
+  redis-data:

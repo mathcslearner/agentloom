@@ -9,9 +9,10 @@ dist/
 coverage.*
 *.coverprofile
 
-# Environment / secrets — never commit these
+# Environment / secrets — never commit these (.env.example is the committed template)
 .env
 .env.*
+!.env.example
 
 # Editor / OS
 .idea/

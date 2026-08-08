@@ -10,18 +10,39 @@ Go module path: `github.com/mathcslearner/agentloom`
 
 ## Status
 
-Early development. The engine is being built milestone-by-milestone per [ROADMAP.md](ROADMAP.md); currently in **Milestone 0 — Foundation & architecture**.
+Early development. The engine is being built milestone-by-milestone per [ROADMAP.md](ROADMAP.md); currently in **Milestone 2 — Durable state: Postgres persistence**.
 
 ## Getting started
 
-Requires Go 1.26+.
+Requires Go 1.26+ and Docker with Compose v2 (for the dev stack).
 
 ```sh
 make lint   # golangci-lint (auto-installs a pinned version into ./bin)
 make test   # unit tests with the race detector
 ```
 
-Other targets: `make fmt` (format + tidy), `make test-integration` (integration suite; requires the Docker Compose stack, arriving in Milestone 2). Run `make` alone to list all targets.
+Other targets: `make fmt` (format + tidy), `make test-integration` (integration suite; requires the dev stack, harness arriving with ticket 2.2). Run `make` alone to list all targets.
+
+### Dev stack (Postgres + Redis)
+
+Local development and integration tests run against a Docker Compose stack defined in [docker-compose.yml](docker-compose.yml):
+
+```sh
+make up         # boot Postgres 16 + Redis 7, wait until both are healthy
+make psql       # psql shell inside the postgres container
+make redis-cli  # redis-cli shell inside the redis container
+make down       # stop the stack — data volumes are KEPT
+```
+
+The stack works out of the box with dev-only defaults; to change credentials or host ports (e.g. if 5432/6379 are taken), copy [.env.example](.env.example) to `.env` and edit it — Compose picks it up automatically. `.env` is gitignored; never commit it.
+
+Data lives in named Docker volumes and survives `make down && make up`. To start over from scratch:
+
+```sh
+make nuke
+```
+
+**`make nuke` is destructive**: it tears down the stack *and deletes all data volumes*. It prompts for confirmation before doing anything.
 
 ## Repository layout
 
@@ -33,7 +54,7 @@ cmd/            api, worker, ctl, loadgen binaries (planned)
 internal/
   version/      build version of agentloom binaries
   config/       env-driven configuration (defaults < env, fail-fast validation)
-  dag/          definition types, validation, graph algorithms, CEL (planned)
+  dag/          definition types, validation, graph algorithms, CEL
   store/        Postgres repositories, migrations, tx helpers (planned)
   queue/        Redis Streams, leases, delayed delivery (planned)
   engine/       claim/execute/complete pipeline, outbox, reconciler (planned)
@@ -50,7 +71,7 @@ internal/
 web/            Next.js builder + dashboard (planned)
 deploy/         helm/, terraform/, dockerfiles (planned)
 docs/           architecture.md + doc index; adr/, demos/, load/ (planned)
-examples/       canonical workflow JSON fixtures (planned)
+examples/       canonical workflow JSON fixtures (definitions/)
 test/           integration + chaos suites (planned)
 api/            openapi.yaml — the REST API contract (planned)
 ```

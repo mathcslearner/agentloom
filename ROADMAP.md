@@ -218,13 +218,13 @@ Author `examples/definitions/`: linear pipeline, fan-out/fan-in, conditional bra
 
 **Exit criteria:** `make up` boots Postgres+Redis with healthchecks; migrations apply/rollback cleanly in CI; run instantiation is atomic under injected failures; concurrent CAS test proves single-winner transitions; data survives `make down && make up` (volumes).
 
-#### 2.1 — Docker Compose dev stack
+#### 2.1 — Docker Compose dev stack ✅
 **Depends on:** 0.1
 Root `docker-compose.yml`: Postgres 16 + Redis 7 with named volumes, healthchecks, and ports; `.env.example`; Make targets `up`, `down`, `psql`, `redis-cli`, `nuke` (destroy volumes, confirmation-gated). Used for local dev and integration tests from here on.
 **Done when:**
-- [ ] `make up` on a clean checkout reaches healthy state for both services
-- [ ] Data survives `make down && make up`; `make nuke` documented as destructive
-- [ ] README quickstart section updated
+- [x] `make up` on a clean checkout reaches healthy state for both services
+- [x] Data survives `make down && make up`; `make nuke` documented as destructive
+- [x] README quickstart section updated
 
 #### 2.2 — Migration tooling & integration-test harness
 **Depends on:** 2.1, 0.2

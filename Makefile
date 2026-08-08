@@ -34,6 +34,30 @@ test-integration: ## Run integration tests (requires the Docker Compose stack; s
 		echo "no integration tests yet (suite arrives with ticket 2.2)"; \
 	fi
 
+COMPOSE := docker compose
+
+.PHONY: up
+up: ## Boot the dev stack (Postgres + Redis) and wait until healthy
+	$(COMPOSE) up -d --wait
+
+.PHONY: down
+down: ## Stop the dev stack (data volumes are kept)
+	$(COMPOSE) down
+
+.PHONY: psql
+psql: ## Open a psql shell inside the running postgres container
+	$(COMPOSE) exec postgres sh -c 'exec psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
+
+.PHONY: redis-cli
+redis-cli: ## Open a redis-cli shell inside the running redis container
+	$(COMPOSE) exec redis redis-cli
+
+.PHONY: nuke
+nuke: ## DESTRUCTIVE: tear down the dev stack AND delete all data volumes (asks first)
+	@printf 'This will DESTROY the dev stack and ALL of its data (volumes included).\nType "yes" to continue: '; \
+	read -r answer && [ "$$answer" = "yes" ] || { echo "aborted."; exit 1; }
+	$(COMPOSE) down -v --remove-orphans
+
 .PHONY: tools
 tools: ## Install pinned golangci-lint into ./bin if missing or outdated
 	@$(GOLANGCI_LINT) version 2>/dev/null | grep -qF "$(patsubst v%,%,$(GOLANGCI_LINT_VERSION))" || \
