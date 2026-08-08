@@ -1,0 +1,477 @@
+# ADR-003: Workflow definition format & versioning
+
+- **Status:** Accepted
+- **Date:** 2026-08-08
+- **Ticket:** ROADMAP.md ticket 1.1
+
+## Context
+
+The workflow definition is the system's central contract, with four consumers
+that must never drift apart:
+
+- the **API** accepts and validates definitions (M6),
+- **Postgres** snapshots a definition per run — the per-run graph copy (M2),
+- **planner steps** extend the instantiated graph at runtime (M13), and
+- the **visual builder** serializes to and from the same format (M17).
+
+Several forces are in tension:
+
+- **Strictness vs. evolvability.** A lenient decoder that ignores unknown
+  fields silently swallows typos (`max_iteration` for `max_iterations`) and
+  lets builder and engine drift apart. But the format *will* grow: retry
+  policy (M5), caching (M9), budgets (M10), validators (M11), context specs
+  (M12), and an `agents:` section (M14) are all scheduled additions.
+- **The engine must round-trip data it does not understand.** The builder
+  stores node positions and other layout state inside the definition; the
+  engine ignores it semantically but must preserve it byte-for-byte — which
+  contradicts a blanket unknown-field rejection unless carved out explicitly.
+- **Loops are required but cycles are poison.** The critic⇄writer revision
+  loop (M14) needs cyclic authoring, while every durability mechanism —
+  per-run graph rows, `remaining_deps` counters, readiness computed in
+  completion transactions (ADR-002) — assumes an acyclic instance graph.
+- **One schema, one truth.** The JSON Schema published for docs and UI forms
+  must be provably in sync with what the engine actually decodes.
+
+Deferring these decisions is not an option: M1.2–1.6 implement this format
+directly, M2 freezes it into Postgres rows, and every later milestone extends
+it.
+
+## Decision
+
+Workflows are defined as **JSON documents**. Go structs in `internal/dag` are
+the **source of truth**; the JSON Schema is **generated** from them
+(invopop/jsonschema) into `docs/schema/` and drift-checked in CI (ticket 1.2).
+All JSON field names are `snake_case`.
+
+### Top-level shape
+
+```json
+{
+  "schema_version": 1,
+  "name": "support-triage",
+  "description": "Classify a ticket, draft a reply, get approval.",
+  "params": {
+    "ticket_id": {"type": "string", "required": true},
+    "tone": {"type": "string", "required": false}
+  },
+  "steps": [ ... ],
+  "edges": [ ... ],
+  "ui": { ... }
+}
+```
+
+- `schema_version` (required, integer) — see [Versioning](#versioning-and-unknown-fields).
+- `name` (required) — human-readable identifier; the stored-definition
+  registry (M6) adds its own versioning on top, which is orthogonal to
+  `schema_version`.
+- `description` (optional).
+- `params` (optional) — declares the run parameters callers may supply at
+  submit time. Each entry has a `type` (`string | number | boolean | object |
+  array`) and `required` flag. Declared params are exposed to CEL edge
+  conditions and (from M8) input templating as `run.params.<key>`. Validation
+  of submitted values against declarations happens at run creation, not
+  definition validation.
+- `steps` (required, non-empty) and `edges` (required, may be empty).
+- `ui` (optional) — engine-opaque builder state; see
+  [The `ui` block](#the-ui-block).
+
+Later ADRs add top-level sections additively (e.g. `agents:` in ADR-016).
+
+### Steps
+
+Every step has:
+
+```json
+{"id": "draft_reply", "type": "llm", "config": { ... }}
+```
+
+- `id` (required) — unique within the definition, matching
+  `^[a-z][a-z0-9_-]{0,63}$`. The characters `#` and `.` are **excluded by
+  construction and reserved**: `#` because loop unrolling (M14) and map
+  fan-out (M13) name runtime instances `{id}#k`, and `.` because CEL and
+  templating use it as a path separator (`steps.draft_reply.output`).
+- `type` (required) — one of the catalog below. Unknown types are a
+  validation error.
+- `config` (required for most types) — a JSON object whose shape is **typed
+  per step type**. The decoder (1.2) decodes `config` into the Go config
+  struct registered for the `type`, so unknown or mistyped config fields
+  produce path-qualified errors like any other field.
+
+Later milestones add optional per-step fields alongside `config` — `retry`
+(ADR-006, M5), `cache` (ADR-011, M9), `budget`/`model_fallbacks` (ADR-012,
+M10), `validators` (ADR-013, M11), `context` (ADR-014, M12). Each lands as an
+additive optional field specified by its own ADR; this ADR is not superseded
+by those additions.
+
+#### Step-type catalog
+
+M1 validates the *shape* of each config (required keys present, correct
+types). Execution semantics belong to the milestone that implements the
+executor; config shapes marked *provisional* are finalized by the owning ADR
+and may gain fields there.
+
+**`llm`** — one model call (executor: M8). Requires `model` and exactly one
+of `prompt` or `messages`.
+
+```json
+{"id": "classify", "type": "llm", "config": {
+  "model": "anthropic/claude-sonnet-5",
+  "prompt": "Classify this ticket: ${{ run.params.ticket_id }}",
+  "max_tokens": 1024,
+  "temperature": 0
+}}
+```
+
+**`tool`** — one tool invocation through the tool SPI (executor: M8).
+Requires `tool`; `input` is the tool's input payload (templated from M8).
+
+```json
+{"id": "fetch_ticket", "type": "tool", "config": {
+  "tool": "http_request",
+  "input": {"method": "GET", "url": "https://support.internal/api/tickets/${{ run.params.ticket_id }}"}
+}}
+```
+
+**`retrieve`** — retrieval query through the retriever SPI (executor: M8).
+Requires `retriever` and `query`; `top_k` defaults to an executor-defined
+value.
+
+```json
+{"id": "find_similar", "type": "retrieve", "config": {
+  "retriever": "pg_fulltext",
+  "query": "${{ steps.classify.output.summary }}",
+  "top_k": 5
+}}
+```
+
+**`map`** — runtime-sized fan-out over a list, instances created via the
+expansion machinery (executor: M13, ADR-015; config provisional). Requires
+`items` (expression yielding the list) and `body` (the named sub-template to
+instantiate per item).
+
+```json
+{"id": "summarize_each", "type": "map", "config": {
+  "items": "${{ steps.find_similar.output.docs }}",
+  "body": "summarize_one"
+}}
+```
+
+**`planner`** — an LLM call whose validated output injects new steps/edges
+into the running graph (executor: M13, ADR-015; config provisional). M1
+requires the same keys as `llm`.
+
+```json
+{"id": "plan_research", "type": "planner", "config": {
+  "model": "anthropic/claude-sonnet-5",
+  "prompt": "Break this goal into research steps: ${{ run.params.goal }}"
+}}
+```
+
+**`agent`** — an LLM step bound to a named role from the `agents:` section
+(executor: M14, ADR-016; config provisional). M1 requires `agent`; reference
+validation arrives with the `agents:` section itself.
+
+```json
+{"id": "critique", "type": "agent", "config": {
+  "agent": "critic",
+  "prompt": "Review the draft on the blackboard."
+}}
+```
+
+**`human_approval`** — parks the run (no lease held) until a human decides
+(executor: M15; config provisional). Requires `prompt`.
+
+```json
+{"id": "approve_send", "type": "human_approval", "config": {
+  "prompt": "OK to send this reply to the customer?"
+}}
+```
+
+**`join`** — synchronization barrier for fan-in. Requires `mode`, one of
+`all` (default fan-in: wait for every incoming edge to resolve) or `any`
+(fire on the first successful parent). Semantics below.
+
+```json
+{"id": "gather", "type": "join", "config": {"mode": "all"}}
+```
+
+**`branch`** — exclusive routing. The branch step itself is a pass-through
+(its output is its rendered `input`, or its primary upstream output if
+`input` is omitted); what makes it a branch is the **edge-firing rule** on
+its outgoing edges, defined below. `config` may be empty.
+
+```json
+{"id": "route", "type": "branch", "config": {}}
+```
+
+**`noop`** / **`echo`** — test executors (M4). `noop` requires no config and
+produces an empty output; `echo` returns its `input` as output. Further test
+executors (`sleep`, `fail_n_times`, …) register the same way in M4 without
+touching this ADR.
+
+```json
+{"id": "start", "type": "noop"}
+```
+```json
+{"id": "mirror", "type": "echo", "config": {"input": {"hello": "world"}}}
+```
+
+### Edges
+
+```json
+{"from": "classify", "to": "draft_reply", "when": "output.category == 'billing'"}
+```
+
+- `from`, `to` (required) — step IDs; both must exist.
+- `when` (optional) — a CEL predicate evaluated when `from` completes, in an
+  environment exposing `output` (the completed step's output, dyn) and
+  `run.params` (dyn map). The full environment is documented in
+  `docs/expressions.md` (ticket 1.5). `when` expressions are **compiled at
+  definition-validation time**; syntax or type errors reject the definition
+  with position info.
+- `type` (optional) — `normal` (default) or `loop`.
+
+**Fan-out is parallel by default:** a step with multiple unconditioned
+outgoing edges fires all of them. Conditioned edges fire independently —
+every edge whose `when` evaluates true fires. Exclusive routing is what
+`branch` is for.
+
+**Evaluation errors are failures, not `false`.** If a `when` (or loop
+`condition`) evaluation errors at runtime — missing field, type error — the
+evaluation error is recorded as a step-level failure of the completing step's
+transition; it is never silently coerced to `false`. How that failure is then
+classified and retried is owned by ADR-006 (M5).
+
+#### Branch edge-firing rule
+
+Outgoing edges of a `branch` step are evaluated **in declaration order**
+(their order in the `edges` array); the **first edge whose `when` is true
+fires, and all others are skipped**. At most one outgoing edge may omit
+`when`; it must be declared last and acts as the default (fires only when no
+conditioned edge matched). No match and no default ⇒ all outgoing edges skip
+(skip propagation below). Validation (1.3) enforces: every outgoing edge of a
+branch except at most one trailing default carries `when`; a branch has at
+least one outgoing edge.
+
+This is why `branch` is "sugar": the graph model stays pure — conditioned
+edges everywhere — and the branch type merely switches the firing rule on its
+out-edges from "all matching" to "first matching".
+
+```json
+{"steps": [
+   {"id": "route", "type": "branch", "config": {}}
+ ],
+ "edges": [
+   {"from": "route", "to": "refund_flow",  "when": "output.category == 'refund'"},
+   {"from": "route", "to": "billing_flow", "when": "output.category == 'billing'"},
+   {"from": "route", "to": "generic_flow"}
+ ]}
+```
+
+#### Loop edges
+
+A loop edge is the **only permitted cycle** in a definition:
+
+```json
+{"from": "critique", "to": "draft_reply", "type": "loop",
+ "condition": "output.verdict == 'revise'",
+ "max_iterations": 3}
+```
+
+- `condition` (required, CEL) — evaluated when `from` completes; true means
+  "iterate again".
+- `max_iterations` (required, integer ≥ 1, capped by the limits table) — hard
+  bound on iterations regardless of `condition`.
+- Structural rules (enforced in 1.4): the definition graph **with all loop
+  edges removed must be acyclic**, and a loop edge's `to` must be an ancestor
+  of its `from` in that acyclic graph. The `to`→`from` paths delimit the
+  **loop body** — the segment cloned per iteration.
+
+Loops execute by **unrolling** (M14): when the loop source completes with
+`condition` true and iteration count < `max_iterations`, the engine expands
+the run graph with fresh instances of the loop body named `{id}#k`. The
+instance graph stays acyclic; every iteration is durably checkpointed;
+`condition` false or the cap reached routes execution to the loop source's
+normal (non-loop) outgoing edges.
+
+### Readiness, skip propagation, and join semantics
+
+These rules are what `ReadySteps` (ticket 1.4) and the completion transaction
+(ADR-002) implement. Loop edges are excluded from all of them — they
+participate in expansion (M14), not in readiness or skip propagation.
+
+1. **Edge resolution.** When a step reaches a terminal state, each outgoing
+   normal edge resolves to exactly one of *fired* (source succeeded, `when`
+   absent or true, and for branch steps the firing rule selected it) or
+   *skipped* (source was skipped; or `when` false; or the branch rule passed
+   it over).
+2. **Non-join readiness/skip.** A non-join step becomes **ready** when at
+   least one incoming edge fired and every other incoming edge is resolved.
+   It becomes **skipped** when *all* incoming edges resolved skipped. Entry
+   steps (no incoming edges) are ready at run creation.
+3. **Skip propagation.** A skipped step never executes; its outgoing edges
+   all resolve skipped, propagating onward. Because loop edges are excluded,
+   propagation runs over a DAG and terminates.
+4. **`join all`.** Ready when every incoming edge is resolved and at least
+   one fired — **skipped parents count as satisfied, not as blockers**.
+   Skipped only when all incoming edges resolved skipped. A *failed* parent
+   means the join can never become ready; whether that fails the run
+   immediately or lets independent branches finish is the workflow failure
+   policy, owned by ADR-006 (M5).
+5. **`join any`.** Ready the moment any single incoming edge fires; later
+   firings are absorbed (the join runs once). Skipped when all incoming edges
+   resolved skipped; if every parent ends failed-or-skipped with at least one
+   failure, the join is blocked and ADR-006's failure policy applies.
+
+Worked example — conditional branch into a fan-in:
+
+```
+fetch → route(branch) → refund_flow  ─┐
+                      → billing_flow ─┤→ gather(join all) → reply
+                      → generic_flow ─┘
+```
+
+`route` outputs `{"category": "billing"}`. The branch rule fires only
+`route→billing_flow`; `refund_flow` and `generic_flow` have their single
+incoming edge skipped, so both are skipped, and their edges into `gather`
+resolve skipped. `gather` (mode `all`) now has all three incoming edges
+resolved with one fired — it is ready, runs, and `reply` proceeds. Had
+`gather` been mode `any`, it would have become ready the moment
+`billing_flow` succeeded, without waiting for the skip propagation to
+resolve the other two edges.
+
+### Versioning and unknown fields
+
+- `schema_version` is a **single integer**, starting at `1`. It identifies
+  the *format*, not the workflow revision (stored-definition versioning is
+  M6's concern).
+- The engine accepts exactly the versions it knows and rejects others with a
+  clear error. **Breaking changes** (removing/renaming fields, changing
+  semantics of existing fields) bump the integer and get a documented
+  migration. **Additive changes** (new optional fields, new step types, new
+  enum values) do **not** bump it — the engine and the schema ship together
+  (ADR-001: datastores are the compatibility surface, and per-run definition
+  snapshots insulate in-flight runs from any format change).
+- **Unknown fields are rejected, everywhere, with the JSON path of the
+  offender** — top level, steps, edges, and per-type `config` alike. A
+  definition that decodes is exactly understood. The single exception is the
+  `ui` subtree.
+
+#### The `ui` block
+
+`ui` is the **one deliberately loose subtree**. The engine treats it as an
+opaque JSON object: never validated beyond being an object, never
+interpreted, **round-tripped byte-for-byte** through decode→encode (1.2
+implements this by retaining raw JSON). The builder (M17) owns its internal
+shape; the suggested convention is per-step layout keyed by step ID:
+
+```json
+{"ui": {"nodes": {"classify": {"position": {"x": 120, "y": 240}}}}}
+```
+
+Rationale: layout data changes at UI speed, not engine speed. Forcing it
+through the strict schema would either block builder iteration on engine
+releases or push layout into a separate store that can drift from the
+definition it describes.
+
+### Limits
+
+Enforced during structural validation (1.3), all violations reported together
+with path-qualified errors. Defaults are compiled into `internal/dag`; making
+them configurable is deferred until a concrete need appears.
+
+| Limit | Default |
+|---|---|
+| Max steps per definition | 10,000 |
+| Max edges per definition | 20,000 |
+| Max serialized definition size | 1 MiB |
+| Step ID | `^[a-z][a-z0-9_-]{0,63}$` |
+| Max `name` length | 128 |
+| Max CEL expression length (`when`, `condition`) | 1,024 |
+| Max `max_iterations` on a loop edge | 100 |
+
+The 10k-step ceiling is deliberately at the M1 exit-criteria benchmark
+(validate + compute readiness on 10k nodes in <100ms) so the limit is backed
+by a measured performance envelope. Runtime expansion caps (`max_added_steps`,
+`max_depth`, `max_expansions`) are a separate concern owned by ADR-015 (M13).
+
+### Enforcement points
+
+For conformance, the rules above land in specific tickets: **1.2** — strict
+decoding, unknown-field rejection, `ui` raw round-trip, `schema_version`
+gate, JSON Schema generation; **1.3** — ID rules, endpoint existence,
+per-type config shape, branch edge rules, limits, multi-error reporting;
+**1.4** — acyclicity-minus-loop-edges, loop-edge ancestry, readiness/skip/join
+semantics; **1.5** — CEL compilation of `when`/`condition`, evaluation-error
+policy.
+
+## Consequences
+
+Positive:
+
+- One strict contract with path-qualified errors: a definition that decodes
+  is fully understood, and builder/engine drift surfaces as an immediate,
+  precise error instead of silent misbehavior.
+- The generated JSON Schema cannot drift from the decoder — both derive from
+  the same Go structs, and CI checks the generated artifact.
+- The `ui` carve-out lets the builder iterate on layout state without engine
+  releases, while layout still travels with the definition it describes.
+- Loop-by-unrolling keeps every durability mechanism (per-run rows,
+  `remaining_deps`, completion-transaction readiness) working on acyclic
+  graphs; loops inherit crash-safety for free via the expansion machinery.
+- Reserving `#` and `.` in IDs now costs nothing and prevents a painful
+  migration when M13/M14 instance naming and CEL paths arrive.
+
+Negative:
+
+- **Strictness gates evolution on the engine.** A definition using a new
+  field is rejected by an older engine — acceptable single-deployment, but a
+  real constraint if definitions are ever shared across installations of
+  different ages.
+- **`branch` semantics live in two places.** The validator and the builder
+  must both understand the first-match firing rule; it is not expressible in
+  the JSON Schema alone.
+- **Iteration bounds are static.** `max_iterations` is fixed at authoring
+  time; a loop that needs data-dependent depth must over-provision the cap.
+- **The `ui` block is a validation hole by design.** Junk under `ui`
+  accumulates unnoticed; the engine will faithfully round-trip garbage.
+- **Every new step type touches Go code** (a config struct + registration).
+  Intended — typed configs are what make path-qualified errors possible —
+  but it rules out defining new step types from data alone.
+
+## Alternatives considered
+
+- **YAML as the authoring format.** Friendlier to hand-authoring, but the
+  primary producers are the API and the visual builder, which speak JSON;
+  YAML's implicit typing (`no` → false) and anchors/aliases add failure modes
+  to a contract whose whole point is strictness. A YAML front-end can be
+  layered client-side later without touching the contract.
+- **A Go/TypeScript DSL as the source format.** Great authoring ergonomics,
+  but the visual builder needs a *data* format to serialize to, and any DSL
+  compiles down to one anyway — that data format is the contract, so it is
+  what gets specified.
+- **Allowing real cycles, executed in place.** Rejected: readiness computed
+  in completion transactions, `remaining_deps` counters, and skip propagation
+  all assume a DAG; in-place cycles would need iteration-scoped state resets
+  and make "resume from last completed step" ambiguous. Unrolling gives
+  durable per-iteration checkpoints and cap enforcement through machinery
+  M13 builds regardless.
+- **Conditions on steps instead of edges.** A step-level condition cannot
+  express per-successor routing (send billing tickets here, refunds there)
+  without duplicating steps; edge conditions subsume step conditions.
+- **Config-driven branch routing** (branch `config` lists cases with target
+  IDs). Rejected: it duplicates routing between `config` and `edges`, giving
+  two sources of truth the validator must cross-check and the builder must
+  keep in sync. The edge-firing rule keeps routing in the graph.
+- **Lenient decoding (ignore unknown fields).** Maximally
+  forward-compatible, but silently swallows typos and schema drift — the
+  exact failure class this contract exists to prevent. The `ui` carve-out
+  covers the one legitimate need for looseness.
+- **Semver string for `schema_version`.** Minor/patch distinctions only pay
+  off when producers and consumers evolve independently; here the engine and
+  schema co-deploy, so only breaking changes matter and an integer
+  comparison suffices.
+- **Hand-written JSON Schema as the source of truth.** Then the schema and
+  the Go decoder are two artifacts that drift; generating the schema from
+  the structs the engine actually decodes (with a CI drift check) keeps one
+  truth.

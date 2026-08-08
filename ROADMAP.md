@@ -158,13 +158,13 @@ Create `docs/adr/` with a template. **ADR-001:** exactly two long-running deploy
 
 **Exit criteria:** fixture suite of valid/invalid definitions passes; a 10k-node synthetic graph validates and computes readiness in <100ms; generated JSON Schema published in docs.
 
-#### 1.1 — ADR-003: workflow definition format
+#### 1.1 — ADR-003: workflow definition format ✅
 **Depends on:** 0.4
 Decide and document: step types (`llm`, `tool`, `retrieve`, `map`, `planner`, `agent`, `human_approval`, `join`, plus test types like `noop`/`echo`); edges carry optional `when` CEL predicates (parallel fan-out = multiple unconditioned edges; a `branch` step is sugar for exclusive conditioned edges); `join` steps declare mode `all|any`; **loop edges** are explicitly marked (`type: loop`, `condition`, `max_iterations`) and are the only permitted cycles (executed via unrolling, M14); `schema_version` field; per-definition limits (max steps/edges); an optional `ui` block (node positions) the engine ignores but round-trips. Go structs are the source of truth; JSON Schema is *generated* (invopop/jsonschema) for docs and later UI forms.
 **Done when:**
-- [ ] ADR covers every step/edge construct with a JSON example each
-- [ ] Skip-propagation and join semantics for conditional branches specified
-- [ ] Versioning and unknown-field policy (strict reject) decided and recorded
+- [x] ADR covers every step/edge construct with a JSON example each
+- [x] Skip-propagation and join semantics for conditional branches specified
+- [x] Versioning and unknown-field policy (strict reject) decided and recorded
 
 #### 1.2 — Definition types & JSON codec
 **Depends on:** 1.1
