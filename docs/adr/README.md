@@ -20,3 +20,4 @@ are reserved and appear here once the ADR is written.
 | [002](002-scheduling-model.md) | Scheduling model — event-driven, no central scheduler | Accepted | 2026-08-07 |
 | [003](003-workflow-definition-format.md) | Workflow definition format & versioning | Accepted | 2026-08-08 |
 | [004](004-persistence-model.md) | Persistence model & state machines | Accepted | 2026-08-08 |
+| [005](005-dispatch-lease-protocol.md) | Dispatch & lease protocol (Redis Streams) | Accepted | 2026-08-08 |

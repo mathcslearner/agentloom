@@ -667,3 +667,65 @@ cross-process template lifecycle management (hash-keyed templates,
 stale-template cleanup, no-connections-during-clone) is real flake surface
 for a modest win; revisit when suite time actually hurts. The 1.5
 `max_iterations: 0` message quirk stands.
+
+## Milestone 3 — Queue & lease layer (Redis Streams)
+
+### 3.1 — ADR-005: dispatch & lease protocol ✅
+
+Docs-only ticket:
+[`docs/adr/005-dispatch-lease-protocol.md`](adr/005-dispatch-lease-protocol.md)
+(+ README index row). Fixes the full queue protocol before `internal/queue`
+exists; 3.2–3.6 and M4's worker implement against it. Decisions worth
+knowing before touching those tickets:
+
+**Envelope = pointer, not payload.** Flat stream field–value pairs (`v`,
+`run_id`, `step_id`, `reason`, reserved `traceparent`/`tracestate` for
+M7, optional informational `enqueued_at_ms`) — no step config or input,
+ever, so duplicates are boring and Redis holds no second truth.
+Versioning: additive-within-version (decoders ignore unknown fields),
+`v`-bump on incompatible change, consumers-decode-before-producers-emit;
+unknown/malformed envelopes are **not ACKed** — they ride the delivery
+count into the poison path rather than being dropped silently.
+
+**Lease = PEL entry; the two-layer split is normative.** PEL answers
+liveness (claim `XREADGROUP >`, heartbeat `XCLAIM JUSTID` to self at
+~TTL/3 — JUSTID is load-bearing, it keeps the delivery counter a pure
+poison signal; reclaim `XAUTOCLAIM` min-idle = lease TTL, which *does*
+increment the counter); Postgres `claim_id` answers correctness. A
+spurious reclaim wastes one execution but can never corrupt state.
+Consumer names are per-incarnation (restart = new consumer, no self-PEL
+replay; recovery is uniformly the reclaim path), which is why the
+orphan janitor (`XGROUP DELCONSUMER`, zero-pending guard) exists.
+
+**ACK discipline table + takeover rule.** ACK only after the consuming
+Postgres tx commits; enumerated ACK-and-drop cases (terminal step,
+`running` on a *fresh* delivery, dangling ref). `running` on a
+*reclaimed* delivery = lease-expiry takeover (`running → ready` clearing
+`claim_id`, then fresh claim) — duplicate-vs-crash is distinguished **by
+delivery path**, not guessing. One accepted race documented: a crashed
+duplicate's later reclaim can steal a live claim — rare, bounded, fenced.
+
+**Crash matrix W1–W5/P1–P2/R1** each cell with recovery + where it's
+proven (3.3/3.4/3.6/4.2/4.4/4.5/4.7/5.8), per the M3 exit criterion.
+Every recovery reduces to "redeliver, claim CAS decides" or "reconciler
+re-outboxes from Postgres." R1(c) (Redis loss + dead worker) is the slow
+path: reconciler staleness sweep with threshold ≫ TTL because
+`updated_at` moves on transitions, not heartbeats — recorded as an
+accepted consequence, with heartbeat-to-Postgres explicitly rejected.
+
+**Delayed delivery** (`sched:delayed` ZSET): Lua pop+`XADD` is atomic,
+`now` is caller-supplied (injectable clock — the script never reads Redis
+time); ZSET member semantics ("identical envelope re-ZADD moves the fire
+time, doesn't duplicate") recorded as the tenant contract — M5.2 must
+make retry envelopes distinct (e.g. attempt number) if it ever needs two
+pending dispatches. Delayed entries are scheduling state, not truth;
+every tenant needs re-derivable Postgres state behind them.
+
+**Tuning defaults** (lease TTL 30s, heartbeat TTL/3 ± 20% jitter, poison
+threshold 5, reclaimer TTL/2, promoter 1s, janitor 10m/1h) live in the
+ADR's table; 3.2–3.5 wire them through config. One deliberate exception
+to the injectable-clock invariant: PEL idle time is Redis-server-side —
+tests shrink TTLs instead of faking that clock.
+
+No code changed; `make test` green as a sanity check. Deferred (fourth
+time): the storetest template-database fast path.

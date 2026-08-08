@@ -278,13 +278,13 @@ Transition functions as conditional UPDATEs: e.g., claim = `ready → running` o
 
 **Exit criteria:** two in-process consumers demonstrate kill → reclaim within lease TTL + ε; heartbeats keep long tasks unreclaimed; delayed tasks promote on schedule; the failure matrix in ADR-005 has a test or explicit rationale per cell.
 
-#### 3.1 — ADR-005: dispatch & lease protocol
+#### 3.1 — ADR-005: dispatch & lease protocol ✅
 **Depends on:** 0.4, 2.3
 Document the full protocol: task envelope schema (versioned; `run_id`, `step_id`, enqueue reason, trace context placeholder); one `steps:ready` stream + `workers` consumer group (sharding by `hash(run_id)` documented as the M19 scale lever); **lease = PEL entry** — lease TTL is the `XAUTOCLAIM` min-idle threshold; heartbeat = `XCLAIM JUSTID` to self (JUSTID so delivery count is *not* inflated — delivery count is the poison-message signal); ack discipline (ACK only after the Postgres completion/park transition commits); fencing tokens (`claim_id`) reject zombie writes; the crash matrix (die before claim / after claim before PG transition / mid-execute / after PG commit before ACK / after ACK) with the recovery path for each; orphan-consumer cleanup.
 **Done when:**
-- [ ] Sequence diagrams for happy path, crash-reclaim, and zombie-fenced-write
-- [ ] Every crash-matrix cell has a stated recovery mechanism
-- [ ] Envelope versioning and compatibility policy recorded
+- [x] Sequence diagrams for happy path, crash-reclaim, and zombie-fenced-write
+- [x] Every crash-matrix cell has a stated recovery mechanism
+- [x] Envelope versioning and compatibility policy recorded
 
 #### 3.2 — Stream primitives: producer & group bootstrap
 **Depends on:** 3.1, 2.1
