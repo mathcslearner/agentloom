@@ -25,6 +25,11 @@ func tableExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, name str
 	return regclass != nil
 }
 
+// latestVersion is the highest migration in internal/store/migrations —
+// bump when adding a migration (the round-trip test below walks every
+// down migration regardless, so forgetting only fails the version check).
+const latestVersion = 2
+
 func TestMigrateUpDownRoundTrip(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -41,16 +46,19 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 		t.Fatalf("Version on fresh database = applied %v, err %v; want not applied, nil", applied, err)
 	}
 
-	// Up applies the baseline; version becomes 1, clean.
+	// Up applies everything; the latest migration's tables exist, clean.
 	if err := mg.Up(); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
-	if !tableExists(ctx, t, pool, "schema_baseline") {
-		t.Fatal("after Up: schema_baseline does not exist")
+	for _, table := range []string{"schema_baseline", "runs"} {
+		if !tableExists(ctx, t, pool, table) {
+			t.Fatalf("after Up: %s does not exist", table)
+		}
 	}
 	version, dirty, applied, err := mg.Version()
-	if err != nil || !applied || dirty || version != 1 {
-		t.Fatalf("after Up: version=%d dirty=%v applied=%v err=%v; want 1, clean, applied", version, dirty, applied, err)
+	if err != nil || !applied || dirty || version != latestVersion {
+		t.Fatalf("after Up: version=%d dirty=%v applied=%v err=%v; want %d, clean, applied",
+			version, dirty, applied, err, latestVersion)
 	}
 
 	// Up with nothing pending is a no-op, not an error.
@@ -58,23 +66,44 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 		t.Fatalf("Up with nothing pending: %v", err)
 	}
 
-	// Down rolls back one step: table gone, version back to none.
+	// Down rolls back one step: the newest migration's tables are gone,
+	// earlier ones untouched.
 	if err := mg.Down(); err != nil {
 		t.Fatalf("Down: %v", err)
 	}
-	if tableExists(ctx, t, pool, "schema_baseline") {
-		t.Fatal("after Down: schema_baseline still exists")
+	if tableExists(ctx, t, pool, "runs") {
+		t.Fatal("after one Down: runs still exists")
 	}
-	if _, _, applied, err := mg.Version(); err != nil || applied {
-		t.Fatalf("after Down: applied=%v err=%v; want not applied, nil", applied, err)
+	if !tableExists(ctx, t, pool, "schema_baseline") {
+		t.Fatal("after one Down: schema_baseline was dropped by the wrong migration")
 	}
 
-	// And up again — the down migration left a re-migratable database.
+	// Walk the rest of the way to zero, exercising every down migration.
+	for steps := 0; ; steps++ {
+		if _, _, applied, err := mg.Version(); err != nil {
+			t.Fatalf("Version while walking down: %v", err)
+		} else if !applied {
+			break
+		}
+		if steps > latestVersion {
+			t.Fatalf("walked down %d steps without reaching an empty database", steps)
+		}
+		if err := mg.Down(); err != nil {
+			t.Fatalf("Down (step %d): %v", steps, err)
+		}
+	}
+	if tableExists(ctx, t, pool, "schema_baseline") {
+		t.Fatal("after walking down to zero: schema_baseline still exists")
+	}
+
+	// And up again — the down migrations left a re-migratable database.
 	if err := mg.Up(); err != nil {
 		t.Fatalf("Up after Down: %v", err)
 	}
-	if !tableExists(ctx, t, pool, "schema_baseline") {
-		t.Fatal("after re-Up: schema_baseline does not exist")
+	for _, table := range []string{"schema_baseline", "runs"} {
+		if !tableExists(ctx, t, pool, table) {
+			t.Fatalf("after re-Up: %s does not exist", table)
+		}
 	}
 }
 

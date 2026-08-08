@@ -291,3 +291,68 @@ leftover test databases, and the full suite green with a host Postgres
 squatting on 5432 via `.env` port overrides (which is also what surfaced
 the need for Makefile `.env` loading). Integration tests double-run unit
 tests under the tag — accepted redundancy for a simple `./...` invocation.
+
+### 2.3 — ADR-004 & core schema v1 ✅
+
+**ADR-004** (`docs/adr/004-persistence-model.md`): state-machine tables +
+append-only event log, explicitly *not* event sourcing (events are written
+in the same tx as the transition they record and never replayed — replay
+would smear ADR-002's "committed or not" recovery story). Statuses are
+**TEXT + named CHECK constraints, not native enums** — the vocabulary
+grows in ≥4 later milestones and `ALTER TYPE ... ADD VALUE` has
+transactional restrictions, while drop-and-re-add of a named CHECK is
+plain transactional DDL (that recipe is the documented evolution path).
+Full allowed-transition matrix for runs and steps, including
+future-milestone rows (parked/cancelling/awaiting_human/dead_lettered…)
+tagged with their owning milestone so ADR-006/017 refine rather than
+contradict. Runs are created directly as `running` (no pending-run state —
+instantiation marks entry steps ready in the creating tx).
+
+**Dependency bookkeeping** deliberately goes beyond the ticket's literal
+"`remaining_deps` counter": **two counters + per-edge resolutions**.
+`remaining_deps` (unresolved incoming normal edges) alone cannot express
+`join any`, distinguish ready from skip-propagation, or make retried
+completion txs idempotent. So `run_steps` carries `remaining_deps` +
+`fired_deps`, and `run_edges` carries `resolution`
+(unresolved|fired|skipped) as the idempotency/audit record (retried txs
+only touch still-unresolved edges — no double-decrement). The ADR maps
+each `dag.ReadySteps` rule to its counter form (ready = `remaining=0 ∧
+fired≥1`; join-any = `fired≥1`; skipped = `remaining=0 ∧ fired=0`; failed
+parents leave edges unresolved → dependents permanently blocked, matching
+M1). Loop edges are excluded from all bookkeeping.
+
+**Schema v1** (`0002_core_schema_v1`): `workflow_definitions` (unique
+name+version, immutable rows), `runs` (definition **snapshot JSONB** on
+the run + nullable RESTRICT FK to the registry; `graph_version`;
+`next_seq` — per-run event seq allocated via `UPDATE … RETURNING`,
+serializing appends on the run row those txs already touch for the
+aggregate counters `steps_total/succeeded/failed/skipped`), `run_steps`
+(PK `(run_id, step_id)`, step_id TEXT because M13/M14 instances are
+`{id}#k`; materialized `step_type`+`config`; `claim_id` fencing token),
+`run_edges` (PK `(run_id, ordinal)` — **ordinal preserves declaration
+order, which the branch first-match rule needs**; no FK on endpoints by
+design, expansion revalidates in-tx), `step_attempts` (composite FK,
+`outcome` nullable TEXT with no CHECK — taxonomy is ADR-006's), `events`
+(PK `(run_id, seq)`), `task_outbox` (identity PK = drain order; **drained
+rows are deleted**, row-exists ⇔ dispatch-pending; no FK so dispatch
+never blocks on run-row churn). Hot-path indexes: partial
+`run_steps (status, updated_at) WHERE status IN ('ready','running')` for
+the reconciler, `runs (status, created_at DESC)`, unique partial
+`runs (idempotency_token) WHERE NOT NULL`. Lifecycle timestamps are
+app-written from the injected clock; only `created_at` defaults to
+`now()` (time-injectable invariant).
+
+**Tests.** `TestMigrateUpDownRoundTrip` was reworked — it silently assumed
+the latest migration is the baseline (one-step `Down` then asserting
+`schema_baseline` gone), which 0002 broke; it now asserts on the newest
+migration's tables, checks one-step Down leaves earlier migrations
+untouched, and **walks every down migration to zero** so the harness stays
+honest as migrations accumulate (`latestVersion` const to bump per
+migration). New `schema_v1_integration_test.go`: tables + named indexes
+exist, CHECK/unique/FK constraints behave (invalid statuses, duplicate
+`(run_id, seq)` event, duplicate idempotency token + two-NULLs-allowed,
+duplicate `(name, version)`, attempt-without-step), run delete cascades
+the whole subtree, definition-with-runs delete RESTRICTed. The
+`schema_baseline` marker table from 0001 stays (storetest's isolation
+canary). Deferred: the storetest template-database fast path noted in 2.2
+(worth doing now that per-test migration applies a real schema).

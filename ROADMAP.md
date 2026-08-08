@@ -234,13 +234,13 @@ golang-migrate with migrations embedded via `embed.FS`; `make migrate-up/down/ne
 - [x] `make test-integration` works locally against the compose stack
 - [x] Parallel tests are isolated (no cross-test data bleed)
 
-#### 2.3 — ADR-004 & core schema v1
+#### 2.3 — ADR-004 & core schema v1 ✅
 **Depends on:** 2.2, 1.1
 **ADR-004:** state-machine tables + append-only event log (why not full event sourcing: replay complexity buys little here since Postgres holds authoritative state; the event log serves audit/UI). Schema v1 migrations: `workflow_definitions` (name, version, spec JSONB), `runs` (status, params, definition snapshot ref, aggregates), `run_steps` + `run_edges` (**per-run graph copy**, `graph_version`, `remaining_deps` counter), `step_attempts` (claim_id, outcome, error, timings), `events` (per-run monotonic `seq`), `task_outbox`. Status enums and the **allowed-transition matrix** documented in the ADR; indexes for hot paths (claimable steps, run status rollup, outbox drain).
 **Done when:**
-- [ ] ERD diagram in ADR; migrations apply on CI
-- [ ] Transition matrix enumerates every legal `(from, to, guard)` for runs and steps
-- [ ] `remaining_deps`/join bookkeeping design matches M1 readiness semantics
+- [x] ERD diagram in ADR; migrations apply on CI
+- [x] Transition matrix enumerates every legal `(from, to, guard)` for runs and steps
+- [x] `remaining_deps`/join bookkeeping design matches M1 readiness semantics
 
 #### 2.4 — Store layer & transaction helpers
 **Depends on:** 2.3
