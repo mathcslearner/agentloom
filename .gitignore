@@ -1,0 +1,23 @@
+# Binaries and build output
+bin/
+dist/
+*.exe
+*.test
+*.out
+
+# Go coverage
+coverage.*
+*.coverprofile
+
+# Environment / secrets — never commit these
+.env
+.env.*
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Frontend (web/, scaffolded in M17)
+node_modules/
+.next/

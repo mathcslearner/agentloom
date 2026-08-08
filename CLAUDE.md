@@ -1,4 +1,4 @@
-# CLAUDE.md — Durable Execution Engine for AI Agent Workflows
+# CLAUDE.md — agentloom: Durable Execution Engine for AI Agent Workflows
 
 ## What this project is
 
@@ -10,7 +10,7 @@ It sits between: **n8n/Zapier** (easy, not production-grade), **Temporal/Airflow
 
 ## Current status
 
-**Scoping phase complete; no code yet.** The repository contains only this file and `ROADMAP.md`. All implementation happens by executing the roadmap.
+**M0 in progress.** Ticket 0.1 (repo scaffold & tooling) is done: project named **agentloom**, module path `github.com/mathcslearner/agentloom`, directory skeleton, `Makefile` (`lint` / `test` / `test-integration` / `fmt`, pinned golangci-lint auto-installed into `./bin`), golangci-lint v2 config, Apache-2.0 license, README. All further implementation happens by executing the roadmap; next ticket is 0.2 (CI pipeline).
 
 ## How to work on this project
 

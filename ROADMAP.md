@@ -106,13 +106,13 @@ The AI-native layer lands immediately after the engine core and *before* any UI 
 
 **Exit criteria:** clean checkout → `make lint test` green in CI; architecture doc + ADR-001/002 merged; a demo binary emits structured JSON logs configured from env.
 
-#### 0.1 — Repo scaffold & tooling
+#### 0.1 — Repo scaffold & tooling ✅
 **Depends on:** —
 Initialize the monorepo: pick the project name and Go module path (placeholder `github.com/OWNER/NAME` until decided), `go.mod`, directory skeleton (`cmd/`, `internal/`, `web/` placeholder, `deploy/`, `docs/`, `examples/`, `test/`), `Makefile` (`lint`, `test`, `test-integration`, `fmt`), golangci-lint config, `.editorconfig`, `.gitignore`, Apache-2.0 `LICENSE`, README stub with one-paragraph positioning.
 **Done when:**
-- [ ] `make lint` and `make test` pass on the empty skeleton
-- [ ] Directory layout documented in README and matches CLAUDE.md
-- [ ] Module path finalized; name recorded in README
+- [x] `make lint` and `make test` pass on the empty skeleton
+- [x] Directory layout documented in README and matches CLAUDE.md
+- [x] Module path finalized; name recorded in README (`agentloom`, `github.com/mathcslearner/agentloom`)
 
 #### 0.2 — CI pipeline (lint + unit tests)
 **Depends on:** 0.1
