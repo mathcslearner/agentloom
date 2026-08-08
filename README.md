@@ -29,8 +29,10 @@ Directories marked *(planned)* are placeholders that gain content in later miles
 
 ```
 cmd/            api, worker, ctl, loadgen binaries (planned)
+  demo/         throwaway config + logging wiring demo (deleted in M4)
 internal/
   version/      build version of agentloom binaries
+  config/       env-driven configuration (defaults < env, fail-fast validation)
   dag/          definition types, validation, graph algorithms, CEL (planned)
   store/        Postgres repositories, migrations, tx helpers (planned)
   queue/        Redis Streams, leases, delayed delivery (planned)
@@ -44,8 +46,7 @@ internal/
   contextmgr/   token counting, blackboard, assembly, compaction (planned)
   validate/     validator SPI, deterministic + LLM-judge validators (planned)
   api/          HTTP handlers, auth, WS (planned)
-  obs/          logging, metrics, tracing (planned)
-  config/       env-driven configuration (planned)
+  obs/          observability: log/ (slog JSON logger, context helpers); metrics, tracing (planned)
 web/            Next.js builder + dashboard (planned)
 deploy/         helm/, terraform/, dockerfiles (planned)
 docs/           architecture.md + doc index; adr/, demos/, load/ (planned)

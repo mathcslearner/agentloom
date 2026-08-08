@@ -138,13 +138,13 @@ Create `docs/adr/` with a template. **ADR-001:** exactly two long-running deploy
 - [x] ADR-002 explicitly addresses "why no scheduler bottleneck" and names the sharding lever
 - [x] ADR index in `docs/adr/README.md`
 
-#### 0.5 — Config & structured logging foundation
+#### 0.5 — Config & structured logging foundation ✅
 **Depends on:** 0.1
 `internal/config`: env-driven config with defaults, validation, and typed sub-configs per component (fail fast on bad config). `internal/obs/log`: `slog` JSON logger factory, canonical field names (`run_id`, `step_id`, `attempt`, `worker_id`, `trace_id`), context-carried logger helpers. A `cmd/demo` throwaway (deleted in M4) proves wiring.
 **Done when:**
-- [ ] Config precedence (default < env) unit-tested; invalid config errors are actionable
-- [ ] Log output is one JSON object per line with canonical fields
-- [ ] Logger retrievable from `context.Context`; nil-safe
+- [x] Config precedence (default < env) unit-tested; invalid config errors are actionable
+- [x] Log output is one JSON object per line with canonical fields
+- [x] Logger retrievable from `context.Context`; nil-safe
 
 ---
 
