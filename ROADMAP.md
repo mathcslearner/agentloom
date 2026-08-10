@@ -294,13 +294,13 @@ Document the full protocol: task envelope schema (versioned; `run_id`, `step_id`
 - [x] Envelope rejects unknown versions with a typed error
 - [x] Introspection helpers return depth + PEL counts used by M7 metrics
 
-#### 3.3 — Consumer loop with ack/nack semantics
+#### 3.3 — Consumer loop with ack/nack semantics ✅
 **Depends on:** 3.2
 Blocking `XREADGROUP` batch loop feeding a per-message handler; explicit ACK on handler success; no-ACK on failure (message stays in PEL for redelivery); delivery-count surfaced to the handler; clean shutdown via context.
 **Done when:**
-- [ ] At-least-once proven in test: kill consumer pre-ACK → message redelivered to another consumer
-- [ ] Handler panic is contained (message survives for redelivery; consumer loop lives)
-- [ ] Batch size/block timeout configurable; shutdown drains in-flight handler
+- [x] At-least-once proven in test: kill consumer pre-ACK → message redelivered to another consumer
+- [x] Handler panic is contained (message survives for redelivery; consumer loop lives)
+- [x] Batch size/block timeout configurable; shutdown drains in-flight handler
 
 #### 3.4 — Lease heartbeat & reclaimer
 **Depends on:** 3.3

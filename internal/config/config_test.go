@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mathcslearner/agentloom/internal/config"
 )
@@ -33,6 +34,13 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Redis.Addr != config.DefaultRedisAddr {
 		t.Errorf("default Redis addr = %q, want %q", cfg.Redis.Addr, config.DefaultRedisAddr)
 	}
+	wantQueue := config.QueueConfig{
+		ConsumerBatch: config.DefaultQueueConsumerBatch,
+		ConsumerBlock: config.DefaultQueueConsumerBlock,
+	}
+	if cfg.Queue != wantQueue {
+		t.Errorf("default Queue config = %+v, want %+v", cfg.Queue, wantQueue)
+	}
 }
 
 func TestLoadRedisAddrOverride(t *testing.T) {
@@ -58,6 +66,22 @@ func TestLoadPostgresDSNOverride(t *testing.T) {
 	}
 	if cfg.Postgres.DSN != dsn {
 		t.Errorf("Postgres DSN = %q, want %q", cfg.Postgres.DSN, dsn)
+	}
+}
+
+func TestLoadQueueOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(lookupFrom(map[string]string{
+		config.EnvQueueConsumerBatch: "32",
+		config.EnvQueueConsumerBlock: "250ms",
+	}))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	want := config.QueueConfig{ConsumerBatch: 32, ConsumerBlock: 250 * time.Millisecond}
+	if cfg.Queue != want {
+		t.Errorf("Queue config = %+v, want %+v", cfg.Queue, want)
 	}
 }
 
@@ -122,6 +146,10 @@ func TestLoadInvalidValuesAreActionable(t *testing.T) {
 		{config.EnvLogLevel, "verbose", []string{config.EnvLogLevel, `"verbose"`, "debug, info, warn, error"}},
 		{config.EnvLogFormat, "yaml", []string{config.EnvLogFormat, `"yaml"`, "json, text"}},
 		{config.EnvLogSource, "yep", []string{config.EnvLogSource, `"yep"`, "true or false"}},
+		{config.EnvQueueConsumerBatch, "lots", []string{config.EnvQueueConsumerBatch, `"lots"`, "positive integer"}},
+		{config.EnvQueueConsumerBatch, "0", []string{config.EnvQueueConsumerBatch, `"0"`, "positive integer"}},
+		{config.EnvQueueConsumerBlock, "soon", []string{config.EnvQueueConsumerBlock, `"soon"`, "positive Go duration"}},
+		{config.EnvQueueConsumerBlock, "-5s", []string{config.EnvQueueConsumerBlock, `"-5s"`, "positive Go duration"}},
 	}
 	for _, tc := range cases {
 		_, err := config.Load(lookupFrom(map[string]string{tc.key: tc.value}))

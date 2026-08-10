@@ -794,3 +794,76 @@ Deliberately no logging in this ticket: `Enqueue` is a library call whose
 callers (the M4 drainer, reconciler, promoter) own the hot-path logs, and
 the loops that warrant them arrive in 3.3+. Deferred (fifth time): the
 storetest template-database fast path.
+
+### 3.3 — Consumer loop with ack/nack semantics ✅
+
+`Consumer` in `internal/queue`: a blocking `XREADGROUP` batch loop
+(`q.NewConsumer(name, handler, cfg)` + `Run(ctx)`) feeding deliveries to
+a `Handler func(ctx, Delivery) error` one at a time. Nil return → `XACK`;
+error → no ACK (entry stays in the PEL for reclaim); panic → recovered
+via `safeHandle` (unit-tested in isolation) and treated as an error, so
+one poisoned message can never kill the loop. Decode failures (unknown
+version / malformed, ticket 3.2's typed errors) never reach the handler
+and are never acked, per ADR-005's no-silent-drop rule. New
+`config.QueueConfig{ConsumerBatch, ConsumerBlock}`
+(`AGENTLOOM_QUEUE_CONSUMER_BATCH`/`_BLOCK`, defaults 16/5s per the
+ADR-005 tuning table); `queue.ConsumerConfig` zero values fall back to
+the same defaults.
+
+**One per-message path, pre-wired for 3.4.** `process(ctx, msg,
+deliveryCount)` is the single decode→handle→ack path; `Run` feeds it
+fresh reads and 3.4's reclaimer will feed it `XAUTOCLAIM`ed entries. This
+matters because an entry reclaimed to consumer B is *already delivered* —
+B's `XREADGROUP >` loop will never see it, so redelivery can only enter
+through this path. The kill-pre-ACK test replays a reclaimed entry
+through it via a test-only export (`export_test.go`), exactly as the
+reclaimer will in production code.
+
+**Delivery count without a round-trip.** `XREADGROUP >` only delivers
+never-before-delivered entries, so the fresh path passes a constant 1 —
+no `XPENDING` lookup per batch. Real counts arrive with the reclaim path
+(3.4); `Delivery.DeliveryCount` surfaces the contract now so it does not
+change later.
+
+**Shutdown = drain, then detached ACK.** Handling is synchronous in
+`Run`'s loop, so cancellation mid-handler naturally waits for the handler
+to return; the subsequent `XACK` runs on a
+`context.WithoutCancel`-derived timeout context so a handler that
+succeeds during shutdown still acks instead of redelivering finished
+work. Pinned by test: `Run` returns only after the in-flight handler
+finishes, and the PEL is empty afterwards.
+
+**Shutdown latency is bounded by Block, not instant.** go-redis does not
+interrupt a blocked `XREADGROUP` on context cancellation — the loop
+observes cancellation between blocking reads. This is ADR-005's stated
+rationale for the 5s default ("keeps shutdown latency and liveness
+checks bounded"); the test pins the bounded contract with a 200ms Block.
+Read errors back off (`ErrorBackoff`, default 1s) instead of hot-spinning;
+that timer is the package's one deliberate real-time wait — tests tune it
+down rather than injecting a clock, the same convention ADR-005 uses for
+lease TTLs.
+
+**Layering catch recorded for future tickets:** `config` must not import
+`queue` (queue logs through `internal/obs/log`, which imports `config`),
+so the 16/5s defaults are duplicated in both packages with keep-in-sync
+comments rather than shared constants.
+
+**Tests.** Unit: config defaulting/env parsing (including invalid batch
+and duration values), `safeHandle` panic containment with stack capture,
+consumer-name generation, nil-handler panic. Integration: 40-envelope
+multi-batch happy path (each handled exactly once, `DeliveryCount` 1,
+PEL drained); handler error leaves the entry pending; scripted panic on
+one entry leaves it pending while the next entry in the same batch is
+still handled; malformed raw entry never reaches the handler and stays
+pending; shutdown drains the in-flight handler and still acks its
+success; idle-block shutdown bounded by the configured Block; and the
+flagship kill-pre-ACK redelivery test — consumer A killed after delivery,
+PEL entry intact with delivery count 1, `XAUTOCLAIM` hands it to B with
+count 2 (asserted via `XPENDING`), B completes and acks through the
+shared path, PEL empty.
+
+A note left in `Run` for 3.4: a full batch becomes PEL leases at read
+time, but queued entries sit un-heartbeated behind the sequential handler
+— safe (reclaim duplicates die at the claim CAS) but a real batch-size ×
+lease-TTL tuning interaction. Deferred (sixth time): the storetest
+template-database fast path.
