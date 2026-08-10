@@ -310,13 +310,13 @@ Heartbeater goroutine per in-flight task: periodic `XCLAIM JUSTID` to self with 
 - [x] Long task with heartbeat is never reclaimed across 3× TTL
 - [x] Heartbeat uses JUSTID (delivery count unchanged); reclaim increments it (asserted)
 
-#### 3.5 — Delayed delivery (ZSET promoter)
+#### 3.5 — Delayed delivery (ZSET promoter) ✅
 **Depends on:** 3.2
 `sched:delayed` sorted set (score = fire-at epoch ms) + promoter loop in every consumer: atomic Lua script pops due entries and `XADD`s them to the ready stream (duplicate-safe: promotion is at-least-once; claims dedupe downstream). Foundation for retry backoff (M5), throttled requeue (M9), and approval timeouts (M15). Injectable clock for tests.
 **Done when:**
-- [ ] Due tasks promote within one tick; not-yet-due tasks never promote (fake clock tests)
-- [ ] Lua move is atomic (no lost/duplicated entries under concurrent promoters — stress test)
-- [ ] Promotion latency observable (hook for M7 metric)
+- [x] Due tasks promote within one tick; not-yet-due tasks never promote (fake clock tests)
+- [x] Lua move is atomic (no lost/duplicated entries under concurrent promoters — stress test)
+- [x] Promotion latency observable (hook for M7 metric)
 
 #### 3.6 — Queue chaos harness
 **Depends on:** 3.4, 3.5

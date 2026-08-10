@@ -16,6 +16,7 @@ const (
 	EnvQueuePoisonThreshold      = "AGENTLOOM_QUEUE_POISON_THRESHOLD"
 	EnvQueueJanitorInterval      = "AGENTLOOM_QUEUE_JANITOR_INTERVAL"
 	EnvQueueJanitorIdleThreshold = "AGENTLOOM_QUEUE_JANITOR_IDLE_THRESHOLD"
+	EnvQueuePromoterTick         = "AGENTLOOM_QUEUE_PROMOTER_TICK"
 )
 
 // Defaults per ADR-005's tuning table. They mirror internal/queue's
@@ -29,11 +30,11 @@ const (
 	DefaultQueuePoisonThreshold      = 5
 	DefaultQueueJanitorInterval      = 10 * time.Minute
 	DefaultQueueJanitorIdleThreshold = time.Hour
+	DefaultQueuePromoterTick         = time.Second
 )
 
-// QueueConfig configures the Redis Streams consumer loop and lease
-// machinery (ADR-005, internal/queue). The delayed-delivery promoter
-// tunables join it with ticket 3.5.
+// QueueConfig configures the Redis Streams consumer loop, lease
+// machinery, and delayed-delivery promoter (ADR-005, internal/queue).
 type QueueConfig struct {
 	// ConsumerBatch is the XREADGROUP COUNT: the maximum number of entries
 	// fetched per read, and also the per-tick XAUTOCLAIM batch bound. Must
@@ -68,6 +69,12 @@ type QueueConfig struct {
 	// idle before the janitor deletes it. Generous by design (hours, not
 	// lease TTLs) — cleanup is cosmetic-plus-memory. Must be positive.
 	JanitorIdleThreshold time.Duration
+	// PromoterTick is the period between delayed-delivery promotion passes:
+	// each tick moves due entries from the sched:delayed sorted set onto
+	// the ready stream. Delayed delivery serves backoffs and timeouts
+	// measured in seconds-to-days, so sub-second precision buys nothing.
+	// Must be positive.
+	PromoterTick time.Duration
 }
 
 func defaultQueueConfig() QueueConfig {
@@ -78,6 +85,7 @@ func defaultQueueConfig() QueueConfig {
 		PoisonThreshold:      DefaultQueuePoisonThreshold,
 		JanitorInterval:      DefaultQueueJanitorInterval,
 		JanitorIdleThreshold: DefaultQueueJanitorIdleThreshold,
+		PromoterTick:         DefaultQueuePromoterTick,
 	}
 }
 
@@ -93,6 +101,7 @@ func (c *QueueConfig) applyEnv(fn LookupFunc) []error {
 	errs = applyPositiveInt(errs, fn, EnvQueuePoisonThreshold, &c.PoisonThreshold)
 	errs = applyPositiveDuration(errs, fn, EnvQueueJanitorInterval, &c.JanitorInterval)
 	errs = applyPositiveDuration(errs, fn, EnvQueueJanitorIdleThreshold, &c.JanitorIdleThreshold)
+	errs = applyPositiveDuration(errs, fn, EnvQueuePromoterTick, &c.PromoterTick)
 	return errs
 }
 

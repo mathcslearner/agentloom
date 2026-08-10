@@ -23,3 +23,7 @@ func (c ConsumerConfig) WithDefaults() ConsumerConfig { return c.withDefaults() 
 
 // HeartbeatJitter exposes the heartbeat jitter function for unit tests.
 var HeartbeatJitter = heartbeatJitter
+
+// EncodeDelayedMember exposes the ZSET member codec so unit tests can pin
+// its determinism (the property ZADD's move-fire-time semantics rest on).
+var EncodeDelayedMember = encodeDelayedMember

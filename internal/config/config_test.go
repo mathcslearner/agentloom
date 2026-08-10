@@ -41,6 +41,7 @@ func TestLoadDefaults(t *testing.T) {
 		PoisonThreshold:      config.DefaultQueuePoisonThreshold,
 		JanitorInterval:      config.DefaultQueueJanitorInterval,
 		JanitorIdleThreshold: config.DefaultQueueJanitorIdleThreshold,
+		PromoterTick:         config.DefaultQueuePromoterTick,
 		// HeartbeatInterval and ReclaimInterval default to zero: derived
 		// from LeaseTTL (TTL/3 and TTL/2) by internal/queue.
 	}
@@ -87,6 +88,7 @@ func TestLoadQueueOverrides(t *testing.T) {
 		config.EnvQueuePoisonThreshold:      "3",
 		config.EnvQueueJanitorInterval:      "1m",
 		config.EnvQueueJanitorIdleThreshold: "30m",
+		config.EnvQueuePromoterTick:         "250ms",
 	}))
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
@@ -100,6 +102,7 @@ func TestLoadQueueOverrides(t *testing.T) {
 		PoisonThreshold:      3,
 		JanitorInterval:      time.Minute,
 		JanitorIdleThreshold: 30 * time.Minute,
+		PromoterTick:         250 * time.Millisecond,
 	}
 	if cfg.Queue != want {
 		t.Errorf("Queue config = %+v, want %+v", cfg.Queue, want)
@@ -179,6 +182,8 @@ func TestLoadInvalidValuesAreActionable(t *testing.T) {
 		{config.EnvQueuePoisonThreshold, "many", []string{config.EnvQueuePoisonThreshold, `"many"`, "positive integer"}},
 		{config.EnvQueueJanitorInterval, "0s", []string{config.EnvQueueJanitorInterval, `"0s"`, "positive Go duration"}},
 		{config.EnvQueueJanitorIdleThreshold, "never", []string{config.EnvQueueJanitorIdleThreshold, `"never"`, "positive Go duration"}},
+		{config.EnvQueuePromoterTick, "0s", []string{config.EnvQueuePromoterTick, `"0s"`, "positive Go duration"}},
+		{config.EnvQueuePromoterTick, "often", []string{config.EnvQueuePromoterTick, `"often"`, "positive Go duration"}},
 	}
 	for _, tc := range cases {
 		_, err := config.Load(lookupFrom(map[string]string{tc.key: tc.value}))

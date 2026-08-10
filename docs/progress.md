@@ -949,3 +949,79 @@ pending-holding one and itself.
 consumers A and B together and B could win the fresh-delivery race; B now
 joins only after A holds the entry. Deferred (seventh time): the
 storetest template-database fast path.
+
+### 3.5 — Delayed delivery (ZSET promoter) ✅
+
+`Delayed` in `internal/queue` (`delayed.go`): the ADR-005 delayed-delivery
+contract. `q.NewDelayed(key)` binds a sorted set (empty key →
+`sched:delayed`; parameterized like the stream because tests want unique
+keys and M19 stream sharding will need per-shard delayed keys — a
+promoter XADDs to its own queue's stream). `Schedule(ctx, env, fireAt)`
+validates via the envelope codec (a malformed envelope never reaches the
+ZSET), rejects a zero `fireAt` (the store layer's zero-`Now` guard
+pattern), and plain-`ZADD`s member = encoded envelope, score = fire-at
+epoch ms. `PromoteDue(ctx, now, limit)` runs one atomic Lua pass; `Len`
+(`ZCARD`) feeds M7 depth and 3.6's delayed-empty quiescence assertion.
+New `ConsumerConfig{PromoterTick, DelayedKey}` +
+`config.QueueConfig.PromoterTick` (`AGENTLOOM_QUEUE_PROMOTER_TICK`,
+default 1s per the tuning table, usual keep-in-sync duplication);
+`.env.example` documents it.
+
+**Member encoding.** A ZSET member is one string but the envelope codec
+speaks flat field–value pairs, so the member is the JSON object of
+`Encode()`'s map — `json.Marshal` sorts map keys, making identical
+envelopes byte-identical, which is exactly the property ZADD's
+move-the-fire-time dedup semantics rest on (pinned by a determinism unit
+test and a move-fire-time integration test). The Lua script
+`cjson.decode`s the member back into `XADD` args, so a promoted stream
+entry is identical to what `Enqueue` would have written (pinned by
+decode-off-the-real-wire assertions).
+
+**The Lua script** (`ZRANGEBYSCORE … WITHSCORES LIMIT 0 batch` → per
+member `XADD` + `ZREM`) is the atomicity guarantee: no crash point
+between removed-from-set and added-to-stream, and concurrent promoters
+serialize on script execution — the 8-goroutine × 200-entry stress test
+asserts zero loss and zero duplication. `now` is `ARGV`, passed from the
+caller's injectable clock; the script never reads Redis server time, so
+the due/not-due tests drive promotion with fully synthetic instants.
+
+**Quarantine decision (recorded in ADR-005).** A member that does not
+decode to a flat string→string object is `RPUSH`ed to `<key>:malformed`
+and `ZREM`ed instead of promoted. Rationale: only `Schedule` writes the
+set so such a member should be unreachable, but an unguarded
+`cjson.decode`/`XADD` failure aborts the script mid-pass, and a bad
+member's due score would re-select it first on every tick — wedging every
+promoter in the fleet forever. Quarantine preserves raw contents for an
+operator (no-silent-drop rule, same shape as the poison path's
+raw-`Values` guarantee); the consumer duty logs quarantines at error
+level.
+
+**Latency observable (M7 hook).** The script returns the promoted
+members' scores; `PromoteResult{Promoted, Quarantined, MaxLag}` computes
+`MaxLag = max(now − fireAt)`, asserted exact in the fake-clock test and
+logged (`count`, `max_lag`) by the consumer duty — the M7 histogram slots
+in behind this.
+
+**Consumer wiring.** The promoter is a third in-loop duty next to the
+reclaimer and janitor (`nextPromote`, included in the block-cap
+computation so an idle consumer's promote cadence is governed by
+`PromoterTick`, not `Block`) — preserving 3.3's strictly-serialized
+handler contract. The duty passes `time.Now()` as `now`, consistent with
+how `Run` already schedules duties; fake-clock coverage targets
+`PromoteDue` directly. Promotion errors log and retry next tick, like the
+reclaimer.
+
+**Tests.** Unit: member determinism ×20, member→`DecodeEnvelope`
+round-trip, encode-time validation, key defaulting +
+`MalformedKey` derivation, zero-`fireAt`/zero-`now` guards (nil-client
+proof they precede any Redis command), `PromoterTick`
+defaulting, config env parsing. Integration: fake-clock due/not-due with
+exact `MaxLag` (1s early → lag 1s; on time → 0); move-fire-time (two
+`Schedule`s of one envelope → `ZCARD` 1, nothing at the old fire time,
+one promotion at the new); batch bound (10 due, limit 4 → exactly the 4
+oldest promote); the concurrency stress; 3-variant malformed quarantine
+(non-JSON, `{}`, JSON array) with raw contents preserved while the valid
+member still promotes; end-to-end consumer test (tuned-down 50ms tick →
+scheduled entry reaches the handler and acks, delayed set empty).
+
+Deferred (eighth time): the storetest template-database fast path.

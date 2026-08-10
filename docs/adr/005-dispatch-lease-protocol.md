@@ -319,6 +319,14 @@ must hold durable Postgres state from which a lost delayed entry is
 re-derivable (M5.2's `retrying` step status is the first example). The
 queue library provides the mechanism; durability remains Postgres's job.
 
+A member the script cannot decode into stream fields is moved to a
+quarantine list (`<key>:malformed`) instead of the stream (decided in
+3.5). Only the library writes the set, so such a member should be
+unreachable — but an unguarded decode failure would abort the script,
+and since the bad member holds a due score it would be re-selected first
+on every tick, wedging every promoter in the fleet; quarantine preserves
+the contents for an operator, per the no-silent-drop rule.
+
 ### Orphan-consumer cleanup
 
 Per-incarnation consumer names mean every worker restart strands a

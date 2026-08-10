@@ -109,6 +109,14 @@ type ConsumerConfig struct {
 	// cosmetic-plus-memory, and a merely quiet consumer still heartbeats
 	// its entries, keeping them visibly pending and itself undeletable.
 	JanitorIdleThreshold time.Duration
+	// PromoterTick is the period between delayed-delivery promotion passes
+	// (3.5). Each pass moves up to Batch due entries from the delayed set
+	// onto the ready stream.
+	PromoterTick time.Duration
+	// DelayedKey is the delayed-delivery sorted-set key this consumer
+	// promotes from. Empty falls back to DefaultDelayedKey; tests pass
+	// unique keys for isolation.
+	DelayedKey string
 }
 
 func (c ConsumerConfig) withDefaults() ConsumerConfig {
@@ -139,6 +147,9 @@ func (c ConsumerConfig) withDefaults() ConsumerConfig {
 	if c.JanitorIdleThreshold <= 0 {
 		c.JanitorIdleThreshold = DefaultJanitorIdleThreshold
 	}
+	if c.PromoterTick <= 0 {
+		c.PromoterTick = DefaultPromoterTick
+	}
 	return c
 }
 
@@ -151,6 +162,7 @@ type Consumer struct {
 	name    string
 	handler Handler
 	cfg     ConsumerConfig
+	delayed *Delayed
 	// reclaimCursor is the XAUTOCLAIM scan position, persisted across
 	// ticks so a bounded per-tick batch still sweeps the whole PEL over
 	// successive passes. Only touched from Run's goroutine.
@@ -168,7 +180,15 @@ func (q *Queue) NewConsumer(name string, handler Handler, cfg ConsumerConfig) *C
 	if name == "" {
 		name = NewConsumerName()
 	}
-	return &Consumer{queue: q, name: name, handler: handler, cfg: cfg.withDefaults(), reclaimCursor: "0-0"}
+	cfg = cfg.withDefaults()
+	return &Consumer{
+		queue:         q,
+		name:          name,
+		handler:       handler,
+		cfg:           cfg,
+		delayed:       q.NewDelayed(cfg.DelayedKey),
+		reclaimCursor: "0-0",
+	}
 }
 
 // Name returns the consumer-group member name this consumer reads as.
@@ -181,8 +201,9 @@ func (c *Consumer) Name() string { return c.name }
 // ErrorBackoff — a Redis outage stalls the loop, it does not kill it.
 //
 // Between reads, Run also performs the consumer's periodic duties: the
-// reclaim pass (XAUTOCLAIM of expired leases, every ReclaimInterval) and
-// the orphan-consumer janitor (every JanitorInterval). Duties share the
+// reclaim pass (XAUTOCLAIM of expired leases, every ReclaimInterval), the
+// delayed-delivery promoter (every PromoterTick), and the orphan-consumer
+// janitor (every JanitorInterval). Duties share the
 // loop rather than running as goroutines so handler invocations stay
 // strictly serialized — one Consumer, one handler at a time — which is
 // what the drain-on-shutdown contract and 3.3's tests assume; a consumer
@@ -203,11 +224,14 @@ func (c *Consumer) Run(ctx context.Context) error {
 		slog.Duration("lease_ttl", c.cfg.LeaseTTL),
 		slog.Duration("heartbeat_interval", c.cfg.HeartbeatInterval),
 		slog.Duration("reclaim_interval", c.cfg.ReclaimInterval),
-		slog.Int("poison_threshold", c.cfg.PoisonThreshold))
+		slog.Int("poison_threshold", c.cfg.PoisonThreshold),
+		slog.Duration("promoter_tick", c.cfg.PromoterTick),
+		slog.String("delayed_key", c.delayed.Key()))
 	defer logger.InfoContext(ctx, "queue consumer stopped")
 
 	nextReclaim := time.Now().Add(c.cfg.ReclaimInterval)
 	nextJanitor := time.Now().Add(c.cfg.JanitorInterval)
+	nextPromote := time.Now().Add(c.cfg.PromoterTick)
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -220,15 +244,23 @@ func (c *Consumer) Run(ctx context.Context) error {
 			c.janitorTick(ctx)
 			nextJanitor = time.Now().Add(c.cfg.JanitorInterval)
 		}
+		if !time.Now().Before(nextPromote) {
+			c.promoteTick(ctx)
+			nextPromote = time.Now().Add(c.cfg.PromoterTick)
+		}
 		if ctx.Err() != nil {
 			return nil
 		}
 		// Cap the blocking read at the next due duty so an idle consumer's
-		// reclaim cadence is governed by ReclaimInterval, not by Block.
+		// reclaim and promotion cadences are governed by their intervals,
+		// not by Block.
 		block := c.cfg.Block
 		nextDuty := nextReclaim
 		if nextJanitor.Before(nextDuty) {
 			nextDuty = nextJanitor
+		}
+		if nextPromote.Before(nextDuty) {
+			nextDuty = nextPromote
 		}
 		if until := time.Until(nextDuty); until < block {
 			block = max(until, time.Millisecond)
