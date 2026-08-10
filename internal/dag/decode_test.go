@@ -196,6 +196,80 @@ func TestDecodeTypedConfigs(t *testing.T) {
 	}
 }
 
+// TestDecodeStepConfig covers the single-config decode path the execution
+// layer uses on run_steps rows (step type and raw config JSONB, no
+// surrounding document): same strictness and normalization as Decode.
+func TestDecodeStepConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("typed decode", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := dag.DecodeStepConfig(dag.StepSleep, []byte(`{"duration": "2s"}`))
+		if err != nil {
+			t.Fatalf("DecodeStepConfig: %v", err)
+		}
+		sleep, ok := cfg.(*dag.SleepConfig)
+		if !ok || sleep.Duration != "2s" {
+			t.Errorf("config = %#v, want *dag.SleepConfig{Duration: \"2s\"}", cfg)
+		}
+
+		cfg, err = dag.DecodeStepConfig(dag.StepFailNTimes, []byte(`{"n": 3}`))
+		if err != nil {
+			t.Fatalf("DecodeStepConfig: %v", err)
+		}
+		if fnt, fok := cfg.(*dag.FailNTimesConfig); !fok || fnt.N != 3 {
+			t.Errorf("config = %#v, want *dag.FailNTimesConfig{N: 3}", cfg)
+		}
+	})
+
+	t.Run("normalization applied", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := dag.DecodeStepConfig(dag.StepEcho, []byte("{\"input\": {\n  \"a\": 1\n}}"))
+		if err != nil {
+			t.Fatalf("DecodeStepConfig: %v", err)
+		}
+		echo, ok := cfg.(*dag.EchoConfig)
+		if !ok || string(echo.Input) != `{"a":1}` {
+			t.Errorf("config = %#v, want compacted input {\"a\":1}", cfg)
+		}
+	})
+
+	t.Run("absent config is nil", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := dag.DecodeStepConfig(dag.StepNoop, nil)
+		if err != nil || cfg != nil {
+			t.Errorf("DecodeStepConfig(noop, nil) = %#v, %v, want nil, nil", cfg, err)
+		}
+	})
+
+	t.Run("errors", func(t *testing.T) {
+		t.Parallel()
+		cases := []struct {
+			name string
+			st   dag.StepType
+			raw  string
+			want string // substring of the error
+		}{
+			{"unknown step type", "bogus", `{}`, `unknown step type "bogus"`},
+			{"unknown field", dag.StepSleep, `{"durations": "2s"}`, "config.durations: unknown field"},
+			{"wrong field type", dag.StepFailNTimes, `{"n": "three"}`, "config.n"},
+			{"non-object config", dag.StepSleep, `[1]`, "expected object"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				cfg, err := dag.DecodeStepConfig(tc.st, []byte(tc.raw))
+				if err == nil {
+					t.Fatalf("DecodeStepConfig = %#v, want error containing %q", cfg, tc.want)
+				}
+				if !strings.Contains(err.Error(), tc.want) {
+					t.Errorf("error = %q, want substring %q", err, tc.want)
+				}
+			})
+		}
+	})
+}
+
 // TestDecodeCompactsOpaquePayloads verifies opaque payload fields are
 // normalized to compact JSON so canonical re-encoding is byte-stable.
 func TestDecodeCompactsOpaquePayloads(t *testing.T) {

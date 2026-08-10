@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 )
 
 // Definition limits (ADR-003 "Limits"). Compiled in; making them
@@ -50,6 +51,7 @@ const (
 	CodeIsolatedStep            ValidationCode = "isolated_step"
 	CodeConfigFieldRequired     ValidationCode = "config_field_required"
 	CodeConfigFieldConflict     ValidationCode = "config_field_conflict"
+	CodeConfigFieldInvalid      ValidationCode = "config_field_invalid"
 	CodeBranchNoOutEdges        ValidationCode = "branch_no_out_edges"
 	CodeBranchEdgeUnconditioned ValidationCode = "branch_edge_unconditioned"
 	CodeLoopFieldRequired       ValidationCode = "loop_field_required"
@@ -251,6 +253,26 @@ func (v *validator) checkStepConfig(path string, s Step) {
 	case StepJoin:
 		if cfg[JoinConfig](s).Mode == "" {
 			v.add(CodeConfigFieldRequired, path+".config.mode", "required field is missing")
+		}
+	case StepSleep:
+		// Parseability is checked here, not at runtime, for the same reason
+		// CEL predicates compile at validation time: a definition the engine
+		// accepts must not explode mid-run on a malformed literal.
+		if c := cfg[SleepConfig](s); c.Duration == "" {
+			v.add(CodeConfigFieldRequired, path+".config.duration", "required field is missing")
+		} else if d, err := time.ParseDuration(c.Duration); err != nil {
+			v.add(CodeConfigFieldInvalid, path+".config.duration", "not a Go duration string: %v", err)
+		} else if d <= 0 {
+			v.add(CodeConfigFieldInvalid, path+".config.duration", "must be positive, got %q", c.Duration)
+		}
+	case StepFailNTimes:
+		// Zero means absent (the key cannot be distinguished from an explicit
+		// 0, mirroring Edge.MaxIterations); n == 0 would be noop anyway.
+		switch c := cfg[FailNTimesConfig](s); {
+		case c.N == 0:
+			v.add(CodeConfigFieldRequired, path+".config.n", "required field is missing")
+		case c.N < 0:
+			v.add(CodeConfigFieldInvalid, path+".config.n", "must be at least 1, got %d", c.N)
 		}
 	case StepBranch, StepNoop, StepEcho:
 		// No required config fields.

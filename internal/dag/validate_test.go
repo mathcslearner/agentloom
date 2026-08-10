@@ -305,6 +305,44 @@ func TestValidateTableDriven(t *testing.T) {
 			}}),
 		},
 		{
+			name: "sleep with valid duration",
+			def:  single(dag.Step{ID: "z", Type: dag.StepSleep, Config: &dag.SleepConfig{Duration: "1500ms"}}),
+		},
+		{
+			name:     "sleep without config",
+			def:      single(dag.Step{ID: "z", Type: dag.StepSleep}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldRequired, "steps[0].config.duration"}},
+		},
+		{
+			name:     "sleep with unparseable duration",
+			def:      single(dag.Step{ID: "z", Type: dag.StepSleep, Config: &dag.SleepConfig{Duration: "soon"}}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.duration"}},
+		},
+		{
+			name:     "sleep with zero duration",
+			def:      single(dag.Step{ID: "z", Type: dag.StepSleep, Config: &dag.SleepConfig{Duration: "0s"}}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.duration"}},
+		},
+		{
+			name:     "sleep with negative duration",
+			def:      single(dag.Step{ID: "z", Type: dag.StepSleep, Config: &dag.SleepConfig{Duration: "-2s"}}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.duration"}},
+		},
+		{
+			name: "fail_n_times with valid n",
+			def:  single(dag.Step{ID: "z", Type: dag.StepFailNTimes, Config: &dag.FailNTimesConfig{N: 2}}),
+		},
+		{
+			name:     "fail_n_times without n",
+			def:      single(dag.Step{ID: "z", Type: dag.StepFailNTimes, Config: &dag.FailNTimesConfig{}}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldRequired, "steps[0].config.n"}},
+		},
+		{
+			name:     "fail_n_times with negative n",
+			def:      single(dag.Step{ID: "z", Type: dag.StepFailNTimes, Config: &dag.FailNTimesConfig{N: -1}}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.n"}},
+		},
+		{
 			name: "name at 128-byte limit",
 			def: &dag.Definition{
 				SchemaVersion: dag.CurrentSchemaVersion,

@@ -347,13 +347,13 @@ Two protocol gaps found by the M3 completion audit. (a) Retention: `XACK` clears
 
 **Exit criteria:** compose stack + 2 workers execute linear and fan-out/fan-in fixtures to completion; `make demo-crash` kills a worker mid-run and the run completes with reclaim visible in attempt history; full stack restart mid-run resumes from last completed step.
 
-#### 4.1 — Executor interface v0 & test executors
+#### 4.1 — Executor interface v0 & test executors ✅
 **Depends on:** 1.2
 `internal/exec`: `Executor` interface (`Type() string`, `Execute(ctx, StepContext) (Output, error)`), registry keyed by step type, typed config decoding. Test executors: `noop`, `echo` (returns input), `sleep` (duration), `fail_n_times` (state via attempt number). Full plugin SPI arrives in M8 — keep v0 minimal but shaped for that refactor.
 **Done when:**
-- [ ] Registry lookup + config decode unit-tested (unknown type → typed error)
-- [ ] `StepContext` exposes step config, rendered input, attempt number, logger
-- [ ] All four test executors behave per spec in unit tests
+- [x] Registry lookup + config decode unit-tested (unknown type → typed error)
+- [x] `StepContext` exposes step config, rendered input, attempt number, logger
+- [x] All four test executors behave per spec in unit tests
 
 #### 4.2 — Worker skeleton: consume → claim
 **Depends on:** 4.1, 3.4, 2.6

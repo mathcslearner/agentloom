@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "kitchen-sink",
-  "description": "A research-and-publish pipeline that exercises every construct of the definition format: all 11 step types (noop, planner, retrieve, tool, map, join, llm, agent, branch, echo, human_approval), unconditioned parallel fan-out, `when`-conditioned edges with has() guards, a branch with conditioned arms plus a trailing default, both join modes (any and all), a marked loop edge, all five param types, and an engine-opaque ui block that round-trips byte-for-byte.",
+  "description": "A research-and-publish pipeline that exercises every construct of the definition format: all 13 step types (noop, planner, retrieve, tool, map, join, llm, agent, branch, echo, sleep, fail_n_times, human_approval), unconditioned parallel fan-out, `when`-conditioned edges with has() guards, a branch with conditioned arms plus a trailing default, both join modes (any and all), a marked loop edge, all five param types, and an engine-opaque ui block that round-trips byte-for-byte.",
   "params": {
     "goal": {
       "type": "string",
@@ -52,6 +52,13 @@
           "method": "GET",
           "url": "https://sources.example.com/api/search?q=${{ run.params.goal }}&limit=${{ run.params.max_sources }}"
         }
+      }
+    },
+    {
+      "id": "flaky_probe",
+      "type": "fail_n_times",
+      "config": {
+        "n": 2
       }
     },
     {
@@ -143,6 +150,13 @@
       }
     },
     {
+      "id": "cooldown",
+      "type": "sleep",
+      "config": {
+        "duration": "1s"
+      }
+    },
+    {
       "id": "publish",
       "type": "echo",
       "config": {
@@ -162,6 +176,10 @@
       "to": "search"
     },
     {
+      "from": "start",
+      "to": "flaky_probe"
+    },
+    {
       "from": "search",
       "to": "summarize_each",
       "when": "has(output.docs) && size(output.docs) > 0"
@@ -176,6 +194,10 @@
     },
     {
       "from": "fetch_sources",
+      "to": "first_source"
+    },
+    {
+      "from": "flaky_probe",
       "to": "first_source"
     },
     {
@@ -234,6 +256,10 @@
     },
     {
       "from": "approve",
+      "to": "cooldown"
+    },
+    {
+      "from": "cooldown",
       "to": "publish"
     }
   ],

@@ -1183,3 +1183,70 @@ payoff yet. Decision: not doing it until integration-suite runtime
 actually hurts (revisit when a full `make test-integration` pass is
 slow enough to disrupt the loop, e.g. >1–2 minutes). Dropped from the
 CLAUDE.md loose-ends list; this entry is the record.
+
+## Milestone 4 — Distributed execution MVP
+
+### 4.1 — Executor interface v0 & test executors ✅
+
+**What shipped.** `internal/exec`: the executor SPI v0 — `Executor`
+(`Type() string`, `Execute(ctx, StepContext) (Output, error)`), an
+instance-based `Registry` (`NewRegistry`/`Register`/`Get`; misses are a
+typed `*UnknownTypeError` unwrapping to `ErrUnknownType`), and the four
+test executors: `noop` (empty output), `echo` (config `input`, falling
+back to the rendered input), `sleep` (Go duration string, ctx-aware
+wait), `fail_n_times` (fails attempts 1..n, succeeds after).
+`Builtins()` returns the four pre-registered for 4.2's worker wiring.
+
+**Catalog expansion (the one scope call).** `sleep` and `fail_n_times`
+were added to the dag step-type catalog — constants, `SleepConfig` /
+`FailNTimesConfig`, `stepConfigTypes` + `stepTypes` entries, validation
+rules, kitchen-sink coverage (`flaky_probe` feeding the `any` join,
+`cooldown` between approve and publish), regenerated JSON Schema.
+ADR-003 pre-authorized exactly this ("further test executors register
+the same way in M4 without touching this ADR"), and 4.7 submits
+definitions made of `sleep` steps, so they had to be first-class types.
+The catalog's sync tests (catalog↔registry, kitchen-sink coverage,
+schema drift) policed every touchpoint as designed.
+
+**Non-obvious decisions.**
+- `StepContext.Config` is **raw JSON** (as materialized into
+  `run_steps.config`, ADR-004), decoded inside each executor via the new
+  exported `dag.DecodeStepConfig` (same strictness + normalization as
+  `Decode`; nil raw → nil config) through a generic `configAs[T]` helper.
+  The worker stays ignorant of config shapes — the seam where M8's
+  per-plugin config schemas will slot in. Decode failures are a typed
+  `*InvalidConfigError` unwrapping to `ErrInvalidConfig`; since configs
+  were validated at submit time, hitting one at execution time means
+  corrupt stored state or version skew — permanent failure, never a
+  retry.
+- `sleep.duration` is a Go duration string, checked **parseable and
+  positive at validation time** (new code `config_field_invalid`) — same
+  reasoning as compiling CEL at validation: an accepted definition must
+  not explode mid-run on a malformed literal. The executor re-checks
+  (defense in depth); its wait is injectable (`SleepExecutor.sleep`
+  field), so unit tests never sleep for real, honoring the
+  time-is-injectable invariant.
+- `fail_n_times.n` requires `n >= 1`; `0` reads as absent (the
+  `Edge.MaxIterations` convention) and would be `noop` anyway. The
+  executor consults **only** `StepContext.Attempt` (1-based, from the
+  attempt row) — no in-process state — so its failure schedule holds
+  across crashes and reclaims, which is what M5's retry fixtures need.
+- `Output` is a struct wrapping `Data json.RawMessage`, not an alias, so
+  M8 can add usage/artifact fields without breaking implementors.
+- `noop` never decodes its config at all (even unknown fields pass) —
+  ADR-003 says it takes none, and rejecting garbage there would be
+  validation's job, not the executor's.
+
+**Tests.** All pure unit (no process/datastore boundary crossed):
+registry lookup/duplicate/empty/nil registration, `Builtins` coverage,
+per-executor behavior incl. sleep cancellation surfacing `ctx.Err()` and
+`fail_n_times` statelessness across executor values; dag side:
+`DecodeStepConfig` (typed decode, normalization, nil, unknown
+type/field, non-object), validation table rows for both new types.
+
+**Deferred.** `fail_n_times`'s deliberate failure is a plain error —
+M5's retry-class taxonomy will decide how executor errors map to
+retryable/permanent. Executor-level structured logging is minimal
+(`fail_n_times` logs its deliberate failures); the hot-path logging duty
+lands with the worker pipeline (4.2/4.3) where run/step/attempt fields
+get stamped.

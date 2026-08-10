@@ -210,6 +210,28 @@ func decodeStepConfig(st StepType, raw json.RawMessage, path string, errs *errLi
 	return cfg
 }
 
+// DecodeStepConfig decodes one step's raw config JSON into the typed
+// struct registered for its step type, with the same strictness as Decode
+// (unknown fields rejected, per-type normalization applied). It exists for
+// the execution layer (M4), which reads step type and config separately
+// from a run's materialized graph copy (run_steps rows, ADR-004) rather
+// than through a whole definition document. A nil or empty raw config
+// returns (nil, nil) — the typed spelling of an absent config key.
+func DecodeStepConfig(st StepType, raw json.RawMessage) (StepConfig, error) {
+	if _, registered := stepConfigTypes[st]; !registered {
+		return nil, &DecodeError{Path: "config", Msg: fmt.Sprintf("unknown step type %q", string(st))}
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var errs errList
+	cfg := decodeStepConfig(st, raw, "config", &errs)
+	if !errs.empty() {
+		return nil, fmt.Errorf("invalid step config:\n%w", errors.Join(errs.errs...))
+	}
+	return cfg, nil
+}
+
 // decodeEdges decodes the edges array.
 func decodeEdges(raw json.RawMessage, errs *errList) []Edge {
 	items, ok := decodeArray(raw, "edges", errs)

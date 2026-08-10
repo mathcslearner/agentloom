@@ -26,6 +26,8 @@ var stepConfigTypes = map[StepType]func() StepConfig{
 	StepBranch:        func() StepConfig { return &BranchConfig{} },
 	StepNoop:          func() StepConfig { return &NoopConfig{} },
 	StepEcho:          func() StepConfig { return &EchoConfig{} },
+	StepSleep:         func() StepConfig { return &SleepConfig{} },
+	StepFailNTimes:    func() StepConfig { return &FailNTimesConfig{} },
 }
 
 // LLMMessage is one entry of an llm step's messages array.
@@ -115,6 +117,22 @@ type EchoConfig struct {
 	Input json.RawMessage `json:"input,omitempty"`
 }
 
+// SleepConfig configures a sleep test step (executor: M4), which waits for
+// Duration and succeeds. Duration is a Go duration string ("1500ms",
+// "2s"); presence and parseability are enforced in validation.
+type SleepConfig struct {
+	Duration string `json:"duration,omitempty"`
+}
+
+// FailNTimesConfig configures a fail_n_times test step (executor: M4),
+// which fails attempts 1..N and succeeds from attempt N+1 on — its state
+// is the attempt number, so behavior survives process restarts. Zero means
+// the key was absent (invalid; enforced in validation, mirroring
+// Edge.MaxIterations).
+type FailNTimesConfig struct {
+	N int `json:"n,omitempty"`
+}
+
 func (*LLMConfig) stepConfig()           {}
 func (*ToolConfig) stepConfig()          {}
 func (*RetrieveConfig) stepConfig()      {}
@@ -126,3 +144,5 @@ func (*JoinConfig) stepConfig()          {}
 func (*BranchConfig) stepConfig()        {}
 func (*NoopConfig) stepConfig()          {}
 func (*EchoConfig) stepConfig()          {}
+func (*SleepConfig) stepConfig()         {}
+func (*FailNTimesConfig) stepConfig()    {}

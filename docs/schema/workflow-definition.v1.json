@@ -106,6 +106,15 @@
         "loop"
       ]
     },
+    "FailNTimesConfig": {
+      "properties": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "HumanApprovalConfig": {
       "properties": {
         "prompt": {
@@ -248,6 +257,15 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "SleepConfig": {
+      "properties": {
+        "duration": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "Step": {
       "oneOf": [
         {
@@ -359,6 +377,26 @@
               "$ref": "#/$defs/EchoConfig"
             }
           }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "sleep"
+            },
+            "config": {
+              "$ref": "#/$defs/SleepConfig"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "fail_n_times"
+            },
+            "config": {
+              "$ref": "#/$defs/FailNTimesConfig"
+            }
+          }
         }
       ],
       "properties": {
@@ -393,7 +431,9 @@
         "join",
         "branch",
         "noop",
-        "echo"
+        "echo",
+        "sleep",
+        "fail_n_times"
       ]
     },
     "ToolConfig": {

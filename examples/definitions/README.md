@@ -36,7 +36,7 @@ each example's "header comment" is its top-level `description` field.
   `max_iterations`) — the only sanctioned kind of cycle, executed by
   unrolling (M14) — plus a conditioned exit edge.
 - **[kitchen_sink.json](kitchen_sink.json)** — one coherent
-  research-and-publish pipeline exercising every construct: all 11 step
+  research-and-publish pipeline exercising every construct: all 13 step
   types, both join modes (`any` and `all`), conditioned and unconditioned
   edges, `has()` guards, a branch with a trailing default, a loop edge,
   all five param types, and an engine-opaque `ui` block that round-trips
