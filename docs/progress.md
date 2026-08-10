@@ -1112,3 +1112,74 @@ entries enter the shared per-message path; the harness self-test covers
 the true W4 crash end to end.
 
 Deferred (ninth time): the storetest template-database fast path.
+
+### 3.7 — Post-M3 audit: stream retention & heartbeat ownership guard ✅
+
+A full audit of M3 against the roadmap and ADR-005 (every acceptance
+criterion re-verified, lint + unit + integration suites re-run green)
+confirmed the milestone complete but surfaced two protocol gaps, fixed
+here as an audit-addendum ticket.
+
+**Gap (a): unbounded stream growth.** `XACK` removes an entry from the
+PEL but not from the stream, and nothing anywhere trimmed — every
+envelope ever enqueued stayed in Redis memory forever, and `Stats.Length`
+was a counter that never decreased rather than a depth. Fix: `TrimAcked`
+on `Queue` (`trim.go`) + a fourth consumer duty (`TrimInterval`, default
+1m; `AGENTLOOM_QUEUE_TRIM_INTERVAL`, usual config keep-in-sync
+duplication, `.env.example` documented). Threshold = the group's
+smallest pending entry ID when the PEL is non-empty, else the successor
+of last-delivered (`successorStreamID`, sequence-overflow handled);
+everything below it is delivered-and-acked by construction. The
+threshold is monotonically safe against concurrent consumers —
+`XREADGROUP >` only moves forward and `XCLAIM`/`XAUTOCLAIM` only touch
+existing PEL entries, so nothing below a snapshot can become pending
+again; a stale snapshot merely trims less. **Exact** (non-`~`) `XTRIM
+MINID`, deliberately: per-pass cost is bounded by entries acked since the
+last pass, and determinism keeps tests and depth metrics honest. A
+missing group/stream is typed `ErrNoGroup` (never a fabricated no-op).
+One subtlety verified by test rather than assumed: group `lag` — the
+3.6 quiescence probe's drained signal — stays computable after trims,
+because deletions never exceed last-delivered (Redis only NULLs lag when
+possibly-unread entries were deleted).
+
+**Gap (b): zombie heartbeat stole reclaimed leases back.** The 3.4
+heartbeat was `XCLAIM JUSTID` with min-idle 0, which unconditionally
+transfers ownership: a consumer stalled past TTL whose entry a reclaimer
+legitimately took over would, on resuming, silently steal the entry back
+on its next beat — and the two heartbeaters would flap ownership. Safe
+(whoever completes first acks; the loser is fenced by `claim_id`) but
+invisible in logs and contrary to ADR-005's R1(b) "heartbeat starts
+failing" narrative. Fix: the beat is now a small Lua script — `XPENDING`
+the single entry, claim only if the owner is still the beater,
+atomically (no check-then-claim race). Outcomes: still-owner → idle
+reset, keep beating; displaced → warn with the new owner's name, stop
+the heartbeater (execution continues; the fence decides); gone
+(acked/deleted) → warn, stop. Transport errors keep the beater alive as
+before. The heartbeater goroutine loop now exits early when a beat
+reports the lease definitively lost.
+
+**Also:** corrected `Stats.Length`'s doc comment (it counts undelivered +
+in-flight + acked-not-yet-trimmed, not "ready depth"), and updated
+`Run`'s duty documentation and startup log (`trim_interval` field).
+
+**Tests.** Unit: `successorStreamID` table incl. sequence-overflow
+rollover and malformed IDs (a first cut let a non-integer timestamp
+through — caught by the test, fixed by always validating both parts);
+config defaulting/env parsing for the new knob; `ConsumerConfig`
+defaults. Integration: a hand-driven retention walk (pending entry pins
+the threshold at every stage; undelivered entry survives an empty-PEL
+trim; quiescence probe still detects a fresh undelivered entry *after*
+trims — the lag property); `ErrNoGroup` without a group; consumer-duty
+wiring (short `TrimInterval` physically empties the stream unattended);
+and the displacement test — entry force-`XCLAIM`ed to a thief while the
+holder's fast heartbeats run, owner asserted stable across ~10 beat
+intervals (guarded beats refuse to steal back), then the displaced
+handler completes and acks anyway (`XACK` needs no ownership).
+
+**Storetest template-database fast path: decision recorded, deferral
+retired.** Deferred nine consecutive tickets; the integration suite
+currently runs in single-digit seconds, so the optimization has no
+payoff yet. Decision: not doing it until integration-suite runtime
+actually hurts (revisit when a full `make test-integration` pass is
+slow enough to disrupt the loop, e.g. >1–2 minutes). Dropped from the
+CLAUDE.md loose-ends list; this entry is the record.

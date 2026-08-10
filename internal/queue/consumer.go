@@ -37,6 +37,10 @@ const (
 	// DefaultJanitorIdleThreshold is how long a consumer with an empty PEL
 	// must be idle before the janitor deletes it.
 	DefaultJanitorIdleThreshold = time.Hour
+	// DefaultTrimInterval is the period between stream retention passes
+	// (TrimAcked). Retention is a memory concern, not correctness; a
+	// minute bounds acked-entry buildup to a minute of throughput.
+	DefaultTrimInterval = time.Minute
 )
 
 // detachedOpTimeout bounds Redis commands issued on a detached context —
@@ -141,6 +145,11 @@ type ConsumerConfig struct {
 	// cosmetic-plus-memory, and a merely quiet consumer still heartbeats
 	// its entries, keeping them visibly pending and itself undeletable.
 	JanitorIdleThreshold time.Duration
+	// TrimInterval is the period between stream retention passes: each
+	// pass XTRIMs entries the group has delivered and acked (ADR-005,
+	// stream retention). Pending and undelivered entries are never
+	// trimmed.
+	TrimInterval time.Duration
 	// PromoterTick is the period between delayed-delivery promotion passes
 	// (3.5). Each pass moves up to Batch due entries from the delayed set
 	// onto the ready stream.
@@ -185,6 +194,9 @@ func (c ConsumerConfig) withDefaults() ConsumerConfig {
 	}
 	if c.JanitorIdleThreshold <= 0 {
 		c.JanitorIdleThreshold = DefaultJanitorIdleThreshold
+	}
+	if c.TrimInterval <= 0 {
+		c.TrimInterval = DefaultTrimInterval
 	}
 	if c.PromoterTick <= 0 {
 		c.PromoterTick = DefaultPromoterTick
@@ -241,8 +253,9 @@ func (c *Consumer) Name() string { return c.name }
 //
 // Between reads, Run also performs the consumer's periodic duties: the
 // reclaim pass (XAUTOCLAIM of expired leases, every ReclaimInterval), the
-// delayed-delivery promoter (every PromoterTick), and the orphan-consumer
-// janitor (every JanitorInterval). Duties share the
+// delayed-delivery promoter (every PromoterTick), the orphan-consumer
+// janitor (every JanitorInterval), and the stream trimmer (every
+// TrimInterval). Duties share the
 // loop rather than running as goroutines so handler invocations stay
 // strictly serialized — one Consumer, one handler at a time — which is
 // what the drain-on-shutdown contract and 3.3's tests assume; a consumer
@@ -265,12 +278,14 @@ func (c *Consumer) Run(ctx context.Context) error {
 		slog.Duration("reclaim_interval", c.cfg.ReclaimInterval),
 		slog.Int("poison_threshold", c.cfg.PoisonThreshold),
 		slog.Duration("promoter_tick", c.cfg.PromoterTick),
+		slog.Duration("trim_interval", c.cfg.TrimInterval),
 		slog.String("delayed_key", c.delayed.Key()))
 	defer logger.InfoContext(ctx, "queue consumer stopped")
 
 	nextReclaim := time.Now().Add(c.cfg.ReclaimInterval)
 	nextJanitor := time.Now().Add(c.cfg.JanitorInterval)
 	nextPromote := time.Now().Add(c.cfg.PromoterTick)
+	nextTrim := time.Now().Add(c.cfg.TrimInterval)
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -287,6 +302,10 @@ func (c *Consumer) Run(ctx context.Context) error {
 			c.promoteTick(ctx)
 			nextPromote = time.Now().Add(c.cfg.PromoterTick)
 		}
+		if !time.Now().Before(nextTrim) {
+			c.trimTick(ctx)
+			nextTrim = time.Now().Add(c.cfg.TrimInterval)
+		}
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -300,6 +319,9 @@ func (c *Consumer) Run(ctx context.Context) error {
 		}
 		if nextPromote.Before(nextDuty) {
 			nextDuty = nextPromote
+		}
+		if nextTrim.Before(nextDuty) {
+			nextDuty = nextTrim
 		}
 		if until := time.Until(nextDuty); until < block {
 			block = max(until, time.Millisecond)

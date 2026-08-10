@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-08-08
 - **Ticket:** ROADMAP.md ticket 3.1
+- **Amended:** 2026-08-10 (ticket 3.7, post-M3 audit) — stream retention
+  section added; heartbeat specified as ownership-guarded.
 
 ## Context
 
@@ -128,6 +130,16 @@ clock, and retry count — so we will not build a second one.
   load-bearing: a plain `XCLAIM` increments the delivery counter, and the
   delivery counter must remain a pure redelivery signal — a long step
   heartbeating for an hour must not look like a poison message.
+  The beat is **ownership-guarded** (3.7, post-M3 audit): a small Lua
+  script claims only when the beater still owns the entry, atomically. A
+  bare `XCLAIM` with min-idle 0 would unconditionally transfer ownership,
+  so a stalled worker that resumed after its lease was reclaimed would
+  silently steal the entry back from the legitimate new holder and the
+  two heartbeaters would flap ownership — safe (the fence decides), but
+  it hides the displacement from logs and resets idle time nobody should
+  be resetting. With the guard, a displaced (or already-acked) entry
+  stops its heartbeater with a logged warning and the worker keeps
+  executing; correctness rests on the `claim_id` fence as always.
 - **Reclaim:** every consumer periodically runs `XAUTOCLAIM ... workers
   <consumer> <lease-TTL> <cursor>`, taking ownership of expired entries
   and feeding them through its normal handler path. `XAUTOCLAIM` (without
@@ -327,6 +339,39 @@ and since the bad member holds a due score it would be re-selected first
 on every tick, wedging every promoter in the fleet; quarantine preserves
 the contents for an operator, per the no-silent-drop rule.
 
+### Stream retention: trimming acked entries
+
+`XACK` removes an entry from the PEL but not from the stream, so without
+retention the stream keeps every envelope ever enqueued and Redis memory
+grows without bound. Every consumer therefore runs a low-frequency trim
+duty (3.7, post-M3 audit): compute the oldest entry ID still relevant to
+the group and issue an exact `XTRIM MINID` at it.
+
+The threshold is the group's **smallest pending entry ID** when the PEL
+is non-empty, otherwise the **successor of the group's last-delivered
+ID**. Every entry below it has been delivered (its ID is at or below
+last-delivered) and is not pending — i.e. acked, and an acked entry is
+one the protocol has permanently forgotten. The threshold is
+monotonically safe against concurrent consumers: `XREADGROUP >` only
+delivers IDs above last-delivered, and `XCLAIM`/`XAUTOCLAIM` only operate
+on entries already in the PEL, so nothing below a snapshotted threshold
+can ever become pending again — a stale snapshot merely trims less.
+Pending and undelivered entries are never trimmed; deleting a pending
+entry would drop lease state (`XAUTOCLAIM` silently discards PEL entries
+whose stream entry is gone), and deleting an undelivered one would lose
+work the reconciler would then have to heal.
+
+Because deletions never exceed last-delivered, the group's `lag` stays
+computable after every trim (`XINFO GROUPS` reports a NULL lag only when
+entries the group may not have read were deleted) — which the 3.6
+quiescence probe depends on; 3.7's tests pin both properties.
+
+Exact (non-`~`) trimming is deliberate: the per-pass cost is bounded by
+the entries acked since the last pass, and determinism keeps depth
+observations honest (`XLEN` after a trim ≈ undelivered + in-flight). A
+crash anywhere in the duty is harmless — the next pass, on any consumer,
+recomputes the threshold from live state.
+
 ### Orphan-consumer cleanup
 
 Per-incarnation consumer names mean every worker restart strands a
@@ -359,6 +404,7 @@ it).
 | Reclaimer interval | TTL/2 | Bounds reclaim latency to TTL + TTL/2 worst case (the "TTL + ε" in the M3 exit criteria). |
 | Promoter tick | 1s | Delayed delivery is for backoffs and timeouts measured in seconds-to-days; sub-second precision buys nothing. |
 | Janitor interval / idle threshold | 10m / 1h | Cleanup is cosmetic-plus-memory; there is no urgency. |
+| Trim interval | 1m | Retention is a memory concern, not correctness; a minute bounds acked-entry buildup to a minute of throughput. |
 
 ### Deployment expectation
 

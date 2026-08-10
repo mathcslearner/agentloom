@@ -326,6 +326,15 @@ Heartbeater goroutine per in-flight task: periodic `XCLAIM JUSTID` to self with 
 - [x] M3 integration tests refactored onto the harness
 - [x] Quiescence assertions (stream drained, PEL empty, delayed empty) reusable
 
+#### 3.7 — Post-M3 audit: stream retention & heartbeat ownership guard ✅
+**Depends on:** 3.6
+Two protocol gaps found by the M3 completion audit. (a) Retention: `XACK` clears the PEL but not the stream, so nothing ever removed acked entries — Redis memory grew without bound. Add a trim duty to every consumer: exact `XTRIM MINID` at the smallest pending entry ID (or the successor of last-delivered when the PEL is empty), never touching pending or undelivered entries. (b) Heartbeat: `XCLAIM` min-idle 0 unconditionally transfers ownership, so a stalled consumer resuming after its lease was reclaimed silently stole the entry back from the legitimate holder — safe (fenced) but invisible in logs and contrary to ADR-005's R1(b) narrative. Guard the beat with an atomic owner check; displacement logs and stops the heartbeater.
+**Done when:**
+- [x] `TrimAcked` + per-consumer trim duty (`TrimInterval`, default 1m, config-wired); pending and undelivered entries never trimmed (integration-tested)
+- [x] Group lag — the 3.6 quiescence probe's drained signal — stays computable after trims (asserted)
+- [x] Heartbeat claims only entries still owned by the beater; displacement is detected, logged, and stops the heartbeater (integration-tested)
+- [x] ADR-005 amended: retention section, ownership-guarded heartbeat, tuning-table row
+
 ---
 
 ## Milestone 4 — Distributed execution MVP

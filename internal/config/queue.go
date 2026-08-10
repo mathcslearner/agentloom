@@ -17,6 +17,7 @@ const (
 	EnvQueueJanitorInterval      = "AGENTLOOM_QUEUE_JANITOR_INTERVAL"
 	EnvQueueJanitorIdleThreshold = "AGENTLOOM_QUEUE_JANITOR_IDLE_THRESHOLD"
 	EnvQueuePromoterTick         = "AGENTLOOM_QUEUE_PROMOTER_TICK"
+	EnvQueueTrimInterval         = "AGENTLOOM_QUEUE_TRIM_INTERVAL"
 )
 
 // Defaults per ADR-005's tuning table. They mirror internal/queue's
@@ -31,6 +32,7 @@ const (
 	DefaultQueueJanitorInterval      = 10 * time.Minute
 	DefaultQueueJanitorIdleThreshold = time.Hour
 	DefaultQueuePromoterTick         = time.Second
+	DefaultQueueTrimInterval         = time.Minute
 )
 
 // QueueConfig configures the Redis Streams consumer loop, lease
@@ -75,6 +77,11 @@ type QueueConfig struct {
 	// measured in seconds-to-days, so sub-second precision buys nothing.
 	// Must be positive.
 	PromoterTick time.Duration
+	// TrimInterval is the period between stream retention passes: each pass
+	// XTRIMs entries the consumer group has delivered and acked. Pending
+	// and undelivered entries are never trimmed. Retention is a memory
+	// concern, not correctness. Must be positive.
+	TrimInterval time.Duration
 }
 
 func defaultQueueConfig() QueueConfig {
@@ -86,6 +93,7 @@ func defaultQueueConfig() QueueConfig {
 		JanitorInterval:      DefaultQueueJanitorInterval,
 		JanitorIdleThreshold: DefaultQueueJanitorIdleThreshold,
 		PromoterTick:         DefaultQueuePromoterTick,
+		TrimInterval:         DefaultQueueTrimInterval,
 	}
 }
 
@@ -102,6 +110,7 @@ func (c *QueueConfig) applyEnv(fn LookupFunc) []error {
 	errs = applyPositiveDuration(errs, fn, EnvQueueJanitorInterval, &c.JanitorInterval)
 	errs = applyPositiveDuration(errs, fn, EnvQueueJanitorIdleThreshold, &c.JanitorIdleThreshold)
 	errs = applyPositiveDuration(errs, fn, EnvQueuePromoterTick, &c.PromoterTick)
+	errs = applyPositiveDuration(errs, fn, EnvQueueTrimInterval, &c.TrimInterval)
 	return errs
 }
 

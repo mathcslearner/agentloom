@@ -413,3 +413,75 @@ func TestJanitorDeletesOrphanConsumers(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// TestHeartbeatDoesNotStealBackReclaimedLease pins the ownership guard
+// (ADR-005, post-M3 audit): a consumer whose lease was legitimately taken
+// over — here simulated with a direct XCLAIM to another consumer, as a
+// reclaimer would after a stall — must not claim the entry back on its
+// next heartbeat. The displaced handler still completes and acks (XACK
+// needs no ownership); correctness rests on the claim_id fence.
+func TestHeartbeatDoesNotStealBackReclaimedLease(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
+	h.Enqueue(ctx, minimalEnvelope())
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	handlerA := func(hctx context.Context, _ queue.Delivery) error {
+		close(started)
+		select {
+		case <-release:
+			return nil
+		case <-hctx.Done():
+			return hctx.Err()
+		}
+	}
+	// Long TTL so nothing here can expire or reclaim; fast beats so A gets
+	// many chances to (wrongly) steal the entry back while displaced.
+	cfg := queue.ConsumerConfig{
+		Block:             100 * time.Millisecond,
+		LeaseTTL:          time.Minute,
+		HeartbeatInterval: 50 * time.Millisecond,
+	}
+	h.Spawn("consumer-a", handlerA, cfg)
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("consumer A never received the entry")
+	}
+
+	pel := h.PELSnapshot(ctx)
+	if len(pel) != 1 {
+		t.Fatalf("PEL = %+v, want exactly one entry", pel)
+	}
+	if err := h.Client().XClaimJustID(ctx, &redis.XClaimArgs{
+		Stream:   h.Queue().Stream(),
+		Group:    h.Queue().Group(),
+		Consumer: "thief",
+		MinIdle:  0,
+		Messages: []string{pel[0].ID},
+	}).Err(); err != nil {
+		t.Fatalf("stealing the lease: %v", err)
+	}
+
+	// Across ~10 of A's heartbeat intervals, ownership must stay with the
+	// thief: A's guarded beats detect the displacement and stop instead
+	// of claiming the entry back.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		for _, p := range h.PELSnapshot(ctx) {
+			if p.Consumer != "thief" {
+				t.Fatalf("PEL owner = %s, want thief (heartbeat stole the lease back)", p.Consumer)
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	close(release)
+	h.WaitStats(ctx, func(s queue.StreamStats) bool { return s.Pending == 0 })
+	h.RequireHandledOncePerClaim()
+}

@@ -28,6 +28,7 @@ func TestConsumerConfigDefaults(t *testing.T) {
 		JanitorInterval:      queue.DefaultJanitorInterval,
 		JanitorIdleThreshold: queue.DefaultJanitorIdleThreshold,
 		PromoterTick:         queue.DefaultPromoterTick,
+		TrimInterval:         queue.DefaultTrimInterval,
 	}
 	// PoisonHandler makes the struct non-comparable; DeepEqual treats the
 	// nil func fields on both sides as equal.
@@ -46,6 +47,7 @@ func TestConsumerConfigDefaults(t *testing.T) {
 		JanitorInterval:      time.Minute,
 		JanitorIdleThreshold: 2 * time.Hour,
 		PromoterTick:         100 * time.Millisecond,
+		TrimInterval:         30 * time.Second,
 		DelayedKey:           "custom:delayed",
 	}
 	if got := explicit.WithDefaults(); !reflect.DeepEqual(got, explicit) {

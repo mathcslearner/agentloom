@@ -11,8 +11,11 @@ import (
 // from XLEN and the XPENDING summary. It feeds the M7 queue metrics and
 // M13's system-stats endpoint; nothing here is an input to protocol logic.
 type StreamStats struct {
-	// Length is the number of entries in the stream (XLEN) — the ready
-	// depth, including entries already delivered but not yet acked.
+	// Length is the number of entries in the stream (XLEN): undelivered
+	// entries, delivered-but-unacked entries, and acked entries the trim
+	// duty (TrimAcked) has not yet removed. Between trim passes it
+	// overstates the ready depth by up to one interval of acked
+	// throughput.
 	Length int64
 	// Pending is the total number of delivered-but-unacked entries in the
 	// group's PEL — the in-flight (leased) count.

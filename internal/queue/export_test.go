@@ -27,3 +27,7 @@ var HeartbeatJitter = heartbeatJitter
 // EncodeDelayedMember exposes the ZSET member codec so unit tests can pin
 // its determinism (the property ZADD's move-fire-time semantics rest on).
 var EncodeDelayedMember = encodeDelayedMember
+
+// SuccessorStreamID exposes the XTRIM MINID threshold arithmetic for unit
+// tests.
+var SuccessorStreamID = successorStreamID
