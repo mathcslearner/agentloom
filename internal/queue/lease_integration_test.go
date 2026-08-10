@@ -13,28 +13,8 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/mathcslearner/agentloom/internal/queue"
+	"github.com/mathcslearner/agentloom/internal/queue/queuetest"
 )
-
-// leaseCfg tunes the lease machinery to test speeds: the given TTL with
-// derived heartbeat (TTL/3) and reclaim (TTL/2) intervals, and a short
-// block so duty ticks are observed promptly. ADR-005's convention: chaos
-// tests shrink the TTL rather than faking the Redis server clock, which is
-// the one clock the protocol consumes without injecting.
-func leaseCfg(ttl time.Duration) queue.ConsumerConfig {
-	return queue.ConsumerConfig{Block: 100 * time.Millisecond, LeaseTTL: ttl}
-}
-
-// pelSnapshot returns the full PEL for the queue's group.
-func pelSnapshot(ctx context.Context, tb testing.TB, client *redis.Client, q *queue.Queue) []redis.XPendingExt {
-	tb.Helper()
-	pending, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
-		Stream: q.Stream(), Group: q.Group(), Start: "-", End: "+", Count: 100,
-	}).Result()
-	if err != nil {
-		tb.Fatalf("XPENDING: %v", err)
-	}
-	return pending
-}
 
 // TestReclaimCompletesKilledConsumersTask is the ticket's flagship
 // acceptance test (crash matrix W2/W3, queue slice): consumer A dies
@@ -48,14 +28,10 @@ func TestReclaimCompletesKilledConsumersTask(t *testing.T) {
 	defer cancel()
 
 	const ttl = 500 * time.Millisecond
-	q := newTestQueue(t)
-	if err := q.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
 	want := minimalEnvelope()
-	if _, err := q.Enqueue(ctx, want); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
+	h.Enqueue(ctx, want)
 
 	// A stalls mid-task until "killed" (ctx cancel), then propagates the
 	// cancellation as an error: entry delivered, leased, never acked.
@@ -65,13 +41,13 @@ func TestReclaimCompletesKilledConsumersTask(t *testing.T) {
 		<-hctx.Done()
 		return hctx.Err()
 	}
-	stopA := startConsumer(t, q.NewConsumer("consumer-a", handlerA, leaseCfg(ttl)))
+	a := h.Spawn("consumer-a", handlerA, queuetest.LeaseConfig(ttl))
 	select {
 	case <-started:
 	case <-ctx.Done():
 		t.Fatal("consumer A never received the entry")
 	}
-	if err := stopA(); err != nil {
+	if err := a.Kill(); err != nil {
 		t.Fatalf("killing consumer A: Run returned %v, want nil", err)
 	}
 	killedAt := time.Now()
@@ -81,7 +57,7 @@ func TestReclaimCompletesKilledConsumersTask(t *testing.T) {
 		got <- d
 		return nil
 	}
-	startConsumer(t, q.NewConsumer("consumer-b", handlerB, leaseCfg(ttl)))
+	h.Spawn("consumer-b", handlerB, queuetest.LeaseConfig(ttl))
 
 	select {
 	case d := <-got:
@@ -99,10 +75,8 @@ func TestReclaimCompletesKilledConsumersTask(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("consumer B never completed the reclaimed entry")
 	}
-	stats := waitForStats(ctx, t, q, func(s queue.StreamStats) bool { return s.Pending == 0 })
-	if stats.Pending != 0 {
-		t.Errorf("Pending = %d after B completed, want 0", stats.Pending)
-	}
+	h.WaitStats(ctx, func(s queue.StreamStats) bool { return s.Pending == 0 })
+	h.RequireHandledOncePerClaim()
 }
 
 // TestHeartbeatPreventsReclaim pins the other half of the lease contract:
@@ -117,14 +91,9 @@ func TestHeartbeatPreventsReclaim(t *testing.T) {
 
 	const ttl = 400 * time.Millisecond
 	const taskDuration = 3*ttl + ttl/2 // > 3× TTL, per the acceptance criterion
-	q := newTestQueue(t)
-	client := rawClient(t)
-	if err := q.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
-	if _, err := q.Enqueue(ctx, minimalEnvelope()); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
+	h.Enqueue(ctx, minimalEnvelope())
 
 	aStarted := make(chan struct{})
 	aDone := make(chan struct{})
@@ -134,7 +103,7 @@ func TestHeartbeatPreventsReclaim(t *testing.T) {
 		time.Sleep(taskDuration)
 		return nil
 	}
-	startConsumer(t, q.NewConsumer("consumer-a", handlerA, leaseCfg(ttl)))
+	h.Spawn("consumer-a", handlerA, queuetest.LeaseConfig(ttl))
 	// B joins only once A holds the entry — otherwise B could win the
 	// fresh-delivery race and the test would measure nothing.
 	select {
@@ -148,7 +117,7 @@ func TestHeartbeatPreventsReclaim(t *testing.T) {
 		stolen <- d
 		return nil
 	}
-	startConsumer(t, q.NewConsumer("consumer-b", handlerB, leaseCfg(ttl)))
+	h.Spawn("consumer-b", handlerB, queuetest.LeaseConfig(ttl))
 
 	// While A executes, the entry must stay leased to A with delivery
 	// count 1 — JUSTID heartbeats reset idle without touching the counter.
@@ -161,7 +130,7 @@ poll:
 		case <-ctx.Done():
 			t.Fatal("consumer A never finished its long task")
 		case <-time.After(ttl / 4):
-			for _, p := range pelSnapshot(ctx, t, client, q) {
+			for _, p := range h.PELSnapshot(ctx) {
 				sampled = true
 				if p.Consumer != "consumer-a" {
 					t.Errorf("PEL owner mid-task = %s, want consumer-a (heartbeat must prevent reclaim)", p.Consumer)
@@ -181,10 +150,7 @@ poll:
 		t.Fatalf("consumer B received %+v; a heartbeated task must never be reclaimed", d)
 	default:
 	}
-	stats := waitForStats(ctx, t, q, func(s queue.StreamStats) bool { return s.Pending == 0 })
-	if stats.Pending != 0 {
-		t.Errorf("Pending = %d after A completed, want 0", stats.Pending)
-	}
+	h.WaitStats(ctx, func(s queue.StreamStats) bool { return s.Pending == 0 })
 }
 
 // TestPoisonDivertsAfterThreshold drives one entry through the designed
@@ -198,15 +164,10 @@ func TestPoisonDivertsAfterThreshold(t *testing.T) {
 
 	const ttl = 300 * time.Millisecond
 	const threshold = 2
-	q := newTestQueue(t)
-	if err := q.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
 	want := minimalEnvelope()
-	id, err := q.Enqueue(ctx, want)
-	if err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
+	id := h.Enqueue(ctx, want)
 
 	var handled atomic.Int64
 	handler := func(context.Context, queue.Delivery) error {
@@ -214,13 +175,13 @@ func TestPoisonDivertsAfterThreshold(t *testing.T) {
 		return errors.New("persistent failure")
 	}
 	poisoned := make(chan queue.PoisonMessage, 1)
-	cfg := leaseCfg(ttl)
+	cfg := queuetest.LeaseConfig(ttl)
 	cfg.PoisonThreshold = threshold
 	cfg.PoisonHandler = func(_ context.Context, p queue.PoisonMessage) error {
 		poisoned <- p
 		return nil
 	}
-	startConsumer(t, q.NewConsumer("", handler, cfg))
+	h.Spawn("", handler, cfg)
 
 	select {
 	case p := <-poisoned:
@@ -241,10 +202,7 @@ func TestPoisonDivertsAfterThreshold(t *testing.T) {
 	if n := handled.Load(); n != threshold {
 		t.Errorf("handler invoked %d times, want %d (deliveries at or below the threshold)", n, threshold)
 	}
-	stats := waitForStats(ctx, t, q, func(s queue.StreamStats) bool { return s.Pending == 0 })
-	if stats.Pending != 0 {
-		t.Errorf("Pending = %d after poison ack, want 0", stats.Pending)
-	}
+	h.WaitStats(ctx, func(s queue.StreamStats) bool { return s.Pending == 0 })
 }
 
 // TestPoisonMalformedEnvelopePreservesContents pins ADR-005's promise that
@@ -257,18 +215,9 @@ func TestPoisonMalformedEnvelopePreservesContents(t *testing.T) {
 	defer cancel()
 
 	const ttl = 300 * time.Millisecond
-	q := newTestQueue(t)
-	client := rawClient(t)
-	if err := q.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
-	if err := client.XAdd(ctx, &redis.XAddArgs{
-		Stream: q.Stream(),
-		ID:     "*",
-		Values: map[string]any{"v": "99", "junk": "payload"},
-	}).Err(); err != nil {
-		t.Fatalf("raw XADD: %v", err)
-	}
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
+	h.EnqueueRaw(ctx, map[string]any{"v": "99", "junk": "payload"})
 
 	handled := make(chan queue.Delivery, 1)
 	handler := func(_ context.Context, d queue.Delivery) error {
@@ -276,13 +225,13 @@ func TestPoisonMalformedEnvelopePreservesContents(t *testing.T) {
 		return nil
 	}
 	poisoned := make(chan queue.PoisonMessage, 1)
-	cfg := leaseCfg(ttl)
+	cfg := queuetest.LeaseConfig(ttl)
 	cfg.PoisonThreshold = 1
 	cfg.PoisonHandler = func(_ context.Context, p queue.PoisonMessage) error {
 		poisoned <- p
 		return nil
 	}
-	startConsumer(t, q.NewConsumer("", handler, cfg))
+	h.Spawn("", handler, cfg)
 
 	select {
 	case p := <-poisoned:
@@ -303,10 +252,7 @@ func TestPoisonMalformedEnvelopePreservesContents(t *testing.T) {
 		t.Errorf("handler saw %+v; a malformed entry must never reach it", d)
 	default:
 	}
-	stats := waitForStats(ctx, t, q, func(s queue.StreamStats) bool { return s.Pending == 0 })
-	if stats.Pending != 0 {
-		t.Errorf("Pending = %d after poison ack, want 0", stats.Pending)
-	}
+	h.WaitStats(ctx, func(s queue.StreamStats) bool { return s.Pending == 0 })
 }
 
 // TestPoisonWithoutHandlerLeavesPending pins the no-silent-drop rule when
@@ -319,30 +265,19 @@ func TestPoisonWithoutHandlerLeavesPending(t *testing.T) {
 	defer cancel()
 
 	const ttl = 300 * time.Millisecond
-	q := newTestQueue(t)
-	client := rawClient(t)
-	if err := q.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
-	if err := client.XAdd(ctx, &redis.XAddArgs{
-		Stream: q.Stream(),
-		ID:     "*",
-		Values: map[string]any{"garbage": "yes"},
-	}).Err(); err != nil {
-		t.Fatalf("raw XADD: %v", err)
-	}
-	if _, err := q.Enqueue(ctx, envelopeForStep("valid")); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
+	h.EnqueueRaw(ctx, map[string]any{"garbage": "yes"})
+	h.Enqueue(ctx, envelopeForStep("valid"))
 
 	handled := make(chan queue.Delivery, 1)
 	handler := func(_ context.Context, d queue.Delivery) error {
 		handled <- d
 		return nil
 	}
-	cfg := leaseCfg(ttl)
+	cfg := queuetest.LeaseConfig(ttl)
 	cfg.PoisonThreshold = 1 // PoisonHandler deliberately nil
-	startConsumer(t, q.NewConsumer("", handler, cfg))
+	h.Spawn("", handler, cfg)
 
 	select {
 	case d := <-handled:
@@ -355,11 +290,7 @@ func TestPoisonWithoutHandlerLeavesPending(t *testing.T) {
 	// Let several reclaim passes cross the threshold and hit the nil
 	// callback; the entry must still be pending afterwards.
 	time.Sleep(4 * ttl)
-	stats, err := q.Stats(ctx)
-	if err != nil {
-		t.Fatalf("Stats: %v", err)
-	}
-	if stats.Pending != 1 {
+	if stats := h.Stats(ctx); stats.Pending != 1 {
 		t.Errorf("Pending = %d, want 1 (poison entry with no callback must stay pending, never dropped)", stats.Pending)
 	}
 }
@@ -375,20 +306,15 @@ func TestReclaimCursorSweepsFullPEL(t *testing.T) {
 	const ttl = 300 * time.Millisecond
 	const n = 10
 	const batch = 4 // forces at least three reclaim ticks
-	q := newTestQueue(t)
-	client := rawClient(t)
-	if err := q.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
 	for i := range n {
-		if _, err := q.Enqueue(ctx, envelopeForStep(fmt.Sprintf("step-%d", i))); err != nil {
-			t.Fatalf("Enqueue %d: %v", i, err)
-		}
+		h.Enqueue(ctx, envelopeForStep(fmt.Sprintf("step-%d", i)))
 	}
 	// A doomed consumer takes delivery of everything and dies without
 	// acking: n leases, all destined to expire.
-	if err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
-		Group: q.Group(), Consumer: "doomed", Streams: []string{q.Stream(), ">"},
+	if err := h.Client().XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group: h.Queue().Group(), Consumer: "doomed", Streams: []string{h.Queue().Stream(), ">"},
 		Count: n, Block: time.Second,
 	}).Err(); err != nil {
 		t.Fatalf("XREADGROUP as doomed consumer: %v", err)
@@ -399,9 +325,9 @@ func TestReclaimCursorSweepsFullPEL(t *testing.T) {
 		deliveries <- d
 		return nil
 	}
-	cfg := leaseCfg(ttl)
+	cfg := queuetest.LeaseConfig(ttl)
 	cfg.Batch = batch
-	startConsumer(t, q.NewConsumer("", handler, cfg))
+	h.Spawn("", handler, cfg)
 
 	seen := make(map[string]int)
 	for range n {
@@ -423,10 +349,8 @@ func TestReclaimCursorSweepsFullPEL(t *testing.T) {
 	if len(seen) != n {
 		t.Errorf("handled %d distinct steps, want %d", len(seen), n)
 	}
-	stats := waitForStats(ctx, t, q, func(s queue.StreamStats) bool { return s.Pending == 0 })
-	if stats.Pending != 0 {
-		t.Errorf("Pending = %d after full sweep, want 0", stats.Pending)
-	}
+	h.WaitStats(ctx, func(s queue.StreamStats) bool { return s.Pending == 0 })
+	h.RequireHandledOncePerClaim()
 }
 
 // TestJanitorDeletesOrphanConsumers pins the janitor contract: a dead
@@ -438,24 +362,19 @@ func TestJanitorDeletesOrphanConsumers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	q := newTestQueue(t)
-	client := rawClient(t)
-	if err := q.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
 	for _, step := range []string{"for-ghost", "for-holder"} {
-		if _, err := q.Enqueue(ctx, envelopeForStep(step)); err != nil {
-			t.Fatalf("Enqueue %s: %v", step, err)
-		}
+		h.Enqueue(ctx, envelopeForStep(step))
 	}
 	// "ghost" reads one entry and acks it: zero pending, then goes silent.
-	msg := readOne(ctx, t, client, q, "ghost")
-	if err := client.XAck(ctx, q.Stream(), q.Group(), msg.ID).Err(); err != nil {
+	msg := h.ReadOne(ctx, "ghost")
+	if err := h.Client().XAck(ctx, h.Queue().Stream(), h.Queue().Group(), msg.ID).Err(); err != nil {
 		t.Fatalf("XACK as ghost: %v", err)
 	}
 	// "holder" reads one entry and goes silent without acking: one
 	// pending entry, undeletable.
-	readOne(ctx, t, client, q, "holder")
+	h.ReadOne(ctx, "holder")
 
 	cfg := queue.ConsumerConfig{
 		Block: 100 * time.Millisecond,
@@ -467,12 +386,11 @@ func TestJanitorDeletesOrphanConsumers(t *testing.T) {
 		JanitorIdleThreshold: 400 * time.Millisecond,
 	}
 	handler := func(context.Context, queue.Delivery) error { return nil }
-	c := q.NewConsumer("janitor-self", handler, cfg)
-	startConsumer(t, c)
+	h.Spawn("janitor-self", handler, cfg)
 
 	deadline := time.Now().Add(opTimeout)
 	for {
-		consumers, err := client.XInfoConsumers(ctx, q.Stream(), q.Group()).Result()
+		consumers, err := h.Client().XInfoConsumers(ctx, h.Queue().Stream(), h.Queue().Group()).Result()
 		if err != nil {
 			t.Fatalf("XINFO CONSUMERS: %v", err)
 		}

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/mathcslearner/agentloom/internal/queue"
 )
 
@@ -142,4 +144,57 @@ func TestNewConsumerNilHandlerPanics(t *testing.T) {
 		}
 	}()
 	queue.New(nil, "", "").NewConsumer("", nil, queue.ConsumerConfig{})
+}
+
+// TestPhaseHookPreHandleAborts pins the hook contract for the chaos
+// harness: an erroring PhaseHook at pre-handle aborts the message before
+// the handler (and before any Redis command — provable here with a nil
+// client), leaving the entry un-acked. The pre-ack sibling needs a real
+// PEL and lives in the queuetest integration self-tests.
+func TestPhaseHookPreHandleAborts(t *testing.T) {
+	t.Parallel()
+
+	values, err := minimalEnvelope().Encode()
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	handled := false
+	var gotPhase queue.Phase
+	cfg := queue.ConsumerConfig{
+		PhaseHook: func(phase queue.Phase, d queue.Delivery) error {
+			gotPhase = phase
+			if d.Envelope != minimalEnvelope() {
+				t.Errorf("hook delivery envelope = %+v, want %+v", d.Envelope, minimalEnvelope())
+			}
+			return errors.New("simulated crash")
+		},
+	}
+	c := queue.New(nil, "", "").NewConsumer("", func(context.Context, queue.Delivery) error {
+		handled = true
+		return nil
+	}, cfg)
+	if acked := c.Process(context.Background(), redis.XMessage{ID: "1-1", Values: values}, 1); acked {
+		t.Error("Process reported an ack despite the pre-handle abort")
+	}
+	if handled {
+		t.Error("handler ran despite the pre-handle abort")
+	}
+	if gotPhase != queue.PhasePreHandle {
+		t.Errorf("hook phase = %v, want %v", gotPhase, queue.PhasePreHandle)
+	}
+}
+
+func TestPhaseString(t *testing.T) {
+	t.Parallel()
+
+	cases := map[queue.Phase]string{
+		queue.PhasePreHandle: "pre-handle",
+		queue.PhasePreAck:    "pre-ack",
+		queue.Phase(42):      "phase(42)",
+	}
+	for phase, want := range cases {
+		if got := phase.String(); got != want {
+			t.Errorf("Phase(%d).String() = %q, want %q", int(phase), got, want)
+		}
+	}
 }

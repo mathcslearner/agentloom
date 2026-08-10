@@ -318,13 +318,13 @@ Heartbeater goroutine per in-flight task: periodic `XCLAIM JUSTID` to self with 
 - [x] Lua move is atomic (no lost/duplicated entries under concurrent promoters — stress test)
 - [x] Promotion latency observable (hook for M7 metric)
 
-#### 3.6 — Queue chaos harness
+#### 3.6 — Queue chaos harness ✅
 **Depends on:** 3.4, 3.5
 `internal/queue/queuetest`: harness that spawns N consumers in-process with individual kill switches, scripted handler behaviors (succeed/fail/hang/panic), fake-clock injection where possible, and assertion helpers (delivered-exactly-once-per-claim, PEL empty at quiescence). Used by M4/M5 chaos tickets.
 **Done when:**
-- [ ] Harness supports kill-at-phase hooks (pre-handle, mid-handle, pre-ack)
-- [ ] M3 integration tests refactored onto the harness
-- [ ] Quiescence assertions (stream drained, PEL empty, delayed empty) reusable
+- [x] Harness supports kill-at-phase hooks (pre-handle, mid-handle, pre-ack)
+- [x] M3 integration tests refactored onto the harness
+- [x] Quiescence assertions (stream drained, PEL empty, delayed empty) reusable
 
 ---
 

@@ -1025,3 +1025,90 @@ member still promotes; end-to-end consumer test (tuned-down 50ms tick →
 scheduled entry reaches the handler and acks, delayed set empty).
 
 Deferred (eighth time): the storetest template-database fast path.
+
+### 3.6 — Queue chaos harness ✅
+
+`internal/queue/queuetest`, the chaos harness the M4/M5 chaos tickets
+build on, closing M3. Shaped like `storetest`: a plain untagged package
+importing `testing`, connecting via `AGENTLOOM_TEST_REDIS_ADDR`
+(fail-fast, never skip), with its own integration-tagged self-tests.
+Each `Harness` owns uniquely prefixed keys (stream, delayed set,
+quarantine list; deleted on cleanup) and a shared `Journal` every spawned
+consumer records into. All four M3 integration test files were refactored
+onto it — the local helpers (`newTestQueue`, `rawClient`, `readOne`,
+`startConsumer`, `fastCfg`/`leaseCfg`, `waitForStats`, `pelSnapshot`,
+`newTestDelayed`, `streamEnvelopes`) are gone; every asserted contract is
+unchanged.
+
+**The one production change: `ConsumerConfig.PhaseHook`.** Crash cell W4
+(die after work, before ACK) cannot be provoked from outside the queue
+package — after a successful handler the ack is unconditional and runs on
+a detached context, so no cancellation can suppress it, and
+`export_test.go` is invisible to a sibling package. `process` therefore
+calls an optional hook at two instrumented points (`PhasePreHandle` after
+decode, `PhasePreAck` after handler success + heartbeat stop); a non-nil
+error aborts the message un-acked. Nil in production, documented as
+test instrumentation; because `process` is the single per-message path,
+the hook covers fresh and reclaimed deliveries alike. Mid-handle needs no
+hook — a scripted `Hang` plus the kill switch composes it.
+
+**Kill switches.** `Spawn` runs `Consumer.Run` under a per-consumer
+cancelable context; `Kill()` cancels and joins (idempotent, registered as
+cleanup). `KillAt(phase, step)` arms a one-shot kill delivered through
+the PhaseHook: on match it cancels the consumer and returns an error, so
+the message aborts and the loop dies exactly as a crashed process would —
+`Killed()` signals the trigger. Spawn also defaults an empty
+`cfg.DelayedKey` to the harness's isolated delayed set: the previous
+tests' consumers silently promoted from the *global* `sched:delayed` on
+the shared test Redis — benign only because nothing ever scheduled into
+it; a promoter XADDs to its own queue's stream, so two parallel tests
+sharing the default key would promote each other's entries onto the
+wrong streams. The harness closes that latent hazard.
+
+**Scripts and journal.** `Script.Handle` is a `queue.Handler`: per-step
+action sequences (`Succeed`/`Fail`/`PanicWith`/`Hang`) consumed one per
+invocation, last action sticky, `Default` for unscripted steps, `Release`
+to unblock hangs (close-once semantics — a pre-release passes straight
+through). Bespoke handlers remain first-class (`Spawn` takes any
+handler): the refactored M3 tests keep their channel-based handlers where
+the handler *is* the test. The journaling wrapper records at invocation
+start (End zero while running — which is the "handler is mid-flight"
+synchronization signal `WaitJournal` exposes) and completes the record on
+return, re-raising panics so `safeHandle` containment stays the behavior
+under test.
+
+**Assertions.** `IsQuiescent`/`WaitQuiescent` check the ticket's trio:
+stream drained (group `lag == 0` via `XINFO GROUPS` — `Stats.Length`
+can't express drained because entries are never trimmed; compose Redis is
+7.x so lag is present), PEL empty, delayed set empty. The quarantine list
+is deliberately *not* part of quiescence (chaos tests plant malformed
+members on purpose); it is asserted via `MalformedMembers`.
+`RequireHandledOncePerClaim` pins the precise exactly-once claim: no two
+invocations share (entry ID, delivery count). Re-execution across claims
+is *correct* at-least-once behavior — the pre-ack crash proves it: the
+handler legitimately runs twice, once per claim, and the claim CAS (M4)
+is what turns that into effectively-once. `WaitQuiescent`/`WaitJournal`
+failures call `DumpDiagnostics` (stats, PEL detail, delayed members with
+scores, quarantine, full journal) — the diagnostic-state dump 5.8
+requires.
+
+**Self-tests.** Unit (no Redis): script sequencing/stickiness/default,
+hang release + cancel, panic re-raise, journal recording, the
+duplicate-claim detector, plus — in the queue package — pre-handle abort
+with a nil client (proving the abort precedes any Redis command) and
+`Phase.String`. Integration: `TestKillAtPreHandle` (W2: handler never
+runs, lease survives, B reclaims at count 2), `TestKillAtPreAck` (W4,
+the cell that motivated the hook: work done, ack suppressed, redelivered,
+handled once per claim), `TestKillMidHandle` (hang + kill → ctx.Err nack
+→ reclaim consumes the next scripted action), `TestQuiescenceInvariants`
+(walks one entry through delayed → undelivered → unacked, asserting the
+probe catches each), `TestScriptedLadderUnderReclaim` (fail → panic →
+succeed across real reclaims).
+
+**Refactor note.** `TestKillPreAckRedelivery` (3.3) deliberately keeps
+its manual `XAUTOCLAIM` + exported-`Process` replay rather than using
+`KillAt(PhasePreAck)`: it pins the export's contract that reclaimed
+entries enter the shared per-message path; the harness self-test covers
+the true W4 crash end to end.
+
+Deferred (ninth time): the storetest template-database fast path.

@@ -6,74 +6,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
 	"github.com/mathcslearner/agentloom/internal/queue"
+	"github.com/mathcslearner/agentloom/internal/queue/queuetest"
 )
-
-// startConsumer runs c.Run in a goroutine and returns a stop function that
-// cancels it and waits for (and returns) Run's error. Tests that never call
-// stop still get cleaned up.
-func startConsumer(tb testing.TB, c *queue.Consumer) (stop func() error) {
-	tb.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- c.Run(ctx) }()
-	var once sync.Once
-	var err error
-	stop = func() error {
-		once.Do(func() {
-			cancel()
-			select {
-			case err = <-done:
-			case <-time.After(opTimeout):
-				tb.Fatalf("consumer %s did not stop within %v", c.Name(), opTimeout)
-			}
-		})
-		return err
-	}
-	tb.Cleanup(func() { stop() }) //nolint:errcheck // shutdown errors checked by tests that care
-	return stop
-}
-
-// fastCfg shortens the XREADGROUP block so consumer shutdown — which is
-// observed between blocking reads, and therefore bounded by Block — keeps
-// tests fast. Everything else stays at the defaults.
-func fastCfg() queue.ConsumerConfig {
-	return queue.ConsumerConfig{Block: 500 * time.Millisecond}
-}
 
 // envelopeForStep is minimalEnvelope with a distinguishing step ID.
 func envelopeForStep(step string) queue.Envelope {
 	env := minimalEnvelope()
 	env.StepID = step
 	return env
-}
-
-// waitForStats polls Stats until cond is satisfied or the deadline passes,
-// returning the last snapshot. Redis-side effects (ACKs, PEL changes) have
-// no completion signal beyond the commands themselves, so observation polls.
-func waitForStats(ctx context.Context, tb testing.TB, q *queue.Queue, cond func(queue.StreamStats) bool) queue.StreamStats {
-	tb.Helper()
-	var stats queue.StreamStats
-	deadline := time.Now().Add(opTimeout)
-	for time.Now().Before(deadline) {
-		var err error
-		stats, err = q.Stats(ctx)
-		if err != nil {
-			tb.Fatalf("Stats: %v", err)
-		}
-		if cond(stats) {
-			return stats
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	tb.Fatalf("condition never met; last stats %+v", stats)
-	return stats
 }
 
 // TestConsumerProcessesBatches proves the happy path across multiple
@@ -84,15 +30,11 @@ func TestConsumerProcessesBatches(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	q := newTestQueue(t)
-	if err := q.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
 	const n = 40 // several batches at Batch: 16
 	for i := range n {
-		if _, err := q.Enqueue(ctx, envelopeForStep(fmt.Sprintf("step-%d", i))); err != nil {
-			t.Fatalf("Enqueue %d: %v", i, err)
-		}
+		h.Enqueue(ctx, envelopeForStep(fmt.Sprintf("step-%d", i)))
 	}
 
 	deliveries := make(chan queue.Delivery, n)
@@ -100,7 +42,7 @@ func TestConsumerProcessesBatches(t *testing.T) {
 		deliveries <- d
 		return nil
 	}
-	stop := startConsumer(t, q.NewConsumer("", handler, fastCfg()))
+	c := h.Spawn("", handler, queuetest.FastConfig())
 
 	seen := make(map[string]int)
 	for range n {
@@ -123,11 +65,11 @@ func TestConsumerProcessesBatches(t *testing.T) {
 		t.Errorf("handled %d distinct steps, want %d", len(seen), n)
 	}
 
-	stats := waitForStats(ctx, t, q, func(s queue.StreamStats) bool { return s.Pending == 0 })
+	stats := h.WaitStats(ctx, func(s queue.StreamStats) bool { return s.Pending == 0 })
 	if stats.Length != n {
 		t.Errorf("stream length = %d, want %d (no trimming)", stats.Length, n)
 	}
-	if err := stop(); err != nil {
+	if err := c.Kill(); err != nil {
 		t.Errorf("Run returned %v on clean shutdown, want nil", err)
 	}
 }
@@ -139,34 +81,26 @@ func TestConsumerHandlerErrorLeavesPending(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	q := newTestQueue(t)
-	if err := q.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
-	if _, err := q.Enqueue(ctx, minimalEnvelope()); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
+	h.Enqueue(ctx, minimalEnvelope())
 
 	handled := make(chan struct{}, 1)
 	handler := func(context.Context, queue.Delivery) error {
 		handled <- struct{}{}
 		return errors.New("transient failure")
 	}
-	stop := startConsumer(t, q.NewConsumer("", handler, fastCfg()))
+	c := h.Spawn("", handler, queuetest.FastConfig())
 
 	select {
 	case <-handled:
 	case <-ctx.Done():
 		t.Fatal("handler never invoked")
 	}
-	if err := stop(); err != nil { // stop first: rules out an ACK racing the assertion
+	if err := c.Kill(); err != nil { // stop first: rules out an ACK racing the assertion
 		t.Errorf("Run returned %v, want nil", err)
 	}
-	stats, err := q.Stats(ctx)
-	if err != nil {
-		t.Fatalf("Stats: %v", err)
-	}
-	if stats.Pending != 1 {
+	if stats := h.Stats(ctx); stats.Pending != 1 {
 		t.Errorf("Pending = %d after handler error, want 1 (no ACK)", stats.Pending)
 	}
 }
@@ -179,16 +113,10 @@ func TestConsumerPanicContained(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	q := newTestQueue(t)
-	if err := q.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
-	if _, err := q.Enqueue(ctx, envelopeForStep("boom")); err != nil {
-		t.Fatalf("Enqueue boom: %v", err)
-	}
-	if _, err := q.Enqueue(ctx, envelopeForStep("fine")); err != nil {
-		t.Fatalf("Enqueue fine: %v", err)
-	}
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
+	h.Enqueue(ctx, envelopeForStep("boom"))
+	h.Enqueue(ctx, envelopeForStep("fine"))
 
 	handled := make(chan string, 2)
 	handler := func(_ context.Context, d queue.Delivery) error {
@@ -198,7 +126,7 @@ func TestConsumerPanicContained(t *testing.T) {
 		handled <- d.Envelope.StepID
 		return nil
 	}
-	stop := startConsumer(t, q.NewConsumer("", handler, fastCfg()))
+	c := h.Spawn("", handler, queuetest.FastConfig())
 
 	select {
 	case step := <-handled:
@@ -208,14 +136,10 @@ func TestConsumerPanicContained(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("loop died after panic: the following delivery was never handled")
 	}
-	if err := stop(); err != nil {
+	if err := c.Kill(); err != nil {
 		t.Errorf("Run returned %v, want nil", err)
 	}
-	stats, err := q.Stats(ctx)
-	if err != nil {
-		t.Fatalf("Stats: %v", err)
-	}
-	if stats.Pending != 1 {
+	if stats := h.Stats(ctx); stats.Pending != 1 {
 		t.Errorf("Pending = %d, want 1 (the panicked delivery, un-acked)", stats.Pending)
 	}
 }
@@ -228,28 +152,17 @@ func TestConsumerMalformedEntryLeftPending(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	q := newTestQueue(t)
-	client := rawClient(t)
-	if err := q.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
-	if err := client.XAdd(ctx, &redis.XAddArgs{
-		Stream: q.Stream(),
-		ID:     "*",
-		Values: map[string]any{"v": "99", "junk": "yes"},
-	}).Err(); err != nil {
-		t.Fatalf("raw XADD: %v", err)
-	}
-	if _, err := q.Enqueue(ctx, envelopeForStep("valid")); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
+	h.EnqueueRaw(ctx, map[string]any{"v": "99", "junk": "yes"})
+	h.Enqueue(ctx, envelopeForStep("valid"))
 
 	handled := make(chan queue.Delivery, 2)
 	handler := func(_ context.Context, d queue.Delivery) error {
 		handled <- d
 		return nil
 	}
-	stop := startConsumer(t, q.NewConsumer("", handler, fastCfg()))
+	c := h.Spawn("", handler, queuetest.FastConfig())
 
 	select {
 	case d := <-handled:
@@ -259,7 +172,7 @@ func TestConsumerMalformedEntryLeftPending(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("valid entry behind the malformed one was never handled")
 	}
-	if err := stop(); err != nil {
+	if err := c.Kill(); err != nil {
 		t.Errorf("Run returned %v, want nil", err)
 	}
 	select {
@@ -267,11 +180,7 @@ func TestConsumerMalformedEntryLeftPending(t *testing.T) {
 		t.Errorf("handler saw a second delivery %+v; the malformed entry must never reach it", d)
 	default:
 	}
-	stats, err := q.Stats(ctx)
-	if err != nil {
-		t.Fatalf("Stats: %v", err)
-	}
-	if stats.Pending != 1 {
+	if stats := h.Stats(ctx); stats.Pending != 1 {
 		t.Errorf("Pending = %d, want 1 (the malformed entry, un-acked)", stats.Pending)
 	}
 }
@@ -284,13 +193,9 @@ func TestConsumerShutdownDrainsInFlight(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	q := newTestQueue(t)
-	if err := q.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
-	if _, err := q.Enqueue(ctx, minimalEnvelope()); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
+	h.Enqueue(ctx, minimalEnvelope())
 
 	started := make(chan struct{})
 	finished := make(chan struct{})
@@ -302,14 +207,14 @@ func TestConsumerShutdownDrainsInFlight(t *testing.T) {
 		close(finished)
 		return nil
 	}
-	stop := startConsumer(t, q.NewConsumer("", handler, fastCfg()))
+	c := h.Spawn("", handler, queuetest.FastConfig())
 
 	select {
 	case <-started:
 	case <-ctx.Done():
 		t.Fatal("handler never started")
 	}
-	if err := stop(); err != nil { // cancels mid-handler, waits for Run
+	if err := c.Kill(); err != nil { // cancels mid-handler, waits for Run
 		t.Errorf("Run returned %v, want nil", err)
 	}
 	select {
@@ -317,11 +222,7 @@ func TestConsumerShutdownDrainsInFlight(t *testing.T) {
 	default:
 		t.Error("Run returned before the in-flight handler finished")
 	}
-	stats, err := q.Stats(ctx)
-	if err != nil {
-		t.Fatalf("Stats: %v", err)
-	}
-	if stats.Pending != 0 {
+	if stats := h.Stats(ctx); stats.Pending != 0 {
 		t.Errorf("Pending = %d, want 0 (success during shutdown must still ack)", stats.Pending)
 	}
 }
@@ -337,16 +238,14 @@ func TestConsumerShutdownDuringIdleBlock(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	q := newTestQueue(t)
-	if err := q.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
 	handler := func(context.Context, queue.Delivery) error { return nil }
-	stop := startConsumer(t, q.NewConsumer("", handler, queue.ConsumerConfig{Block: 200 * time.Millisecond}))
+	c := h.Spawn("", handler, queue.ConsumerConfig{Block: 200 * time.Millisecond})
 
 	time.Sleep(100 * time.Millisecond) // let the loop enter its idle block
 	begin := time.Now()
-	if err := stop(); err != nil {
+	if err := c.Kill(); err != nil {
 		t.Errorf("Run returned %v, want nil", err)
 	}
 	if elapsed := time.Since(begin); elapsed > 2*time.Second {
@@ -358,24 +257,22 @@ func TestConsumerShutdownDuringIdleBlock(t *testing.T) {
 // matrix W4 for 3.3's slice): consumer A is killed after delivery but
 // before ACK, the entry survives in the PEL, a reclaim hands it to
 // consumer B with an incremented delivery count, and B's handler path
-// completes and acks it. The XAUTOCLAIM here is issued by the test —
-// ticket 3.4's reclaimer automates exactly this call and feeds the same
-// process path.
+// completes and acks it. The XAUTOCLAIM here is issued by the test, and B
+// replays the entry through the exported Process — deliberately kept
+// manual even though the queuetest harness can now express this scenario
+// end to end (TestKillAtPreAck there), because this test pins the
+// export's contract: reclaimed entries enter the same per-message path.
 func TestKillPreAckRedelivery(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	q := newTestQueue(t)
-	client := rawClient(t)
-	if err := q.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
+	h := queuetest.New(t)
+	q := h.Queue()
+	client := h.Client()
+	h.EnsureGroup(ctx)
 	want := minimalEnvelope()
-	id, err := q.Enqueue(ctx, want)
-	if err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
+	id := h.Enqueue(ctx, want)
 
 	// Consumer A stalls in the handler until "killed" (ctx cancel), then
 	// propagates the cancellation as an error: delivered, never acked.
@@ -385,28 +282,22 @@ func TestKillPreAckRedelivery(t *testing.T) {
 		<-hctx.Done()
 		return hctx.Err()
 	}
-	a := q.NewConsumer("consumer-a", handlerA, fastCfg())
-	stopA := startConsumer(t, a)
+	a := h.Spawn("consumer-a", handlerA, queuetest.FastConfig())
 	select {
 	case <-started:
 	case <-ctx.Done():
 		t.Fatal("consumer A never received the entry")
 	}
-	if err := stopA(); err != nil {
+	if err := a.Kill(); err != nil {
 		t.Fatalf("killing consumer A: Run returned %v, want nil", err)
 	}
 
-	pending, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
-		Stream: q.Stream(), Group: q.Group(), Start: "-", End: "+", Count: 10,
-	}).Result()
-	if err != nil {
-		t.Fatalf("XPENDING after kill: %v", err)
-	}
+	pending := h.PELSnapshot(ctx)
 	if len(pending) != 1 || pending[0].ID != id || pending[0].Consumer != "consumer-a" || pending[0].RetryCount != 1 {
 		t.Fatalf("PEL after kill = %+v, want entry %s owned by consumer-a with delivery count 1", pending, id)
 	}
 
-	// Reclaim to B — what 3.4's reclaimer will do on lease expiry (min-idle
+	// Reclaim to B — what 3.4's reclaimer does on lease expiry (min-idle
 	// 0 stands in for an expired TTL; the TTL threshold is 3.4's subject).
 	msgs, _, err := client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 		Stream: q.Stream(), Group: q.Group(), Consumer: "consumer-b",
@@ -418,12 +309,7 @@ func TestKillPreAckRedelivery(t *testing.T) {
 	if len(msgs) != 1 || msgs[0].ID != id {
 		t.Fatalf("XAUTOCLAIM returned %+v, want exactly entry %s", msgs, id)
 	}
-	pending, err = client.XPendingExt(ctx, &redis.XPendingExtArgs{
-		Stream: q.Stream(), Group: q.Group(), Start: "-", End: "+", Count: 10,
-	}).Result()
-	if err != nil {
-		t.Fatalf("XPENDING after reclaim: %v", err)
-	}
+	pending = h.PELSnapshot(ctx)
 	if len(pending) != 1 || pending[0].Consumer != "consumer-b" || pending[0].RetryCount != 2 {
 		t.Fatalf("PEL after reclaim = %+v, want entry owned by consumer-b with delivery count 2", pending)
 	}
@@ -434,18 +320,14 @@ func TestKillPreAckRedelivery(t *testing.T) {
 		got = d
 		return nil
 	}
-	b := q.NewConsumer("consumer-b", handlerB, fastCfg())
+	b := q.NewConsumer("consumer-b", handlerB, queuetest.FastConfig())
 	if acked := b.Process(ctx, msgs[0], pending[0].RetryCount); !acked {
 		t.Fatal("Process on the redelivered entry reported no ACK")
 	}
 	if got.ID != id || got.Envelope != want || got.DeliveryCount != 2 {
 		t.Errorf("redelivery seen by B = %+v, want ID %s, envelope %+v, DeliveryCount 2", got, id, want)
 	}
-	stats, err := q.Stats(ctx)
-	if err != nil {
-		t.Fatalf("Stats: %v", err)
-	}
-	if stats.Pending != 0 {
+	if stats := h.Stats(ctx); stats.Pending != 0 {
 		t.Errorf("Pending = %d after B completed, want 0", stats.Pending)
 	}
 }

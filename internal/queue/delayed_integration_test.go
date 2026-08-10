@@ -13,47 +13,13 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/mathcslearner/agentloom/internal/queue"
+	"github.com/mathcslearner/agentloom/internal/queue/queuetest"
 )
 
 // t0 is an arbitrary fixed instant: the promoter's now is caller-supplied
 // and the Lua script never reads Redis server time, so these tests drive
 // promotion with fully synthetic clocks.
 var t0 = time.UnixMilli(1_754_000_000_000).UTC()
-
-// newTestDelayed binds a delayed set to the test queue under a unique key
-// derived from the (already unique) stream name, cleaning up both the set
-// and its quarantine list.
-func newTestDelayed(tb testing.TB, q *queue.Queue) *queue.Delayed {
-	tb.Helper()
-	d := q.NewDelayed(q.Stream() + ":delayed")
-	client := rawClient(tb)
-	tb.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
-		defer cancel()
-		if err := client.Del(ctx, d.Key(), d.MalformedKey()).Err(); err != nil {
-			tb.Errorf("deleting delayed keys: %v", err)
-		}
-	})
-	return d
-}
-
-// streamEnvelopes decodes every entry currently on the stream, in order.
-func streamEnvelopes(ctx context.Context, tb testing.TB, client *redis.Client, q *queue.Queue) []queue.Envelope {
-	tb.Helper()
-	msgs, err := client.XRange(ctx, q.Stream(), "-", "+").Result()
-	if err != nil {
-		tb.Fatalf("XRANGE %s: %v", q.Stream(), err)
-	}
-	envs := make([]queue.Envelope, 0, len(msgs))
-	for _, msg := range msgs {
-		env, err := queue.DecodeEnvelope(msg.Values)
-		if err != nil {
-			tb.Fatalf("promoted entry %s does not decode: %v", msg.ID, err)
-		}
-		envs = append(envs, env)
-	}
-	return envs
-}
 
 // TestPromoteDueFakeClock is acceptance criterion 1 (and 3): with a fully
 // synthetic now, due entries promote within one pass with an exact
@@ -63,9 +29,8 @@ func TestPromoteDueFakeClock(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	q := newTestQueue(t)
-	d := newTestDelayed(t, q)
-	client := rawClient(t)
+	h := queuetest.New(t)
+	d := h.Delayed()
 
 	due := envelopeForStep("due")
 	future := envelopeForStep("future")
@@ -76,47 +41,38 @@ func TestPromoteDueFakeClock(t *testing.T) {
 		t.Fatalf("Schedule future: %v", err)
 	}
 
-	res, err := d.PromoteDue(ctx, t0, 16)
-	if err != nil {
-		t.Fatalf("PromoteDue at t0: %v", err)
-	}
+	res := h.PromoteDue(ctx, t0, 16)
 	if res.Promoted != 1 || res.Quarantined != 0 {
 		t.Errorf("PromoteDue at t0 = %+v, want Promoted 1, Quarantined 0", res)
 	}
 	if res.MaxLag != time.Second {
 		t.Errorf("MaxLag = %v, want exactly 1s (now − fireAt)", res.MaxLag)
 	}
-	envs := streamEnvelopes(ctx, t, client, q)
+	envs := h.StreamEnvelopes(ctx)
 	if len(envs) != 1 || envs[0] != due {
 		t.Errorf("stream after promotion = %+v, want exactly the due envelope %+v", envs, due)
 	}
-	if n, err := d.Len(ctx); err != nil || n != 1 {
-		t.Errorf("Len = %d (err %v), want 1 (the future entry stays)", n, err)
+	if n := h.DelayedLen(ctx); n != 1 {
+		t.Errorf("Len = %d, want 1 (the future entry stays)", n)
 	}
 
 	// A second pass at the same now must find nothing: due entries promote
 	// once, not-yet-due entries never promote.
-	res, err = d.PromoteDue(ctx, t0, 16)
-	if err != nil {
-		t.Fatalf("second PromoteDue at t0: %v", err)
-	}
+	res = h.PromoteDue(ctx, t0, 16)
 	if res.Promoted != 0 || res.MaxLag != 0 {
 		t.Errorf("second pass at t0 = %+v, want nothing promoted", res)
 	}
 
 	// Advance the fake clock past the future entry's fire time.
-	res, err = d.PromoteDue(ctx, t0.Add(10*time.Second), 16)
-	if err != nil {
-		t.Fatalf("PromoteDue at t0+10s: %v", err)
-	}
+	res = h.PromoteDue(ctx, t0.Add(10*time.Second), 16)
 	if res.Promoted != 1 || res.MaxLag != 0 {
 		t.Errorf("pass at t0+10s = %+v, want Promoted 1 with zero lag (promoted exactly on time)", res)
 	}
-	if envs := streamEnvelopes(ctx, t, client, q); len(envs) != 2 || envs[1] != future {
+	if envs := h.StreamEnvelopes(ctx); len(envs) != 2 || envs[1] != future {
 		t.Errorf("stream after second promotion = %+v, want [due, future]", envs)
 	}
-	if n, err := d.Len(ctx); err != nil || n != 0 {
-		t.Errorf("Len = %d (err %v), want 0", n, err)
+	if n := h.DelayedLen(ctx); n != 0 {
+		t.Errorf("Len = %d, want 0", n)
 	}
 }
 
@@ -129,9 +85,8 @@ func TestScheduleMovesFireTime(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	q := newTestQueue(t)
-	d := newTestDelayed(t, q)
-	client := rawClient(t)
+	h := queuetest.New(t)
+	d := h.Delayed()
 
 	env := minimalEnvelope()
 	if err := d.Schedule(ctx, env, t0.Add(time.Second)); err != nil {
@@ -140,26 +95,20 @@ func TestScheduleMovesFireTime(t *testing.T) {
 	if err := d.Schedule(ctx, env, t0.Add(time.Minute)); err != nil {
 		t.Fatalf("second Schedule: %v", err)
 	}
-	if n, err := d.Len(ctx); err != nil || n != 1 {
-		t.Fatalf("Len = %d (err %v), want 1 (identical envelope must not queue twice)", n, err)
+	if n := h.DelayedLen(ctx); n != 1 {
+		t.Fatalf("Len = %d, want 1 (identical envelope must not queue twice)", n)
 	}
 
 	// At the original fire time nothing is due — the fire time moved.
-	res, err := d.PromoteDue(ctx, t0.Add(time.Second), 16)
-	if err != nil {
-		t.Fatalf("PromoteDue at original fire time: %v", err)
-	}
+	res := h.PromoteDue(ctx, t0.Add(time.Second), 16)
 	if res.Promoted != 0 {
 		t.Errorf("promoted %d at the original fire time, want 0 (fire time moved to t0+1m)", res.Promoted)
 	}
-	res, err = d.PromoteDue(ctx, t0.Add(time.Minute), 16)
-	if err != nil {
-		t.Fatalf("PromoteDue at moved fire time: %v", err)
-	}
+	res = h.PromoteDue(ctx, t0.Add(time.Minute), 16)
 	if res.Promoted != 1 {
 		t.Errorf("promoted %d at the moved fire time, want 1", res.Promoted)
 	}
-	if envs := streamEnvelopes(ctx, t, client, q); len(envs) != 1 || envs[0] != env {
+	if envs := h.StreamEnvelopes(ctx); len(envs) != 1 || envs[0] != env {
 		t.Errorf("stream = %+v, want exactly one copy of %+v", envs, env)
 	}
 }
@@ -171,9 +120,8 @@ func TestPromoteDueBatchBound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	q := newTestQueue(t)
-	d := newTestDelayed(t, q)
-	client := rawClient(t)
+	h := queuetest.New(t)
+	d := h.Delayed()
 
 	const n = 10
 	for i := range n {
@@ -181,17 +129,14 @@ func TestPromoteDueBatchBound(t *testing.T) {
 			t.Fatalf("Schedule %d: %v", i, err)
 		}
 	}
-	res, err := d.PromoteDue(ctx, t0.Add(time.Second), 4)
-	if err != nil {
-		t.Fatalf("PromoteDue: %v", err)
-	}
+	res := h.PromoteDue(ctx, t0.Add(time.Second), 4)
 	if res.Promoted != 4 {
 		t.Errorf("Promoted = %d, want the limit 4", res.Promoted)
 	}
-	if remaining, err := d.Len(ctx); err != nil || remaining != n-4 {
-		t.Errorf("Len = %d (err %v), want %d", remaining, err, n-4)
+	if remaining := h.DelayedLen(ctx); remaining != n-4 {
+		t.Errorf("Len = %d, want %d", remaining, n-4)
 	}
-	envs := streamEnvelopes(ctx, t, client, q)
+	envs := h.StreamEnvelopes(ctx)
 	if len(envs) != 4 {
 		t.Fatalf("stream holds %d entries, want 4", len(envs))
 	}
@@ -210,9 +155,8 @@ func TestPromoteDueConcurrent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	q := newTestQueue(t)
-	d := newTestDelayed(t, q)
-	client := rawClient(t)
+	h := queuetest.New(t)
+	d := h.Delayed()
 
 	const n = 200
 	for i := range n {
@@ -258,7 +202,7 @@ func TestPromoteDueConcurrent(t *testing.T) {
 		t.Errorf("promoters reported %d promotions in total, want %d (no loss, no duplication)", got, n)
 	}
 	seen := make(map[string]int)
-	for _, env := range streamEnvelopes(ctx, t, client, q) {
+	for _, env := range h.StreamEnvelopes(ctx) {
 		seen[env.StepID]++
 	}
 	if len(seen) != n {
@@ -269,8 +213,8 @@ func TestPromoteDueConcurrent(t *testing.T) {
 			t.Errorf("step %s promoted %d times, want exactly once", step, count)
 		}
 	}
-	if remaining, err := d.Len(ctx); err != nil || remaining != 0 {
-		t.Errorf("Len = %d (err %v), want 0 at quiescence", remaining, err)
+	if remaining := h.DelayedLen(ctx); remaining != 0 {
+		t.Errorf("Len = %d, want 0 at quiescence", remaining)
 	}
 }
 
@@ -283,15 +227,14 @@ func TestPromoteDueQuarantinesMalformed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	q := newTestQueue(t)
-	d := newTestDelayed(t, q)
-	client := rawClient(t)
+	h := queuetest.New(t)
+	d := h.Delayed()
 
 	// Raw malformed members, all scored earlier than the valid entry so
 	// they occupy the front of the batch window.
 	malformed := []string{"not json", "{}", `["run_id","x"]`}
 	for i, member := range malformed {
-		if err := client.ZAdd(ctx, d.Key(), redis.Z{
+		if err := h.Client().ZAdd(ctx, d.Key(), redis.Z{
 			Score:  float64(t0.Add(time.Duration(i-10) * time.Second).UnixMilli()),
 			Member: member,
 		}).Err(); err != nil {
@@ -303,20 +246,14 @@ func TestPromoteDueQuarantinesMalformed(t *testing.T) {
 		t.Fatalf("Schedule valid: %v", err)
 	}
 
-	res, err := d.PromoteDue(ctx, t0, 16)
-	if err != nil {
-		t.Fatalf("PromoteDue: %v", err)
-	}
+	res := h.PromoteDue(ctx, t0, 16)
 	if res.Promoted != 1 || res.Quarantined != len(malformed) {
 		t.Errorf("PromoteDue = %+v, want Promoted 1, Quarantined %d", res, len(malformed))
 	}
-	if envs := streamEnvelopes(ctx, t, client, q); len(envs) != 1 || envs[0] != valid {
+	if envs := h.StreamEnvelopes(ctx); len(envs) != 1 || envs[0] != valid {
 		t.Errorf("stream = %+v, want exactly the valid envelope", envs)
 	}
-	quarantined, err := client.LRange(ctx, d.MalformedKey(), 0, -1).Result()
-	if err != nil {
-		t.Fatalf("LRANGE %s: %v", d.MalformedKey(), err)
-	}
+	quarantined := h.MalformedMembers(ctx)
 	if len(quarantined) != len(malformed) {
 		t.Fatalf("quarantine holds %d members, want %d", len(quarantined), len(malformed))
 	}
@@ -329,25 +266,26 @@ func TestPromoteDueQuarantinesMalformed(t *testing.T) {
 			t.Errorf("quarantine is missing raw member %q — contents must be preserved", member)
 		}
 	}
-	if remaining, err := d.Len(ctx); err != nil || remaining != 0 {
-		t.Errorf("Len = %d (err %v), want 0 (no member left wedging the window)", remaining, err)
+	if remaining := h.DelayedLen(ctx); remaining != 0 {
+		t.Errorf("Len = %d, want 0 (no member left wedging the window)", remaining)
 	}
 }
 
 // TestConsumerPromotesDelayedEntries proves the wiring end to end: a
 // consumer's promoter duty moves a due entry onto the stream, and the
 // same consumer's read loop delivers it to the handler. Real time here,
-// tuned down — the fake-clock coverage is PromoteDue's tests above.
+// tuned down — the fake-clock coverage is PromoteDue's tests above. The
+// consumer's DelayedKey is left empty: Spawn defaulting it to the
+// harness's isolated delayed set is part of the contract under test.
 func TestConsumerPromotesDelayedEntries(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	q := newTestQueue(t)
-	d := newTestDelayed(t, q)
+	h := queuetest.New(t)
 
 	want := envelopeForStep("delayed-step")
-	if err := d.Schedule(ctx, want, time.Now().Add(-time.Second)); err != nil {
+	if err := h.Delayed().Schedule(ctx, want, time.Now().Add(-time.Second)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 
@@ -356,10 +294,9 @@ func TestConsumerPromotesDelayedEntries(t *testing.T) {
 		deliveries <- del
 		return nil
 	}
-	cfg := fastCfg()
+	cfg := queuetest.FastConfig()
 	cfg.PromoterTick = 50 * time.Millisecond
-	cfg.DelayedKey = d.Key()
-	stop := startConsumer(t, q.NewConsumer("", handler, cfg))
+	c := h.Spawn("", handler, cfg)
 
 	select {
 	case del := <-deliveries:
@@ -369,11 +306,8 @@ func TestConsumerPromotesDelayedEntries(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("promoted entry was never delivered to the handler")
 	}
-	waitForStats(ctx, t, q, func(s queue.StreamStats) bool { return s.Pending == 0 })
-	if n, err := d.Len(ctx); err != nil || n != 0 {
-		t.Errorf("Len = %d (err %v), want 0", n, err)
-	}
-	if err := stop(); err != nil {
+	h.WaitQuiescent(ctx)
+	if err := c.Kill(); err != nil {
 		t.Errorf("Run returned %v on clean shutdown, want nil", err)
 	}
 }

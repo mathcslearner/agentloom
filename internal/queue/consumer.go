@@ -65,6 +65,38 @@ type Delivery struct {
 // per ADR-005.
 type Handler func(ctx context.Context, d Delivery) error
 
+// Phase identifies the instrumented points in the per-message path where
+// the chaos harness (internal/queue/queuetest, ticket 3.6) injects
+// simulated crashes. The hook exists because one crash cell cannot be
+// provoked from outside this package: die-after-work-before-ACK (crash
+// matrix W4) — after a successful handler the ack is unconditional and
+// runs on a detached context, so no amount of context cancellation can
+// suppress it.
+type Phase int
+
+const (
+	// PhasePreHandle is after the envelope decodes, before the
+	// heartbeater starts and the handler runs (crash cell W2: die after
+	// claim, before execution).
+	PhasePreHandle Phase = iota + 1
+	// PhasePreAck is after the handler returns nil (and the heartbeater
+	// has stopped), before XACK (crash cell W4: die after work, before
+	// ack).
+	PhasePreAck
+)
+
+// String names the phase for logs and test failures.
+func (p Phase) String() string {
+	switch p {
+	case PhasePreHandle:
+		return "pre-handle"
+	case PhasePreAck:
+		return "pre-ack"
+	default:
+		return fmt.Sprintf("phase(%d)", int(p))
+	}
+}
+
 // ConsumerConfig tunes a consumer loop. The zero value is ready to use:
 // zero fields fall back to the ADR-005 defaults.
 type ConsumerConfig struct {
@@ -117,6 +149,13 @@ type ConsumerConfig struct {
 	// promotes from. Empty falls back to DefaultDelayedKey; tests pass
 	// unique keys for isolation.
 	DelayedKey string
+	// PhaseHook, when non-nil, is invoked at each Phase of the
+	// per-message path — fresh and reclaimed deliveries alike, since
+	// process is the single path. A non-nil error aborts the message at
+	// that point: no ack, the entry stays in the PEL, exactly as if the
+	// process had died there. Test instrumentation for the queuetest
+	// chaos harness (ticket 3.6); production configs leave it nil.
+	PhaseHook func(phase Phase, d Delivery) error
 }
 
 func (c ConsumerConfig) withDefaults() ConsumerConfig {
@@ -328,17 +367,36 @@ func (c *Consumer) process(ctx context.Context, msg redis.XMessage, deliveryCoun
 		log.RunID(env.RunID.String()),
 		log.StepID(env.StepID),
 		slog.String("reason", env.Reason))
+	d := Delivery{ID: msg.ID, Envelope: env, DeliveryCount: deliveryCount}
+	if err := c.phaseHook(PhasePreHandle, d); err != nil {
+		log.From(ctx).WarnContext(ctx, "phase hook aborted before handling; entry stays pending",
+			slog.Any("error", err))
+		return false
+	}
 	// The heartbeater keeps this entry's lease alive for the duration of
 	// the handler; it stops (and is fully joined) before the ack decision.
 	stopHeartbeat := c.startHeartbeat(ctx, msg.ID)
-	err = safeHandle(ctx, c.handler, Delivery{ID: msg.ID, Envelope: env, DeliveryCount: deliveryCount})
+	err = safeHandle(ctx, c.handler, d)
 	stopHeartbeat()
 	if err != nil {
 		log.From(ctx).WarnContext(ctx, "handler failed; entry stays pending for redelivery",
 			slog.Any("error", err))
 		return false
 	}
+	if err := c.phaseHook(PhasePreAck, d); err != nil {
+		log.From(ctx).WarnContext(ctx, "phase hook aborted before ack; entry stays pending",
+			slog.Any("error", err))
+		return false
+	}
 	return c.ack(ctx, msg.ID)
+}
+
+// phaseHook runs the configured PhaseHook, if any.
+func (c *Consumer) phaseHook(phase Phase, d Delivery) error {
+	if c.cfg.PhaseHook == nil {
+		return nil
+	}
+	return c.cfg.PhaseHook(phase, d)
 }
 
 // ack removes one entry from the PEL. It runs on a detached context: a
