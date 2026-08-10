@@ -729,3 +729,68 @@ tests shrink TTLs instead of faking that clock.
 
 No code changed; `make test` green as a sanity check. Deferred (fourth
 time): the storetest template-database fast path.
+
+### 3.2 — Stream primitives: producer & group bootstrap ✅
+
+First code in `internal/queue`: the dispatch-side primitives of ADR-005
+that 3.3–3.5 build on. `Open` (go-redis v9 client + ping, mirroring
+`store.Open`'s connect-and-verify shape); `Queue` bound to one stream +
+group pair (`New(client, stream, group)`, empty names default to
+`steps:ready`/`workers` — parameterized because M19 sharding and test
+isolation both want per-instance names); `Enqueue` (validate → encode →
+`XADD`, no trimming — at-least-once by design, dedup is the claim CAS's
+job); `EnsureGroup`; `Stats`; the envelope codec; `NewConsumerName`.
+New config sub-config `RedisConfig{Addr}` (`AGENTLOOM_REDIS_ADDR`,
+default = compose stack, passed through opaquely like the Postgres DSN);
+`.env.example` documents it alongside the pre-existing test-only
+`AGENTLOOM_TEST_REDIS_ADDR`.
+
+**Envelope codec.** Flat field–value pairs per ADR-005, `Encode()
+(map[string]any, error)` validates required fields so a malformed envelope
+never reaches the wire; empty optional fields are omitted, not written as
+`""`. `DecodeEnvelope` takes `map[string]any` (the `XMessage.Values`
+shape): missing/non-integer `v` → `*MalformedEnvelopeError{Field}`;
+well-formed `v != 1` → `*UnknownVersionError{Version}`; both unwrap to
+sentinel `ErrBadEnvelope`, the one thing 3.3's no-ACK branch needs to
+test. Unknown fields are ignored (additive-evolution rule) and — decided
+here — **`reason` is presence-checked but not vocabulary-checked**:
+enforcing the enum at decode would make every future reason (M4.4, M5.2,
+M5.4, M5.6, M15) a breaking decoder change, contradicting
+additive-within-version. Producer-side constants (`ReasonStepReady`) keep
+the vocabulary honest. `EnqueuedAt` is caller-supplied — the queue library
+holds no clock at all, satisfying the injectable-time invariant by
+construction.
+
+**Consumer-name format (decision ADR-005 delegated to 3.2):**
+`<hostname>-<pid>-<8-hex-crypto-random>`. Only the random suffix carries
+the per-incarnation uniqueness guarantee; host/pid exist for operators
+reading `XINFO CONSUMERS` mid-incident.
+
+**Group bootstrap.** `XGROUP CREATE ... 0 MKSTREAM` — start ID **`0`, not
+`$`**, because outbox drain can race worker startup and pre-boot entries
+must still be delivered (pinned by test). `BUSYGROUP` reply = success;
+go-redis surfaces Redis error replies as plain errors, so this is a
+string-prefix match by necessity (same for `NOGROUP` in `Stats`).
+Idempotency verified to not reset an existing group's last-delivered-id.
+
+**Introspection.** `Stats` = `XLEN` (ready depth) + `XPENDING` summary
+(total + per-consumer pending, sorted for determinism) — the M7 metric /
+M13 system-stats surface. A missing group fails with typed `ErrNoGroup`
+rather than fabricating zeros.
+
+**Tests.** Unit: codec round-trips (table + `rapid` property at ms
+precision), every malformed-field case with `errors.As` on the field,
+unknown-version, unknown-field tolerance, unknown-reason acceptance,
+consumer-name uniqueness. Integration (compose Redis, unique
+`agentloom-test:<random>:steps:ready` keys per test, deleted on cleanup —
+a local helper 3.6's `queuetest` harness will absorb): produce→
+`XREADGROUP`→decode round-trip, pre-group-creation delivery, 16-goroutine
+`EnsureGroup` race (exactly one group), re-ensure leaves
+last-delivered-id untouched, stats before/after unacked reads with
+per-consumer breakdown, and malformed/unknown-version entries `XADD`ed
+raw and decoded off the real wire.
+
+Deliberately no logging in this ticket: `Enqueue` is a library call whose
+callers (the M4 drainer, reconciler, promoter) own the hot-path logs, and
+the loops that warrant them arrive in 3.3+. Deferred (fifth time): the
+storetest template-database fast path.

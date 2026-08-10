@@ -286,13 +286,13 @@ Document the full protocol: task envelope schema (versioned; `run_id`, `step_id`
 - [x] Every crash-matrix cell has a stated recovery mechanism
 - [x] Envelope versioning and compatibility policy recorded
 
-#### 3.2 — Stream primitives: producer & group bootstrap
+#### 3.2 — Stream primitives: producer & group bootstrap ✅
 **Depends on:** 3.1, 2.1
 `internal/queue`: go-redis client wiring, envelope encode/decode with version field, `XADD` producer, idempotent consumer-group creation (race-safe `BUSYGROUP` handling), stream/PEL introspection helpers (`XLEN`, `XPENDING` summaries) for later metrics.
 **Done when:**
-- [ ] Integration tests: produce/consume round-trip; group creation race-safe under concurrency
-- [ ] Envelope rejects unknown versions with a typed error
-- [ ] Introspection helpers return depth + PEL counts used by M7 metrics
+- [x] Integration tests: produce/consume round-trip; group creation race-safe under concurrency
+- [x] Envelope rejects unknown versions with a typed error
+- [x] Introspection helpers return depth + PEL counts used by M7 metrics
 
 #### 3.3 — Consumer loop with ack/nack semantics
 **Depends on:** 3.2

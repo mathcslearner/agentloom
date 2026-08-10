@@ -30,6 +30,22 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Postgres.DSN != config.DefaultPostgresDSN {
 		t.Errorf("default Postgres DSN = %q, want %q", cfg.Postgres.DSN, config.DefaultPostgresDSN)
 	}
+	if cfg.Redis.Addr != config.DefaultRedisAddr {
+		t.Errorf("default Redis addr = %q, want %q", cfg.Redis.Addr, config.DefaultRedisAddr)
+	}
+}
+
+func TestLoadRedisAddrOverride(t *testing.T) {
+	t.Parallel()
+
+	const addr = "redis.internal:6380"
+	cfg, err := config.Load(lookupFrom(map[string]string{config.EnvRedisAddr: addr}))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	if cfg.Redis.Addr != addr {
+		t.Errorf("Redis addr = %q, want %q", cfg.Redis.Addr, addr)
+	}
 }
 
 func TestLoadPostgresDSNOverride(t *testing.T) {
