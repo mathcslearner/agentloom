@@ -867,3 +867,85 @@ time, but queued entries sit un-heartbeated behind the sequential handler
 — safe (reclaim duplicates die at the claim CAS) but a real batch-size ×
 lease-TTL tuning interaction. Deferred (sixth time): the storetest
 template-database fast path.
+
+### 3.4 — Lease heartbeat & reclaimer ✅
+
+The full lease protocol of ADR-005 on top of 3.3's consumer:
+heartbeater (`heartbeat.go`), reclaimer + poison path (`reclaim.go`),
+orphan-consumer janitor (`janitor.go`). `ConsumerConfig` grows `LeaseTTL`
+(30s), `HeartbeatInterval`, `ReclaimInterval`, `PoisonThreshold` (5),
+`PoisonHandler`, `JanitorInterval` (10m), `JanitorIdleThreshold` (1h);
+`config.QueueConfig` mirrors them (`AGENTLOOM_QUEUE_LEASE_TTL` etc.), with
+the existing keep-in-sync duplication (config ↛ queue import rule). The
+duplicated env-parsing in `applyEnv` was refactored into
+`applyPositiveInt`/`applyPositiveDuration` helpers while adding the six
+new variables.
+
+**Intervals derive from the TTL by default.** `HeartbeatInterval`/
+`ReclaimInterval` zero-values derive `LeaseTTL/3` and `LeaseTTL/2` (in
+both config and queue layers), so a TTL-only override preserves ADR-005's
+two-missed-beats-still-precede-expiry margin; explicit overrides remain
+possible. Jitter is ±20% recomputed per beat (`math/rand/v2`).
+
+**Duties run inside `Run`'s loop, not as goroutines.** The reclaimer and
+janitor are deadline-checked between blocking reads (the read's `BLOCK` is
+capped at the next due duty so an idle consumer's reclaim cadence is
+governed by `ReclaimInterval`, not `Block`). Deliberate: 3.3's contract is
+strictly serialized handler invocations per consumer, and a concurrent
+reclaim goroutine would either break that or hold freshly-claimed leases
+un-heartbeated behind a mutex. A consumer busy in a long handler simply
+doesn't reclaim — any idle consumer in the fleet does (leaderless recovery
+per ADR-005). The heartbeater is the one goroutine, started inside
+`process` around the handler call (so fresh and reclaimed deliveries are
+heartbeated identically), fully joined before the ack decision, and
+issuing `XCLAIM JUSTID` on a detached context so a handler draining
+through shutdown keeps its lease. Heartbeat failure is logged, never
+fatal — R1(b)'s prescribed behavior (the Postgres `claim_id` fence is the
+correctness layer).
+
+**Delivery counts after `XAUTOCLAIM` need a lookup.** go-redis's
+`XAutoClaim` returns messages without retry counts, so the reclaimer
+issues one pipelined per-entry `XPENDING` — exact regardless of what else
+the consumer holds, unlike a single range query, which interleaved entries
+could truncate. An ID missing from the lookup means the previous holder's
+completion acked it between claim and lookup (`XACK` needs no ownership) —
+skipped, work already done. The `XAUTOCLAIM` cursor persists across ticks
+(bounded per-tick batch = `Batch`, full PEL coverage over successive
+passes; pinned by a 10-entries-batch-4 sweep test).
+
+**Poison contract.** Checked on the reclaim path only (`count >
+PoisonThreshold`, before decode): diverted entries go to
+`PoisonHandler(ctx, PoisonMessage)` — `Values` always carries the raw
+entry and `Envelope` is nil when undecodable, which is how malformed
+envelopes (a poison source by design) finally get dead-lettered with
+contents preserved. Nil callback return acks (M5.4 wires dead-lettering
+before that ack); error or a contained panic leaves the entry pending for
+the next pass. No callback configured → log-and-leave-pending: visible
+spin, never a silent drop.
+
+**Janitor.** `XINFO CONSUMERS` → `XGROUP DELCONSUMER` for consumers that
+aren't self with zero pending entries and idle beyond the threshold. The
+zero-pending guard is the safety argument (DELCONSUMER drops PEL state);
+delete races between workers are benign no-ops.
+
+**Tests.** Unit: config defaulting/env parsing for the six new knobs,
+TTL-derivation ratios, jitter bounds (1000 samples in [0.8i, 1.2i]).
+Integration (all at tuned-down TTLs of 300–500ms, per the ADR-005
+convention — the Redis server's idle clock is the one clock consumed
+rather than injected): the flagship kill-mid-task test (A dies, B's
+reclaimer completes the entry within TTL + ε with `DeliveryCount` 2 —
+the reclaim-increments half of the JUSTID criterion); heartbeated 3.5×TTL
+task never reclaimed while a hungry reclaimer ticks next to it, with
+mid-task PEL sampling asserting owner stays A and count stays 1 (the
+JUSTID-doesn't-inflate half); the error→reclaim→error ladder walking an
+entry into the poison callback at exactly threshold+1 with the handler
+invoked exactly threshold times; malformed-envelope poison with raw
+contents preserved and nil `Envelope`; nil-callback poison staying
+visibly pending while the loop serves other entries; cursor sweep;
+janitor deletes the idle empty consumer but spares both the
+pending-holding one and itself.
+
+**Flake fixed during development:** the heartbeat test originally started
+consumers A and B together and B could win the fresh-delivery race; B now
+joins only after A holds the entry. Deferred (seventh time): the
+storetest template-database fast path.

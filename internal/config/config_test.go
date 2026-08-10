@@ -35,8 +35,14 @@ func TestLoadDefaults(t *testing.T) {
 		t.Errorf("default Redis addr = %q, want %q", cfg.Redis.Addr, config.DefaultRedisAddr)
 	}
 	wantQueue := config.QueueConfig{
-		ConsumerBatch: config.DefaultQueueConsumerBatch,
-		ConsumerBlock: config.DefaultQueueConsumerBlock,
+		ConsumerBatch:        config.DefaultQueueConsumerBatch,
+		ConsumerBlock:        config.DefaultQueueConsumerBlock,
+		LeaseTTL:             config.DefaultQueueLeaseTTL,
+		PoisonThreshold:      config.DefaultQueuePoisonThreshold,
+		JanitorInterval:      config.DefaultQueueJanitorInterval,
+		JanitorIdleThreshold: config.DefaultQueueJanitorIdleThreshold,
+		// HeartbeatInterval and ReclaimInterval default to zero: derived
+		// from LeaseTTL (TTL/3 and TTL/2) by internal/queue.
 	}
 	if cfg.Queue != wantQueue {
 		t.Errorf("default Queue config = %+v, want %+v", cfg.Queue, wantQueue)
@@ -73,13 +79,28 @@ func TestLoadQueueOverrides(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := config.Load(lookupFrom(map[string]string{
-		config.EnvQueueConsumerBatch: "32",
-		config.EnvQueueConsumerBlock: "250ms",
+		config.EnvQueueConsumerBatch:        "32",
+		config.EnvQueueConsumerBlock:        "250ms",
+		config.EnvQueueLeaseTTL:             "10s",
+		config.EnvQueueHeartbeatInterval:    "2s",
+		config.EnvQueueReclaimInterval:      "4s",
+		config.EnvQueuePoisonThreshold:      "3",
+		config.EnvQueueJanitorInterval:      "1m",
+		config.EnvQueueJanitorIdleThreshold: "30m",
 	}))
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
 	}
-	want := config.QueueConfig{ConsumerBatch: 32, ConsumerBlock: 250 * time.Millisecond}
+	want := config.QueueConfig{
+		ConsumerBatch:        32,
+		ConsumerBlock:        250 * time.Millisecond,
+		LeaseTTL:             10 * time.Second,
+		HeartbeatInterval:    2 * time.Second,
+		ReclaimInterval:      4 * time.Second,
+		PoisonThreshold:      3,
+		JanitorInterval:      time.Minute,
+		JanitorIdleThreshold: 30 * time.Minute,
+	}
 	if cfg.Queue != want {
 		t.Errorf("Queue config = %+v, want %+v", cfg.Queue, want)
 	}
@@ -150,6 +171,14 @@ func TestLoadInvalidValuesAreActionable(t *testing.T) {
 		{config.EnvQueueConsumerBatch, "0", []string{config.EnvQueueConsumerBatch, `"0"`, "positive integer"}},
 		{config.EnvQueueConsumerBlock, "soon", []string{config.EnvQueueConsumerBlock, `"soon"`, "positive Go duration"}},
 		{config.EnvQueueConsumerBlock, "-5s", []string{config.EnvQueueConsumerBlock, `"-5s"`, "positive Go duration"}},
+		{config.EnvQueueLeaseTTL, "0", []string{config.EnvQueueLeaseTTL, `"0"`, "positive Go duration"}},
+		{config.EnvQueueLeaseTTL, "forever", []string{config.EnvQueueLeaseTTL, `"forever"`, "positive Go duration"}},
+		{config.EnvQueueHeartbeatInterval, "-1s", []string{config.EnvQueueHeartbeatInterval, `"-1s"`, "positive Go duration"}},
+		{config.EnvQueueReclaimInterval, "later", []string{config.EnvQueueReclaimInterval, `"later"`, "positive Go duration"}},
+		{config.EnvQueuePoisonThreshold, "0", []string{config.EnvQueuePoisonThreshold, `"0"`, "positive integer"}},
+		{config.EnvQueuePoisonThreshold, "many", []string{config.EnvQueuePoisonThreshold, `"many"`, "positive integer"}},
+		{config.EnvQueueJanitorInterval, "0s", []string{config.EnvQueueJanitorInterval, `"0s"`, "positive Go duration"}},
+		{config.EnvQueueJanitorIdleThreshold, "never", []string{config.EnvQueueJanitorIdleThreshold, `"never"`, "positive Go duration"}},
 	}
 	for _, tc := range cases {
 		_, err := config.Load(lookupFrom(map[string]string{tc.key: tc.value}))

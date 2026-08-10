@@ -3,6 +3,7 @@ package queue_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,17 +16,64 @@ func TestConsumerConfigDefaults(t *testing.T) {
 
 	got := queue.ConsumerConfig{}.WithDefaults()
 	want := queue.ConsumerConfig{
-		Batch:        queue.DefaultConsumerBatch,
-		Block:        queue.DefaultConsumerBlock,
-		ErrorBackoff: queue.DefaultErrorBackoff,
+		Batch:                queue.DefaultConsumerBatch,
+		Block:                queue.DefaultConsumerBlock,
+		ErrorBackoff:         queue.DefaultErrorBackoff,
+		LeaseTTL:             queue.DefaultLeaseTTL,
+		HeartbeatInterval:    queue.DefaultLeaseTTL / 3,
+		ReclaimInterval:      queue.DefaultLeaseTTL / 2,
+		PoisonThreshold:      queue.DefaultPoisonThreshold,
+		JanitorInterval:      queue.DefaultJanitorInterval,
+		JanitorIdleThreshold: queue.DefaultJanitorIdleThreshold,
 	}
-	if got != want {
+	// PoisonHandler makes the struct non-comparable; DeepEqual treats the
+	// nil func fields on both sides as equal.
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("zero config with defaults = %+v, want %+v", got, want)
 	}
 
-	explicit := queue.ConsumerConfig{Batch: 4, Block: 100 * time.Millisecond, ErrorBackoff: 10 * time.Millisecond}
-	if got := explicit.WithDefaults(); got != explicit {
+	explicit := queue.ConsumerConfig{
+		Batch:                4,
+		Block:                100 * time.Millisecond,
+		ErrorBackoff:         10 * time.Millisecond,
+		LeaseTTL:             time.Minute,
+		HeartbeatInterval:    5 * time.Second,
+		ReclaimInterval:      7 * time.Second,
+		PoisonThreshold:      3,
+		JanitorInterval:      time.Minute,
+		JanitorIdleThreshold: 2 * time.Hour,
+	}
+	if got := explicit.WithDefaults(); !reflect.DeepEqual(got, explicit) {
 		t.Errorf("explicit config with defaults = %+v, want unchanged %+v", got, explicit)
+	}
+}
+
+// TestConsumerConfigDerivedIntervals pins the ADR-005 ratios: heartbeat and
+// reclaim intervals derive from LeaseTTL (TTL/3 and TTL/2) when unset, so a
+// TTL-only override keeps two missed beats preceding expiry.
+func TestConsumerConfigDerivedIntervals(t *testing.T) {
+	t.Parallel()
+
+	got := queue.ConsumerConfig{LeaseTTL: 900 * time.Millisecond}.WithDefaults()
+	if got.HeartbeatInterval != 300*time.Millisecond {
+		t.Errorf("HeartbeatInterval = %v, want LeaseTTL/3 = 300ms", got.HeartbeatInterval)
+	}
+	if got.ReclaimInterval != 450*time.Millisecond {
+		t.Errorf("ReclaimInterval = %v, want LeaseTTL/2 = 450ms", got.ReclaimInterval)
+	}
+}
+
+// TestHeartbeatJitterBounds pins the ±20% jitter contract from the ADR-005
+// tuning table.
+func TestHeartbeatJitterBounds(t *testing.T) {
+	t.Parallel()
+
+	const interval = time.Second
+	lo, hi := 800*time.Millisecond, 1200*time.Millisecond
+	for range 1000 {
+		if d := queue.HeartbeatJitter(interval); d < lo || d > hi {
+			t.Fatalf("jitter produced %v, want within [%v, %v]", d, lo, hi)
+		}
 	}
 }
 

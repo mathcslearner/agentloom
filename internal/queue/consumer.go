@@ -17,18 +17,32 @@ import (
 // carries the deployable knobs and mirrors these values (it cannot import
 // them: queue → obs/log → config would make that an import cycle).
 const (
-	// DefaultConsumerBatch is the XREADGROUP COUNT.
+	// DefaultConsumerBatch is the XREADGROUP COUNT, and also the per-tick
+	// XAUTOCLAIM batch bound.
 	DefaultConsumerBatch = 16
 	// DefaultConsumerBlock is the XREADGROUP BLOCK timeout.
 	DefaultConsumerBlock = 5 * time.Second
 	// DefaultErrorBackoff spaces read retries after a transport error so a
 	// Redis outage does not hot-spin the loop.
 	DefaultErrorBackoff = time.Second
+	// DefaultLeaseTTL is the XAUTOCLAIM min-idle threshold: a PEL entry
+	// idle longer than this is an expired lease.
+	DefaultLeaseTTL = 30 * time.Second
+	// DefaultPoisonThreshold is the delivery count above which a reclaimed
+	// entry is diverted to the poison callback instead of the handler.
+	DefaultPoisonThreshold = 5
+	// DefaultJanitorInterval is the period between orphan-consumer cleanup
+	// passes.
+	DefaultJanitorInterval = 10 * time.Minute
+	// DefaultJanitorIdleThreshold is how long a consumer with an empty PEL
+	// must be idle before the janitor deletes it.
+	DefaultJanitorIdleThreshold = time.Hour
 )
 
-// ackTimeout bounds the detached-context XACK issued after a handler
-// succeeds; see process.
-const ackTimeout = 5 * time.Second
+// detachedOpTimeout bounds Redis commands issued on a detached context —
+// the post-success XACK and lease heartbeats, both of which must outlive a
+// canceled loop context during shutdown drain.
+const detachedOpTimeout = 5 * time.Second
 
 // Delivery is one delivered task message as a Handler sees it.
 type Delivery struct {
@@ -64,6 +78,37 @@ type ConsumerConfig struct {
 	// for queue timing, where Redis-side blocking already binds the loop to
 	// real time.
 	ErrorBackoff time.Duration
+	// LeaseTTL is the XAUTOCLAIM min-idle threshold: how long a PEL entry
+	// may sit idle before any consumer may reclaim it. Idle time is
+	// tracked by the Redis server against its own clock, so expiry is
+	// immune to worker clock skew.
+	LeaseTTL time.Duration
+	// HeartbeatInterval is the base period between XCLAIM JUSTID
+	// heartbeats for the in-flight entry; each beat applies ±20% jitter so
+	// a fleet never aligns. Zero derives LeaseTTL/3, keeping ADR-005's
+	// two-missed-beats-still-precede-expiry margin when only the TTL is
+	// tuned.
+	HeartbeatInterval time.Duration
+	// ReclaimInterval is the period between XAUTOCLAIM passes. Zero
+	// derives LeaseTTL/2, bounding worst-case reclaim latency to
+	// TTL + TTL/2 per ADR-005.
+	ReclaimInterval time.Duration
+	// PoisonThreshold is the delivery count above which a reclaimed entry
+	// is diverted to the PoisonHandler instead of the Handler.
+	PoisonThreshold int
+	// PoisonHandler receives entries whose delivery count exceeded
+	// PoisonThreshold. Nil return acks the entry (M5.4 wires dead-lettering
+	// here); an error leaves it pending for the next reclaim pass. A nil
+	// PoisonHandler logs and leaves the entry pending — visible spin beats
+	// a silent drop, per ADR-005.
+	PoisonHandler PoisonHandler
+	// JanitorInterval is the period between orphan-consumer cleanup passes.
+	JanitorInterval time.Duration
+	// JanitorIdleThreshold is how long a consumer with an empty PEL must be
+	// idle before the janitor deletes it. Generous by design: cleanup is
+	// cosmetic-plus-memory, and a merely quiet consumer still heartbeats
+	// its entries, keeping them visibly pending and itself undeletable.
+	JanitorIdleThreshold time.Duration
 }
 
 func (c ConsumerConfig) withDefaults() ConsumerConfig {
@@ -75,6 +120,24 @@ func (c ConsumerConfig) withDefaults() ConsumerConfig {
 	}
 	if c.ErrorBackoff <= 0 {
 		c.ErrorBackoff = DefaultErrorBackoff
+	}
+	if c.LeaseTTL <= 0 {
+		c.LeaseTTL = DefaultLeaseTTL
+	}
+	if c.HeartbeatInterval <= 0 {
+		c.HeartbeatInterval = c.LeaseTTL / 3
+	}
+	if c.ReclaimInterval <= 0 {
+		c.ReclaimInterval = c.LeaseTTL / 2
+	}
+	if c.PoisonThreshold <= 0 {
+		c.PoisonThreshold = DefaultPoisonThreshold
+	}
+	if c.JanitorInterval <= 0 {
+		c.JanitorInterval = DefaultJanitorInterval
+	}
+	if c.JanitorIdleThreshold <= 0 {
+		c.JanitorIdleThreshold = DefaultJanitorIdleThreshold
 	}
 	return c
 }
@@ -88,6 +151,10 @@ type Consumer struct {
 	name    string
 	handler Handler
 	cfg     ConsumerConfig
+	// reclaimCursor is the XAUTOCLAIM scan position, persisted across
+	// ticks so a bounded per-tick batch still sweeps the whole PEL over
+	// successive passes. Only touched from Run's goroutine.
+	reclaimCursor string
 }
 
 // NewConsumer binds a handler to this queue under the given consumer name.
@@ -101,7 +168,7 @@ func (q *Queue) NewConsumer(name string, handler Handler, cfg ConsumerConfig) *C
 	if name == "" {
 		name = NewConsumerName()
 	}
-	return &Consumer{queue: q, name: name, handler: handler, cfg: cfg.withDefaults()}
+	return &Consumer{queue: q, name: name, handler: handler, cfg: cfg.withDefaults(), reclaimCursor: "0-0"}
 }
 
 // Name returns the consumer-group member name this consumer reads as.
@@ -112,6 +179,15 @@ func (c *Consumer) Name() string { return c.name }
 // any) has drained. It ensures the consumer group exists first; that is
 // the only error it returns. Read errors are logged and retried after
 // ErrorBackoff — a Redis outage stalls the loop, it does not kill it.
+//
+// Between reads, Run also performs the consumer's periodic duties: the
+// reclaim pass (XAUTOCLAIM of expired leases, every ReclaimInterval) and
+// the orphan-consumer janitor (every JanitorInterval). Duties share the
+// loop rather than running as goroutines so handler invocations stay
+// strictly serialized — one Consumer, one handler at a time — which is
+// what the drain-on-shutdown contract and 3.3's tests assume; a consumer
+// busy in a long handler simply doesn't reclaim, and any idle consumer in
+// the fleet does instead (recovery is leaderless per ADR-005).
 func (c *Consumer) Run(ctx context.Context) error {
 	if err := c.queue.EnsureGroup(ctx); err != nil {
 		return err
@@ -123,24 +199,51 @@ func (c *Consumer) Run(ctx context.Context) error {
 	logger := log.From(ctx)
 	logger.InfoContext(ctx, "queue consumer started",
 		slog.Int("batch", c.cfg.Batch),
-		slog.Duration("block", c.cfg.Block))
+		slog.Duration("block", c.cfg.Block),
+		slog.Duration("lease_ttl", c.cfg.LeaseTTL),
+		slog.Duration("heartbeat_interval", c.cfg.HeartbeatInterval),
+		slog.Duration("reclaim_interval", c.cfg.ReclaimInterval),
+		slog.Int("poison_threshold", c.cfg.PoisonThreshold))
 	defer logger.InfoContext(ctx, "queue consumer stopped")
 
+	nextReclaim := time.Now().Add(c.cfg.ReclaimInterval)
+	nextJanitor := time.Now().Add(c.cfg.JanitorInterval)
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		// Note for 3.4: every entry in a batch becomes a PEL lease at read
-		// time, but entries queue behind the sequential handler without
-		// heartbeats until their turn. A reclaim of a queued entry is safe
-		// (duplicates die at the claim CAS) but wasteful; batch size versus
-		// lease TTL is a real tuning interaction.
+		if !time.Now().Before(nextReclaim) {
+			c.reclaimTick(ctx)
+			nextReclaim = time.Now().Add(c.cfg.ReclaimInterval)
+		}
+		if !time.Now().Before(nextJanitor) {
+			c.janitorTick(ctx)
+			nextJanitor = time.Now().Add(c.cfg.JanitorInterval)
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		// Cap the blocking read at the next due duty so an idle consumer's
+		// reclaim cadence is governed by ReclaimInterval, not by Block.
+		block := c.cfg.Block
+		nextDuty := nextReclaim
+		if nextJanitor.Before(nextDuty) {
+			nextDuty = nextJanitor
+		}
+		if until := time.Until(nextDuty); until < block {
+			block = max(until, time.Millisecond)
+		}
+		// A full batch becomes PEL leases at read time, but entries queue
+		// behind the sequential handler without heartbeats until their
+		// turn. A reclaim of a queued entry is safe (duplicates die at the
+		// claim CAS) but wasteful; batch size versus lease TTL is a real
+		// tuning interaction.
 		streams, err := c.queue.client.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group:    c.queue.group,
 			Consumer: c.name,
 			Streams:  []string{c.queue.stream, ">"},
 			Count:    int64(c.cfg.Batch),
-			Block:    c.cfg.Block,
+			Block:    block,
 		}).Result()
 		switch {
 		case err == nil:
@@ -193,17 +296,26 @@ func (c *Consumer) process(ctx context.Context, msg redis.XMessage, deliveryCoun
 		log.RunID(env.RunID.String()),
 		log.StepID(env.StepID),
 		slog.String("reason", env.Reason))
-	if err := safeHandle(ctx, c.handler, Delivery{ID: msg.ID, Envelope: env, DeliveryCount: deliveryCount}); err != nil {
+	// The heartbeater keeps this entry's lease alive for the duration of
+	// the handler; it stops (and is fully joined) before the ack decision.
+	stopHeartbeat := c.startHeartbeat(ctx, msg.ID)
+	err = safeHandle(ctx, c.handler, Delivery{ID: msg.ID, Envelope: env, DeliveryCount: deliveryCount})
+	stopHeartbeat()
+	if err != nil {
 		log.From(ctx).WarnContext(ctx, "handler failed; entry stays pending for redelivery",
 			slog.Any("error", err))
 		return false
 	}
-	// The ACK runs on a detached context: a handler that succeeds while
-	// shutdown is in progress must still ack, or its completed work would
-	// redeliver for nothing.
-	ackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ackTimeout)
+	return c.ack(ctx, msg.ID)
+}
+
+// ack removes one entry from the PEL. It runs on a detached context: a
+// handler that succeeds while shutdown is in progress must still ack, or
+// its completed work would redeliver for nothing.
+func (c *Consumer) ack(ctx context.Context, entryID string) bool {
+	ackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedOpTimeout)
 	defer cancel()
-	if err := c.queue.client.XAck(ackCtx, c.queue.stream, c.queue.group, msg.ID).Err(); err != nil {
+	if err := c.queue.client.XAck(ackCtx, c.queue.stream, c.queue.group, entryID).Err(); err != nil {
 		log.From(ctx).ErrorContext(ctx, "XACK failed; entry will redeliver as a duplicate",
 			slog.Any("error", err))
 		return false

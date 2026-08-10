@@ -8,36 +8,76 @@ import (
 
 // Environment variables read by QueueConfig.
 const (
-	EnvQueueConsumerBatch = "AGENTLOOM_QUEUE_CONSUMER_BATCH"
-	EnvQueueConsumerBlock = "AGENTLOOM_QUEUE_CONSUMER_BLOCK"
+	EnvQueueConsumerBatch        = "AGENTLOOM_QUEUE_CONSUMER_BATCH"
+	EnvQueueConsumerBlock        = "AGENTLOOM_QUEUE_CONSUMER_BLOCK"
+	EnvQueueLeaseTTL             = "AGENTLOOM_QUEUE_LEASE_TTL"
+	EnvQueueHeartbeatInterval    = "AGENTLOOM_QUEUE_HEARTBEAT_INTERVAL"
+	EnvQueueReclaimInterval      = "AGENTLOOM_QUEUE_RECLAIM_INTERVAL"
+	EnvQueuePoisonThreshold      = "AGENTLOOM_QUEUE_POISON_THRESHOLD"
+	EnvQueueJanitorInterval      = "AGENTLOOM_QUEUE_JANITOR_INTERVAL"
+	EnvQueueJanitorIdleThreshold = "AGENTLOOM_QUEUE_JANITOR_IDLE_THRESHOLD"
 )
 
-// Defaults per ADR-005's tuning table (XREADGROUP COUNT / BLOCK). They
-// mirror internal/queue's zero-value fallbacks and must stay in sync with
-// them; the literals are duplicated here because config must not import
-// queue (queue logs through internal/obs/log, which imports this package).
+// Defaults per ADR-005's tuning table. They mirror internal/queue's
+// zero-value fallbacks and must stay in sync with them; the literals are
+// duplicated here because config must not import queue (queue logs through
+// internal/obs/log, which imports this package).
 const (
-	DefaultQueueConsumerBatch = 16
-	DefaultQueueConsumerBlock = 5 * time.Second
+	DefaultQueueConsumerBatch        = 16
+	DefaultQueueConsumerBlock        = 5 * time.Second
+	DefaultQueueLeaseTTL             = 30 * time.Second
+	DefaultQueuePoisonThreshold      = 5
+	DefaultQueueJanitorInterval      = 10 * time.Minute
+	DefaultQueueJanitorIdleThreshold = time.Hour
 )
 
-// QueueConfig configures the Redis Streams consumer loop (ADR-005,
-// internal/queue). The lease, reclaim, and promoter tunables join it with
-// tickets 3.4–3.5.
+// QueueConfig configures the Redis Streams consumer loop and lease
+// machinery (ADR-005, internal/queue). The delayed-delivery promoter
+// tunables join it with ticket 3.5.
 type QueueConfig struct {
 	// ConsumerBatch is the XREADGROUP COUNT: the maximum number of entries
-	// fetched per read. Must be positive.
+	// fetched per read, and also the per-tick XAUTOCLAIM batch bound. Must
+	// be positive.
 	ConsumerBatch int
 	// ConsumerBlock is the XREADGROUP BLOCK timeout: the upper bound on how
 	// long an idle consumer waits for work before re-checking for shutdown.
 	// Must be positive.
 	ConsumerBlock time.Duration
+	// LeaseTTL is the XAUTOCLAIM min-idle threshold: a PEL entry idle
+	// longer than this is an expired lease, eligible for reclaim by any
+	// consumer. Must be positive.
+	LeaseTTL time.Duration
+	// HeartbeatInterval is the base period between XCLAIM JUSTID heartbeats
+	// for an in-flight entry (±20% jitter is applied per beat). Zero means
+	// derived: LeaseTTL/3, so two consecutive missed beats still precede
+	// expiry — the ratio survives a LeaseTTL-only override. Must be
+	// positive when set explicitly.
+	HeartbeatInterval time.Duration
+	// ReclaimInterval is the period between XAUTOCLAIM passes. Zero means
+	// derived: LeaseTTL/2, bounding worst-case reclaim latency to
+	// TTL + TTL/2 per ADR-005. Must be positive when set explicitly.
+	ReclaimInterval time.Duration
+	// PoisonThreshold is the delivery count above which a reclaimed entry
+	// is diverted to the poison callback instead of the handler. Must be
+	// positive.
+	PoisonThreshold int
+	// JanitorInterval is the period between orphan-consumer cleanup passes.
+	// Must be positive.
+	JanitorInterval time.Duration
+	// JanitorIdleThreshold is how long a consumer with an empty PEL must be
+	// idle before the janitor deletes it. Generous by design (hours, not
+	// lease TTLs) — cleanup is cosmetic-plus-memory. Must be positive.
+	JanitorIdleThreshold time.Duration
 }
 
 func defaultQueueConfig() QueueConfig {
 	return QueueConfig{
-		ConsumerBatch: DefaultQueueConsumerBatch,
-		ConsumerBlock: DefaultQueueConsumerBlock,
+		ConsumerBatch:        DefaultQueueConsumerBatch,
+		ConsumerBlock:        DefaultQueueConsumerBlock,
+		LeaseTTL:             DefaultQueueLeaseTTL,
+		PoisonThreshold:      DefaultQueuePoisonThreshold,
+		JanitorInterval:      DefaultQueueJanitorInterval,
+		JanitorIdleThreshold: DefaultQueueJanitorIdleThreshold,
 	}
 }
 
@@ -45,19 +85,42 @@ func defaultQueueConfig() QueueConfig {
 // invalid variable.
 func (c *QueueConfig) applyEnv(fn LookupFunc) []error {
 	var errs []error
-	if raw, ok := lookup(fn, EnvQueueConsumerBatch); ok {
-		if n, err := strconv.Atoi(raw); err != nil || n <= 0 {
-			errs = append(errs, fmt.Errorf("%s: invalid value %q (want a positive integer)", EnvQueueConsumerBatch, raw))
-		} else {
-			c.ConsumerBatch = n
-		}
+	errs = applyPositiveInt(errs, fn, EnvQueueConsumerBatch, &c.ConsumerBatch)
+	errs = applyPositiveDuration(errs, fn, EnvQueueConsumerBlock, &c.ConsumerBlock)
+	errs = applyPositiveDuration(errs, fn, EnvQueueLeaseTTL, &c.LeaseTTL)
+	errs = applyPositiveDuration(errs, fn, EnvQueueHeartbeatInterval, &c.HeartbeatInterval)
+	errs = applyPositiveDuration(errs, fn, EnvQueueReclaimInterval, &c.ReclaimInterval)
+	errs = applyPositiveInt(errs, fn, EnvQueuePoisonThreshold, &c.PoisonThreshold)
+	errs = applyPositiveDuration(errs, fn, EnvQueueJanitorInterval, &c.JanitorInterval)
+	errs = applyPositiveDuration(errs, fn, EnvQueueJanitorIdleThreshold, &c.JanitorIdleThreshold)
+	return errs
+}
+
+// applyPositiveInt overrides *dst from the environment when the variable is
+// set, appending an error for a non-positive or unparseable value.
+func applyPositiveInt(errs []error, fn LookupFunc, key string, dst *int) []error {
+	raw, ok := lookup(fn, key)
+	if !ok {
+		return errs
 	}
-	if raw, ok := lookup(fn, EnvQueueConsumerBlock); ok {
-		if d, err := time.ParseDuration(raw); err != nil || d <= 0 {
-			errs = append(errs, fmt.Errorf("%s: invalid value %q (want a positive Go duration, e.g. 5s)", EnvQueueConsumerBlock, raw))
-		} else {
-			c.ConsumerBlock = d
-		}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return append(errs, fmt.Errorf("%s: invalid value %q (want a positive integer)", key, raw))
 	}
+	*dst = n
+	return errs
+}
+
+// applyPositiveDuration is applyPositiveInt for Go durations.
+func applyPositiveDuration(errs []error, fn LookupFunc, key string, dst *time.Duration) []error {
+	raw, ok := lookup(fn, key)
+	if !ok {
+		return errs
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return append(errs, fmt.Errorf("%s: invalid value %q (want a positive Go duration, e.g. 5s)", key, raw))
+	}
+	*dst = d
 	return errs
 }

@@ -20,3 +20,6 @@ func SafeHandle(ctx context.Context, h Handler, d Delivery) error {
 
 // WithDefaults exposes ConsumerConfig defaulting for unit tests.
 func (c ConsumerConfig) WithDefaults() ConsumerConfig { return c.withDefaults() }
+
+// HeartbeatJitter exposes the heartbeat jitter function for unit tests.
+var HeartbeatJitter = heartbeatJitter

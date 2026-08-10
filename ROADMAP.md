@@ -302,13 +302,13 @@ Blocking `XREADGROUP` batch loop feeding a per-message handler; explicit ACK on 
 - [x] Handler panic is contained (message survives for redelivery; consumer loop lives)
 - [x] Batch size/block timeout configurable; shutdown drains in-flight handler
 
-#### 3.4 — Lease heartbeat & reclaimer
+#### 3.4 — Lease heartbeat & reclaimer ✅
 **Depends on:** 3.3
 Heartbeater goroutine per in-flight task: periodic `XCLAIM JUSTID` to self with jitter, stops on completion/cancel. Reclaimer loop in every consumer: `XAUTOCLAIM` with min-idle = lease TTL, cursor handling; reclaimed messages re-enter the local handler path; delivery count > threshold flags poison (handed to a callback — DLQ wiring lands in M5.4). Periodic orphan-consumer janitor (`XGROUP DELCONSUMER` for dead consumers with empty PEL).
 **Done when:**
-- [ ] Integration: consumer A killed mid-task → B reclaims within TTL + ε and completes
-- [ ] Long task with heartbeat is never reclaimed across 3× TTL
-- [ ] Heartbeat uses JUSTID (delivery count unchanged); reclaim increments it (asserted)
+- [x] Integration: consumer A killed mid-task → B reclaims within TTL + ε and completes
+- [x] Long task with heartbeat is never reclaimed across 3× TTL
+- [x] Heartbeat uses JUSTID (delivery count unchanged); reclaim increments it (asserted)
 
 #### 3.5 — Delayed delivery (ZSET promoter)
 **Depends on:** 3.2
