@@ -1250,3 +1250,74 @@ retryable/permanent. Executor-level structured logging is minimal
 (`fail_n_times` logs its deliberate failures); the hot-path logging duty
 lands with the worker pipeline (4.2/4.3) where run/step/attempt fields
 get stamped.
+
+### 4.2 — Worker skeleton: consume → claim ✅
+
+**What shipped.** The first deployable worker. `internal/engine` (the
+ADR-002 execution pipeline's home): `Engine` (store + executor registry +
+injectable clock + `worker_id`) whose `Handle` is a `queue.Handler`
+implementing the claim path — one `WithTx` containing exactly
+`store.ClaimStep`, then ADR-005's ACK discipline applied to the outcome
+via a pure, unit-tested classifier (`classifyClaimFailure`). On a won
+claim the executor runs with a `StepContext` built from the claimed
+`run_steps` row (raw config, nil input — rendering is M6 — and the
+durable attempt number); the lease heartbeater needs no new wiring
+because 3.4's consumer already beats around every handler invocation.
+`cmd/worker`: env-only config, JSON logs, store/Redis wiring on the
+ADR-005 default stream+group, `exec.Builtins()`, one consumer whose name
+doubles as `worker_id`, SIGINT/SIGTERM graceful drain, and health
+logging (startup/stop lines plus a periodic liveness line with stream
+depth and PEL size, `AGENTLOOM_WORKER_HEALTH_INTERVAL`, default 1m —
+new `config.WorkerConfig`).
+
+**The ACK decision table as implemented.** Claim won → execute → ACK.
+Wrong-status from a terminal state → ACK-and-drop (duplicate of finished
+work, crash cell W4). Wrong-status `running` on a *fresh* delivery
+(delivery count 1) → ACK-and-drop (concurrent duplicate; the holder's own
+entry covers the crash case). Wrong-status `running` on a *reclaimed*
+delivery → **no ACK**: lease-expiry takeover (`running → ready` clearing
+`claim_id`) is ticket 4.5's store transition, so until it lands the entry
+stays pending and rises visibly toward the poison path — never silently
+dropped. `ErrNotFound` → ACK-and-drop (dangling reference). Anything else
+(unexpected status/reason, transport failure) → no ACK, redeliver.
+
+**Non-obvious decisions.**
+- **ACK-after-claim-decided is a deliberate v0 policy.** With no
+  completion transaction yet, a claimed step stays `running` and the
+  executor's result (success *or* failure) is only logged — redelivery
+  could only bounce off the running-status CAS, so retrying buys
+  nothing. 4.3 replaces this tail wholesale and moves the ACK after the
+  completion tx commits. Executor-registry misses and config-decode
+  failures are likewise log-and-drop (version skew/corrupt state —
+  permanent, per 4.1's reasoning).
+- The engine is transport-agnostic: it sees `queue.Delivery`, never
+  Redis. The fresh-vs-reclaim distinction rides `DeliveryCount` (1 =
+  fresh by XREADGROUP `>` semantics), which ADR-005 already fixed as the
+  duplicate-vs-crash discriminator.
+- The `config.QueueConfig → queue.ConsumerConfig` mapping lives in
+  `cmd/worker` (config cannot import queue — documented cycle);
+  `PoisonHandler` stays nil on purpose (3.4's visible-spin default until
+  M5.4 wires dead-lettering). One consumer per process; parallelism is
+  worker replicas (the M19 lever is sharding, not in-process fan-out).
+
+**Tests.** Unit: the classifier's full decision table (including the
+fresh/reclaimed running split), `New` validation, config mapping
+(pinning that `PoisonHandler`/`PhaseHook` stay nil), `WorkerConfig`
+loading. Integration (first suite composing both harnesses —
+`storetest` Postgres + `queuetest` Redis): 8 duplicate envelopes of one
+ready step consumed by two engine-backed consumers (`Batch: 1` to spread
+entries) → exactly one attempt row, one `step_claimed` event, one
+executor invocation (counting noop-typed executor — the registry being
+instance-based made the probe trivial), everything acked to quiescence;
+duplicate of an out-of-band-completed step → dropped with zero side
+effects (output compared semantically — Postgres jsonb does not preserve
+whitespace); dangling run id → dropped, loop healthy; `cmd/worker`
+full lifecycle in-process against the compose stack (start, health line,
+cancel → clean nil return, stop logs).
+
+**Deferred.** Reclaimed-`running` deliveries spin (visibly) until 4.5's
+takeover transition; the claimed-but-stuck-`running` steps this ticket
+can strand are exactly what 4.4's reconciler and 4.3's completion tx
+exist to close. The start/stop test uses the global `steps:ready` stream
+(names are not yet configurable) — fine against a dev stack, worth a
+knob if it ever bites CI.

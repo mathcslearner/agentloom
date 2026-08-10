@@ -27,6 +27,7 @@ type Config struct {
 	Postgres PostgresConfig
 	Redis    RedisConfig
 	Queue    QueueConfig
+	Worker   WorkerConfig
 }
 
 // Load builds a Config by applying environment overrides from lookup on top
@@ -38,12 +39,14 @@ func Load(lookup LookupFunc) (Config, error) {
 		Postgres: defaultPostgresConfig(),
 		Redis:    defaultRedisConfig(),
 		Queue:    defaultQueueConfig(),
+		Worker:   defaultWorkerConfig(),
 	}
 	var errs []error
 	errs = append(errs, cfg.Log.applyEnv(lookup)...)
 	errs = append(errs, cfg.Postgres.applyEnv(lookup)...)
 	errs = append(errs, cfg.Redis.applyEnv(lookup)...)
 	errs = append(errs, cfg.Queue.applyEnv(lookup)...)
+	errs = append(errs, cfg.Worker.applyEnv(lookup)...)
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration:\n%w", err)
 	}

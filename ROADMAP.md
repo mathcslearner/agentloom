@@ -355,13 +355,13 @@ Two protocol gaps found by the M3 completion audit. (a) Retention: `XACK` clears
 - [x] `StepContext` exposes step config, rendered input, attempt number, logger
 - [x] All four test executors behave per spec in unit tests
 
-#### 4.2 — Worker skeleton: consume → claim
+#### 4.2 — Worker skeleton: consume → claim ✅
 **Depends on:** 4.1, 3.4, 2.6
 `cmd/worker`: config, queue consumer wiring, and the claim path — on message receipt, attempt the Postgres CAS `ready → running` (fresh `claim_id`, new attempt row, heartbeater started). Already-terminal/already-claimed/unknown steps: ACK and drop (this is what makes at-least-once delivery safe). Structured logs on every branch.
 **Done when:**
-- [ ] Two workers racing one message/step: exactly one executes (integration test)
-- [ ] Duplicate delivery of a completed step is ACKed-and-dropped without side effects
-- [ ] Worker starts/stops cleanly under compose with health logging
+- [x] Two workers racing one message/step: exactly one executes (integration test)
+- [x] Duplicate delivery of a completed step is ACKed-and-dropped without side effects
+- [x] Worker starts/stops cleanly under compose with health logging
 
 #### 4.3 — Execute & complete pipeline (readiness fan-out)
 **Depends on:** 4.2, 1.5

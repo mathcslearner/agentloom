@@ -49,6 +49,25 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Queue != wantQueue {
 		t.Errorf("default Queue config = %+v, want %+v", cfg.Queue, wantQueue)
 	}
+	wantWorker := config.WorkerConfig{HealthInterval: config.DefaultWorkerHealthInterval}
+	if cfg.Worker != wantWorker {
+		t.Errorf("default Worker config = %+v, want %+v", cfg.Worker, wantWorker)
+	}
+}
+
+func TestLoadWorkerOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(lookupFrom(map[string]string{
+		config.EnvWorkerHealthInterval: "15s",
+	}))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	want := config.WorkerConfig{HealthInterval: 15 * time.Second}
+	if cfg.Worker != want {
+		t.Errorf("Worker config = %+v, want %+v", cfg.Worker, want)
+	}
 }
 
 func TestLoadRedisAddrOverride(t *testing.T) {
@@ -189,6 +208,8 @@ func TestLoadInvalidValuesAreActionable(t *testing.T) {
 		{config.EnvQueuePromoterTick, "often", []string{config.EnvQueuePromoterTick, `"often"`, "positive Go duration"}},
 		{config.EnvQueueTrimInterval, "0s", []string{config.EnvQueueTrimInterval, `"0s"`, "positive Go duration"}},
 		{config.EnvQueueTrimInterval, "rarely", []string{config.EnvQueueTrimInterval, `"rarely"`, "positive Go duration"}},
+		{config.EnvWorkerHealthInterval, "0s", []string{config.EnvWorkerHealthInterval, `"0s"`, "positive Go duration"}},
+		{config.EnvWorkerHealthInterval, "hourly", []string{config.EnvWorkerHealthInterval, `"hourly"`, "positive Go duration"}},
 	}
 	for _, tc := range cases {
 		_, err := config.Load(lookupFrom(map[string]string{tc.key: tc.value}))
