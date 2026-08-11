@@ -25,8 +25,7 @@ type CreateOutboxTaskParams struct {
 }
 
 // Transactional Postgres→Redis dispatch buffer (ADR-002/004). Drained rows
-// are deleted — row exists ⇔ dispatch pending. The FOR UPDATE SKIP LOCKED
-// drain query arrives with the queue layer (M4).
+// are deleted — row exists ⇔ dispatch pending.
 func (q *Queries) CreateOutboxTask(ctx context.Context, arg CreateOutboxTaskParams) (TaskOutbox, error) {
 	row := q.db.QueryRow(ctx, createOutboxTask, arg.RunID, arg.StepID, arg.Reason)
 	var i TaskOutbox
@@ -58,6 +57,40 @@ SELECT id, run_id, step_id, reason, created_at FROM task_outbox ORDER BY id LIMI
 
 func (q *Queries) ListOutboxTasks(ctx context.Context, limit int32) ([]TaskOutbox, error) {
 	rows, err := q.db.Query(ctx, listOutboxTasks, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TaskOutbox
+	for rows.Next() {
+		var i TaskOutbox
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.StepID,
+			&i.Reason,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOutboxTasksForDrain = `-- name: ListOutboxTasksForDrain :many
+SELECT id, run_id, step_id, reason, created_at FROM task_outbox ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED
+`
+
+// Drain batch (ticket 4.4): SKIP LOCKED partitions concurrent drainers
+// onto disjoint row sets, so a row is dispatched by exactly one drainer
+// unless that drainer's transaction rolls back — in which case the retry
+// is a duplicate the claim CAS absorbs (ADR-005 P1).
+func (q *Queries) ListOutboxTasksForDrain(ctx context.Context, limit int32) ([]TaskOutbox, error) {
+	rows, err := q.db.Query(ctx, listOutboxTasksForDrain, limit)
 	if err != nil {
 		return nil, err
 	}

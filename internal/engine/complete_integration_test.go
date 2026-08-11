@@ -24,10 +24,9 @@ import (
 )
 
 // Ticket 4.3's integration suite: full execute-and-complete runs across
-// two workers. The outbox is drained by a test-local loop (List → Enqueue
-// → Delete) standing in for ticket 4.4's dispatcher; deleting only after
-// a successful enqueue makes it at-least-once, and the claim CAS
-// ACK-drops any duplicates that produces — the system's own contract.
+// two workers. Since ticket 4.4 the outbox is drained by the production
+// Dispatcher (SKIP LOCKED batch → XADD → delete, one transaction), wired
+// to the workers' completion nudge exactly as cmd/worker wires it.
 
 // mustDecode decodes a definition fixture, failing the test on error.
 func mustDecode(t *testing.T, defJSON string) *dag.Definition {
@@ -46,59 +45,42 @@ func workerConfig() queue.ConsumerConfig {
 }
 
 // newWorker builds an engine over the full builtin registry.
-func newWorker(t *testing.T, s *store.Store, workerID string) *engine.Engine {
+func newWorker(t *testing.T, s *store.Store, workerID string, opts ...engine.Option) *engine.Engine {
 	t.Helper()
-	e, err := engine.New(s, exec.Builtins(), workerID)
+	e, err := engine.New(s, exec.Builtins(), workerID, opts...)
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
 	}
 	return e
 }
 
-// spawnWorkers runs two builtin-registry workers against the harness.
-func spawnWorkers(t *testing.T, s *store.Store, h *queuetest.Harness) {
+// spawnWorkers runs two builtin-registry workers against the harness,
+// nudging the dispatcher on completion the way cmd/worker does.
+func spawnWorkers(t *testing.T, s *store.Store, h *queuetest.Harness, d *engine.Dispatcher) {
 	t.Helper()
-	h.Spawn("worker-a", newWorker(t, s, "worker-a").Handle, workerConfig())
-	h.Spawn("worker-b", newWorker(t, s, "worker-b").Handle, workerConfig())
+	h.Spawn("worker-a", newWorker(t, s, "worker-a", engine.WithDispatchNudge(d.Nudge)).Handle, workerConfig())
+	h.Spawn("worker-b", newWorker(t, s, "worker-b", engine.WithDispatchNudge(d.Nudge)).Handle, workerConfig())
 }
 
-// drainOutbox stands in for the 4.4 dispatcher: poll task_outbox, enqueue
-// each row, delete what was enqueued. Runs until test cleanup; errors are
-// swallowed (retried next tick) so shutdown races stay quiet.
-func drainOutbox(t *testing.T, s *store.Store, h *queuetest.Harness) {
+// startDispatcher runs a production Dispatcher (ticket 4.4) over the
+// given producer until test cleanup. The interval is short because it is
+// also the recovery cadence for nudges that raced shutdown.
+func startDispatcher(t *testing.T, s *store.Store, enq engine.Enqueuer) *engine.Dispatcher {
 	t.Helper()
+	d, err := engine.NewDispatcher(s, enq, engine.DispatcherConfig{
+		Interval: 10 * time.Millisecond, Batch: 16,
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	t.Cleanup(func() { cancel(); <-done })
 	go func() {
 		defer close(done)
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
-			tasks, err := s.Outbox().List(ctx, 100)
-			if err != nil || len(tasks) == 0 {
-				continue
-			}
-			ids := make([]int64, 0, len(tasks))
-			for _, task := range tasks {
-				_, err := h.Queue().Enqueue(ctx, queue.Envelope{
-					RunID: task.RunID, StepID: task.StepID, Reason: task.Reason,
-				})
-				if err != nil {
-					continue
-				}
-				ids = append(ids, task.ID)
-			}
-			if len(ids) > 0 {
-				s.Outbox().Delete(ctx, ids) //nolint:errcheck // re-drained rows dedupe at claim
-			}
-		}
+		d.Run(ctx)
 	}()
+	return d
 }
 
 // waitRun polls until the run reaches want, failing on timeout or on a
@@ -233,8 +215,8 @@ func TestLinearRunCompletes(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	s, h, runID := setup(t, linearDef)
-	spawnWorkers(t, s, h)
-	drainOutbox(t, s, h)
+	d := startDispatcher(t, s, h.Queue())
+	spawnWorkers(t, s, h, d)
 
 	run := waitRun(t, s, runID, store.RunStatusSucceeded)
 	h.WaitQuiescent(ctx)
@@ -298,8 +280,8 @@ func TestFanOutFanInCompletes(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	s, h, runID := setup(t, fanoutDef)
-	spawnWorkers(t, s, h)
-	drainOutbox(t, s, h)
+	d := startDispatcher(t, s, h.Queue())
+	spawnWorkers(t, s, h, d)
 
 	run := waitRun(t, s, runID, store.RunStatusSucceeded)
 	h.WaitQuiescent(ctx)
@@ -379,8 +361,8 @@ func TestConditionalBranchWithSkipPropagation(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	s, h, runID := setup(t, branchDef)
-	spawnWorkers(t, s, h)
-	drainOutbox(t, s, h)
+	d := startDispatcher(t, s, h.Queue())
+	spawnWorkers(t, s, h, d)
 
 	run := waitRun(t, s, runID, store.RunStatusSucceeded)
 	h.WaitQuiescent(ctx)
@@ -459,8 +441,8 @@ func TestJoinAnyAbsorbsLateFiring(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	s, h, runID := setup(t, joinAnyDef)
-	spawnWorkers(t, s, h)
-	drainOutbox(t, s, h)
+	d := startDispatcher(t, s, h.Queue())
+	spawnWorkers(t, s, h, d)
 
 	waitRun(t, s, runID, store.RunStatusSucceeded)
 	h.WaitQuiescent(ctx)
@@ -508,8 +490,8 @@ func TestExecutorFailureFailsStepAndRun(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	s, h, runID := setup(t, failDef)
-	spawnWorkers(t, s, h)
-	drainOutbox(t, s, h)
+	d := startDispatcher(t, s, h.Queue())
+	spawnWorkers(t, s, h, d)
 
 	run := waitRun(t, s, runID, store.RunStatusFailed)
 	h.WaitQuiescent(ctx)

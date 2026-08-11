@@ -1408,3 +1408,86 @@ reclaimed-`running` no-ACK path until 4.5's takeover lands (4.2's known
 spin, unchanged). Failure policy, retries, and DLQ are M5;
 `docs/architecture.md`'s realized execution walkthrough is deferred to
 the milestone exit (4.7).
+
+### 4.4 — Outbox dispatcher & reconciler ✅
+
+**What shipped.** The two dispatch duties every worker runs (ADR-002 —
+no central scheduler). `internal/engine/dispatch.go`: `Dispatcher`, the
+outbox drain loop — one transaction per pass doing exactly ADR-005's
+producer sequence: `Outbox().ListForDrain` (new repo method, `SELECT …
+ORDER BY id LIMIT n FOR UPDATE SKIP LOCKED`, guarded by `ErrNoTx` outside
+`WithTx`) → `XADD` per row via the `Enqueuer` seam → `Delete` of the rows
+that reached the stream → commit. `Run` waits on a ticker (the latency
+backstop) or the cap-1 coalescing `Nudge` channel, now wired into 4.3's
+`WithDispatchNudge` seam, and drains to empty on every wake; errors are
+logged and retried next wake, never fatal. `internal/engine/reconcile.go`:
+`Reconciler`, a jittered (±20%) periodic sweep in one transaction under a
+fleet-wide `pg_try_advisory_xact_lock` — losers skip (`Skipped`), so N
+workers cost one sweep per interval. The sweep re-outboxes steps stuck in
+`ready` past `ReadyStale` that have no pending outbox row (new reason
+`reconcile_ready`, healing ADR-005 P2/R1(a)), then flags — warn/error
+logs plus a `ReconcileResult` — stale-`running` steps past `RunningStale`
+(R1(c) dead-worker suspects) and runs `running` with no live step (an
+impossible state). A sweep that wrote rows fires the dispatcher's nudge.
+Store side: `internal/store/reconcile.go` (`TryReconcileLock`,
+`ListStaleReadySteps` with the anti-join, `ListStaleRunningSteps`,
+`ListStalledRuns` — all requiring the WithTx Querier, like transitions)
+over a new `queries/reconcile.sql`. `cmd/worker` starts both loops
+(waited on at shutdown) with new `WorkerConfig` knobs:
+`AGENTLOOM_WORKER_DISPATCH_INTERVAL`/`_BATCH` (1s/64) and
+`AGENTLOOM_WORKER_RECONCILE_INTERVAL`/`_READY_STALE`/`_RUNNING_STALE`/
+`_LIMIT` (30s/1m/5m/256).
+
+**Non-obvious decisions.**
+- **Partial-batch commit on enqueue failure.** An `Enqueue` error
+  mid-batch stops the pass but still commits the deletes of rows whose
+  XADD landed — rolling back would re-dispatch them all. The failed row
+  itself is kept: whether its XADD landed is unknown (the P1 window), so
+  it re-drains next pass and any duplicate ACK-drops at claim. A full
+  rollback (crash) leaves every XADDed row in place — same P1 shape.
+- **The reconciler heals via outbox rows, not direct XADD** — one
+  dispatch path; the drainer stays the only component XADDing for
+  dispatch. Re-outboxing appends no event and touches no step row:
+  dispatch bookkeeping, not a transition (`ReadyStep`'s documented
+  contract).
+- **Idempotency is the anti-join, rate-bounding is layered.** A stuck
+  step with a pending outbox row never re-qualifies, so repeated sweeps
+  are no-ops until a drain happens; after that it costs at most one
+  duplicate per threshold period. Advisory lock (one sweep fleet-wide) +
+  jitter + per-scan `Limit` (hits are logged — no silent cap) complete
+  the no-thundering-herd story.
+- **Stale-`running` steps are flagged, not healed.** The heal needs
+  4.5's `running → ready` takeover CAS; until then a re-outbox would be
+  ACK-dropped as a fresh-delivery duplicate by 4.2's classifier. ADR-005's
+  R1(c) cell and tuning table amended accordingly (reason vocabulary too:
+  `reconcile_ready` is now v1); ROADMAP 4.5 records the upgrade.
+- **The 4.3 integration suite now runs the production dispatcher** —
+  `drainOutbox` (test-local List → Enqueue → Delete) replaced by
+  `startDispatcher` + nudge-wired workers, so every existing fixture
+  exercises the real drain path with contracts unchanged.
+
+**Tests.** Unit: constructor validation for both types, `Nudge`
+never-blocks under concurrency, jitter bounds, new `WorkerConfig`
+fields (defaults/overrides/invalids). Store integration: `ListForDrain`
+and all reconcile reads reject non-tx Queriers; anti-join semantics
+(pending row → invisible; drained → visible past threshold only);
+stale-running rows carry the holder's claim ID; stalled-run flag on
+fabricated corruption (raw UPDATE); advisory-lock mutual exclusion and
+release-on-commit. Engine integration: 4 concurrent drainers over 12
+independent steps → exactly one stream entry per step, outbox empty
+(SKIP LOCKED partitioning); P1 injected post-XADD failure → row kept,
+re-drain produces the duplicate pair, two workers → exactly one
+execution, duplicate ACK-dropped, run succeeds; the headline heal —
+lost XADD after commit (`lostEnqueuer`) → step stuck ready with nothing
+anywhere → sweep before threshold does nothing, past threshold
+re-outboxes exactly once with `reconcile_ready` (second sweep no-op) →
+real dispatcher + workers complete the run with one `step_ready` per
+step and the healed reason visible on the wire; sweep under a held lock
+→ `Skipped` with no work, heals after release; flags mutate nothing
+(step keeps status + claim, corrupt run keeps its status, no rows
+written).
+
+**Deferred.** The stale-`running` takeover heal (4.5, recorded in
+ROADMAP); reconciler/dispatcher metrics — sweep counts, drain latency
+from `enqueued_at_ms` — are M7; delayed-set reconciliation has no v1
+tenant (M5.2).

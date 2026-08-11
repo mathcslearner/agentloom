@@ -49,7 +49,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Queue != wantQueue {
 		t.Errorf("default Queue config = %+v, want %+v", cfg.Queue, wantQueue)
 	}
-	wantWorker := config.WorkerConfig{HealthInterval: config.DefaultWorkerHealthInterval}
+	wantWorker := config.WorkerConfig{
+		HealthInterval:        config.DefaultWorkerHealthInterval,
+		DispatchInterval:      config.DefaultWorkerDispatchInterval,
+		DispatchBatch:         config.DefaultWorkerDispatchBatch,
+		ReconcileInterval:     config.DefaultWorkerReconcileInterval,
+		ReconcileReadyStale:   config.DefaultWorkerReconcileReadyStale,
+		ReconcileRunningStale: config.DefaultWorkerReconcileRunningStale,
+		ReconcileLimit:        config.DefaultWorkerReconcileLimit,
+	}
 	if cfg.Worker != wantWorker {
 		t.Errorf("default Worker config = %+v, want %+v", cfg.Worker, wantWorker)
 	}
@@ -59,14 +67,50 @@ func TestLoadWorkerOverrides(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := config.Load(lookupFrom(map[string]string{
-		config.EnvWorkerHealthInterval: "15s",
+		config.EnvWorkerHealthInterval:        "15s",
+		config.EnvWorkerDispatchInterval:      "200ms",
+		config.EnvWorkerDispatchBatch:         "16",
+		config.EnvWorkerReconcileInterval:     "10s",
+		config.EnvWorkerReconcileReadyStale:   "20s",
+		config.EnvWorkerReconcileRunningStale: "2m",
+		config.EnvWorkerReconcileLimit:        "50",
 	}))
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
 	}
-	want := config.WorkerConfig{HealthInterval: 15 * time.Second}
+	want := config.WorkerConfig{
+		HealthInterval:        15 * time.Second,
+		DispatchInterval:      200 * time.Millisecond,
+		DispatchBatch:         16,
+		ReconcileInterval:     10 * time.Second,
+		ReconcileReadyStale:   20 * time.Second,
+		ReconcileRunningStale: 2 * time.Minute,
+		ReconcileLimit:        50,
+	}
 	if cfg.Worker != want {
 		t.Errorf("Worker config = %+v, want %+v", cfg.Worker, want)
+	}
+}
+
+func TestLoadWorkerInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.Load(lookupFrom(map[string]string{
+		config.EnvWorkerDispatchBatch:    "0",
+		config.EnvWorkerReconcileLimit:   "-3",
+		config.EnvWorkerDispatchInterval: "soon",
+	}))
+	if err == nil {
+		t.Fatal("Load with invalid worker values: want error, got nil")
+	}
+	for _, env := range []string{
+		config.EnvWorkerDispatchBatch,
+		config.EnvWorkerReconcileLimit,
+		config.EnvWorkerDispatchInterval,
+	} {
+		if !strings.Contains(err.Error(), env) {
+			t.Errorf("error %q does not mention %s", err, env)
+		}
 	}
 }
 

@@ -4,7 +4,9 @@
 // each (internal/engine), and runs the claimed step's executor. The
 // consumer loop also carries the fleet's shared duties from M3: lease
 // heartbeats, expired-lease reclaim, delayed-delivery promotion, orphan
-// cleanup, and stream trimming.
+// cleanup, and stream trimming. Ticket 4.4 adds the dispatch duties every
+// worker runs (ADR-002 — no central scheduler): the outbox drain loop and
+// the periodic reconciler.
 //
 // Configuration comes entirely from AGENTLOOM_* environment variables
 // (internal/config); there are no flags. SIGINT/SIGTERM trigger a
@@ -18,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -63,7 +66,24 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 
 	q := queue.New(client, "", "") // ADR-005 default stream + group
 	workerID := queue.NewConsumerName()
-	eng, err := engine.New(st, exec.Builtins(), workerID)
+	dispatcher, err := engine.NewDispatcher(st, q, engine.DispatcherConfig{
+		Interval: cfg.Worker.DispatchInterval,
+		Batch:    cfg.Worker.DispatchBatch,
+	})
+	if err != nil {
+		return err
+	}
+	reconciler, err := engine.NewReconciler(st, engine.ReconcilerConfig{
+		Interval:     cfg.Worker.ReconcileInterval,
+		ReadyStale:   cfg.Worker.ReconcileReadyStale,
+		RunningStale: cfg.Worker.ReconcileRunningStale,
+		Limit:        cfg.Worker.ReconcileLimit,
+	}, engine.WithReconcilerNudge(dispatcher.Nudge))
+	if err != nil {
+		return err
+	}
+	eng, err := engine.New(st, exec.Builtins(), workerID,
+		engine.WithDispatchNudge(dispatcher.Nudge))
 	if err != nil {
 		return err
 	}
@@ -75,9 +95,19 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		slog.String("version", version.Version),
 		slog.String("stream", q.Stream()),
 		slog.String("group", q.Group()),
-		slog.Duration("health_interval", cfg.Worker.HealthInterval))
+		slog.Duration("health_interval", cfg.Worker.HealthInterval),
+		slog.Duration("dispatch_interval", cfg.Worker.DispatchInterval),
+		slog.Duration("reconcile_interval", cfg.Worker.ReconcileInterval))
 	defer logger.InfoContext(ctx, "worker stopped")
 
+	// The dispatch duties stop on the same ctx as the consumer; wait for
+	// them before the deferred store/client closes tear down their
+	// backends (an in-flight drain transaction simply rolls back).
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	wg.Add(2)
+	go func() { defer wg.Done(); dispatcher.Run(ctx) }()
+	go func() { defer wg.Done(); reconciler.Run(ctx) }()
 	go healthLoop(ctx, q, cfg.Worker.HealthInterval)
 
 	// Blocks until ctx is canceled, then drains the in-flight handler

@@ -35,9 +35,19 @@ const (
 	EdgeResolutionSkipped    = "skipped"
 )
 
-// OutboxReasonStepReady is the v1 outbox enqueue reason; ADR-005 (M3) owns
-// the task envelope reasons are carried into.
-const OutboxReasonStepReady = "step_ready"
+// Outbox enqueue reasons; ADR-005 owns the task envelope they are carried
+// into. The vocabulary is small and closed (safe as a metric label).
+const (
+	// OutboxReasonStepReady: the step just became ready (instantiation 2.5,
+	// completion fan-out 4.3).
+	OutboxReasonStepReady = "step_ready"
+	// OutboxReasonReconcileReady: the reconciler re-outboxed a step stuck
+	// in ready — its original dispatch was lost (ticket 4.4, ADR-005
+	// P2/R1(a)). Handled identically to step_ready downstream; the distinct
+	// reason exists so healed dispatches are visible in stream entries and
+	// logs.
+	OutboxReasonReconcileReady = "reconcile_ready"
+)
 
 // Event types written by run instantiation (2.5) and the guarded
 // transitions (2.6); ADR-018 (M16) owns formalizing the envelope.

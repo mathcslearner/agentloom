@@ -371,17 +371,17 @@ After executor success, one transaction: persist output, CAS `running → succee
 - [x] Join `all`/`any` and skip propagation verified end-to-end
 - [x] Completion is a single tx (asserted by failure-injection leaving pre-completion state)
 
-#### 4.4 — Outbox dispatcher & reconciler
+#### 4.4 — Outbox dispatcher & reconciler ✅
 **Depends on:** 4.3
 Every worker runs: (a) outbox drain loop — `SELECT … FOR UPDATE SKIP LOCKED` batches → `XADD` → delete outbox row; (b) periodic reconciler — re-outboxes steps stuck in `ready` beyond a threshold (covers crash between commit and dispatch, and lost messages) and flags runs with impossible states. Both safe under many concurrent workers.
 **Done when:**
-- [ ] Kill-between-commit-and-XADD test: reconciler recovers the step; run completes
-- [ ] SKIP LOCKED drain shows no duplicate dispatch under 4 concurrent drainers (dupes that do occur are ACK-dropped at claim — asserted)
-- [ ] Reconciler is idempotent and rate-bounded (no thundering herd)
+- [x] Kill-between-commit-and-XADD test: reconciler recovers the step; run completes
+- [x] SKIP LOCKED drain shows no duplicate dispatch under 4 concurrent drainers (dupes that do occur are ACK-dropped at claim — asserted)
+- [x] Reconciler is idempotent and rate-bounded (no thundering herd)
 
 #### 4.5 — Fencing enforcement (zombie writes)
 **Depends on:** 4.3
-Completion/failure transitions require the matching `claim_id`; a stale worker (lease expired, step reclaimed) gets a typed fencing error, logs it, ACKs nothing new, and abandons. Integration test: pause worker A past lease TTL (simulated stall), let B reclaim and complete, resume A → A's write is rejected; no duplicate successor dispatch (outbox keyed idempotently per step transition).
+Completion/failure transitions require the matching `claim_id`; a stale worker (lease expired, step reclaimed) gets a typed fencing error, logs it, ACKs nothing new, and abandons. Integration test: pause worker A past lease TTL (simulated stall), let B reclaim and complete, resume A → A's write is rejected; no duplicate successor dispatch (outbox keyed idempotently per step transition). Also upgrades 4.4's reconciler on stale-`running` steps from flag to heal (takeover + re-outbox, ADR-005 R1(c)) — the `running → ready` takeover CAS it needs is built here.
 **Done when:**
 - [ ] Zombie write rejected with fencing error; state reflects B's result only
 - [ ] Successors dispatched exactly once (event log asserted)

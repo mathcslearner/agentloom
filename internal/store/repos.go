@@ -282,12 +282,18 @@ func (r eventRepo) List(ctx context.Context, runID uuid.UUID, afterSeq int64, li
 }
 
 // OutboxRepo stores the transactional dispatch buffer. Row exists ⇔
-// dispatch pending: drained rows are deleted, and the FOR UPDATE SKIP
-// LOCKED drain query arrives with the queue layer (M4).
+// dispatch pending: drained rows are deleted.
 type OutboxRepo interface {
 	Create(ctx context.Context, runID uuid.UUID, stepID, reason string) (gen.TaskOutbox, error)
 	// List returns up to limit pending tasks in id (drain) order.
 	List(ctx context.Context, limit int32) ([]gen.TaskOutbox, error)
+	// ListForDrain is List with FOR UPDATE SKIP LOCKED — the dispatcher's
+	// batch read (ticket 4.4). Concurrent drainers lock disjoint sets, so
+	// no row is dispatched twice unless a drain transaction rolls back
+	// after its XADD (ADR-005 P1 — the claim CAS absorbs the duplicate).
+	// Must run inside WithTx: row locks outside a transaction are
+	// meaningless, so any other Querier fails with ErrNoTx.
+	ListForDrain(ctx context.Context, limit int32) ([]gen.TaskOutbox, error)
 	// Delete removes the given tasks, returning how many existed.
 	Delete(ctx context.Context, ids []int64) (int64, error)
 }
@@ -302,6 +308,14 @@ func (r outboxRepo) Create(ctx context.Context, runID uuid.UUID, stepID, reason 
 func (r outboxRepo) List(ctx context.Context, limit int32) ([]gen.TaskOutbox, error) {
 	tasks, err := r.q.ListOutboxTasks(ctx, limit)
 	return tasks, wrapErr("list outbox tasks", err)
+}
+
+func (r outboxRepo) ListForDrain(ctx context.Context, limit int32) ([]gen.TaskOutbox, error) {
+	if ctx.Value(txMarker{}) == nil {
+		return nil, fmt.Errorf("store: list outbox tasks for drain: %w", ErrNoTx)
+	}
+	tasks, err := r.q.ListOutboxTasksForDrain(ctx, limit)
+	return tasks, wrapErr("list outbox tasks for drain", err)
 }
 
 func (r outboxRepo) Delete(ctx context.Context, ids []int64) (int64, error) {
