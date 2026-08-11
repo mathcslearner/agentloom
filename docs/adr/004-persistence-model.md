@@ -96,12 +96,13 @@ constraint and re-adds it with the extended list.
   `running` — instantiation (2.5) marks entry steps ready in the creating
   transaction, so there is no pending-run state.
 - **Steps:** `pending`, `ready`, `running`, `succeeded`, `failed`,
-  `skipped`.
+  `skipped`; since 5.2 also `retrying` (a failed attempt recorded, the
+  next one due at `next_attempt_at` — not terminal).
 
 Reserved for later milestones (listed so the matrix below is complete;
 each lands via the CHECK-constraint recipe in its owning milestone):
-runs — `cancelling`, `cancelled`, `parked` (M5.6); steps — `retrying`,
-`dead_lettered`, `cancelled` (M5), `awaiting_human` (M15).
+runs — `cancelling`, `cancelled`, `parked` (M5.6); steps —
+`dead_lettered`, `cancelled` (M5.4), `awaiting_human` (M15).
 
 ### Allowed-transition matrix
 
@@ -129,21 +130,23 @@ from that milestone on; v1 rows are enforced from 2.6.
 | — | `pending` / `ready` | instantiation: `ready` iff entry step (no incoming normal edges) | 2.5 |
 | `pending` | `ready` | `remaining_deps = 0 AND fired_deps ≥ 1`; or, for `join any`, `fired_deps ≥ 1` (bookkeeping below) | 2.6 |
 | `pending` | `skipped` | `remaining_deps = 0 AND fired_deps = 0` (skip propagation) | 2.6 |
-| `ready` | `running` | **claim**: status matches, a fresh `claim_id` is set, an attempt row is inserted, `attempt_count` increments | 2.6 |
+| `ready` | `running` | **claim**: status matches, a fresh `claim_id` is set, an attempt row is inserted, `attempt_count` increments; since 5.2 additionally guarded on the run being `running` (typed rejection `run_not_running` — ADR-006's "claim path refuses terminal runs", reused by M5.6 park/cancel) | 2.6 |
 | `running` | `succeeded` | **completion**: supplied `claim_id` matches the row's (fencing); output persisted; out-edges resolved | 2.6 |
 | `running` | `failed` | matching `claim_id`; error recorded on the attempt | 2.6 |
 | `running` | `ready` | reclaim after lease expiry (**takeover**): guarded on the *observed* holder's `claim_id` (a stale observation must not steal a newer live claim), which is cleared so the zombie's write is fenced; the holder's dangling attempt row closes with the administrative outcome `lost` | 4.5 |
 | `running` | `awaiting_human` | approval executor parks; matching `claim_id`; queue message ACKed after commit | M15 |
 | `awaiting_human` | `ready` | decision recorded (single winner vs timeout under CAS) | M15 |
-| `failed` | `retrying` | retry policy admits another attempt; backoff scheduled via the delayed queue | M5 |
-| `retrying` | `ready` | delayed-queue promotion re-dispatches the step | M5 |
-| `failed` | `dead_lettered` | retries exhausted / permanent class / poison | M5 |
-| `dead_lettered` | `ready` | manual DLQ requeue (`ctl`) | M5 |
+| `running` | `retrying` | **retry routing** (as built in 5.2; the reserved `failed → retrying` row was realized as a direct CAS — ADR-006's `failed` routing state is passed through *inside* the completion transaction, never rested): matching `claim_id`; the policy admits another attempt; the attempt row closes with its error class; `claim_id` clears and `next_attempt_at` is stamped; the delayed re-dispatch is scheduled post-commit | 5.2 |
+| `retrying` | `running` | **claim once due** (as built in 5.2; the reserved `retrying → ready` row: delayed promotion is a pure Redis event with no Postgres write, so the hop to `ready` is realized at claim time): the claim CAS additionally guards `next_attempt_at ≤ now`, which is what makes backoff enforceable against early duplicate deliveries | 5.2 |
+| `failed` | `dead_lettered` | retries exhausted / permanent class / poison | M5.4 |
+| `dead_lettered` | `ready` | manual DLQ requeue (`ctl`) | M5.4 |
 | any non-terminal | `cancelled` | run cancellation sweep | M5.6 |
 
-Terminal step states in v1: `succeeded`, `failed` (until M5 makes `failed`
-retryable), `skipped`. A step never leaves a terminal state except through
-the explicitly-listed M5 requeue transitions.
+Terminal step states: `succeeded`, `failed`, `skipped` (`failed` stays
+terminal through 5.2 — exhausted and never-retryable failures land there —
+until M5.4 retires it in favor of `dead_lettered`). `retrying` is not
+terminal. A step never leaves a terminal state except through the
+explicitly-listed M5.4 requeue transition.
 
 ### Dependency bookkeeping: two counters + per-edge resolutions
 
@@ -253,13 +256,19 @@ once written; a new version is a new row.
 
 **`run_steps`** — the per-run graph copy, node side. Materializes
 `step_type` and `config` (JSONB) from the snapshot so executors never
-reparse the definition; carries `status`, the two dependency counters,
-`claim_id` (nullable UUID — the fencing token, set on claim, cleared on
-reclaim), `attempt_count`, `output` (JSONB, set on success), `error`
-(JSONB, last failure summary; full per-attempt detail lives on
-`step_attempts`), `graph_version` (the version that introduced this row —
-1 for instantiation-time rows, >1 for expansion-injected ones: M13/M18
-provenance), and timestamps.
+reparse the definition, and — since 5.2 — `retry_policy` (JSONB, NOT
+NULL): the *effective* retry policy, authored fields merged over engine
+defaults at instantiation (ADR-006 "Where the policy lives at runtime"),
+so the failure path never reparses the snapshot and a worker upgrade
+cannot change an in-flight run's retry behavior. Carries `status`, the two
+dependency counters, `claim_id` (nullable UUID — the fencing token, set on
+claim, cleared on reclaim), `attempt_count`, `next_attempt_at` (nullable —
+set while `retrying`: when the next attempt is due, the durable state the
+reconciler heals a lost delayed re-dispatch from), `output` (JSONB, set on
+success), `error` (JSONB, last failure summary; full per-attempt detail
+lives on `step_attempts`), `graph_version` (the version that introduced
+this row — 1 for instantiation-time rows, >1 for expansion-injected ones:
+M13/M18 provenance), and timestamps.
 
 **`run_edges`** — the per-run graph copy, edge side. `from_step`,
 `to_step`, `edge_type` (`normal | loop`), the raw predicate texts
@@ -272,11 +281,14 @@ to expansion (M14), which this schema anticipates but does not implement.
 **`step_attempts`** — one row per execution try, keyed
 `(run_id, step_id, attempt_no)` with a composite FK to `run_steps`.
 `claim_id` ties the attempt to its lease; `outcome` is nullable `TEXT`
-(null while in flight; v1 writes `succeeded`/`failed`, plus `lost` — the
-administrative closure 4.5's takeover stamps on the displaced holder's
-dangling attempt, deliberately outside the failure taxonomy; the full
-taxonomy — `timeout`, `cancelled`, `validation_failed` — is ADR-006's, so
-no CHECK constraint yet); `error` (JSONB), `started_at`, `finished_at`.
+(null while in flight). Since 5.2 the postponed CHECK is in place with
+ADR-006's classed vocabulary — `succeeded | transient | permanent |
+timeout | cancelled` plus the administrative `lost` (4.5's takeover
+closure, deliberately outside the taxonomy and outside the retry budget);
+the pre-M5 bare `failed` was backfilled to `permanent` by migration 0003
+(under pre-M5 semantics every failure was terminal). `validation_failed`
+joins the CHECK when M11 unlocks it. Also `error` (JSONB), `started_at`,
+`finished_at`.
 
 **`events`** — `(run_id, seq)` PK, `type`, `payload` (JSONB),
 `created_at`. Append-only.
@@ -300,6 +312,8 @@ ACK-and-drop.
 | Path | Index |
 |---|---|
 | Reconciler: find stuck / claimable work | partial index on `run_steps (status, updated_at)` `WHERE status IN ('ready','running')` — small (only in-flight steps), serves "ready longer than X" and "running with expired lease" scans |
+| Reconciler: overdue retries (5.2) | partial index on `run_steps (next_attempt_at)` `WHERE status = 'retrying'` — serves the "due longer than RetryStale ago" scan healing the failure-commit/delayed-schedule crash gap |
+| Reconciler anti-joins into the outbox (5.2, post-M4 audit) | `task_outbox (run_id, step_id)` — the stale-ready/overdue-retrying anti-joins and the stale-running pending-row probe stop scanning the identity PK |
 | Run listing filtered by status | `runs (status, created_at DESC)`; unfiltered newest-first listing is a heap scan until a measured need says otherwise (M19) |
 | Idempotent submission | unique partial index on `runs (idempotency_token) WHERE idempotency_token IS NOT NULL` |
 | Definition registry lookup | unique `workflow_definitions (name, version)` |

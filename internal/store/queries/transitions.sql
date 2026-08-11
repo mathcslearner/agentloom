@@ -6,17 +6,25 @@
 -- public repository interfaces: transitions.go is the only mutation
 -- surface, so a status change can never skip its event append.
 
--- Claim: ready → running. Sets the fresh fencing token, increments the
+-- Claim: ready → running, or retrying → running once the step's backoff
+-- has elapsed (ticket 5.2 — ADR-006's `retrying → ready → running` hop is
+-- realized at claim time; delayed promotion writes nothing to Postgres).
+-- The next_attempt_at guard is what makes backoff enforceable: an early
+-- duplicate delivery of a retrying step matches nothing and is dropped by
+-- the claim classifier. Sets the fresh fencing token, increments the
 -- durable attempt counter, and stamps started_at on the first claim only
 -- (reclaims and retries keep the original).
 -- name: ClaimRunStep :one
 UPDATE run_steps
-SET status         = 'running',
-    claim_id       = @claim_id,
-    attempt_count  = attempt_count + 1,
-    started_at     = COALESCE(started_at, @now::timestamptz),
-    updated_at     = @now::timestamptz
-WHERE run_id = @run_id AND step_id = @step_id AND status = 'ready'
+SET status          = 'running',
+    claim_id        = @claim_id,
+    attempt_count   = attempt_count + 1,
+    next_attempt_at = NULL,
+    started_at      = COALESCE(started_at, @now::timestamptz),
+    updated_at      = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id
+  AND (status = 'ready'
+       OR (status = 'retrying' AND next_attempt_at <= @now::timestamptz))
 RETURNING *;
 
 -- Completion: running → succeeded, fenced by claim_id (a zombie whose
@@ -39,6 +47,23 @@ SET status      = 'failed',
     error       = @error,
     finished_at = @now::timestamptz,
     updated_at  = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id
+  AND status = 'running' AND claim_id = @claim_id
+RETURNING *;
+
+-- Retry routing: running → retrying, fenced by claim_id (ticket 5.2,
+-- ADR-006 "Step failure lifecycle" — `failed` is a routing state the
+-- completion transaction passes through, never left resting). Records the
+-- last failure summary, stamps when the next attempt is due, and clears
+-- claim_id — a retrying step holds no claim and no lease. finished_at
+-- stays NULL: the step is not terminal.
+-- name: RetryRunStep :one
+UPDATE run_steps
+SET status          = 'retrying',
+    error           = @error,
+    claim_id        = NULL,
+    next_attempt_at = @next_attempt_at::timestamptz,
+    updated_at      = @now::timestamptz
 WHERE run_id = @run_id AND step_id = @step_id
   AND status = 'running' AND claim_id = @claim_id
 RETURNING *;

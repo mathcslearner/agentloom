@@ -471,11 +471,14 @@ func TestJoinAnyAbsorbsLateFiring(t *testing.T) {
 	}
 }
 
+// failDef pins max_attempts 1 so the failure is terminal on the first
+// attempt — this test is about the terminal path; the retry engine's own
+// suite (retry_integration_test.go, ticket 5.2) covers retrying policies.
 const failDef = `{
 	"schema_version": 1,
 	"name": "executor-failure",
 	"steps": [
-		{"id": "boom", "type": "fail_n_times", "config": {"n": 99}},
+		{"id": "boom", "type": "fail_n_times", "config": {"n": 99}, "retry": {"max_attempts": 1}},
 		{"id": "never", "type": "noop"}
 	],
 	"edges": [
@@ -483,10 +486,11 @@ const failDef = `{
 	]
 }`
 
-// TestExecutorFailureFailsStepAndRun: an executor error lands the failure
-// completion — step failed with the error recorded, run failed (the v1
-// rollup; ADR-006 refines policy in M5), dependents never dispatched, and
-// the delivery ACKed (queue quiescent).
+// TestExecutorFailureFailsStepAndRun: an executor error whose policy
+// admits no retry lands the terminal failure completion — step failed
+// with the error recorded and the attempt classed (transient — the judged
+// class survives even when the disposition is terminal), run failed,
+// dependents never dispatched, and the delivery ACKed (queue quiescent).
 func TestExecutorFailureFailsStepAndRun(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -516,8 +520,8 @@ func TestExecutorFailureFailsStepAndRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listing attempts: %v", err)
 	}
-	if len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != store.StepStatusFailed {
-		t.Errorf("attempts = %+v, want one closed with outcome failed", attempts)
+	if len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != store.AttemptOutcomeTransient {
+		t.Errorf("attempts = %+v, want one closed with outcome transient", attempts)
 	}
 	// The failed step's out-edges stay unresolved (ADR-004): the
 	// dependent is permanently blocked, never ready, never skipped.

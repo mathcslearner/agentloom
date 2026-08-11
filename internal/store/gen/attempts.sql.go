@@ -13,6 +13,28 @@ import (
 	"github.com/google/uuid"
 )
 
+const countCountedFailures = `-- name: CountCountedFailures :one
+SELECT count(*) FROM step_attempts
+WHERE run_id = $1 AND step_id = $2 AND outcome IN ('transient', 'timeout')
+`
+
+type CountCountedFailuresParams struct {
+	RunID  uuid.UUID
+	StepID string
+}
+
+// CountCountedFailures is the durable retry budget (ADR-006 "Retry budget
+// vs. delivery count"): judged attempt failures only — outcomes transient
+// and timeout. `lost` closures are excluded by construction (a crashed
+// host recorded no judgment), and 5.4's requeue-from-baseline reuses the
+// same derivation.
+func (q *Queries) CountCountedFailures(ctx context.Context, arg CountCountedFailuresParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countCountedFailures, arg.RunID, arg.StepID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createStepAttempt = `-- name: CreateStepAttempt :one
 
 INSERT INTO step_attempts (run_id, step_id, attempt_no, claim_id, started_at)

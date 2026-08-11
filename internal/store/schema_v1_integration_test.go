@@ -52,7 +52,7 @@ func insertRun(ctx context.Context, t *testing.T, pool *pgxpool.Pool) string {
 func insertStep(ctx context.Context, t *testing.T, pool *pgxpool.Pool, runID, stepID string) {
 	t.Helper()
 	_, err := pool.Exec(ctx,
-		`INSERT INTO run_steps (run_id, step_id, step_type) VALUES ($1, $2, 'noop')`,
+		`INSERT INTO run_steps (run_id, step_id, step_type, retry_policy) VALUES ($1, $2, 'noop', '{}'::jsonb)`,
 		runID, stepID)
 	if err != nil {
 		t.Fatalf("inserting run_steps %s: %v", stepID, err)
@@ -104,7 +104,7 @@ func TestSchemaV1StatusChecks(t *testing.T) {
 	wantPgError(t, err, pgCheckViolation, "run status outside v1 vocabulary")
 
 	_, err = pool.Exec(ctx,
-		`INSERT INTO run_steps (run_id, step_id, step_type, status) VALUES ($1, 'a', 'noop', 'awaiting_human')`,
+		`INSERT INTO run_steps (run_id, step_id, step_type, retry_policy, status) VALUES ($1, 'a', 'noop', '{}'::jsonb, 'awaiting_human')`,
 		runID)
 	wantPgError(t, err, pgCheckViolation, "step status outside v1 vocabulary")
 

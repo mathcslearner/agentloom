@@ -16,12 +16,25 @@
 package engine
 
 import (
+	"context"
 	"errors"
+	"math/rand/v2"
 	"time"
 
 	"github.com/mathcslearner/agentloom/internal/exec"
+	"github.com/mathcslearner/agentloom/internal/queue"
 	"github.com/mathcslearner/agentloom/internal/store"
 )
+
+// RetryScheduler is the engine's seam onto delayed delivery (ticket 5.2)
+// — satisfied by *queue.Delayed. After a retry-routing completion commits,
+// the engine schedules the re-dispatch envelope through it; a failure (or
+// a crash before the call) is deliberately survivable, healed by the
+// reconciler's overdue-retrying scan, which is also why tests inject a
+// failing implementation to provoke that gap.
+type RetryScheduler interface {
+	Schedule(ctx context.Context, env queue.Envelope, fireAt time.Time) error
+}
 
 // Engine executes claimed steps for one worker process. It is safe for
 // concurrent Handle calls (every field is read-only after New), though
@@ -41,6 +54,13 @@ type Engine struct {
 	// seam. The outbox drain loop (ticket 4.4) wires its wake channel
 	// here; nil means no one to nudge (drain cadence alone dispatches).
 	nudge func()
+	// scheduler, when set, receives the delayed retry envelope after a
+	// retry-routing completion commits (ticket 5.2). Nil means no delayed
+	// scheduling — retries then re-dispatch only via the reconciler's
+	// overdue-retrying heal (degraded latency, same convergence).
+	scheduler RetryScheduler
+	// jitterRand supplies the [0,1) draw for full-jitter backoff.
+	jitterRand func() float64
 }
 
 // Option customizes an Engine.
@@ -61,6 +81,22 @@ func WithDispatchNudge(nudge func()) Option {
 	return func(e *Engine) { e.nudge = nudge }
 }
 
+// WithRetryScheduler sets the delayed-delivery producer retry-routing
+// completions schedule their re-dispatch through — wire the queue's
+// Delayed handle here (cmd/worker does). Nil is legal: retries still
+// commit durably and the reconciler re-dispatches them, just on its sweep
+// cadence instead of on time.
+func WithRetryScheduler(s RetryScheduler) Option {
+	return func(e *Engine) { e.scheduler = s }
+}
+
+// WithJitterRand overrides the [0,1) source full-jitter backoff draws
+// from (project invariant: nondeterminism is injectable; timing tests pin
+// it or use jitter "none").
+func WithJitterRand(r func() float64) Option {
+	return func(e *Engine) { e.jitterRand = r }
+}
+
 // New builds an Engine over the given store and executor registry.
 // workerID may be empty (logs then carry an empty worker_id — the queue
 // consumer name is the conventional value).
@@ -71,7 +107,7 @@ func New(s *store.Store, r *exec.Registry, workerID string, opts ...Option) (*En
 	if r == nil {
 		return nil, errors.New("engine: New requires an executor registry")
 	}
-	e := &Engine{store: s, registry: r, workerID: workerID, now: time.Now}
+	e := &Engine{store: s, registry: r, workerID: workerID, now: time.Now, jitterRand: rand.Float64}
 	for _, opt := range opts {
 		opt(e)
 	}

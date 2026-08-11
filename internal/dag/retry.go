@@ -139,3 +139,108 @@ type BackoffSpec struct {
 	// absent (engine default 2). 1 means constant backoff.
 	Multiplier float64 `json:"multiplier,omitempty"`
 }
+
+// The engine defaults (ADR-006 "Engine defaults"), applied field-wise by
+// ResolveRetryPolicy when `retry` or any of its fields is absent.
+const (
+	// DefaultRetryMaxAttempts is the default total attempt budget.
+	DefaultRetryMaxAttempts = 3
+
+	// DefaultBackoffInitial is the default first delay.
+	DefaultBackoffInitial = "1s"
+
+	// DefaultBackoffCap is the default bound on every computed delay.
+	DefaultBackoffCap = "1m"
+
+	// DefaultBackoffMultiplier is the default exponential base.
+	DefaultBackoffMultiplier = 2.0
+
+	// DefaultRetryJitter is the default jitter mode.
+	DefaultRetryJitter = JitterFull
+)
+
+// DefaultRetryOn returns the default retryable classes — everything
+// retryable is retried by default. A fresh slice per call, so callers may
+// own the result.
+func DefaultRetryOn() []ErrorClass {
+	return []ErrorClass{ClassTransient, ClassTimeout}
+}
+
+// ResolvedRetryPolicy is a step's *effective* retry policy: the authored
+// fields merged over the engine defaults, every field concrete. It is
+// materialized as JSON onto run_steps at instantiation (ticket 5.2,
+// ADR-006 "Where the policy lives at runtime") so the failure path never
+// reparses the definition snapshot and a worker upgrade cannot change an
+// in-flight run's policy. Durations stay Go duration strings — readable
+// in the row, parseable on the failure path, and guaranteed parseable by
+// validation (authored) or by construction (defaults).
+type ResolvedRetryPolicy struct {
+	// MaxAttempts is the total attempt budget, counting the first.
+	MaxAttempts int `json:"max_attempts"`
+
+	// Backoff is the fully-resolved backoff shape.
+	Backoff ResolvedBackoff `json:"backoff"`
+
+	// Jitter is the delay randomization mode.
+	Jitter JitterMode `json:"jitter"`
+
+	// RetryOn lists the error classes retried for this step. A class
+	// outside the list is treated as permanent for this step.
+	RetryOn []ErrorClass `json:"retry_on"`
+}
+
+// ResolvedBackoff is BackoffSpec with every field concrete.
+type ResolvedBackoff struct {
+	Initial    string  `json:"initial"`
+	Cap        string  `json:"cap"`
+	Multiplier float64 `json:"multiplier"`
+}
+
+// ResolveRetryPolicy merges an authored policy (nil = no `retry` block)
+// over the engine defaults, field-wise: an explicit block overrides only
+// what it sets. Validation bounds (Validate) are assumed to hold — this
+// is a pure merge, not a validator.
+func ResolveRetryPolicy(p *RetryPolicy) ResolvedRetryPolicy {
+	r := ResolvedRetryPolicy{
+		MaxAttempts: DefaultRetryMaxAttempts,
+		Backoff: ResolvedBackoff{
+			Initial:    DefaultBackoffInitial,
+			Cap:        DefaultBackoffCap,
+			Multiplier: DefaultBackoffMultiplier,
+		},
+		Jitter:  DefaultRetryJitter,
+		RetryOn: DefaultRetryOn(),
+	}
+	if p == nil {
+		return r
+	}
+	if p.MaxAttempts != 0 {
+		r.MaxAttempts = p.MaxAttempts
+	}
+	if p.Backoff != nil {
+		// Validation requires initial and cap whenever a backoff block is
+		// present; only the multiplier is optional within the block.
+		r.Backoff.Initial = p.Backoff.Initial
+		r.Backoff.Cap = p.Backoff.Cap
+		if p.Backoff.Multiplier != 0 {
+			r.Backoff.Multiplier = p.Backoff.Multiplier
+		}
+	}
+	if p.Jitter != "" {
+		r.Jitter = p.Jitter
+	}
+	if p.RetryOn != nil {
+		r.RetryOn = append([]ErrorClass(nil), p.RetryOn...)
+	}
+	return r
+}
+
+// Retries reports whether class is retryable under this policy.
+func (r ResolvedRetryPolicy) Retries(class ErrorClass) bool {
+	for _, c := range r.RetryOn {
+		if c == class {
+			return true
+		}
+	}
+	return false
+}

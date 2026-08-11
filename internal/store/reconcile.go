@@ -133,9 +133,49 @@ func ListStaleRunningSteps(ctx context.Context, q Querier, staleBefore time.Time
 	return steps, nil
 }
 
+// OverdueRetryingStep is a retrying step whose next_attempt_at passed the
+// reconciler's threshold with no pending outbox row — the failure-commit/
+// delayed-schedule crash gap (ticket 5.2, ADR-006).
+type OverdueRetryingStep struct {
+	RunID  uuid.UUID
+	StepID string
+	// NextAttemptAt is when the attempt was due — how overdue it is.
+	NextAttemptAt time.Time
+}
+
+// ListOverdueRetryingSteps returns up to limit steps in retrying whose
+// next_attempt_at is before staleBefore with no pending task_outbox row —
+// steps whose delayed re-dispatch was lost (the worker died, or its
+// Schedule call failed, between the retry commit and the delayed-ZSET
+// write). The anti-join makes repeated sweeps idempotent, exactly like
+// ListStaleReadySteps. The heal is an outbox row alone (reason
+// reconcile_retry): the step stays retrying, and the claim CAS accepts a
+// due retrying step directly.
+func ListOverdueRetryingSteps(ctx context.Context, q Querier, staleBefore time.Time, limit int32) ([]OverdueRetryingStep, error) {
+	const op = "list overdue retrying steps"
+	gq, err := reconcileQueries(ctx, q, op)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := gq.ListOverdueRetryingSteps(ctx, gen.ListOverdueRetryingStepsParams{
+		StaleBefore: staleBefore, RowLimit: limit,
+	})
+	if err != nil {
+		return nil, wrapErr(op, err)
+	}
+	steps := make([]OverdueRetryingStep, len(rows))
+	for i, r := range rows {
+		steps[i] = OverdueRetryingStep{RunID: r.RunID, StepID: r.StepID}
+		if r.NextAttemptAt != nil {
+			steps[i].NextAttemptAt = *r.NextAttemptAt
+		}
+	}
+	return steps, nil
+}
+
 // ListStalledRuns returns up to limit runs still running with no live
-// (pending/ready/running) step — an impossible state, since the run
-// rollup is atomic with the transition terminalizing the last step.
+// (pending/ready/running/retrying) step — an impossible state, since the
+// run rollup is atomic with the transition terminalizing the last step.
 // Observing one means corrupt state or an engine bug; the reconciler
 // flags it loudly and touches nothing.
 func ListStalledRuns(ctx context.Context, q Querier, limit int32) ([]uuid.UUID, error) {

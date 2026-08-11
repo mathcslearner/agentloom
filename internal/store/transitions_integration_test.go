@@ -69,7 +69,8 @@ func failStep(t *testing.T, s *store.Store, runID uuid.UUID, stepID string, clai
 	t.Helper()
 	return s.WithTx(t.Context(), func(ctx context.Context, q store.Querier) error {
 		_, err := store.FailStep(ctx, q, store.FailStepArgs{
-			RunID: runID, StepID: stepID, ClaimID: claim, Error: errJSON, Now: testNow,
+			RunID: runID, StepID: stepID, ClaimID: claim,
+			Outcome: store.AttemptOutcomePermanent, Error: errJSON, Now: testNow,
 		})
 		return err
 	})
@@ -331,7 +332,8 @@ func TestStepTransitionMatrix(t *testing.T) {
 			name: "FailStep", legalFrom: store.StepStatusRunning,
 			call: func(ctx context.Context, q store.Querier, runID uuid.UUID, stepID string, claim uuid.UUID) error {
 				_, err := store.FailStep(ctx, q, store.FailStepArgs{
-					RunID: runID, StepID: stepID, ClaimID: claim, Now: testNow,
+					RunID: runID, StepID: stepID, ClaimID: claim,
+					Outcome: store.AttemptOutcomePermanent, Now: testNow,
 				})
 				return err
 			},

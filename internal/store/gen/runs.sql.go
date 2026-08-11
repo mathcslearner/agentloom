@@ -231,15 +231,23 @@ func (q *Queries) ListRunsByStatus(ctx context.Context, arg ListRunsByStatusPara
 }
 
 const lockRun = `-- name: LockRun :one
-SELECT id FROM runs WHERE id = $1 FOR UPDATE
+SELECT id, status FROM runs WHERE id = $1 FOR UPDATE
 `
+
+type LockRunRow struct {
+	ID     uuid.UUID
+	Status string
+}
 
 // LockRun acquires the run-row lock without writing anything. It is every
 // transition's first statement (uniform run → step → edge lock ordering;
 // see the transitions.go package comment) and doubles as the existence
-// check — zero rows means the run is gone.
-func (q *Queries) LockRun(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+// check — zero rows means the run is gone. It returns the run's status so
+// ClaimStep can enforce the run-status guard (ticket 5.2, ADR-006: the
+// claim path refuses steps of terminal runs; 5.6's park/cancel reuses it).
+func (q *Queries) LockRun(ctx context.Context, id uuid.UUID) (LockRunRow, error) {
 	row := q.db.QueryRow(ctx, lockRun, id)
-	err := row.Scan(&id)
-	return id, err
+	var i LockRunRow
+	err := row.Scan(&i.ID, &i.Status)
+	return i, err
 }

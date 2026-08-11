@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
 
@@ -134,8 +135,11 @@ func (r runRepo) AllocateEventSeq(ctx context.Context, runID uuid.UUID) (int64, 
 // graph.
 type StepRepo interface {
 	// Create inserts a step row. An empty arg.Status becomes pending; a
-	// zero arg.GraphVersion becomes 1. arg.UpdatedAt is required (injected
-	// clock — the reconciler's staleness scan reads it): zero is an error.
+	// zero arg.GraphVersion becomes 1; a nil arg.RetryPolicy becomes the
+	// serialized engine-default policy (ticket 5.2 — semantically what an
+	// absent authored policy means; run instantiation always materializes
+	// explicitly). arg.UpdatedAt is required (injected clock — the
+	// reconciler's staleness scan reads it): zero is an error.
 	Create(ctx context.Context, arg gen.CreateRunStepParams) (gen.RunStep, error)
 	// CreateBatch inserts step rows in one COPY, with the same per-row
 	// defaulting and UpdatedAt requirement as Create.
@@ -169,6 +173,9 @@ func (r stepRepo) Create(ctx context.Context, arg gen.CreateRunStepParams) (gen.
 	if arg.GraphVersion == 0 {
 		arg.GraphVersion = 1
 	}
+	if arg.RetryPolicy == nil {
+		arg.RetryPolicy = defaultRetryPolicyJSON()
+	}
 	step, err := r.q.CreateRunStep(ctx, arg)
 	return step, wrapErr("create run step", err)
 }
@@ -184,9 +191,20 @@ func (r stepRepo) CreateBatch(ctx context.Context, args []gen.CreateRunStepsPara
 		if args[i].GraphVersion == 0 {
 			args[i].GraphVersion = 1
 		}
+		if args[i].RetryPolicy == nil {
+			args[i].RetryPolicy = defaultRetryPolicyJSON()
+		}
 	}
 	rows, err := r.q.CreateRunSteps(ctx, args)
 	return rows, wrapErr("create run steps", err)
+}
+
+// defaultRetryPolicyJSON serializes the all-defaults effective policy —
+// what a nil RetryPolicy on a directly-created step row means. The merge
+// is dag's; marshaling a plain struct cannot fail.
+func defaultRetryPolicyJSON() json.RawMessage {
+	b, _ := json.Marshal(dag.ResolveRetryPolicy(nil)) //nolint:errcheck // plain struct
+	return b
 }
 
 func (r stepRepo) Get(ctx context.Context, runID uuid.UUID, stepID string) (gen.RunStep, error) {
@@ -242,6 +260,10 @@ type AttemptRepo interface {
 	// ListByRun returns every attempt of the run in (step_id, attempt_no)
 	// order — one query for the run-detail API instead of one per step.
 	ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.StepAttempt, error)
+	// CountCountedFailures returns how many of the step's attempts closed
+	// with a counted outcome — transient or timeout — the durable retry
+	// budget (ticket 5.2, ADR-006: `lost` closures are excluded).
+	CountCountedFailures(ctx context.Context, runID uuid.UUID, stepID string) (int64, error)
 }
 
 type attemptRepo struct{ q *gen.Queries }
@@ -259,6 +281,11 @@ func (r attemptRepo) ListByStep(ctx context.Context, runID uuid.UUID, stepID str
 func (r attemptRepo) ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.StepAttempt, error) {
 	atts, err := r.q.ListRunStepAttempts(ctx, runID)
 	return atts, wrapErr("list run step attempts", err)
+}
+
+func (r attemptRepo) CountCountedFailures(ctx context.Context, runID uuid.UUID, stepID string) (int64, error) {
+	n, err := r.q.CountCountedFailures(ctx, gen.CountCountedFailuresParams{RunID: runID, StepID: stepID})
+	return n, wrapErr("count counted failures", err)
 }
 
 // EventRepo stores the append-only per-run event log. Append-only is

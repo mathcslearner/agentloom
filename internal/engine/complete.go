@@ -23,6 +23,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
+	"github.com/mathcslearner/agentloom/internal/queue"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
@@ -247,18 +248,19 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 	if len(run.Params) > 0 {
 		if err := json.Unmarshal(run.Params, &params); err != nil {
 			// Params were validated JSON at submission; failing to decode
-			// now is corrupt stored state — deterministic, so a step
-			// failure, not a redelivery loop.
-			return e.completeFailure(ctx, step, fmt.Errorf("decoding run params: %w", err))
+			// now is corrupt stored state — deterministic, so a permanent
+			// step failure (ADR-006 taxonomy row 7), not a redelivery loop.
+			return e.completeFailure(ctx, step, fmt.Errorf("decoding run params: %w", err), dag.ClassPermanent)
 		}
 	}
 	verdicts, err := planEdges(step.StepType, outEdges, out.Data, params)
 	if err != nil {
 		// Deterministic content failure (ADR-003: evaluation errors are
-		// recorded as a step-level failure of the completing step).
+		// recorded as a step-level failure of the completing step;
+		// ADR-006 row 6: force-classified permanent).
 		logger.WarnContext(ctx, "edge predicate evaluation failed; recording step failure",
 			slog.Any("error", err))
-		return e.completeFailure(ctx, step, err)
+		return e.completeFailure(ctx, step, err, dag.ClassPermanent)
 	}
 
 	now := e.now()
@@ -320,7 +322,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		if errors.As(txErr, &de) {
 			logger.WarnContext(ctx, "corrupt step config discovered during fan-out; recording step failure",
 				slog.Any("error", txErr))
-			return e.completeFailure(ctx, step, txErr)
+			return e.completeFailure(ctx, step, txErr, dag.ClassPermanent)
 		}
 		logger.ErrorContext(ctx, "completion transaction failed; delivery will redeliver",
 			slog.Any("error", txErr))
@@ -354,26 +356,83 @@ func attemptRunRollup(ctx context.Context, q store.Querier, runID uuid.UUID, now
 	return false, err
 }
 
-// completeFailure runs the failure completion: one transaction with the
-// claim-fenced running → failed transition (error recorded on step and
-// attempt) and the v1-minimum run rollup running → failed (ADR-006 owns
-// *when* a step failure halts a run; until then a failed step fails its
-// run). The failed step's out-edges stay unresolved (ADR-004), so
-// dependents block — retry, DLQ, and failure policy are M5.
-func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr error) error {
+// completeFailure is the failure router (ticket 5.2, ADR-006): one
+// transaction that records the classed attempt failure and routes the
+// step by the materialized policy — running → retrying (the budget admits
+// another attempt of a retryable class, next_attempt_at stamped) or
+// running → failed plus the v1-minimum run rollup running → failed (the
+// terminal path; 5.4 upgrades it to dead_lettered and the failure
+// policy). On the retry route the delayed re-dispatch is scheduled
+// post-commit, best-effort: the envelope (reason retry, no EnqueuedAt so
+// the delayed member dedups) fires at next_attempt_at, and a crash or
+// Schedule failure after the commit is healed by the reconciler's
+// overdue-retrying scan — either way the entry is consumed (nil return,
+// ACK), because the durable row now carries the retry.
+func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr error, class dag.ErrorClass) error {
 	logger := log.From(ctx)
-	payload, err := json.Marshal(map[string]string{"message": execErr.Error()})
+	if declared, ok := misdeclaredClass(execErr); ok {
+		logger.ErrorContext(ctx, "executor declared a class it may not use; defaulting to transient",
+			slog.String("declared_class", string(declared)),
+			slog.Any("error", execErr))
+	}
+	payload, err := json.Marshal(map[string]string{"message": execErr.Error(), "class": string(class)})
 	if err != nil {
-		payload = json.RawMessage(`{"message": "unencodable executor error"}`)
+		payload = json.RawMessage(`{"message": "unencodable executor error", "class": "` + string(class) + `"}`)
+	}
+
+	policy, perr := decodeRetryPolicy(step.RetryPolicy)
+	if perr != nil {
+		// Corrupt materialized policy — deterministic stored-state failure
+		// (taxonomy row 7 in spirit): the retry decision cannot be made, so
+		// the failure lands terminal with its judged class intact.
+		logger.ErrorContext(ctx, "corrupt materialized retry policy; failing step without retry",
+			slog.Any("error", perr))
 	}
 
 	now := e.now()
 	runFailed := false
+	var fireAt time.Time
+	scheduled := false
 	var fenced *store.TransitionError
 	txErr := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+		retry := perr == nil && policy.Retries(class)
+		if retry {
+			prior, err := q.Attempts().CountCountedFailures(ctx, step.RunID, step.StepID)
+			if err != nil {
+				return err
+			}
+			// This failure is counted failure n; lost closures never count
+			// (ADR-006 — the budget is judged attempts only).
+			n := int(prior) + 1
+			if n >= policy.MaxAttempts {
+				retry = false // budget exhausted: this was the last attempt
+			} else {
+				delay, derr := retryDelay(policy, n, e.jitterRand)
+				if derr != nil {
+					// Corrupt materialized durations; terminal, like perr.
+					logger.ErrorContext(ctx, "corrupt materialized backoff; failing step without retry",
+						slog.Any("error", derr))
+					retry = false
+				} else {
+					fireAt = now.Add(delay)
+				}
+			}
+		}
+		if retry {
+			if _, err := store.RetryStep(ctx, q, store.RetryStepArgs{
+				RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
+				Outcome: string(class), Error: payload, NextAttemptAt: fireAt, Now: now,
+			}); err != nil {
+				// The fence firing on the retry path — see completeSuccess.
+				errors.As(err, &fenced)
+				return err
+			}
+			scheduled = true
+			return nil
+		}
 		if _, err := store.FailStep(ctx, q, store.FailStepArgs{
 			RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
-			Error: payload, Now: now,
+			Outcome: string(class), Error: payload, Now: now,
 		}); err != nil {
 			// The fence firing on the failure path — see completeSuccess.
 			errors.As(err, &fenced)
@@ -404,10 +463,55 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 		return txErr
 	}
 
+	if scheduled {
+		e.scheduleRetry(ctx, step, fireAt)
+		logger.WarnContext(ctx, "step attempt failed; retry scheduled",
+			slog.Any("error", execErr),
+			slog.String("class", string(class)),
+			slog.Time("next_attempt_at", fireAt))
+		return nil
+	}
 	logger.WarnContext(ctx, "step failed",
 		slog.Any("error", execErr),
+		slog.String("class", string(class)),
 		slog.Bool("run_failed", runFailed))
 	return nil
+}
+
+// scheduleRetry performs the post-commit half of the retry route: the
+// delayed-ZSET write due at fireAt. Failures (and a nil scheduler) only
+// log — the committed row already carries next_attempt_at, so the
+// reconciler's overdue-retrying scan re-dispatches; nothing here may turn
+// into a handler error, which would un-ACK an already-consumed delivery.
+func (e *Engine) scheduleRetry(ctx context.Context, step gen.RunStep, fireAt time.Time) {
+	logger := log.From(ctx)
+	if e.scheduler == nil {
+		logger.WarnContext(ctx, "no retry scheduler configured; reconciler will re-dispatch the retry")
+		return
+	}
+	env := queue.Envelope{RunID: step.RunID, StepID: step.StepID, Reason: queue.ReasonRetry}
+	if err := e.scheduler.Schedule(ctx, env, fireAt); err != nil {
+		logger.ErrorContext(ctx, "delayed retry schedule failed; reconciler will re-dispatch",
+			slog.Time("fire_at", fireAt),
+			slog.Any("error", err))
+	}
+}
+
+// decodeRetryPolicy parses the effective policy materialized onto the
+// run_steps row at instantiation. The column is NOT NULL and written from
+// dag.ResolveRetryPolicy, so a decode failure means corrupt stored state.
+func decodeRetryPolicy(raw json.RawMessage) (dag.ResolvedRetryPolicy, error) {
+	var p dag.ResolvedRetryPolicy
+	if len(raw) == 0 {
+		return p, errors.New("engine: run step carries no materialized retry policy")
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return p, fmt.Errorf("engine: decoding materialized retry policy: %w", err)
+	}
+	if p.MaxAttempts < 1 {
+		return p, fmt.Errorf("engine: materialized retry policy has max_attempts %d", p.MaxAttempts)
+	}
+	return p, nil
 }
 
 // errFencedCompletion marks a completion abandoned because its terminal CAS

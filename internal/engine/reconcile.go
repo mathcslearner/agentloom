@@ -58,6 +58,14 @@ type ReconcilerConfig struct {
 	// effects run twice. Until M5.3 gives steps real timeouts, size this
 	// above the longest executor you expect to run. Must be positive.
 	RunningStale time.Duration
+	// RetryStale is how long past its next_attempt_at a retrying step may
+	// sit before its delayed re-dispatch is presumed lost — the
+	// failure-commit/delayed-schedule crash gap (ticket 5.2, ADR-006) —
+	// and the step is re-outboxed (reason reconcile_retry). Measured from
+	// the due time, not updated_at, so it needs no lease-TTL margin; it
+	// must comfortably exceed the promoter tick, or healthy retries get
+	// duplicate dispatches (safe, wasteful). Must be positive.
+	RetryStale time.Duration
 	// Limit caps each scan's rows per sweep. Must be positive.
 	Limit int
 }
@@ -103,6 +111,9 @@ func NewReconciler(s *store.Store, cfg ReconcilerConfig, opts ...ReconcilerOptio
 	if cfg.RunningStale <= 0 {
 		return nil, errors.New("engine: NewReconciler requires a positive RunningStale")
 	}
+	if cfg.RetryStale <= 0 {
+		return nil, errors.New("engine: NewReconciler requires a positive RetryStale")
+	}
 	if cfg.Limit <= 0 {
 		return nil, errors.New("engine: NewReconciler requires a positive Limit")
 	}
@@ -122,6 +133,9 @@ type ReconcileResult struct {
 	// TakenOver lists the stale-running steps this sweep healed with the
 	// lease-expiry takeover + re-outbox (ADR-005 R1(c), ticket 4.5).
 	TakenOver []store.StaleRunningStep
+	// RetriesHealed lists the overdue retrying steps this sweep
+	// re-outboxed — their delayed re-dispatch was lost (ticket 5.2).
+	RetriesHealed []store.OverdueRetryingStep
 	// StalledRuns lists runs in an impossible state (flagged, untouched).
 	StalledRuns []uuid.UUID
 	// LimitHit: some scan returned exactly Limit rows — there may be more;
@@ -223,12 +237,23 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 			}
 			res.TakenOver = append(res.TakenOver, st)
 		}
+		overdue, err := store.ListOverdueRetryingSteps(ctx, q, now.Add(-r.cfg.RetryStale), limit)
+		if err != nil {
+			return err
+		}
+		for _, st := range overdue {
+			if _, err := q.Outbox().Create(ctx, st.RunID, st.StepID, store.OutboxReasonReconcileRetry); err != nil {
+				return err
+			}
+		}
+		res.RetriesHealed = overdue
 		res.StalledRuns, err = store.ListStalledRuns(ctx, q, limit)
 		if err != nil {
 			return err
 		}
 		res.LimitHit = len(res.Requeued) == int(limit) ||
-			len(staleRunning) == int(limit) || len(res.StalledRuns) == int(limit)
+			len(staleRunning) == int(limit) || len(overdue) == int(limit) ||
+			len(res.StalledRuns) == int(limit)
 		return nil
 	})
 	if err != nil {
@@ -250,6 +275,11 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 			slog.Time("running_since", st.UpdatedAt),
 			slog.String("displaced_claim_id", claimIDRefString(st.ClaimID)))
 	}
+	for _, st := range res.RetriesHealed {
+		logger.WarnContext(ctx, "reconciler re-outboxed an overdue retrying step (lost delayed re-dispatch)",
+			log.RunID(st.RunID.String()), log.StepID(st.StepID),
+			slog.Time("was_due_at", st.NextAttemptAt))
+	}
 	for _, st := range lostRace {
 		logger.InfoContext(ctx, "stale running step moved on before takeover — heal dropped",
 			log.RunID(st.RunID.String()), log.StepID(st.StepID))
@@ -267,13 +297,14 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 		logger.WarnContext(ctx, "reconciler sweep hit its row limit; more may remain for the next sweep",
 			slog.Int("limit", r.cfg.Limit))
 	}
-	if len(res.Requeued) > 0 || len(res.TakenOver) > 0 || len(res.StalledRuns) > 0 {
+	if len(res.Requeued) > 0 || len(res.TakenOver) > 0 || len(res.RetriesHealed) > 0 || len(res.StalledRuns) > 0 {
 		logger.InfoContext(ctx, "reconciler sweep complete",
 			slog.Int("requeued", len(res.Requeued)),
 			slog.Int("taken_over", len(res.TakenOver)),
+			slog.Int("retries_healed", len(res.RetriesHealed)),
 			slog.Int("stalled_runs", len(res.StalledRuns)))
 	}
-	if (len(res.Requeued) > 0 || len(res.TakenOver) > 0) && r.nudge != nil {
+	if (len(res.Requeued) > 0 || len(res.TakenOver) > 0 || len(res.RetriesHealed) > 0) && r.nudge != nil {
 		r.nudge()
 	}
 	return res, nil

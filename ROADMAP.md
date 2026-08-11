@@ -423,13 +423,13 @@ The headline guarantee, automated: harness (or compose-driven test) starts 2 wor
 - [x] Policy schema validated with sensible bounds (e.g., backoff cap required)
 - [x] Defaults documented; fixtures updated with explicit policies
 
-#### 5.2 — Retry engine with backoff
+#### 5.2 — Retry engine with backoff ✅
 **Depends on:** 5.1, 3.5
-On classified-transient failure: record failed attempt, compute backoff (exponential + full jitter), CAS step to a retry-wait state, schedule re-dispatch via the delayed ZSET, ACK the original message. Exhausted attempts → permanent failure path (5.4). Attempt counter durable in Postgres (survives worker death). *(Post-M4 audit note: if retry re-dispatch keeps the outbox non-trivially populated, add an index on `task_outbox(run_id, step_id)` — the reconciler's anti-join and the stale-running pending-row probe currently scan the identity PK only.)*
+On classified-transient failure: record failed attempt, compute backoff (exponential + full jitter), CAS step to a retry-wait state, schedule re-dispatch via the delayed ZSET, ACK the original message. Exhausted attempts → permanent failure path (5.4). Attempt counter durable in Postgres (survives worker death). *(Post-M4 audit note resolved in 5.2's migration: `task_outbox(run_id, step_id)` is indexed — the retry reconciler heal added a third anti-join over the outbox.)*
 **Done when:**
-- [ ] `fail_n_times(2)` with `max_attempts=3` succeeds on attempt 3; timings honor backoff (fake clock)
-- [ ] Exhaustion transitions to the permanent-failure path with full error history
-- [ ] Crash between attempt-fail commit and delayed-schedule is healed by the reconciler
+- [x] `fail_n_times(2)` with `max_attempts=3` succeeds on attempt 3; timings honor backoff (fake clock)
+- [x] Exhaustion transitions to the permanent-failure path with full error history
+- [x] Crash between attempt-fail commit and delayed-schedule is healed by the reconciler
 
 #### 5.3 — Step execution timeouts
 **Depends on:** 5.2

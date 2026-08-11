@@ -12,6 +12,57 @@ import (
 	"github.com/google/uuid"
 )
 
+const listOverdueRetryingSteps = `-- name: ListOverdueRetryingSteps :many
+SELECT rs.run_id, rs.step_id, rs.next_attempt_at
+FROM run_steps rs
+WHERE rs.status = 'retrying'
+  AND rs.next_attempt_at < $1::timestamptz
+  AND NOT EXISTS (
+      SELECT 1 FROM task_outbox o
+      WHERE o.run_id = rs.run_id AND o.step_id = rs.step_id)
+ORDER BY rs.next_attempt_at
+LIMIT $2
+`
+
+type ListOverdueRetryingStepsParams struct {
+	StaleBefore time.Time
+	RowLimit    int32
+}
+
+type ListOverdueRetryingStepsRow struct {
+	RunID         uuid.UUID
+	StepID        string
+	NextAttemptAt *time.Time
+}
+
+// Steps in retrying whose due time passed more than a staleness threshold
+// ago with no pending dispatch row — ADR-006's failure-commit/
+// delayed-schedule crash gap (the worker died, or its Schedule call
+// failed, after committing running → retrying but before the delayed-ZSET
+// write). Same anti-join shape as ListStaleReadySteps, same idempotency: a
+// re-outboxed step stops matching until its row is drained. The heal is an
+// outbox row alone (reason reconcile_retry) — no status change, since the
+// claim CAS accepts a due retrying step directly.
+func (q *Queries) ListOverdueRetryingSteps(ctx context.Context, arg ListOverdueRetryingStepsParams) ([]ListOverdueRetryingStepsRow, error) {
+	rows, err := q.db.Query(ctx, listOverdueRetryingSteps, arg.StaleBefore, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOverdueRetryingStepsRow
+	for rows.Next() {
+		var i ListOverdueRetryingStepsRow
+		if err := rows.Scan(&i.RunID, &i.StepID, &i.NextAttemptAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStaleReadySteps = `-- name: ListStaleReadySteps :many
 
 SELECT rs.run_id, rs.step_id, rs.updated_at
@@ -132,13 +183,13 @@ WHERE r.status = 'running'
   AND NOT EXISTS (
       SELECT 1 FROM run_steps rs
       WHERE rs.run_id = r.id
-        AND rs.status IN ('pending', 'ready', 'running'))
+        AND rs.status IN ('pending', 'ready', 'running', 'retrying'))
 ORDER BY r.created_at
 LIMIT $1
 `
 
-// Runs still running with no live (pending/ready/running) step — an
-// impossible state: the run rollup is atomic with the transition that
+// Runs still running with no live (pending/ready/running/retrying) step —
+// an impossible state: the run rollup is atomic with the transition that
 // terminalizes the last step, so observing this means corrupt state or an
 // engine bug. Flag-only, loudly.
 func (q *Queries) ListStalledRuns(ctx context.Context, rowLimit int32) ([]uuid.UUID, error) {

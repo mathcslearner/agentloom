@@ -248,11 +248,21 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 				return gen.Run{}, fmt.Errorf("marshaling config of step %q: %w", step.ID, err)
 			}
 		}
+		// The *effective* retry policy — authored fields merged over engine
+		// defaults — is materialized per step (ticket 5.2, ADR-006): the
+		// failure path never reparses the snapshot, and a worker upgrade
+		// cannot change an in-flight run's retry behavior. M13's expansion
+		// inherits this same path.
+		retryPolicy, err := json.Marshal(dag.ResolveRetryPolicy(step.Retry))
+		if err != nil {
+			return gen.Run{}, fmt.Errorf("marshaling retry policy of step %q: %w", step.ID, err)
+		}
 		steps[i] = gen.CreateRunStepsParams{
 			RunID:         run.ID,
 			StepID:        step.ID,
 			StepType:      string(step.Type),
 			Config:        config,
+			RetryPolicy:   retryPolicy,
 			Status:        status,
 			RemainingDeps: p.remaining[step.ID],
 			GraphVersion:  1,

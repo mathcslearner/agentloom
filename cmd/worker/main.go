@@ -80,13 +80,18 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		Interval:     cfg.Worker.ReconcileInterval,
 		ReadyStale:   cfg.Worker.ReconcileReadyStale,
 		RunningStale: cfg.Worker.ReconcileRunningStale,
+		RetryStale:   cfg.Worker.ReconcileRetryStale,
 		Limit:        cfg.Worker.ReconcileLimit,
 	}, engine.WithReconcilerNudge(dispatcher.Nudge))
 	if err != nil {
 		return err
 	}
+	// The engine's own delayed handle shares the consumer's key: retry
+	// re-dispatches scheduled here are promoted by any worker's promoter
+	// duty (ticket 5.2).
 	eng, err := engine.New(st, exec.Builtins(), workerID,
-		engine.WithDispatchNudge(dispatcher.Nudge))
+		engine.WithDispatchNudge(dispatcher.Nudge),
+		engine.WithRetryScheduler(q.NewDelayed(cfg.Queue.DelayedKey)))
 	if err != nil {
 		return err
 	}

@@ -10,6 +10,7 @@ const (
 	EnvWorkerReconcileInterval     = "AGENTLOOM_WORKER_RECONCILE_INTERVAL"
 	EnvWorkerReconcileReadyStale   = "AGENTLOOM_WORKER_RECONCILE_READY_STALE"
 	EnvWorkerReconcileRunningStale = "AGENTLOOM_WORKER_RECONCILE_RUNNING_STALE"
+	EnvWorkerReconcileRetryStale   = "AGENTLOOM_WORKER_RECONCILE_RETRY_STALE"
 	EnvWorkerReconcileLimit        = "AGENTLOOM_WORKER_RECONCILE_LIMIT"
 )
 
@@ -37,6 +38,10 @@ const (
 	DefaultWorkerReconcileReadyStale = time.Minute
 	// DefaultWorkerReconcileRunningStale is 10× the default lease TTL.
 	DefaultWorkerReconcileRunningStale = 5 * time.Minute
+	// DefaultWorkerReconcileRetryStale is 60× the default promoter tick —
+	// measured from a retrying step's next_attempt_at, so no lease-TTL
+	// margin applies (ticket 5.2).
+	DefaultWorkerReconcileRetryStale = time.Minute
 	// DefaultWorkerReconcileLimit caps rows per scan per sweep.
 	DefaultWorkerReconcileLimit = 256
 )
@@ -71,6 +76,12 @@ type WorkerConfig struct {
 	// step timeouts, size this above the longest step you expect to run.
 	// Must be positive.
 	ReconcileRunningStale time.Duration
+	// ReconcileRetryStale is how long past its next_attempt_at a retrying
+	// step may sit before the reconciler presumes its delayed re-dispatch
+	// lost and re-outboxes it (ticket 5.2, ADR-006's failure-commit/
+	// delayed-schedule crash gap). Measured from the due time; must
+	// comfortably exceed the promoter tick. Must be positive.
+	ReconcileRetryStale time.Duration
 	// ReconcileLimit caps each reconciler scan's rows per sweep. Must be
 	// positive.
 	ReconcileLimit int
@@ -84,6 +95,7 @@ func defaultWorkerConfig() WorkerConfig {
 		ReconcileInterval:     DefaultWorkerReconcileInterval,
 		ReconcileReadyStale:   DefaultWorkerReconcileReadyStale,
 		ReconcileRunningStale: DefaultWorkerReconcileRunningStale,
+		ReconcileRetryStale:   DefaultWorkerReconcileRetryStale,
 		ReconcileLimit:        DefaultWorkerReconcileLimit,
 	}
 }
@@ -98,6 +110,7 @@ func (c *WorkerConfig) applyEnv(fn LookupFunc) []error {
 	errs = applyPositiveDuration(errs, fn, EnvWorkerReconcileInterval, &c.ReconcileInterval)
 	errs = applyPositiveDuration(errs, fn, EnvWorkerReconcileReadyStale, &c.ReconcileReadyStale)
 	errs = applyPositiveDuration(errs, fn, EnvWorkerReconcileRunningStale, &c.ReconcileRunningStale)
+	errs = applyPositiveDuration(errs, fn, EnvWorkerReconcileRetryStale, &c.ReconcileRetryStale)
 	errs = applyPositiveInt(errs, fn, EnvWorkerReconcileLimit, &c.ReconcileLimit)
 	return errs
 }

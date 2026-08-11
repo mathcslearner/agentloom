@@ -85,7 +85,7 @@ nested parser.
 | `v` | yes | Envelope version, integer as string. This ADR defines `1`. |
 | `run_id` | yes | Run UUID, canonical string form. |
 | `step_id` | yes | Definition step ID, or a runtime instance ID `{id}#k` once M13/M14 expansion exists (ADR-003 reserves `#` for exactly this). Opaque to the queue layer. |
-| `reason` | yes | Enqueue reason — the `task_outbox.reason` value carried through (ADR-004). v1 vocabulary: `step_ready`, `reconcile_ready` (the reconciler's re-outbox of a stuck-ready step, 4.4), `reconcile_running` (the reconciler's re-outbox after taking over a stale-running step, 4.5) — all handled identically downstream; the distinct values make healed dispatches visible in entries and logs. Future reasons land with their owning milestones (retry re-dispatch M5.2, DLQ requeue M5.4, unpark M5.6, approval timeout M15). The vocabulary is small and closed, so `reason` is safe as a metric label (unlike `run_id`/`step_id`, which never are — project invariant). |
+| `reason` | yes | Enqueue reason — the `task_outbox.reason` value carried through (ADR-004), or stamped directly by a non-outbox producer. Vocabulary: `step_ready`, `reconcile_ready` (the reconciler's re-outbox of a stuck-ready step, 4.4), `reconcile_running` (the reconciler's re-outbox after taking over a stale-running step, 4.5), `retry` (a retry re-dispatch scheduled through the delayed set by the failing worker, 5.2 — the one reason produced without an outbox row), `reconcile_retry` (the reconciler's re-outbox of an overdue retrying step whose delayed entry was lost, 5.2) — all handled identically downstream; the distinct values make healed dispatches visible in entries and logs. Future reasons land with their owning milestones (DLQ requeue M5.4, unpark M5.6, approval timeout M15). The vocabulary is small and closed, so `reason` is safe as a metric label (unlike `run_id`/`step_id`, which never are — project invariant). |
 | `traceparent`, `tracestate` | no | W3C trace context placeholder. Reserved now, written and propagated from M7 on; absent until then. Reserving the fields is what lets observability arrive without a version bump. |
 | `enqueued_at_ms` | no | Producer's injected-clock time at enqueue, epoch milliseconds. Informational only — feeds dispatch-latency metrics (M7); never an input to logic, because producer and consumer clocks are not comparable. |
 
@@ -176,8 +176,11 @@ commits**, or when consuming the message is provably unnecessary:
 | Case | Action |
 |---|---|
 | Completion/failure transition committed (M4.3; also park, M15) | ACK |
+| Retry-routing transition committed (`running → retrying`, 5.2) | ACK — the durable row (`next_attempt_at`) now carries the retry; the post-commit delayed schedule is best-effort, its loss healed by the reconciler's overdue-retrying scan |
 | Claim CAS reports the step is already terminal (`succeeded`/`failed`/`skipped`) — duplicate of finished work | ACK and drop |
 | Claim CAS reports the step is already `running` on a message from the **fresh-delivery** path — a concurrent duplicate; the live holder's own entry covers the crash case | ACK and drop |
+| Claim CAS reports the step is `retrying` with its backoff still pending (5.2 — a due step would have matched the claim) | ACK and drop — `next_attempt_at` is durable and the delayed entry or the reconciler carries the future dispatch |
+| Claim CAS reports the run is not `running` (5.2's run-status guard; terminal now, parked/cancelling with M5.6) | ACK and drop — executing a step of a settled run is provably unnecessary |
 | Step is `running` on a message from the **reclaim** path — the holder's lease expired | lease-expiry takeover (below), no ACK until the subsequent completion commits |
 | Run or step row does not exist (dangling reference — e.g. run deleted under a retention policy) | ACK and drop |
 | Handler error, handler panic, worker crash | **no ACK** — the entry stays in the PEL and redelivers via reclaim |
@@ -226,7 +229,8 @@ explicit rationale.
 | W5 | After `XACK` | Nothing pending anywhere | Nothing to recover — rationale: ACK is the last protocol step; all durable effects committed in W4's transaction | rationale (no test needed) |
 | P1 | Outbox drainer, between `XADD` and the outbox-row `DELETE` committing | Entry in stream *and* outbox row still present | Row re-drained → duplicate entry → ACK-and-drop at claim. Enqueue is at-least-once by design | 4.4 (kill between commit and XADD; duplicate-dispatch assertion) |
 | P2 | Stream entry lost after drain (never delivered, no PEL trace) | Step stuck `ready`, no message anywhere | Reconciler re-outboxes steps `ready` longer than a threshold (ADR-004's partial index on `(status, updated_at)` serves the scan) | 4.4 reconciler test |
-| R1 | Redis loses stream + PEL + delayed set (crash beyond AOF's fsync window, failover) | Postgres intact: steps `ready` with no messages, steps `running` with no leases | Three-part: (a) `ready` steps — as P2. (b) `running` steps with a **live** worker — unaffected: the fence is Postgres `claim_id`, which survived; the worker's heartbeat starts failing (entry gone), it logs and continues, and its completion commits normally. (c) `running` steps with a **dead** worker — no PEL entry will ever expire, so the reconciler is the backstop: steps `running` with `updated_at` staler than a threshold ≫ lease TTL get the takeover (the same fenced CAS as the reclaim path, guarded on the scanned claim so a step re-claimed between snapshot and row lock is left alone) + a re-outbox with reason `reconcile_running` (4.5). The threshold is generous because `updated_at` moves on transitions, not heartbeats — it is effectively a cap on step wall-clock time; a false positive keeps durable state correct (fencing rejects the live holder's completion) but re-runs the step's side effects. The heal skips its re-outbox when the step already carries a pending outbox row (the P1 shape sustained past the threshold), so a takeover never doubles a pending dispatch. (d) delayed entries — recovered by their owners' durable state (a `retrying` step visibly stuck, M5.2's reconciler concern; v1 has no production tenant of the delayed set) | (a) 4.4; (b) 4.5; (c) flagged 4.4, healed 4.5; full-loss drill in 5.8 chaos (Redis restart blip) |
+| P3 | Retry-routing worker dies (or its ZADD fails) after the `running → retrying` commit, before the delayed schedule (5.2) | Step `retrying` with `next_attempt_at` set; no delayed entry; original PEL entry either ACKed (schedule failed softly) or redelivered-then-dropped (retrying, not due) | Reconciler re-outboxes steps `retrying` whose `next_attempt_at` is more than the retry-stale threshold in the past with no pending outbox row (reason `reconcile_retry`; same anti-join idempotency as P2); the claim CAS accepts a due retrying step directly, so no status heal is needed. A late-arriving duplicate delivery past the due time claims and executes on its own — self-healing without the sweep | 5.2 failing-scheduler integration test (`TestRetryCrashGapHealedByReconciler`) |
+| R1 | Redis loses stream + PEL + delayed set (crash beyond AOF's fsync window, failover) | Postgres intact: steps `ready` with no messages, steps `running` with no leases | Three-part: (a) `ready` steps — as P2. (b) `running` steps with a **live** worker — unaffected: the fence is Postgres `claim_id`, which survived; the worker's heartbeat starts failing (entry gone), it logs and continues, and its completion commits normally. (c) `running` steps with a **dead** worker — no PEL entry will ever expire, so the reconciler is the backstop: steps `running` with `updated_at` staler than a threshold ≫ lease TTL get the takeover (the same fenced CAS as the reclaim path, guarded on the scanned claim so a step re-claimed between snapshot and row lock is left alone) + a re-outbox with reason `reconcile_running` (4.5). The threshold is generous because `updated_at` moves on transitions, not heartbeats — it is effectively a cap on step wall-clock time; a false positive keeps durable state correct (fencing rejects the live holder's completion) but re-runs the step's side effects. The heal skips its re-outbox when the step already carries a pending outbox row (the P1 shape sustained past the threshold), so a takeover never doubles a pending dispatch. (d) delayed entries — recovered by their owners' durable state: the retry tenant (5.2, the delayed set's first production tenant) rests in `retrying` with `next_attempt_at` durable, so a lost entry is healed exactly as P3 | (a) 4.4; (b) 4.5; (c) flagged 4.4, healed 4.5; (d) 5.2's P3 test; full-loss drill in 5.8 chaos (Redis restart blip) |
 
 The uniform shape: **every recovery is either "redeliver and let the
 claim CAS decide" or "reconciler re-outboxes from Postgres state."** No
@@ -321,15 +325,22 @@ tests drive promotion with a fake clock; the script never reads Redis
 server time. ZSET member semantics are deliberate: `ZADD` of an identical
 envelope *moves its fire time* rather than queueing a second copy — "at
 most one pending future dispatch per identical envelope" is the semantic
-retries and requeues want. A tenant needing two independent future
-dispatches of the same step must make the envelopes distinct (e.g. M5.2
-can carry the attempt number in a field); that is the tenant's contract,
-recorded here so nobody trips over it.
+retries and requeues want. The retry tenant (5.2) leans into this
+deliberately: retry envelopes are built without `enqueued_at_ms` so
+successive retries of one step encode byte-identically — at most one
+pending retry dispatch per step, ever. A tenant needing two independent
+future dispatches of the same step must instead make the envelopes
+distinct; that is the tenant's contract, recorded here so nobody trips
+over it.
 
-Delayed entries are *scheduling state, not truth*: each future tenant
-must hold durable Postgres state from which a lost delayed entry is
-re-derivable (M5.2's `retrying` step status is the first example). The
-queue library provides the mechanism; durability remains Postgres's job.
+Delayed entries are *scheduling state, not truth*: each tenant must hold
+durable Postgres state from which a lost delayed entry is re-derivable.
+The first production tenant — 5.2's retry re-dispatch — models this:
+`retrying` status plus `next_attempt_at` on the step row are the truth,
+the delayed entry is a latency optimization, and the reconciler's
+overdue-retrying scan (crash cell P3) re-dispatches from the row alone.
+The queue library provides the mechanism; durability remains Postgres's
+job.
 
 A member the script cannot decode into stream fields is moved to a
 quarantine list (`<key>:malformed`) instead of the stream (decided in
@@ -409,6 +420,7 @@ it).
 | Reconciler sweep interval | 30s, ±20% jitter | Bounds lost-dispatch heal latency; the fleet-wide advisory lock (`pg_try_advisory_xact_lock`) admits one sweep at a time — losers skip, so N workers cost one sweep per interval, not N. Jitter keeps worst-case heal latency near one interval instead of stacking skipped sweeps. |
 | Ready-stale threshold | 1m | ≫ the drain interval, so only a genuinely lost dispatch (P2/R1(a)) qualifies; the anti-join against pending `task_outbox` rows makes sweeps idempotent — a stuck step costs at most one duplicate dispatch per threshold period, never one per sweep. |
 | Running-stale threshold | 5m | ≫ the lease TTL because `updated_at` moves on transitions, not heartbeats (R1(c)); a hit gets takeover + re-outbox (4.5) — a false positive is fenced, so the cost of too tight a bound is wasted re-execution, not corruption. |
+| Retry-stale threshold | 1m | Measured from a retrying step's `next_attempt_at` (5.2, crash cell P3), so no lease-TTL margin applies; it need only comfortably exceed the promoter tick. A false positive (delayed entry merely slow) costs one duplicate dispatch, absorbed at the claim CAS. |
 | Reconciler sweep limit | 256 rows/scan | Caps sweep transaction size; a hit is logged (no silent truncation) and the next sweep continues. |
 | Stream / group / delayed-set names | `steps:ready` / `workers` / `sched:delayed` | The fleet-wide names above; overridable via env (`AGENTLOOM_QUEUE_STREAM`/`_GROUP`/`_DELAYED_KEY`, 4.7) for test isolation only — the crash-recovery suite runs real worker processes against per-test keys on a shared Redis. Production sharding is M19's lever, not this knob. |
 

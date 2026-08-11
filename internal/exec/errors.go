@@ -3,7 +3,47 @@ package exec
 import (
 	"errors"
 	"fmt"
+
+	"github.com/mathcslearner/agentloom/internal/dag"
 )
+
+// ErrorClass aliases the dag package's contract type (ADR-006): the
+// definition contract references the vocabulary (`retry.retry_on`), so it
+// lives there; the execution layer speaks it through this alias.
+type ErrorClass = dag.ErrorClass
+
+// ClassifiedError is the typed wrapper an executor returns when it knows
+// its error's class better than the engine's default (unclassified errors
+// default to transient — ADR-006 "Classification"). errors.As unwraps it
+// anywhere in a wrap chain. Executors classify only transient/permanent:
+// the engine assigns timeout and cancelled itself from context state
+// (M5.3/5.6), and validation_failed is reserved until M11.
+type ClassifiedError struct {
+	// Class is the declared error class.
+	Class ErrorClass
+	// Err is the wrapped cause. Required.
+	Err error
+}
+
+func (e *ClassifiedError) Error() string {
+	return fmt.Sprintf("[%s] %v", e.Class, e.Err)
+}
+
+func (e *ClassifiedError) Unwrap() error { return e.Err }
+
+// Transientf builds a ClassifiedError marked transient: the failure can
+// plausibly heal on its own (network error, provider 5xx/429, contention)
+// and deserves a retry per the step's policy.
+func Transientf(format string, args ...any) error {
+	return &ClassifiedError{Class: dag.ClassTransient, Err: fmt.Errorf(format, args...)}
+}
+
+// Permanentf builds a ClassifiedError marked permanent: no identical
+// re-execution can succeed (bad request shape, nonexistent model, a
+// deterministic content failure), so retrying only wastes budget.
+func Permanentf(format string, args ...any) error {
+	return &ClassifiedError{Class: dag.ClassPermanent, Err: fmt.Errorf(format, args...)}
+}
 
 // ErrUnknownType is the sentinel every registry miss unwraps to. Test
 // with errors.Is; errors.As an *UnknownTypeError for the offending type.

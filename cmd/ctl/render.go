@@ -32,6 +32,7 @@ var statusGlyph = map[string]string{
 	"succeeded": "✓",
 	"failed":    "✗",
 	"skipped":   "-",
+	"retrying":  "↻",
 }
 
 // renderRun writes the run's status tree: a header with the rollup

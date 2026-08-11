@@ -243,11 +243,23 @@ transaction** that records the failed attempt — `failed` is never left
 resting across transactions (a crash mid-transaction rolls back to
 `running` and the delivery redelivers; ADR-005's discipline). The
 retry delay is served by the delayed-delivery ZSET (ADR-005 3.5 — its
-first production tenant), with the promotion re-outboxing under a new
-reason `retry` added to ADR-005's vocabulary; a crash between the
-failure commit and the delayed-schedule is healed by the reconciler
-(5.2 extends the staleness sweep to `retrying` steps with no delayed
-entry, the same anti-join shape as `reconcile_ready`).
+first production tenant), the delayed envelope carrying the new reason
+`retry` added to ADR-005's vocabulary; a crash between the failure
+commit and the delayed-schedule is healed by the reconciler (5.2
+extends the staleness sweep to `retrying` steps whose due time is long
+past with no pending outbox row, the same anti-join shape as
+`reconcile_ready`).
+
+*As built (5.2):* both hops through transient states are realized as
+single CASes — the routing state `failed` is passed through inside the
+completion transaction as a direct `running → retrying` CAS, and the
+`retrying → ready` hop collapses into the claim (delayed promotion is a
+pure Redis event with no Postgres write): the claim CAS accepts a
+`retrying` step once `next_attempt_at ≤ now`, which is also what makes
+backoff enforceable against early duplicate deliveries. `next_attempt_at`
+is stamped durably on the step row by the retry transaction — the state
+the reconciler heals a lost delayed entry from (ADR-005 crash cell P3).
+ADR-004's transition matrix records the as-built rows.
 
 ### Dead-letter model
 

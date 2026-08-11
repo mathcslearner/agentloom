@@ -39,8 +39,27 @@ WHERE rs.status = 'running'
 ORDER BY rs.updated_at
 LIMIT @row_limit;
 
--- Runs still running with no live (pending/ready/running) step — an
--- impossible state: the run rollup is atomic with the transition that
+-- Steps in retrying whose due time passed more than a staleness threshold
+-- ago with no pending dispatch row — ADR-006's failure-commit/
+-- delayed-schedule crash gap (the worker died, or its Schedule call
+-- failed, after committing running → retrying but before the delayed-ZSET
+-- write). Same anti-join shape as ListStaleReadySteps, same idempotency: a
+-- re-outboxed step stops matching until its row is drained. The heal is an
+-- outbox row alone (reason reconcile_retry) — no status change, since the
+-- claim CAS accepts a due retrying step directly.
+-- name: ListOverdueRetryingSteps :many
+SELECT rs.run_id, rs.step_id, rs.next_attempt_at
+FROM run_steps rs
+WHERE rs.status = 'retrying'
+  AND rs.next_attempt_at < @stale_before::timestamptz
+  AND NOT EXISTS (
+      SELECT 1 FROM task_outbox o
+      WHERE o.run_id = rs.run_id AND o.step_id = rs.step_id)
+ORDER BY rs.next_attempt_at
+LIMIT @row_limit;
+
+-- Runs still running with no live (pending/ready/running/retrying) step —
+-- an impossible state: the run rollup is atomic with the transition that
 -- terminalizes the last step, so observing this means corrupt state or an
 -- engine bug. Flag-only, loudly.
 -- name: ListStalledRuns :many
@@ -50,7 +69,7 @@ WHERE r.status = 'running'
   AND NOT EXISTS (
       SELECT 1 FROM run_steps rs
       WHERE rs.run_id = r.id
-        AND rs.status IN ('pending', 'ready', 'running'))
+        AND rs.status IN ('pending', 'ready', 'running', 'retrying'))
 ORDER BY r.created_at
 LIMIT @row_limit;
 

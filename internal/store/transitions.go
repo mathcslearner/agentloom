@@ -51,6 +51,15 @@ type stepFinishedPayload struct {
 	AttemptNo int32  `json:"attempt_no"`
 }
 
+// stepRetryPayload is the step_retry_scheduled event body (ticket 5.2):
+// which attempt failed, how it was classed, and when the next is due.
+type stepRetryPayload struct {
+	StepID        string    `json:"step_id"`
+	AttemptNo     int32     `json:"attempt_no"`
+	Class         string    `json:"class"`
+	NextAttemptAt time.Time `json:"next_attempt_at"`
+}
+
 // ClaimStepArgs are the inputs to ClaimStep.
 type ClaimStepArgs struct {
 	RunID  uuid.UUID
@@ -59,20 +68,37 @@ type ClaimStepArgs struct {
 	Now time.Time
 }
 
-// ClaimStep transitions a step ready → running: it stamps a fresh claim_id
-// (the fencing token, carried on the returned row), increments the durable
-// attempt counter, inserts the step_attempts row, and appends the
-// step_claimed event. Exactly one of N racing claimers wins; the rest get
-// ErrConflict — the substrate that turns at-least-once delivery into
-// effectively-once execution (losers ACK-and-drop).
+// ClaimStep transitions a step ready → running — or retrying → running
+// once its next_attempt_at has passed (ticket 5.2; the backoff guard means
+// an early duplicate delivery bounces instead of executing before its
+// time). It stamps a fresh claim_id (the fencing token, carried on the
+// returned row), increments the durable attempt counter, inserts the
+// step_attempts row, and appends the step_claimed event. Exactly one of N
+// racing claimers wins; the rest get ErrConflict — the substrate that
+// turns at-least-once delivery into effectively-once execution (losers
+// ACK-and-drop). Steps of non-running runs are refused with
+// ConflictRunNotRunning (ADR-006: the claim path refuses terminal runs;
+// 5.6's park/cancel reuses the guard).
 func ClaimStep(ctx context.Context, q Querier, args ClaimStepArgs) (gen.RunStep, error) {
 	const op = "claim step"
 	gq, err := transitionQueries(ctx, q, op, args.Now)
 	if err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
+	run, err := lockRun(ctx, gq, op, args.RunID)
+	if err != nil {
 		return gen.RunStep{}, err
+	}
+	if run.Status != RunStatusRunning {
+		step, gerr := gq.GetRunStep(ctx, gen.GetRunStepParams{RunID: args.RunID, StepID: args.StepID})
+		if gerr != nil {
+			return gen.RunStep{}, wrapErr(op, gerr)
+		}
+		return gen.RunStep{}, fmt.Errorf("store: %s: %w", op, &TransitionError{
+			Entity: "step", RunID: args.RunID, StepID: args.StepID,
+			From: run.Status, To: StepStatusRunning,
+			Reason: ConflictRunNotRunning, CurrentClaimID: step.ClaimID,
+		})
 	}
 	claimID := uuid.New()
 	step, err := gq.ClaimRunStep(ctx, gen.ClaimRunStepParams{
@@ -130,7 +156,7 @@ func TakeoverStep(ctx context.Context, q Querier, args TakeoverStepArgs) (gen.Ru
 	if err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.RunStep{}, err
 	}
 	step, err := gq.TakeoverRunStep(ctx, gen.TakeoverRunStepParams{
@@ -183,7 +209,7 @@ func SucceedStep(ctx context.Context, q Querier, args SucceedStepArgs) (gen.RunS
 	if err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.RunStep{}, err
 	}
 	step, err := gq.SucceedRunStep(ctx, gen.SucceedRunStepParams{
@@ -220,6 +246,11 @@ type FailStepArgs struct {
 	StepID string
 	// ClaimID is the fencing token ClaimStep issued to this caller.
 	ClaimID uuid.UUID
+	// Outcome is the attempt's ADR-006 error class (transient / permanent /
+	// timeout / cancelled) — what the judged failure *was*, even when the
+	// disposition is terminal (an exhausted transient records `transient`).
+	// Required; the retired bare `failed` is rejected by the schema CHECK.
+	Outcome string
 	// Error is the failure summary, stored on both the step (last failure)
 	// and the attempt; nil stores NULL.
 	Error json.RawMessage
@@ -228,17 +259,22 @@ type FailStepArgs struct {
 }
 
 // FailStep transitions a step running → failed, fenced by ClaimID: it
-// records the error on the step and its attempt row, bumps the run's
-// steps_failed aggregate, and appends the step_failed event. The failed
-// step's out-edges stay unresolved (ADR-004), permanently blocking
-// dependents until retry/DLQ semantics arrive (M5).
+// records the error on the step and its attempt row (outcome = the ADR-006
+// class), bumps the run's steps_failed aggregate, and appends the
+// step_failed event. Since 5.2 this is the *terminal* failure path —
+// budget exhausted or class not retryable; retryable failures route
+// through RetryStep instead. The failed step's out-edges stay unresolved
+// (ADR-004), blocking dependents until DLQ semantics arrive (5.4).
 func FailStep(ctx context.Context, q Querier, args FailStepArgs) (gen.RunStep, error) {
 	const op = "fail step"
 	gq, err := transitionQueries(ctx, q, op, args.Now)
 	if err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
+	if args.Outcome == "" {
+		return gen.RunStep{}, fmt.Errorf("store: %s: empty Outcome — pass the attempt's ADR-006 error class", op)
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.RunStep{}, err
 	}
 	step, err := gq.FailRunStep(ctx, gen.FailRunStepParams{
@@ -253,7 +289,7 @@ func FailStep(ctx context.Context, q Querier, args FailStepArgs) (gen.RunStep, e
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := finishAttempt(ctx, gq, op, step, StepStatusFailed, args.Error, args.Now); err != nil {
+	if err := finishAttempt(ctx, gq, op, step, args.Outcome, args.Error, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DFailed: 1}); err != nil {
@@ -266,6 +302,79 @@ func FailStep(ctx context.Context, q Querier, args FailStepArgs) (gen.RunStep, e
 	}
 	log.From(ctx).DebugContext(ctx, "step failed",
 		log.RunID(args.RunID.String()), log.StepID(args.StepID), log.Attempt(int(step.AttemptCount)))
+	return step, nil
+}
+
+// RetryStepArgs are the inputs to RetryStep.
+type RetryStepArgs struct {
+	RunID  uuid.UUID
+	StepID string
+	// ClaimID is the fencing token ClaimStep issued to this caller.
+	ClaimID uuid.UUID
+	// Outcome is the attempt's ADR-006 error class. Only the counted,
+	// retryable classes may route here: transient or timeout.
+	Outcome string
+	// Error is the failure summary, stored on both the step (last failure)
+	// and the attempt; nil stores NULL.
+	Error json.RawMessage
+	// NextAttemptAt is when the next attempt is due — now plus the computed
+	// backoff delay. Required.
+	NextAttemptAt time.Time
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// RetryStep transitions a step running → retrying, fenced by ClaimID
+// (ticket 5.2, ADR-006 "Step failure lifecycle" — the conceptual `failed`
+// routing state is passed through inside this one transaction, never left
+// resting): it records the error on the step and closes its attempt row
+// with the judged class, clears claim_id (a retrying step holds no claim
+// and no lease), stamps next_attempt_at, and appends the
+// step_retry_scheduled event. The run's steps_failed aggregate is NOT
+// bumped — the step is not terminal, and the rollup guard must still pass
+// when the retry eventually succeeds. Scheduling the delayed re-dispatch
+// is the caller's post-commit move; a crash before it is healed by the
+// reconciler's overdue-retrying scan.
+func RetryStep(ctx context.Context, q Querier, args RetryStepArgs) (gen.RunStep, error) {
+	const op = "retry step"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.RunStep{}, err
+	}
+	if args.Outcome != AttemptOutcomeTransient && args.Outcome != AttemptOutcomeTimeout {
+		return gen.RunStep{}, fmt.Errorf(
+			"store: %s: outcome %q is not a counted retryable class (transient/timeout)", op, args.Outcome)
+	}
+	if args.NextAttemptAt.IsZero() {
+		return gen.RunStep{}, fmt.Errorf("store: %s: zero NextAttemptAt — pass the computed due time", op)
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.RunStep{}, err
+	}
+	step, err := gq.RetryRunStep(ctx, gen.RetryRunStepParams{
+		RunID: args.RunID, StepID: args.StepID, ClaimID: &args.ClaimID,
+		Error: args.Error, NextAttemptAt: args.NextAttemptAt, Now: args.Now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.RunStep{}, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
+			want: StepStatusRunning, to: StepStatusRetrying, claim: &args.ClaimID,
+		})
+	}
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op, err)
+	}
+	if err := finishAttempt(ctx, gq, op, step, args.Outcome, args.Error, args.Now); err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepRetryScheduled, stepRetryPayload{
+		StepID: args.StepID, AttemptNo: step.AttemptCount,
+		Class: args.Outcome, NextAttemptAt: args.NextAttemptAt,
+	}); err != nil {
+		return gen.RunStep{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "step retry scheduled",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID),
+		log.Attempt(int(step.AttemptCount)))
 	return step, nil
 }
 
@@ -310,7 +419,7 @@ func ResolveEdge(ctx context.Context, q Querier, args ResolveEdgeArgs) (ResolveE
 	if err != nil {
 		return ResolveEdgeResult{}, err
 	}
-	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return ResolveEdgeResult{}, err
 	}
 	resolution := EdgeResolutionSkipped
@@ -405,7 +514,7 @@ func ReadyStep(ctx context.Context, q Querier, args ReadyStepArgs) (gen.RunStep,
 	if err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.RunStep{}, err
 	}
 	step, err := gq.ReadyRunStep(ctx, gen.ReadyRunStepParams{
@@ -446,7 +555,7 @@ func SkipStep(ctx context.Context, q Querier, args SkipStepArgs) (gen.RunStep, e
 	if err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.RunStep{}, err
 	}
 	step, err := gq.SkipRunStep(ctx, gen.SkipRunStepParams{
@@ -490,7 +599,7 @@ func SucceedRun(ctx context.Context, q Querier, args SucceedRunArgs) (gen.Run, e
 	if err != nil {
 		return gen.Run{}, err
 	}
-	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.Run{}, err
 	}
 	run, err := gq.SucceedRun(ctx, gen.SucceedRunParams{RunID: args.RunID, Now: args.Now})
@@ -523,7 +632,7 @@ func FailRun(ctx context.Context, q Querier, args FailRunArgs) (gen.Run, error) 
 	if err != nil {
 		return gen.Run{}, err
 	}
-	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.Run{}, err
 	}
 	run, err := gq.FailRun(ctx, gen.FailRunParams{RunID: args.RunID, Now: args.Now})
@@ -562,12 +671,15 @@ func transitionQueries(ctx context.Context, q Querier, op string, now time.Time)
 // transition (uniform run → step → edge ordering; see the package
 // comment) — and surfaces a missing run as ErrNotFound before any other
 // work. A FOR UPDATE read, not a write: a transition rejected after it
-// leaves no trace.
-func lockRun(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUID) error {
-	if _, err := gq.LockRun(ctx, runID); err != nil {
-		return wrapErr(op+": lock run", err)
+// leaves no trace. The returned row carries the run's status for the
+// transitions that guard on it (ClaimStep since 5.2); everyone else
+// ignores it.
+func lockRun(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUID) (gen.LockRunRow, error) {
+	row, err := gq.LockRun(ctx, runID)
+	if err != nil {
+		return gen.LockRunRow{}, wrapErr(op+": lock run", err)
 	}
-	return nil
+	return row, nil
 }
 
 // appendEvent allocates the transition's event seq and writes the event

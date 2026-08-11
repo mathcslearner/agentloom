@@ -30,6 +30,8 @@ UPDATE runs SET next_seq = next_seq + 1 WHERE id = $1 RETURNING next_seq;
 -- LockRun acquires the run-row lock without writing anything. It is every
 -- transition's first statement (uniform run → step → edge lock ordering;
 -- see the transitions.go package comment) and doubles as the existence
--- check — zero rows means the run is gone.
+-- check — zero rows means the run is gone. It returns the run's status so
+-- ClaimStep can enforce the run-status guard (ticket 5.2, ADR-006: the
+-- claim path refuses steps of terminal runs; 5.6's park/cancel reuses it).
 -- name: LockRun :one
-SELECT id FROM runs WHERE id = $1 FOR UPDATE;
+SELECT id, status FROM runs WHERE id = $1 FOR UPDATE;

@@ -19,7 +19,7 @@ SET remaining_deps = remaining_deps - 1,
     fired_deps     = fired_deps + $1::int,
     updated_at     = $2::timestamptz
 WHERE run_id = $3 AND step_id = $4 AND remaining_deps > 0
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at
 `
 
 type ApplyEdgeResolutionParams struct {
@@ -59,6 +59,8 @@ func (q *Queries) ApplyEdgeResolution(ctx context.Context, arg ApplyEdgeResoluti
 		&i.UpdatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
 	)
 	return i, err
 }
@@ -96,13 +98,16 @@ func (q *Queries) BumpRunStepCounters(ctx context.Context, arg BumpRunStepCounte
 const claimRunStep = `-- name: ClaimRunStep :one
 
 UPDATE run_steps
-SET status         = 'running',
-    claim_id       = $1,
-    attempt_count  = attempt_count + 1,
-    started_at     = COALESCE(started_at, $2::timestamptz),
-    updated_at     = $2::timestamptz
-WHERE run_id = $3 AND step_id = $4 AND status = 'ready'
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at
+SET status          = 'running',
+    claim_id        = $1,
+    attempt_count   = attempt_count + 1,
+    next_attempt_at = NULL,
+    started_at      = COALESCE(started_at, $2::timestamptz),
+    updated_at      = $2::timestamptz
+WHERE run_id = $3 AND step_id = $4
+  AND (status = 'ready'
+       OR (status = 'retrying' AND next_attempt_at <= $2::timestamptz))
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at
 `
 
 type ClaimRunStepParams struct {
@@ -119,7 +124,12 @@ type ClaimRunStepParams struct {
 // return a typed error. These queries are deliberately absent from the
 // public repository interfaces: transitions.go is the only mutation
 // surface, so a status change can never skip its event append.
-// Claim: ready → running. Sets the fresh fencing token, increments the
+// Claim: ready → running, or retrying → running once the step's backoff
+// has elapsed (ticket 5.2 — ADR-006's `retrying → ready → running` hop is
+// realized at claim time; delayed promotion writes nothing to Postgres).
+// The next_attempt_at guard is what makes backoff enforceable: an early
+// duplicate delivery of a retrying step matches nothing and is dropped by
+// the claim classifier. Sets the fresh fencing token, increments the
 // durable attempt counter, and stamps started_at on the first claim only
 // (reclaims and retries keep the original).
 func (q *Queries) ClaimRunStep(ctx context.Context, arg ClaimRunStepParams) (RunStep, error) {
@@ -147,6 +157,8 @@ func (q *Queries) ClaimRunStep(ctx context.Context, arg ClaimRunStepParams) (Run
 		&i.UpdatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
 	)
 	return i, err
 }
@@ -197,7 +209,7 @@ SET status      = 'failed',
     updated_at  = $2::timestamptz
 WHERE run_id = $3 AND step_id = $4
   AND status = 'running' AND claim_id = $5
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at
 `
 
 type FailRunStepParams struct {
@@ -236,6 +248,8 @@ func (q *Queries) FailRunStep(ctx context.Context, arg FailRunStepParams) (RunSt
 		&i.UpdatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
 	)
 	return i, err
 }
@@ -273,7 +287,7 @@ SET status     = 'ready',
     updated_at = $1::timestamptz
 WHERE run_id = $2 AND step_id = $3 AND status = 'pending'
   AND fired_deps >= 1 AND (remaining_deps = 0 OR $4::boolean)
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at
 `
 
 type ReadyRunStepParams struct {
@@ -312,6 +326,8 @@ func (q *Queries) ReadyRunStep(ctx context.Context, arg ReadyRunStepParams) (Run
 		&i.UpdatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
 	)
 	return i, err
 }
@@ -352,13 +368,73 @@ func (q *Queries) ResolveRunEdge(ctx context.Context, arg ResolveRunEdgeParams) 
 	return i, err
 }
 
+const retryRunStep = `-- name: RetryRunStep :one
+UPDATE run_steps
+SET status          = 'retrying',
+    error           = $1,
+    claim_id        = NULL,
+    next_attempt_at = $2::timestamptz,
+    updated_at      = $3::timestamptz
+WHERE run_id = $4 AND step_id = $5
+  AND status = 'running' AND claim_id = $6
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at
+`
+
+type RetryRunStepParams struct {
+	Error         json.RawMessage
+	NextAttemptAt time.Time
+	Now           time.Time
+	RunID         uuid.UUID
+	StepID        string
+	ClaimID       *uuid.UUID
+}
+
+// Retry routing: running → retrying, fenced by claim_id (ticket 5.2,
+// ADR-006 "Step failure lifecycle" — `failed` is a routing state the
+// completion transaction passes through, never left resting). Records the
+// last failure summary, stamps when the next attempt is due, and clears
+// claim_id — a retrying step holds no claim and no lease. finished_at
+// stays NULL: the step is not terminal.
+func (q *Queries) RetryRunStep(ctx context.Context, arg RetryRunStepParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, retryRunStep,
+		arg.Error,
+		arg.NextAttemptAt,
+		arg.Now,
+		arg.RunID,
+		arg.StepID,
+		arg.ClaimID,
+	)
+	var i RunStep
+	err := row.Scan(
+		&i.RunID,
+		&i.StepID,
+		&i.StepType,
+		&i.Config,
+		&i.Status,
+		&i.RemainingDeps,
+		&i.FiredDeps,
+		&i.ClaimID,
+		&i.AttemptCount,
+		&i.Output,
+		&i.Error,
+		&i.GraphVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
+	)
+	return i, err
+}
+
 const skipRunStep = `-- name: SkipRunStep :one
 UPDATE run_steps
 SET status     = 'skipped',
     updated_at = $1::timestamptz
 WHERE run_id = $2 AND step_id = $3 AND status = 'pending'
   AND remaining_deps = 0 AND fired_deps = 0
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at
 `
 
 type SkipRunStepParams struct {
@@ -389,6 +465,8 @@ func (q *Queries) SkipRunStep(ctx context.Context, arg SkipRunStepParams) (RunSt
 		&i.UpdatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
 	)
 	return i, err
 }
@@ -442,7 +520,7 @@ SET status      = 'succeeded',
     updated_at  = $2::timestamptz
 WHERE run_id = $3 AND step_id = $4
   AND status = 'running' AND claim_id = $5
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at
 `
 
 type SucceedRunStepParams struct {
@@ -481,6 +559,8 @@ func (q *Queries) SucceedRunStep(ctx context.Context, arg SucceedRunStepParams) 
 		&i.UpdatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
 	)
 	return i, err
 }
@@ -492,7 +572,7 @@ SET status     = 'ready',
     updated_at = $1::timestamptz
 WHERE run_id = $2 AND step_id = $3
   AND status = 'running' AND claim_id = $4
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at
 `
 
 type TakeoverRunStepParams struct {
@@ -533,6 +613,8 @@ func (q *Queries) TakeoverRunStep(ctx context.Context, arg TakeoverRunStepParams
 		&i.UpdatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
 	)
 	return i, err
 }

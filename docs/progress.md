@@ -1963,3 +1963,141 @@ mirrors all three spellings for the roundtrip corpus; READMEs updated.
 - ADR-003/004/005 needed no amendments: all three had reserved exactly
   the slots this ADR fills (the `retry` field, the M5 statuses and
   outcome vocabulary, the `retry`/`dlq_requeue` reasons).
+
+### 5.2 — Retry engine with backoff ✅
+
+**Delivered.** The runtime half of ADR-006 for retryable failures:
+worker-side classification, the `retrying` step status with durable
+scheduling state, exponential-backoff-with-full-jitter computation, the
+delayed-ZSET re-dispatch (the delayed queue's first production tenant),
+the run-status guard on claims, and reconciler coverage for the
+failure-commit/delayed-schedule crash gap. Exhausted and never-retryable
+failures land on the 4.x terminal path (`FailStep`+`FailRun`) with their
+class recorded — 5.4 upgrades that path to `dead_lettered`.
+
+**Migration 0003** (`retry_semantics`): `run_steps.retry_policy` (JSONB
+NOT NULL — the *effective* policy, authored fields merged over engine
+defaults, materialized at instantiation by `CreateRun` via the new
+`dag.ResolveRetryPolicy`; existing rows backfilled with the default
+policy) and `run_steps.next_attempt_at` (set while `retrying`); status
+CHECK gains `retrying` (`dead_lettered`/`cancelled` wait for 5.4);
+`step_attempts.outcome` gets ADR-004's postponed CHECK with the classed
+vocabulary (`succeeded|transient|permanent|timeout|cancelled|lost`),
+retiring the bare `failed` (backfilled to `permanent`); partial index
+`run_steps_retrying_idx (next_attempt_at) WHERE status='retrying'`; and
+`task_outbox(run_id, step_id)` — the post-M4 audit note, resolved because
+the retry heal added a third anti-join over the outbox.
+
+**Store.** `RetryStep` — the claim-fenced `running → retrying` CAS
+(ADR-006's `failed` routing state is passed through *inside* the
+transaction, never rested): closes the attempt with its class, records
+the error, clears `claim_id`, stamps `next_attempt_at`, appends the new
+`step_retry_scheduled` event, and deliberately does **not** bump
+`steps_failed` (the rollup guard must pass when the retry succeeds).
+`FailStepArgs` gained a required `Outcome` (the judged class — an
+exhausted transient records `transient` even though the disposition is
+terminal). `ClaimRunStep` widened: `ready`, or `retrying` with
+`next_attempt_at <= now` — the backoff guard that bounces early duplicate
+deliveries — clearing `next_attempt_at` on claim; `LockRun` now returns
+the run's status and `ClaimStep` refuses steps of non-`running` runs with
+the new typed reason `run_not_running` (the mechanism 5.6's park/cancel
+reuses). `CountCountedFailures` (AttemptRepo) derives the durable retry
+budget — outcomes `transient|timeout` only, `lost` excluded by
+construction, the same derivation 5.4's requeue-baseline will reuse.
+Reconciler reads grew `ListOverdueRetryingSteps` (due more than a
+threshold ago, anti-join against pending outbox rows — the
+`reconcile_ready` shape); `ListStalledRuns` counts `retrying` as live.
+`StepRepo.Create`/`CreateBatch` default a nil `RetryPolicy` to the
+serialized engine-default policy (the eventRepo nil-payload convention;
+instantiation always materializes explicitly).
+
+**Exec.** `ErrorClass` (alias of dag's), `ClassifiedError` with
+`Transientf`/`Permanentf` constructors, `errors.As`-unwrappable anywhere
+in a chain. Executors declare only transient/permanent; timeout and
+cancelled stay engine-assigned (5.3/5.6), `validation_failed` reserved.
+
+**Engine.** `classifyFailure` (pure): declared classes honored,
+`ErrUnknownType`/`ErrInvalidConfig` force-permanent (taxonomy rows 4–5),
+everything else default-transient (row 1); a mis-declared class
+(reserved/engine-owned) falls back to transient and logs. Call sites that
+know better pass the class explicitly — CEL edge failures, corrupt
+params/config/join decodes (rows 6–7) are permanent. `retryDelay` (pure):
+`min(cap, initial × multiplier^(n−1))` with overflow landing on the cap;
+full jitter draws from an injected `[0,1)` source (`WithJitterRand`),
+`none` exact. `completeFailure` became the router: one transaction counts
+prior counted failures, and either `RetryStep` (class ∈ `retry_on` and
+`prior+1 < max_attempts`; `n = prior+1` feeds the backoff) or
+`FailStep`+`FailRun`. Post-commit, the retry route schedules the delayed
+envelope — reason `retry`, **no EnqueuedAt** so successive retries of one
+step encode to byte-identical ZSET members (ZADD move-the-fire-time
+dedup, at most one pending retry dispatch per step) — through the new
+`RetryScheduler` seam (`WithRetryScheduler`, satisfied by
+`*queue.Delayed`; nil or a failed Schedule only logs: the delivery still
+ACKs because the durable row carries the retry and the reconciler
+re-dispatches). Claim classifier grew three ack-drop branches:
+`run_not_running`, `retrying`-not-yet-due (fresh or reclaimed), and
+retry-routed-between-reclaim-and-takeover; the post-takeover claim
+rolls the takeover back when the run guard rejects. The reconciler
+sweep gained the overdue-retrying scan + `reconcile_retry` outbox heal
+(`ReconcilerConfig.RetryStale`, `ReconcileResult.RetriesHealed`).
+
+**Config/wiring.** `WorkerConfig.ReconcileRetryStale`
+(`AGENTLOOM_WORKER_RECONCILE_RETRY_STALE`, default 1m — measured from
+`next_attempt_at`, needs only ≫ promoter tick, no lease-TTL margin);
+`cmd/worker` wires `q.NewDelayed(cfg.Queue.DelayedKey)` as the engine's
+scheduler (same key as the consumer's promoter duty, so any worker
+promotes any worker's retries); `ctl watch` renders `retrying` (`↻`).
+
+**Tests.** Unit: backoff math (exponential/cap-clamp/multiplier-1/full-
+jitter bounds with pinned draws/corrupt-duration errors), classification
+table, materialized-policy decode, `ResolveRetryPolicy` field-wise merge
+(+ no aliasing of the authored slice, JSON round-trip), the new claim/
+takeover classifier branches. Integration (fully injected time — engine
+and reconciler on a shared fake clock, consumers' promoter tick parked at
+1h, promotion driven by hand): the headline `TestRetrySucceedsWithinBudget`
+(fail_n_times(2)/max 3/jitter none: next_attempt_at exactly +1s then +2s,
+promotion refuses just-before-due, attempts transient/transient/succeeded,
+`steps_failed` 0, two `step_retry_scheduled` events, quiescent);
+exhaustion (max 2: terminal on the second counted failure, full error
+history, class recorded in `run_steps.error`); declared-permanent
+(one attempt, nothing scheduled); `TestRetryCrashGapHealedByReconciler`
+(failing `RetryScheduler` — commit lands, delayed empty, entry ACKed;
+sweep heals with one `reconcile_retry` row, second sweep idempotent,
+drain → due claim → success). Store-level: `RetryStep` lifecycle (no
+`steps_failed` bump, early claim bounces with From=`retrying`, due claim
+issues attempt 2 with fresh fence and cleared `next_attempt_at`),
+fencing + outcome-vocabulary guards, the run-status guard (rejects
+before any write), and `CountCountedFailures` excluding `lost` and
+`permanent`. Migration round-trip test walks 0003 down (retry columns
+gone, 0002 tables intact). Full integration + crash suites green.
+
+**Docs.** ADR-004 amended: `retrying` in the vocabulary; as-built matrix
+rows (`running → retrying` direct CAS; `retrying → running` at claim,
+guarded on `next_attempt_at` — delayed promotion writes nothing to
+Postgres, so the reserved `failed → retrying → ready` hops collapsed);
+run-status guard on the claim row; `run_steps` columns; outcome CHECK;
+two new indexes. ADR-005 amended: reasons `retry` + `reconcile_retry`;
+ACK-discipline rows for the retry commit, not-yet-due drops, and the
+run-status guard; new crash cell **P3** (commit-then-schedule gap) and
+R1(d) now pointing at the real tenant; the deliberate no-EnqueuedAt
+dedup contract; tuning row for the retry-stale threshold. ADR-006 gained
+an as-built note recording the collapsed transitions.
+
+**Non-obvious decisions / deferred.**
+- The conceptual `failed`/`ready` hops are not materialized: fewer
+  states observable ⇒ fewer races; the claim guard doubles as the
+  backoff enforcer.
+- ACK-after-commit even when the delayed schedule fails: the row is the
+  truth, the reconciler the backstop — a handler error there would
+  un-ACK a consumed delivery and redeliver into an ack-drop loop.
+- Exhaustion and not-retryable land on `failed` (still terminal until
+  5.4), so `fail_fast` behavior is unchanged this ticket.
+- The engine defaults live in `dag` (`ResolveRetryPolicy`) because the
+  contract documents them; the store and engine share that one merge.
+- A duplicate delivery of a *due* retrying step claims and executes —
+  deliberate: it is exactly the self-heal path for a lost delayed entry,
+  and the claim CAS still admits only one winner.
+- Deferred to 5.3/5.4/5.6: `timeout`/`cancelled` class assignment,
+  `dead_lettered` + the failure policy, poison wiring, and the
+  dispatcher skipping terminal runs (today those rows drain, deliver,
+  and ack-drop at the run-status guard — harmless, slightly wasteful).

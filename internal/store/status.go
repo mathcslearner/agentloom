@@ -20,6 +20,10 @@ const (
 	StepStatusSucceeded = "succeeded"
 	StepStatusFailed    = "failed"
 	StepStatusSkipped   = "skipped"
+	// StepStatusRetrying: a failed attempt was recorded and another is due
+	// at run_steps.next_attempt_at (ticket 5.2, ADR-006). Not terminal —
+	// the claim CAS moves it back to running once the backoff elapses.
+	StepStatusRetrying = "retrying"
 )
 
 // Edge types.
@@ -51,15 +55,37 @@ const (
 	// running step — its holder is presumed dead with no reclaimable lease
 	// (ticket 4.5, ADR-005 R1(c)) — and re-outboxed it for a fresh claim.
 	OutboxReasonReconcileRunning = "reconcile_running"
+	// OutboxReasonReconcileRetry: the reconciler re-dispatched a retrying
+	// step whose due time is long past with no delayed entry to show for it
+	// — the failure-commit/delayed-schedule crash gap (ticket 5.2,
+	// ADR-006). The step stays `retrying`; the claim CAS accepts it once
+	// due.
+	OutboxReasonReconcileRetry = "reconcile_retry"
 )
 
-// Attempt outcomes beyond the step statuses the completion transitions
-// reuse (succeeded/failed). ADR-006 (M5) owns the full failure taxonomy.
+// Attempt outcomes (ADR-006's error classes, plus `succeeded` and the
+// administrative `lost`). The bare `failed` written by 2.6–4.x is retired:
+// migration 0003 backfilled it to `permanent` and added the CHECK. The
+// class constants mirror dag's ErrorClass vocabulary — string-typed here
+// because outcomes are a storage vocabulary, not the contract type.
 const (
 	// AttemptOutcomeLost: the holder went silent past the lease TTL and the
 	// step was taken over (TakeoverStep) — administrative closure of the
-	// dangling attempt, deliberately outside ADR-006's outcome taxonomy.
+	// dangling attempt, deliberately outside ADR-006's outcome taxonomy
+	// (lost attempts never consume the retry budget).
 	AttemptOutcomeLost = "lost"
+	// AttemptOutcomeTransient: a judged failure that can plausibly heal on
+	// its own; counts against the retry budget.
+	AttemptOutcomeTransient = "transient"
+	// AttemptOutcomePermanent: a judged failure no re-execution can fix;
+	// never retried.
+	AttemptOutcomePermanent = "permanent"
+	// AttemptOutcomeTimeout: the attempt was cancelled at its execution
+	// deadline by a live worker (M5.3); counts against the retry budget.
+	AttemptOutcomeTimeout = "timeout"
+	// AttemptOutcomeCancelled: the attempt was cancelled by run-level
+	// control flow (M5.6/5.7); never retried.
+	AttemptOutcomeCancelled = "cancelled"
 )
 
 // Event types written by run instantiation (2.5) and the guarded
@@ -77,6 +103,11 @@ const (
 	// cleared — ticket 4.5, ADR-005). The payload carries the displaced
 	// holder's claim_id and the attempt it strands.
 	EventStepReclaimed = "step_reclaimed"
-	EventRunSucceeded  = "run_succeeded"
-	EventRunFailed     = "run_failed"
+	// EventStepRetryScheduled: a classified-retryable attempt failure was
+	// recorded and the step routed running → retrying (ticket 5.2,
+	// ADR-006). The payload carries the attempt, its class, and when the
+	// next attempt is due.
+	EventStepRetryScheduled = "step_retry_scheduled"
+	EventRunSucceeded       = "run_succeeded"
+	EventRunFailed          = "run_failed"
 )

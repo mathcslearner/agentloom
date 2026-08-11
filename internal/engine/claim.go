@@ -131,12 +131,12 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 	if err != nil {
 		// Step types are validated against the catalog at submit time, so
 		// a miss here means worker/definition version skew or corrupt
-		// state — deterministic and permanent, so a recorded step failure,
-		// never a redelivery loop.
+		// state — deterministic and permanent (ADR-006 taxonomy row 4), so
+		// a recorded step failure, never a redelivery loop.
 		logger.ErrorContext(ctx, "no executor registered for step type; recording step failure",
 			slog.String("step_type", step.StepType),
 			slog.Any("error", err))
-		return e.completeFailure(ctx, step, err)
+		return e.completeFailure(ctx, step, err, dag.ClassPermanent)
 	}
 
 	out, execErr := executor.Execute(ctx, exec.StepContext{
@@ -147,7 +147,10 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 		Logger:   logger,
 	})
 	if execErr != nil {
-		return e.completeFailure(ctx, step, execErr)
+		// Worker-side classification at completion time (ADR-006): a
+		// declared class is honored, config-decode misses are permanent,
+		// and everything unclassified defaults to transient.
+		return e.completeFailure(ctx, step, execErr, classifyFailure(execErr))
 	}
 	return e.completeSuccess(ctx, step, out)
 }
@@ -195,6 +198,15 @@ func classifyClaimFailure(err error, deliveryCount int64) claimDecision {
 	var te *store.TransitionError
 	switch {
 	case errors.As(err, &te):
+		if te.Reason == store.ConflictRunNotRunning {
+			// The run-status guard (ticket 5.2, ADR-006): the run is
+			// terminal (later: parked/cancelling), so executing this step
+			// is provably unnecessary — drop the delivery.
+			return claimDecision{
+				action: claimAckDrop, level: slog.LevelInfo,
+				reason: "run not running (" + te.From + ") — dropping delivery",
+			}
+		}
 		if te.Reason != store.ConflictWrongStatus {
 			// ClaimStep guards only on status, so any other reason is a
 			// protocol surprise; keep the entry pending — the rising
@@ -209,6 +221,17 @@ func classifyClaimFailure(err error, deliveryCount int64) claimDecision {
 			return claimDecision{
 				action: claimAckDrop, level: slog.LevelInfo,
 				reason: "step already terminal (" + te.From + ") — duplicate of finished work",
+			}
+		case store.StepStatusRetrying:
+			// A delivery of a retrying step whose backoff has not elapsed
+			// (a due one would have matched the claim CAS): an early
+			// duplicate, or the original entry redelivered after a
+			// post-commit crash. Dropping is safe — next_attempt_at is
+			// durable, and the delayed entry or the reconciler's
+			// overdue-retrying heal carries the future dispatch.
+			return claimDecision{
+				action: claimAckDrop, level: slog.LevelInfo,
+				reason: "step retrying with backoff pending — future dispatch is covered",
 			}
 		case store.StepStatusRunning:
 			if deliveryCount <= 1 {
@@ -268,6 +291,15 @@ func classifyTakeoverFailure(err error) claimDecision {
 	var te *store.TransitionError
 	switch {
 	case errors.As(err, &te):
+		if te.Reason == store.ConflictRunNotRunning {
+			// The post-takeover claim hit the run-status guard (ticket
+			// 5.2): the run is terminal, so the takeover rolled back with
+			// it and the delivery is unnecessary.
+			return claimDecision{
+				action: claimAckDrop, level: slog.LevelInfo,
+				reason: "run not running (" + te.From + ") — dropping reclaimed delivery",
+			}
+		}
 		if te.To != store.StepStatusReady {
 			return claimDecision{
 				action: claimRedeliver, level: slog.LevelError,
@@ -285,9 +317,12 @@ func classifyTakeoverFailure(err error) claimDecision {
 				reason: "step re-claimed by a newer holder since observation — stale takeover dropped",
 			}
 		case te.Reason == store.ConflictWrongStatus &&
-			(te.From == store.StepStatusSucceeded || te.From == store.StepStatusFailed || te.From == store.StepStatusSkipped):
-			// ADR-005's takeover race rule: the holder's completion
-			// committed between the reclaim and the takeover CAS.
+			(te.From == store.StepStatusSucceeded || te.From == store.StepStatusFailed ||
+				te.From == store.StepStatusSkipped || te.From == store.StepStatusRetrying):
+			// ADR-005's takeover race rule: the holder's completion — a
+			// terminal one, or since 5.2 a retry routing — committed
+			// between the reclaim and the takeover CAS. Either way that
+			// commit consumed the work this entry carried.
 			return claimDecision{
 				action: claimAckDrop, level: slog.LevelInfo,
 				reason: "step completed between reclaim and takeover (" + te.From + ") — duplicate of finished work",

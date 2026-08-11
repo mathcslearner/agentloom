@@ -29,6 +29,7 @@ func reconcilerAt(t *testing.T, s *store.Store, now time.Time) *engine.Reconcile
 		Interval:     time.Hour, // manual ReconcileOnce only
 		ReadyStale:   time.Minute,
 		RunningStale: 5 * time.Minute,
+		RetryStale:   time.Minute,
 		Limit:        10,
 	}, engine.WithReconcilerClock(func() time.Time { return now }))
 	if err != nil {
@@ -314,6 +315,7 @@ func TestReconcilerNudgesDispatcherOnHeal(t *testing.T) {
 		Interval:     time.Hour,
 		ReadyStale:   time.Minute,
 		RunningStale: 5 * time.Minute,
+		RetryStale:   time.Minute,
 		Limit:        10,
 	},
 		engine.WithReconcilerClock(func() time.Time { return testNow.Add(10 * time.Minute) }),

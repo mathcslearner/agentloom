@@ -64,6 +64,11 @@ const (
 	// the transition's guard predicate did not — e.g. readying a pending
 	// step with unresolved dependencies, or a premature run rollup.
 	ConflictGuardFailed ConflictReason = "guard_failed"
+	// ConflictRunNotRunning: a step claim was refused because its run is
+	// not running (ticket 5.2, ADR-006 — the claim path refuses steps of
+	// terminal runs; 5.6's park/cancel reuses the same guard). On this
+	// reason alone, From carries the *run's* status, not the step's.
+	ConflictRunNotRunning ConflictReason = "run_not_running"
 )
 
 // TransitionError reports a rejected state transition (ticket 2.6). It

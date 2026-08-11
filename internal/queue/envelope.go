@@ -28,12 +28,19 @@ const (
 	fieldEnqueuedAtMS = "enqueued_at_ms"
 )
 
-// ReasonStepReady is the v1 enqueue-reason vocabulary: the step became
-// ready for execution. Future reasons (retry re-dispatch, DLQ requeue,
-// unpark, reconciler re-outbox, approval timeout) land with their owning
-// milestones; adding one is additive within version 1, which is why Decode
-// checks presence but not vocabulary.
-const ReasonStepReady = "step_ready"
+// Enqueue-reason vocabulary. Future reasons (DLQ requeue, unpark,
+// approval timeout) land with their owning milestones; adding one is
+// additive within version 1, which is why Decode checks presence but not
+// vocabulary.
+const (
+	// ReasonStepReady: the step became ready for execution.
+	ReasonStepReady = "step_ready"
+	// ReasonRetry: a retry re-dispatch scheduled through the delayed set
+	// (ticket 5.2, ADR-006). Retry envelopes are built without EnqueuedAt
+	// so identical (run, step) retries encode to byte-identical delayed
+	// members — ZADD's move-the-fire-time dedup (ADR-005).
+	ReasonRetry = "retry"
+)
 
 // Envelope is a task message: a pointer to durable state, never a payload
 // (ADR-005). It names which step to look at; Postgres holds everything

@@ -100,6 +100,7 @@ func validReconcilerConfig() ReconcilerConfig {
 		Interval:     30 * time.Second,
 		ReadyStale:   time.Minute,
 		RunningStale: 5 * time.Minute,
+		RetryStale:   time.Minute,
 		Limit:        256,
 	}
 }
@@ -117,6 +118,7 @@ func TestNewReconcilerValidation(t *testing.T) {
 		{"zero interval", unqueriedStore(), func(c *ReconcilerConfig) { c.Interval = 0 }, "positive Interval"},
 		{"zero ready stale", unqueriedStore(), func(c *ReconcilerConfig) { c.ReadyStale = 0 }, "positive ReadyStale"},
 		{"zero running stale", unqueriedStore(), func(c *ReconcilerConfig) { c.RunningStale = 0 }, "positive RunningStale"},
+		{"zero retry stale", unqueriedStore(), func(c *ReconcilerConfig) { c.RetryStale = 0 }, "positive RetryStale"},
 		{"zero limit", unqueriedStore(), func(c *ReconcilerConfig) { c.Limit = 0 }, "positive Limit"},
 		{"negative limit", unqueriedStore(), func(c *ReconcilerConfig) { c.Limit = -5 }, "positive Limit"},
 	}
