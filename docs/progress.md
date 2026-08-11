@@ -1584,3 +1584,97 @@ lives) remains accepted — bounded to one wasted execution, absorbed by
 fencing now and side-effect idempotency in M5.5. Graceful-drain semantics
 for an executor interrupted by shutdown (today it records a real failure)
 are M5's retry/timeout work.
+
+### 4.6 — Minimal ingest API & `ctl` CLI ✅
+
+**What shipped.** The first client-facing surface, welding 2.5's atomic
+instantiation to the M4 execution engine. `internal/api` (chi router, dev
+mode — no auth until M6): `POST /v1/runs` accepts an inline definition
+XOR a stored `definition_id` ref plus opaque `params` and an
+`idempotency_token` (201 on create, 200 + `reused` on token replay, per
+CreateRun's semantics); `GET /v1/runs/{id}` returns the run rollup, every
+step with its full attempt history, and every edge with its resolution —
+attempts come from the new run-wide `AttemptRepo.ListByRun`
+(`ListRunStepAttempts`, one query instead of per-step); `GET /healthz`
+pings Postgres (new `Store.Ping`). Definition problems answer 400 with
+the error envelope `{"error": {code, message, issues}}` where `issues`
+carries M1's path-qualified findings verbatim — `DefinitionIssues`
+flattens the dag package's joined `*DecodeError`/`*ValidationIssue` trees
+into wire shape (exported: ctl's local validate renders the same shape).
+The API holds **no Redis client** (ADR-002): submission writes outbox
+rows; the worker fleet's dispatchers drain them. `cmd/api`: env-only
+config (new `config.APIConfig` — `AGENTLOOM_API_ADDR`/`_READ_TIMEOUT`/
+`_WRITE_TIMEOUT`/`_IDLE_TIMEOUT`/`_SHUTDOWN_TIMEOUT`), graceful
+SIGINT/SIGTERM drain, and a `ready` channel so the in-process test can
+learn a `:0` listener's port. `cmd/demo` deleted as its header promised.
+Cobra `cmd/ctl` (pure HTTP client; base URL via `--api` or
+`AGENTLOOM_API_URL`): `validate <file>` (local decode + M1 validation,
+all findings printed path-qualified, exit 1 on error severity), `submit
+<file> [--params json] [--token t]` (stdout carries exactly the run id so
+`ctl watch "$(ctl submit …)"` composes; context and rendered 400 issues
+go to stderr), `watch <run-id> [--interval] [--timeout]` (poll
+`GET /v1/runs/{id}`, re-render the status tree on change — Kahn
+topological order over normal edges, depth-indented, glyph + attempt
+counts + failure messages — exit 0 on `succeeded`, 1 on `failed`).
+Deploy: `deploy/dockerfiles/Dockerfile`, one multi-stage build with
+`api`/`worker`/`migrate` targets (ldflags-stamped version, non-root
+alpine runtime; hardening deferred to M20); compose gains the three
+services under the **`app` profile** — one-shot `migrate` job gating
+`api` (healthchecked on `/healthz`, published on `AGENTLOOM_API_PORT`)
+and `worker` (`deploy.replicas: 2`) — via `make up-app`, keeping
+`make up`, `make test-integration`, and the CI integration job
+stores-only.
+
+**Non-obvious decisions.**
+- **`llm`/`tool`/`retrieve` became dev-stub executors** in `Builtins()`
+  (`internal/exec/devstub.go`): the ticket's acceptance runs
+  `examples/definitions/fanout.json`, which carries all three types, but
+  their real executors arrive with M8's plugin SPI and M9's provider
+  layer — and since 4.3 a registry miss is a real `FailStep`/`FailRun`.
+  Each stub succeeds immediately with a deterministic, config-derived
+  output carrying a `"stub": true` marker; no network, keys, or state.
+  Same types, real semantics replace them in place later; ROADMAP 4.6
+  records the scope addition.
+- **The compose `app` profile is a deliberate deviation** from the
+  ticket's literal "docker compose up": default services would force Go
+  image builds into every `make up` and the CI integration job (which
+  shares the compose file precisely so envs match). The acceptance box
+  records the amended command.
+- **ctl prints the run id alone on stdout.** Everything human goes to
+  stderr, so the ticket's `ctl submit … && ctl watch …` loop is
+  scriptable as `ctl watch "$(ctl submit …)"` without parsing.
+- **A stored-ref decode failure is a 500, not a 400** — a spec that was
+  valid when stored but no longer decodes is server-side corruption or
+  version skew, not a client error. Inline submissions re-validate from
+  scratch and 400 with the full issue list (warnings included).
+- **GET is three pool reads, deliberately not one transaction**: a run
+  mid-flight may show a step slightly newer than its rollup counters;
+  the watch loop's next poll heals it. Documented on the handler.
+
+**Tests.** Unit: the three stubs (deterministic outputs, messages-take-
+last, required-field misses → `ErrInvalidConfig`), `APIConfig`
+defaults/overrides/invalids, `DefinitionIssues` flattening (decode +
+validate paths, path preservation), ctl against `httptest` fakes
+(validate over the canonical fixtures + invalid/malformed files, submit
+stdout contract + params validation + rendered 400 issues, watch until
+succeeded / failed-exit / env-var base URL, topological render order).
+Integration (`internal/api`, storetest + httptest): healthz; submit +
+GET round-trip (fanout counters, entry `ready`, edges unresolved);
+path-qualified 400 (`edges[0].to` / `unknown_edge_endpoint` asserted on
+the wire); malformed-request table (bad JSON, unknown field, XOR
+violations, bad/unknown `definition_id`); idempotency token replay
+(201 → 200 `reused`, same run); stored-ref submission recording
+`definition_id` provenance; GET misses (404 unknown, 400 bad UUID). The
+headline (storetest + queuetest + production dispatcher + two
+builtin-registry workers): fanout.json in through POST, executed to
+`succeeded`, every step 1 attempt with outcome on the wire, all edges
+fired, stub-marked outputs on the AI-native steps, outbox drained, queue
+quiescent, no duplicate handling per claim. Acceptance verified live on
+compose: `make up-app` → `ctl submit examples/definitions/fanout.json`
+→ `ctl watch` reached `succeeded` across the 2 worker replicas.
+
+**Deferred.** OpenAPI contract (6.6), auth (6.1–6.2), param-value
+validation against ParamSpecs (M6), run listing/cancel endpoints (6.5).
+`ctl` links the store package transitively (shared wire types live in
+`internal/api`); splitting a leaf types package can ride M6.6's contract
+work if binary size ever matters.

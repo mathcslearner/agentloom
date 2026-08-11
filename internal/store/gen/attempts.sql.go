@@ -84,6 +84,43 @@ func (q *Queries) FinishStepAttempt(ctx context.Context, arg FinishStepAttemptPa
 	return result.RowsAffected(), nil
 }
 
+const listRunStepAttempts = `-- name: ListRunStepAttempts :many
+SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at FROM step_attempts
+WHERE run_id = $1
+ORDER BY step_id, attempt_no
+`
+
+// ListRunStepAttempts reads a whole run's attempt history in one query,
+// so the run-detail API (4.6) avoids a per-step round trip.
+func (q *Queries) ListRunStepAttempts(ctx context.Context, runID uuid.UUID) ([]StepAttempt, error) {
+	rows, err := q.db.Query(ctx, listRunStepAttempts, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []StepAttempt
+	for rows.Next() {
+		var i StepAttempt
+		if err := rows.Scan(
+			&i.RunID,
+			&i.StepID,
+			&i.AttemptNo,
+			&i.ClaimID,
+			&i.Outcome,
+			&i.Error,
+			&i.StartedAt,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStepAttempts = `-- name: ListStepAttempts :many
 SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at FROM step_attempts
 WHERE run_id = $1 AND step_id = $2

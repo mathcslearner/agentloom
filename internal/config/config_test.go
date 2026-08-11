@@ -61,6 +61,58 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Worker != wantWorker {
 		t.Errorf("default Worker config = %+v, want %+v", cfg.Worker, wantWorker)
 	}
+	wantAPI := config.APIConfig{
+		Addr:            config.DefaultAPIAddr,
+		ReadTimeout:     config.DefaultAPIReadTimeout,
+		WriteTimeout:    config.DefaultAPIWriteTimeout,
+		IdleTimeout:     config.DefaultAPIIdleTimeout,
+		ShutdownTimeout: config.DefaultAPIShutdownTimeout,
+	}
+	if cfg.API != wantAPI {
+		t.Errorf("default API config = %+v, want %+v", cfg.API, wantAPI)
+	}
+}
+
+func TestLoadAPIOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(lookupFrom(map[string]string{
+		config.EnvAPIAddr:            "127.0.0.1:9090",
+		config.EnvAPIReadTimeout:     "5s",
+		config.EnvAPIWriteTimeout:    "10s",
+		config.EnvAPIIdleTimeout:     "1m",
+		config.EnvAPIShutdownTimeout: "3s",
+	}))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	want := config.APIConfig{
+		Addr:            "127.0.0.1:9090",
+		ReadTimeout:     5 * time.Second,
+		WriteTimeout:    10 * time.Second,
+		IdleTimeout:     time.Minute,
+		ShutdownTimeout: 3 * time.Second,
+	}
+	if cfg.API != want {
+		t.Errorf("API config = %+v, want %+v", cfg.API, want)
+	}
+}
+
+func TestLoadAPIInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.Load(lookupFrom(map[string]string{
+		config.EnvAPIReadTimeout:     "-1s",
+		config.EnvAPIShutdownTimeout: "later",
+	}))
+	if err == nil {
+		t.Fatal("Load with invalid API values: want error, got nil")
+	}
+	for _, env := range []string{config.EnvAPIReadTimeout, config.EnvAPIShutdownTimeout} {
+		if !strings.Contains(err.Error(), env) {
+			t.Errorf("error %q does not mention %s", err, env)
+		}
+	}
 }
 
 func TestLoadWorkerOverrides(t *testing.T) {

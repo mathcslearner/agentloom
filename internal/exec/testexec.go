@@ -11,14 +11,16 @@ import (
 )
 
 // Builtins returns a registry holding the M4 executors: the four test
-// executors (noop, echo, sleep, fail_n_times) plus the two control-flow
+// executors (noop, echo, sleep, fail_n_times), the two control-flow
 // types (join, branch), whose real semantics live in the engine — readiness
 // counters and the edge-firing rule — so their executors are trivial by
-// design. Real executors (llm, tool, retrieve, …) register through the M8
-// plugin SPI, not here.
+// design, and the three dev stubs (llm, tool, retrieve; devstub.go) that
+// make the canonical example definitions runnable until the real
+// executors arrive through the M8 plugin SPI and the M9 provider layer.
 func Builtins() *Registry {
 	r, err := NewRegistry(NoopExecutor{}, EchoExecutor{}, NewSleep(), FailNTimesExecutor{},
-		JoinExecutor{}, BranchExecutor{})
+		JoinExecutor{}, BranchExecutor{},
+		StubLLMExecutor{}, StubToolExecutor{}, StubRetrieveExecutor{})
 	if err != nil {
 		panic(err) // unreachable: a fixed set of distinct, non-empty types
 	}

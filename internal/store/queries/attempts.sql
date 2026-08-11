@@ -17,3 +17,10 @@ WHERE run_id = @run_id AND step_id = @step_id AND attempt_no = @attempt_no;
 SELECT * FROM step_attempts
 WHERE run_id = $1 AND step_id = $2
 ORDER BY attempt_no;
+
+-- ListRunStepAttempts reads a whole run's attempt history in one query,
+-- so the run-detail API (4.6) avoids a per-step round trip.
+-- name: ListRunStepAttempts :many
+SELECT * FROM step_attempts
+WHERE run_id = $1
+ORDER BY step_id, attempt_no;

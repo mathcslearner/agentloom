@@ -387,13 +387,13 @@ Completion/failure transitions require the matching `claim_id`; a stale worker (
 - [x] Successors dispatched exactly once (event log asserted)
 - [x] Fencing rejection visible in logs with both claim IDs
 
-#### 4.6 — Minimal ingest API & `ctl` CLI
+#### 4.6 — Minimal ingest API & `ctl` CLI ✅
 **Depends on:** 2.5
-`cmd/api` (dev mode, no auth yet): `POST /v1/runs` (inline definition or stored definition ref), `GET /v1/runs/{id}` (status + step tree + attempts), `GET /healthz`. Cobra `cmd/ctl`: `submit <file>`, `watch <run-id>` (poll + render status tree), `validate <file>` (local M1 validation). Compose gains the api + worker services (Dockerfiles: simple builder stage now; hardened in M20).
+`cmd/api` (dev mode, no auth yet): `POST /v1/runs` (inline definition or stored definition ref), `GET /v1/runs/{id}` (status + step tree + attempts), `GET /healthz`. Cobra `cmd/ctl`: `submit <file>`, `watch <run-id>` (poll + render status tree), `validate <file>` (local M1 validation). Compose gains the api + worker services (Dockerfiles: simple builder stage now; hardened in M20). To make the canonical fixtures executable, `llm`/`tool`/`retrieve` run as deterministic dev-stub executors until M8/M9.
 **Done when:**
-- [ ] `ctl submit examples/definitions/fanout.json && ctl watch …` reaches `succeeded` on compose
-- [ ] Invalid definitions rejected with M1's path-qualified errors (400)
-- [ ] `docker compose up` runs api + 2 worker replicas + stores end-to-end
+- [x] `ctl submit examples/definitions/fanout.json && ctl watch …` reaches `succeeded` on compose
+- [x] Invalid definitions rejected with M1's path-qualified errors (400)
+- [x] `docker compose --profile app up` (`make up-app`) runs api + 2 worker replicas + stores end-to-end — the `app` profile keeps `make up`/CI stores-only
 
 #### 4.7 — Flagship crash-recovery integration test & demo
 **Depends on:** 4.4, 4.5, 3.6

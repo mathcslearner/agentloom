@@ -28,6 +28,7 @@ type Config struct {
 	Redis    RedisConfig
 	Queue    QueueConfig
 	Worker   WorkerConfig
+	API      APIConfig
 }
 
 // Load builds a Config by applying environment overrides from lookup on top
@@ -40,6 +41,7 @@ func Load(lookup LookupFunc) (Config, error) {
 		Redis:    defaultRedisConfig(),
 		Queue:    defaultQueueConfig(),
 		Worker:   defaultWorkerConfig(),
+		API:      defaultAPIConfig(),
 	}
 	var errs []error
 	errs = append(errs, cfg.Log.applyEnv(lookup)...)
@@ -47,6 +49,7 @@ func Load(lookup LookupFunc) (Config, error) {
 	errs = append(errs, cfg.Redis.applyEnv(lookup)...)
 	errs = append(errs, cfg.Queue.applyEnv(lookup)...)
 	errs = append(errs, cfg.Worker.applyEnv(lookup)...)
+	errs = append(errs, cfg.API.applyEnv(lookup)...)
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration:\n%w", err)
 	}

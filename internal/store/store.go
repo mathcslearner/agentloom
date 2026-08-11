@@ -68,6 +68,11 @@ func (s *Store) Close() {
 	s.pool.Close()
 }
 
+// Ping verifies database connectivity — the API server's health probe.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
 // repos implements Querier over a gen.Queries, which itself runs on either
 // the pool or a transaction (gen.Queries.WithTx).
 type repos struct {

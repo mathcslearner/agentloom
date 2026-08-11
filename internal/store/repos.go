@@ -239,6 +239,9 @@ type AttemptRepo interface {
 	Create(ctx context.Context, arg gen.CreateStepAttemptParams) (gen.StepAttempt, error)
 	// ListByStep returns a step's attempts in attempt_no order.
 	ListByStep(ctx context.Context, runID uuid.UUID, stepID string) ([]gen.StepAttempt, error)
+	// ListByRun returns every attempt of the run in (step_id, attempt_no)
+	// order — one query for the run-detail API instead of one per step.
+	ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.StepAttempt, error)
 }
 
 type attemptRepo struct{ q *gen.Queries }
@@ -251,6 +254,11 @@ func (r attemptRepo) Create(ctx context.Context, arg gen.CreateStepAttemptParams
 func (r attemptRepo) ListByStep(ctx context.Context, runID uuid.UUID, stepID string) ([]gen.StepAttempt, error) {
 	atts, err := r.q.ListStepAttempts(ctx, gen.ListStepAttemptsParams{RunID: runID, StepID: stepID})
 	return atts, wrapErr("list step attempts", err)
+}
+
+func (r attemptRepo) ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.StepAttempt, error) {
+	atts, err := r.q.ListRunStepAttempts(ctx, runID)
+	return atts, wrapErr("list run step attempts", err)
 }
 
 // EventRepo stores the append-only per-run event log. Append-only is

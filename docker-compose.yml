@@ -1,10 +1,20 @@
 # agentloom local dev stack: Postgres (source of truth) + Redis (queue,
-# leases, cache, pub/sub). Used by local development and, from ticket 2.2 on,
-# the integration-test suite. The api and worker services join in M4.
+# leases, cache, pub/sub), plus — under the `app` profile (ticket 4.6) —
+# the deployables: a one-shot migrate job, the api server, and 2 worker
+# replicas.
+#
+# `make up` boots only the stores (what local development and the
+# integration-test suite need); `make up-app` boots the full stack
+# (`docker compose --profile app up`). The profile split keeps `make
+# test-integration` and CI from building Go images they don't use.
 #
 # Defaults are dev-only and inline so `make up` works on a clean checkout;
 # override them by copying .env.example to .env (auto-loaded by Compose).
 name: agentloom
+
+# The in-network DSN the app services share (host tooling uses
+# localhost:5432 instead — see internal/config's default).
+x-app-env: &app-postgres-dsn postgres://${POSTGRES_USER:-agentloom}:${POSTGRES_PASSWORD:-agentloom}@postgres:5432/${POSTGRES_DB:-agentloom}?sslmode=disable
 
 services:
   postgres:
@@ -38,6 +48,57 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+
+  # One-shot: applies embedded schema migrations, then exits. api and
+  # worker gate on its success so `make up-app` works on a fresh volume.
+  migrate:
+    profiles: [app]
+    build:
+      context: .
+      dockerfile: deploy/dockerfiles/Dockerfile
+      target: migrate
+    environment:
+      AGENTLOOM_POSTGRES_DSN: *app-postgres-dsn
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    profiles: [app]
+    build:
+      context: .
+      dockerfile: deploy/dockerfiles/Dockerfile
+      target: api
+    environment:
+      AGENTLOOM_POSTGRES_DSN: *app-postgres-dsn
+    ports:
+      - "${AGENTLOOM_API_PORT:-8080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  worker:
+    profiles: [app]
+    build:
+      context: .
+      dockerfile: deploy/dockerfiles/Dockerfile
+      target: worker
+    environment:
+      AGENTLOOM_POSTGRES_DSN: *app-postgres-dsn
+      AGENTLOOM_REDIS_ADDR: redis:6379
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: 2
 
 volumes:
   postgres-data:

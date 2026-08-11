@@ -60,9 +60,13 @@ COMPOSE := docker compose
 up: ## Boot the dev stack (Postgres + Redis) and wait until healthy
 	$(COMPOSE) up -d --wait
 
+.PHONY: up-app
+up-app: ## Boot the full stack (stores + migrate + api + 2 workers) and wait until healthy
+	$(COMPOSE) --profile app up -d --build --wait
+
 .PHONY: down
-down: ## Stop the dev stack (data volumes are kept)
-	$(COMPOSE) down
+down: ## Stop the dev stack, app services included (data volumes are kept)
+	$(COMPOSE) --profile app down
 
 .PHONY: psql
 psql: ## Open a psql shell inside the running postgres container
@@ -76,7 +80,7 @@ redis-cli: ## Open a redis-cli shell inside the running redis container
 nuke: ## DESTRUCTIVE: tear down the dev stack AND delete all data volumes (asks first)
 	@printf 'This will DESTROY the dev stack and ALL of its data (volumes included).\nType "yes" to continue: '; \
 	read -r answer && [ "$$answer" = "yes" ] || { echo "aborted."; exit 1; }
-	$(COMPOSE) down -v --remove-orphans
+	$(COMPOSE) --profile app down -v --remove-orphans
 
 .PHONY: tools
 tools: ## Install pinned golangci-lint into ./bin if missing or outdated

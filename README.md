@@ -29,10 +29,20 @@ Local development and integration tests run against a Docker Compose stack defin
 
 ```sh
 make up         # boot Postgres 16 + Redis 7, wait until both are healthy
+make up-app     # boot the full stack: stores + migrations + api + 2 workers
 make psql       # psql shell inside the postgres container
 make redis-cli  # redis-cli shell inside the redis container
 make down       # stop the stack — data volumes are KEPT
 ```
+
+`make up-app` (the compose `app` profile) builds the deployable images from [deploy/dockerfiles/Dockerfile](deploy/dockerfiles/Dockerfile), applies migrations via a one-shot job, and publishes the API on `localhost:8080` (`AGENTLOOM_API_PORT`). Then submit and watch a run with the `ctl` CLI:
+
+```sh
+go run ./cmd/ctl validate examples/definitions/fanout.json
+go run ./cmd/ctl watch "$(go run ./cmd/ctl submit examples/definitions/fanout.json --params '{"topic": "durable execution"}')"
+```
+
+(`llm`/`tool`/`retrieve` steps run as deterministic dev stubs until the real executors land in M8/M9.)
 
 The stack works out of the box with dev-only defaults; to change credentials or host ports (e.g. if 5432/6379 are taken by a Postgres/Redis already on your machine), copy [.env.example](.env.example) to `.env` and edit it — both Compose and the Make targets pick it up automatically, so keep the `AGENTLOOM_*_DSN` entries in sync with the ports. `.env` is gitignored; never commit it.
 
@@ -70,17 +80,19 @@ Each test gets its own throwaway database via `internal/store/storetest` (create
 Directories marked *(planned)* are placeholders that gain content in later milestones.
 
 ```
-cmd/            api, worker, ctl, loadgen binaries (planned)
-  demo/         throwaway config + logging wiring demo (deleted in M4)
+cmd/            deployables and tools (loadgen planned)
+  api/          ingest/inspection API server (dev mode; auth in M6)
+  worker/       step-execution worker (claim, execute, complete, dispatch duties)
+  ctl/          operator CLI: validate / submit / watch
   migrate/      dev-time schema migration tool (make migrate-up/down/new)
 internal/
   version/      build version of agentloom binaries
   config/       env-driven configuration (defaults < env, fail-fast validation)
   dag/          definition types, validation, graph algorithms, CEL
   store/        Postgres persistence: migrations + migrator, storetest/ harness, sqlc repositories, WithTx, atomic run instantiation, guarded CAS transitions
-  queue/        Redis Streams, leases, delayed delivery (planned)
-  engine/       claim/execute/complete pipeline, outbox, reconciler (planned)
-  exec/         executor SPI, registry, middleware, side-effect journal (planned)
+  queue/        Redis Streams: producer/consumer, leases, delayed delivery, queuetest/ chaos harness
+  engine/       claim/execute/complete pipeline, outbox dispatcher, reconciler, fencing
+  exec/         executor SPI v0, registry, test + dev-stub executors (middleware, journal planned)
   llm/          provider interface: Anthropic, OpenAI, mock (planned)
   tools/        tool SPI + built-ins (planned)
   ratelimit/    Redis token buckets (planned)
@@ -88,10 +100,10 @@ internal/
   cost/         pricing catalog, ledger, budget enforcement (planned)
   contextmgr/   token counting, blackboard, assembly, compaction (planned)
   validate/     validator SPI, deterministic + LLM-judge validators (planned)
-  api/          HTTP handlers, auth, WS (planned)
+  api/          HTTP handlers + wire types (dev mode; auth + WS planned)
   obs/          observability: log/ (slog JSON logger, context helpers); metrics, tracing (planned)
 web/            Next.js builder + dashboard (planned)
-deploy/         helm/, terraform/, dockerfiles (planned)
+deploy/         dockerfiles/ (compose app profile); helm/, terraform/ (planned)
 docs/           architecture.md + doc index; adr/, demos/, load/ (planned)
 examples/       canonical workflow JSON fixtures (definitions/)
 test/           cross-cutting integration + chaos suites (smoke/ env checks today)
