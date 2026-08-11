@@ -78,6 +78,7 @@ const (
 	StepEcho          StepType = "echo"
 	StepSleep         StepType = "sleep"
 	StepFailNTimes    StepType = "fail_n_times"
+	StepCounter       StepType = "counter"
 )
 
 // Step is one node in the workflow graph.

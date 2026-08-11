@@ -92,6 +92,11 @@ services:
     environment:
       AGENTLOOM_POSTGRES_DSN: *app-postgres-dsn
       AGENTLOOM_REDIS_ADDR: redis:6379
+      # Pass-through so the crash-recovery demo (make demo-crash) can
+      # shorten the lease without editing this file; the default mirrors
+      # internal/config's DefaultQueueLeaseTTL. Heartbeat and reclaim
+      # intervals derive from the TTL, so one knob retunes all three.
+      AGENTLOOM_QUEUE_LEASE_TTL: ${AGENTLOOM_QUEUE_LEASE_TTL:-30s}
     depends_on:
       migrate:
         condition: service_completed_successfully

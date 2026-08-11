@@ -274,6 +274,10 @@ func (v *validator) checkStepConfig(path string, s Step) {
 		case c.N < 0:
 			v.add(CodeConfigFieldInvalid, path+".config.n", "must be at least 1, got %d", c.N)
 		}
+	case StepCounter:
+		if cfg[CounterConfig](s).Path == "" {
+			v.add(CodeConfigFieldRequired, path+".config.path", "required field is missing")
+		}
 	case StepBranch, StepNoop, StepEcho:
 		// No required config fields.
 	}

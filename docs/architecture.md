@@ -120,6 +120,55 @@ The completion transaction is where scheduling happens: persist the output, CAS 
 - **Park/resume** — one primitive underlies manual pause, budget-exceeded halts, and human approvals. Parking ACKs the queue message: no lease or worker slot is held while a run waits, whether for minutes or days.
 - **Events** — every transition appends to a per-run, monotonically-sequenced event log in Postgres (truth), mirrored to Redis pub/sub for latency. The WebSocket protocol is snapshot → backfill from `last_seq` → live tail, so clients never miss or reorder events.
 
+### The realized walkthrough (as of M4)
+
+The sections above describe the full design; as of M4 (distributed
+execution MVP) the following is **built and proven end-to-end** — submit a
+definition and watch two independent worker processes execute it:
+
+1. **Submit** — `POST /v1/runs` (or `ctl submit`) validates the
+   definition (M1's path-qualified issues on a 400) and runs 2.5's
+   instantiation transaction: run row, per-run graph copy, entry steps
+   `ready`, outbox rows. The API holds no Redis client (ADR-002) —
+   dispatch is entirely the fleet's job.
+2. **Dispatch** — every worker runs the outbox drain loop (`ListForDrain`
+   with `FOR UPDATE SKIP LOCKED` → `XADD` → delete-what-landed, one
+   transaction per pass) plus the jittered reconciler under a fleet-wide
+   advisory lock, which re-outboxes stuck-`ready` steps and heals
+   stale-`running` steps via takeover (reasons `reconcile_ready` /
+   `reconcile_running`).
+3. **Claim** — on delivery, one transaction attempts the `ready →
+   running` CAS (fresh `claim_id`, attempt row, `step_claimed` event). A
+   pure classifier applies ADR-005's ACK discipline to failures:
+   terminal/duplicate/dangling → ACK-and-drop; a **reclaimed** delivery
+   of a `running` step → lease-expiry **takeover** (`store.TakeoverStep`:
+   fenced on the observed holder's claim, closes the dead attempt as
+   `lost`, appends `step_reclaimed`) then re-claim, in one transaction.
+4. **Execute** — through the 4.1 executor SPI (the middleware chain
+   arrives M9–M12): the test executors (`noop`, `echo`, `sleep`,
+   `fail_n_times`, `counter`), trivial control-flow executors (`join`,
+   `branch`), and deterministic dev stubs for `llm`/`tool`/`retrieve`
+   until M8/M9.
+5. **Complete** — one transaction: output + fenced `running → succeeded`
+   CAS, edge verdicts from pre-computed CEL evaluation (branch
+   first-match with trailing default; errors fail the step), join-counter
+   decrements with skip propagation, outbox rows for newly-ready steps,
+   run rollup. Then ACK, then nudge the dispatcher. Executor errors land
+   a real `FailStep` + `FailRun` transaction. Any terminal-CAS conflict
+   means the worker lost its lease: log both claim IDs, no ACK, abandon —
+   the fence did its job.
+6. **Crash recovery** — the flagship guarantee, proven by `make
+   demo-crash` ([docs/demos/crash-recovery.md](demos/crash-recovery.md))
+   and the automated [`test/crash`](../test/crash/) suite: SIGKILL the
+   lease-holding worker mid-step and the survivor reclaims, takes over,
+   re-executes, and completes — attempt history `lost → succeeded`, no
+   double effects; a full-fleet restart resumes from the last completed
+   step.
+
+Not yet realized: retries/timeouts/DLQ (M5), park/resume (M5), input
+rendering and auth (M6), observability (M7), the middleware chain and
+real providers (M8–M12), expansion (M13+).
+
 ### Step lifecycle
 
 Illustrative summary of step states (the authoritative state machine and its guards are fixed in the M2 schema ADR):

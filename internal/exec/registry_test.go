@@ -76,7 +76,7 @@ func TestBuiltinsRegistersAllTestExecutors(t *testing.T) {
 	t.Parallel()
 
 	r := Builtins()
-	for _, typ := range []string{"noop", "echo", "sleep", "fail_n_times", "join", "branch", "llm", "tool", "retrieve"} {
+	for _, typ := range []string{"noop", "echo", "sleep", "fail_n_times", "counter", "join", "branch", "llm", "tool", "retrieve"} {
 		e, err := r.Get(typ)
 		if err != nil {
 			t.Errorf("Get(%q): %v", typ, err)

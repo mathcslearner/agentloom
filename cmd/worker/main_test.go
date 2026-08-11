@@ -16,6 +16,7 @@ func TestConsumerConfigMapping(t *testing.T) {
 	t.Parallel()
 
 	in := config.QueueConfig{
+		DelayedKey:           "sched:delayed:mapped",
 		ConsumerBatch:        7,
 		ConsumerBlock:        1 * time.Second,
 		LeaseTTL:             2 * time.Second,
@@ -28,6 +29,7 @@ func TestConsumerConfigMapping(t *testing.T) {
 		TrimInterval:         8 * time.Second,
 	}
 	want := queue.ConsumerConfig{
+		DelayedKey:           "sched:delayed:mapped",
 		Batch:                7,
 		Block:                1 * time.Second,
 		LeaseTTL:             2 * time.Second,

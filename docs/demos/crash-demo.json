@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "name": "crash-demo",
+  "description": "The crash-recovery demo workflow (ticket 4.7, driven by `make demo-crash`): a linear chain whose 25-second long_task gives a human plenty of time to SIGKILL the worker executing it. Deliberately a demo prop rather than a canonical example: sleeps this long would only slow the format-focused fixtures in examples/definitions/.",
+  "steps": [
+    {
+      "id": "warm_up",
+      "type": "echo",
+      "config": {
+        "input": {
+          "stage": "warm-up"
+        }
+      }
+    },
+    {
+      "id": "short_task",
+      "type": "sleep",
+      "config": {
+        "duration": "5s"
+      }
+    },
+    {
+      "id": "long_task",
+      "type": "sleep",
+      "config": {
+        "duration": "25s"
+      }
+    },
+    {
+      "id": "wrap_up",
+      "type": "echo",
+      "config": {
+        "input": {
+          "stage": "wrap-up"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "warm_up",
+      "to": "short_task"
+    },
+    {
+      "from": "short_task",
+      "to": "long_task"
+    },
+    {
+      "from": "long_task",
+      "to": "wrap_up"
+    }
+  ]
+}

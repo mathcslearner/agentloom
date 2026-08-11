@@ -8,6 +8,9 @@ import (
 
 // Environment variables read by QueueConfig.
 const (
+	EnvQueueStream               = "AGENTLOOM_QUEUE_STREAM"
+	EnvQueueGroup                = "AGENTLOOM_QUEUE_GROUP"
+	EnvQueueDelayedKey           = "AGENTLOOM_QUEUE_DELAYED_KEY"
 	EnvQueueConsumerBatch        = "AGENTLOOM_QUEUE_CONSUMER_BATCH"
 	EnvQueueConsumerBlock        = "AGENTLOOM_QUEUE_CONSUMER_BLOCK"
 	EnvQueueLeaseTTL             = "AGENTLOOM_QUEUE_LEASE_TTL"
@@ -38,6 +41,15 @@ const (
 // QueueConfig configures the Redis Streams consumer loop, lease
 // machinery, and delayed-delivery promoter (ADR-005, internal/queue).
 type QueueConfig struct {
+	// Stream, Group, and DelayedKey name the Redis keys this deployable's
+	// queue lives on. Empty (the default) means ADR-005's fleet-wide names
+	// (steps:ready / workers / sched:delayed, internal/queue's zero-value
+	// fallbacks). Overriding exists for test isolation — the crash-recovery
+	// suite (4.7) runs real worker processes against per-test keys on a
+	// shared Redis — not for production sharding (that lever is M19's).
+	Stream     string
+	Group      string
+	DelayedKey string
 	// ConsumerBatch is the XREADGROUP COUNT: the maximum number of entries
 	// fetched per read, and also the per-tick XAUTOCLAIM batch bound. Must
 	// be positive.
@@ -101,6 +113,9 @@ func defaultQueueConfig() QueueConfig {
 // invalid variable.
 func (c *QueueConfig) applyEnv(fn LookupFunc) []error {
 	var errs []error
+	applyString(fn, EnvQueueStream, &c.Stream)
+	applyString(fn, EnvQueueGroup, &c.Group)
+	applyString(fn, EnvQueueDelayedKey, &c.DelayedKey)
 	errs = applyPositiveInt(errs, fn, EnvQueueConsumerBatch, &c.ConsumerBatch)
 	errs = applyPositiveDuration(errs, fn, EnvQueueConsumerBlock, &c.ConsumerBlock)
 	errs = applyPositiveDuration(errs, fn, EnvQueueLeaseTTL, &c.LeaseTTL)
@@ -112,6 +127,15 @@ func (c *QueueConfig) applyEnv(fn LookupFunc) []error {
 	errs = applyPositiveDuration(errs, fn, EnvQueuePromoterTick, &c.PromoterTick)
 	errs = applyPositiveDuration(errs, fn, EnvQueueTrimInterval, &c.TrimInterval)
 	return errs
+}
+
+// applyString overrides *dst from the environment when the variable is set
+// to a non-empty value. Any non-empty string is valid, so it reports no
+// errors.
+func applyString(fn LookupFunc, key string, dst *string) {
+	if raw, ok := lookup(fn, key); ok {
+		*dst = raw
+	}
 }
 
 // applyPositiveInt overrides *dst from the environment when the variable is

@@ -28,6 +28,7 @@ var stepConfigTypes = map[StepType]func() StepConfig{
 	StepEcho:          func() StepConfig { return &EchoConfig{} },
 	StepSleep:         func() StepConfig { return &SleepConfig{} },
 	StepFailNTimes:    func() StepConfig { return &FailNTimesConfig{} },
+	StepCounter:       func() StepConfig { return &CounterConfig{} },
 }
 
 // LLMMessage is one entry of an llm step's messages array.
@@ -133,6 +134,14 @@ type FailNTimesConfig struct {
 	N int `json:"n,omitempty"`
 }
 
+// CounterConfig configures a counter test step (executor: M4), which
+// appends one line to the file at Path — an externally observable side
+// effect. The crash and chaos suites count those lines to prove effects
+// fired exactly once across kills, reclaims, and retries (M4.7, M5).
+type CounterConfig struct {
+	Path string `json:"path,omitempty"`
+}
+
 func (*LLMConfig) stepConfig()           {}
 func (*ToolConfig) stepConfig()          {}
 func (*RetrieveConfig) stepConfig()      {}
@@ -146,3 +155,4 @@ func (*NoopConfig) stepConfig()          {}
 func (*EchoConfig) stepConfig()          {}
 func (*SleepConfig) stepConfig()         {}
 func (*FailNTimesConfig) stepConfig()    {}
+func (*CounterConfig) stepConfig()       {}

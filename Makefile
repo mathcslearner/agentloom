@@ -68,6 +68,10 @@ up-app: ## Boot the full stack (stores + migrate + api + 2 workers) and wait unt
 down: ## Stop the dev stack, app services included (data volumes are kept)
 	$(COMPOSE) --profile app down
 
+.PHONY: demo-crash
+demo-crash: ## SIGKILL a worker mid-run against compose and watch the run recover (docs/demos/crash-recovery.md)
+	bash scripts/demo-crash.sh
+
 .PHONY: psql
 psql: ## Open a psql shell inside the running postgres container
 	$(COMPOSE) exec postgres sh -c 'exec psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'

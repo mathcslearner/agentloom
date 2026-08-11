@@ -43,6 +43,15 @@ const opTimeout = 30 * time.Second
 // returns a pool connected to it. The database is dropped on test cleanup.
 func NewDB(tb testing.TB) *pgxpool.Pool {
 	tb.Helper()
+	pool, _ := NewDBWithDSN(tb)
+	return pool
+}
+
+// NewDBWithDSN is NewDB for tests that also need the database's DSN — the
+// crash-recovery suite (4.7) passes it to real worker subprocesses via
+// AGENTLOOM_POSTGRES_DSN.
+func NewDBWithDSN(tb testing.TB) (*pgxpool.Pool, string) {
+	tb.Helper()
 	pool, dsn := NewEmptyDB(tb)
 	mg, err := store.NewMigrator(dsn)
 	if err != nil {
@@ -52,7 +61,7 @@ func NewDB(tb testing.TB) *pgxpool.Pool {
 	if err := mg.Up(); err != nil {
 		tb.Fatalf("storetest: migrating test database: %v", err)
 	}
-	return pool
+	return pool, dsn
 }
 
 // NewEmptyDB creates a fresh database with no migrations applied and returns

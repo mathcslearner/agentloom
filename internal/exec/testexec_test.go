@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -230,6 +232,65 @@ func TestFailNTimes(t *testing.T) {
 			if !errors.Is(err, ErrInvalidConfig) {
 				t.Errorf("Execute(config=%s) error = %v, want ErrInvalidConfig", cfg, err)
 			}
+		}
+	})
+}
+
+func TestCounter(t *testing.T) {
+	t.Parallel()
+
+	e := CounterExecutor{}
+	sc := func(path string, attempt int) StepContext {
+		cfg, err := json.Marshal(map[string]string{"path": path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return StepContext{StepType: dag.StepCounter, Config: cfg, Attempt: attempt}
+	}
+
+	t.Run("appends one attempt-stamped line per execution", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "effects.log")
+		out, err := e.Execute(context.Background(), sc(path, 1))
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if string(out.Data) != `{"counted":true,"attempt":1}` {
+			t.Errorf("output = %s", out.Data)
+		}
+		// A second execution (a retry, attempt 2) appends — never truncates:
+		// the file is the cross-process effect ledger the crash suite counts.
+		if _, err := e.Execute(context.Background(), sc(path, 2)); err != nil {
+			t.Fatalf("Execute attempt 2: %v", err)
+		}
+		data, err := os.ReadFile(path) // #nosec G304 -- t.TempDir path, test-only
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		if got, want := string(data), "attempt=1\nattempt=2\n"; got != want {
+			t.Errorf("file contents = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("config errors", func(t *testing.T) {
+		t.Parallel()
+		for _, cfg := range []json.RawMessage{nil, json.RawMessage(`{}`), json.RawMessage(`{"path": ""}`)} {
+			_, err := e.Execute(context.Background(), StepContext{StepType: dag.StepCounter, Config: cfg, Attempt: 1})
+			if !errors.Is(err, ErrInvalidConfig) {
+				t.Errorf("Execute(config=%s) error = %v, want ErrInvalidConfig", cfg, err)
+			}
+		}
+	})
+
+	t.Run("unwritable path is an executor error, not invalid config", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "no-such-dir", "effects.log")
+		_, err := e.Execute(context.Background(), sc(path, 1))
+		if err == nil {
+			t.Fatal("Execute succeeded, want open error")
+		}
+		if errors.Is(err, ErrInvalidConfig) {
+			t.Errorf("error = %v; an I/O failure must not classify as invalid config", err)
 		}
 	})
 }

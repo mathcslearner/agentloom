@@ -4,22 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 )
 
-// Builtins returns a registry holding the M4 executors: the four test
-// executors (noop, echo, sleep, fail_n_times), the two control-flow
-// types (join, branch), whose real semantics live in the engine — readiness
-// counters and the edge-firing rule — so their executors are trivial by
-// design, and the three dev stubs (llm, tool, retrieve; devstub.go) that
-// make the canonical example definitions runnable until the real
-// executors arrive through the M8 plugin SPI and the M9 provider layer.
+// Builtins returns a registry holding the M4 executors: the five test
+// executors (noop, echo, sleep, fail_n_times, counter), the two
+// control-flow types (join, branch), whose real semantics live in the
+// engine — readiness counters and the edge-firing rule — so their
+// executors are trivial by design, and the three dev stubs (llm, tool,
+// retrieve; devstub.go) that make the canonical example definitions
+// runnable until the real executors arrive through the M8 plugin SPI and
+// the M9 provider layer.
 func Builtins() *Registry {
 	r, err := NewRegistry(NoopExecutor{}, EchoExecutor{}, NewSleep(), FailNTimesExecutor{},
-		JoinExecutor{}, BranchExecutor{},
+		CounterExecutor{}, JoinExecutor{}, BranchExecutor{},
 		StubLLMExecutor{}, StubToolExecutor{}, StubRetrieveExecutor{})
 	if err != nil {
 		panic(err) // unreachable: a fixed set of distinct, non-empty types
@@ -145,6 +147,42 @@ func (BranchExecutor) Execute(_ context.Context, sc StepContext) (Output, error)
 		return Output{Data: c.Input}, nil
 	}
 	return Output{Data: sc.Input}, nil
+}
+
+// CounterExecutor runs counter steps: append one line recording the
+// attempt number to the file at the configured path — a deliberate,
+// externally observable side effect. The crash and chaos suites (4.7, M5)
+// give each counter step its own file and count lines to prove effects
+// fired exactly once across kills, reclaims, and retries; StepContext
+// carries no step identity by design (4.1's minimal SPI), so distinctness
+// comes from the per-step path. O_APPEND keeps concurrent appends from
+// separate processes intact.
+type CounterExecutor struct{}
+
+// Type implements Executor.
+func (CounterExecutor) Type() string { return string(dag.StepCounter) }
+
+// Execute implements Executor.
+func (CounterExecutor) Execute(_ context.Context, sc StepContext) (Output, error) {
+	c, err := configAs[*dag.CounterConfig](sc)
+	if err != nil {
+		return Output{}, err
+	}
+	if c == nil || c.Path == "" {
+		return Output{}, &InvalidConfigError{StepType: string(sc.StepType), cause: fmt.Errorf("missing required field %q", "path")}
+	}
+	f, err := os.OpenFile(c.Path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return Output{}, fmt.Errorf("counter: opening %s: %w", c.Path, err)
+	}
+	_, werr := fmt.Fprintf(f, "attempt=%d\n", sc.Attempt)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		return Output{}, fmt.Errorf("counter: appending to %s: %w", c.Path, werr)
+	}
+	return Output{Data: json.RawMessage(fmt.Sprintf(`{"counted":true,"attempt":%d}`, sc.Attempt))}, nil
 }
 
 // FailNTimesExecutor runs fail_n_times steps: fail attempts 1..n, succeed

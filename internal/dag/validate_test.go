@@ -343,6 +343,20 @@ func TestValidateTableDriven(t *testing.T) {
 			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.n"}},
 		},
 		{
+			name: "counter with valid path",
+			def:  single(dag.Step{ID: "z", Type: dag.StepCounter, Config: &dag.CounterConfig{Path: "out/effects.log"}}),
+		},
+		{
+			name:     "counter without config",
+			def:      single(dag.Step{ID: "z", Type: dag.StepCounter}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldRequired, "steps[0].config.path"}},
+		},
+		{
+			name:     "counter with empty path",
+			def:      single(dag.Step{ID: "z", Type: dag.StepCounter, Config: &dag.CounterConfig{}}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldRequired, "steps[0].config.path"}},
+		},
+		{
 			name: "name at 128-byte limit",
 			def: &dag.Definition{
 				SchemaVersion: dag.CurrentSchemaVersion,

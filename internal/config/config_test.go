@@ -196,6 +196,9 @@ func TestLoadQueueOverrides(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := config.Load(lookupFrom(map[string]string{
+		config.EnvQueueStream:               "steps:ready:test",
+		config.EnvQueueGroup:                "workers:test",
+		config.EnvQueueDelayedKey:           "sched:delayed:test",
 		config.EnvQueueConsumerBatch:        "32",
 		config.EnvQueueConsumerBlock:        "250ms",
 		config.EnvQueueLeaseTTL:             "10s",
@@ -211,6 +214,9 @@ func TestLoadQueueOverrides(t *testing.T) {
 		t.Fatalf("Load: unexpected error: %v", err)
 	}
 	want := config.QueueConfig{
+		Stream:               "steps:ready:test",
+		Group:                "workers:test",
+		DelayedKey:           "sched:delayed:test",
 		ConsumerBatch:        32,
 		ConsumerBlock:        250 * time.Millisecond,
 		LeaseTTL:             10 * time.Second,

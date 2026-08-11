@@ -395,13 +395,13 @@ Completion/failure transitions require the matching `claim_id`; a stale worker (
 - [x] Invalid definitions rejected with M1's path-qualified errors (400)
 - [x] `docker compose --profile app up` (`make up-app`) runs api + 2 worker replicas + stores end-to-end — the `app` profile keeps `make up`/CI stores-only
 
-#### 4.7 — Flagship crash-recovery integration test & demo
+#### 4.7 — Flagship crash-recovery integration test & demo ✅
 **Depends on:** 4.4, 4.5, 3.6
-The headline guarantee, automated: harness (or compose-driven test) starts 2 workers, submits a workflow of `sleep` steps, SIGKILLs the worker holding a lease mid-step, asserts: another worker reclaims after lease expiry, the run completes, attempt history shows the reclaim, no step executed effects twice (echo-side-effect counter). Also: full-stack restart (api+workers) mid-run → resumes from last completed step. Packaged as `make demo-crash` with narrated output, documented in `docs/demos/crash-recovery.md`.
+The headline guarantee, automated: harness (or compose-driven test) starts 2 workers, submits a workflow of `sleep` steps, SIGKILLs the worker holding a lease mid-step, asserts: another worker reclaims after lease expiry, the run completes, attempt history shows the reclaim, no step executed effects twice (echo-side-effect counter). Also: full-stack restart (api+workers) mid-run → resumes from last completed step. Packaged as `make demo-crash` with narrated output, documented in `docs/demos/crash-recovery.md`. *(As built: the CI test spawns real `cmd/worker` processes and SIGKILLs them — enabled by new `AGENTLOOM_QUEUE_STREAM`/`_GROUP`/`_DELAYED_KEY` isolation knobs; the side-effect counter became a fifth test step type, `counter`, appending one line per execution to a per-step file — it also serves M5's no-double-fire exit criterion.)*
 **Done when:**
-- [ ] Test is deterministic in CI (tuned TTLs; no sleeps-as-synchronization)
-- [ ] Attempt history proves reclaim (worker A claimed, worker B completed)
-- [ ] `make demo-crash` runs the scenario against compose with human-readable narration
+- [x] Test is deterministic in CI (tuned TTLs; no sleeps-as-synchronization)
+- [x] Attempt history proves reclaim (worker A claimed, worker B completed)
+- [x] `make demo-crash` runs the scenario against compose with human-readable narration
 
 ---
 

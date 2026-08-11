@@ -410,6 +410,7 @@ it).
 | Ready-stale threshold | 1m | ≫ the drain interval, so only a genuinely lost dispatch (P2/R1(a)) qualifies; the anti-join against pending `task_outbox` rows makes sweeps idempotent — a stuck step costs at most one duplicate dispatch per threshold period, never one per sweep. |
 | Running-stale threshold | 5m | ≫ the lease TTL because `updated_at` moves on transitions, not heartbeats (R1(c)); a hit gets takeover + re-outbox (4.5) — a false positive is fenced, so the cost of too tight a bound is wasted re-execution, not corruption. |
 | Reconciler sweep limit | 256 rows/scan | Caps sweep transaction size; a hit is logged (no silent truncation) and the next sweep continues. |
+| Stream / group / delayed-set names | `steps:ready` / `workers` / `sched:delayed` | The fleet-wide names above; overridable via env (`AGENTLOOM_QUEUE_STREAM`/`_GROUP`/`_DELAYED_KEY`, 4.7) for test isolation only — the crash-recovery suite runs real worker processes against per-test keys on a shared Redis. Production sharding is M19's lever, not this knob. |
 
 ### Deployment expectation
 

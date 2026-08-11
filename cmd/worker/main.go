@@ -64,7 +64,10 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	}
 	defer client.Close() //nolint:errcheck // best-effort cleanup at shutdown
 
-	q := queue.New(client, "", "") // ADR-005 default stream + group
+	// Empty names fall back to ADR-005's fleet-wide defaults; the env
+	// overrides exist for test isolation (the 4.7 crash suite runs real
+	// worker processes against per-test keys).
+	q := queue.New(client, cfg.Queue.Stream, cfg.Queue.Group)
 	workerID := queue.NewConsumerName()
 	dispatcher, err := engine.NewDispatcher(st, q, engine.DispatcherConfig{
 		Interval: cfg.Worker.DispatchInterval,
@@ -122,6 +125,7 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 // spin beats a silent drop — until M5.4 wires dead-lettering.
 func consumerConfig(cfg config.QueueConfig) queue.ConsumerConfig {
 	return queue.ConsumerConfig{
+		DelayedKey:           cfg.DelayedKey,
 		Batch:                cfg.ConsumerBatch,
 		Block:                cfg.ConsumerBlock,
 		LeaseTTL:             cfg.LeaseTTL,

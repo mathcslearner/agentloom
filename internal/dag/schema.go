@@ -13,7 +13,7 @@ import (
 var stepTypes = []StepType{
 	StepLLM, StepTool, StepRetrieve, StepMap, StepPlanner, StepAgent,
 	StepHumanApproval, StepJoin, StepBranch, StepNoop, StepEcho,
-	StepSleep, StepFailNTimes,
+	StepSleep, StepFailNTimes, StepCounter,
 }
 
 // JSONSchema builds the JSON Schema for the workflow definition format

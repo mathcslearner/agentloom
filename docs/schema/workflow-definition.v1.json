@@ -21,6 +21,15 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "CounterConfig": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "Definition": {
       "properties": {
         "schema_version": {
@@ -397,6 +406,16 @@
               "$ref": "#/$defs/FailNTimesConfig"
             }
           }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "counter"
+            },
+            "config": {
+              "$ref": "#/$defs/CounterConfig"
+            }
+          }
         }
       ],
       "properties": {
@@ -433,7 +452,8 @@
         "noop",
         "echo",
         "sleep",
-        "fail_n_times"
+        "fail_n_times",
+        "counter"
       ]
     },
     "ToolConfig": {

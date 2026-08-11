@@ -1678,3 +1678,99 @@ validation against ParamSpecs (M6), run listing/cancel endpoints (6.5).
 `ctl` links the store package transitively (shared wire types live in
 `internal/api`); splitting a leaf types package can ride M6.6's contract
 work if binary size ever matters.
+
+### 4.7 — Flagship crash-recovery integration test & demo ✅
+
+**What shipped.** The headline guarantee, proven against real process
+death — closing crash-matrix cell W3's last "proven by" and M4 itself.
+`test/crash`, the first suite in the planned top-level chaos home: its
+`TestMain` builds `cmd/worker` once, and every scenario spawns **real
+worker subprocesses** and kills them with SIGKILL — the one crash shape
+the in-process suites cannot produce (a goroutine cannot be killed;
+cancelling a context makes the sleep executor return an error, which is
+the *failure* path, not a crash — heartbeats must simply stop).
+Scenario 1 (`TestWorkerSIGKILLMidStepRecovered`): two workers run
+counter → sleep(4s) → counter; the test polls until the sleep step is
+`running`, reads the lease holder from the PEL (`XPENDING` + envelope
+decode; consumer name == worker_id, parsed from each subprocess's
+"worker started" JSON log line), SIGKILLs that process, and asserts the
+survivor reclaims → takes over → re-executes → completes: attempt
+history exactly `lost` → `succeeded` on distinct claims, one
+`step_reclaimed` event, one `step_ready`/`step_succeeded` per step, each
+counter file exactly one line, queue quiescent, outbox empty.
+Scenario 2 (`TestFullFleetRestartResumesFromLastCompletedStep`):
+SIGKILL the *entire* fleet mid-run, prove the run freezes (the orphaned
+entry's PEL idle provably exceeds the TTL while the step stays `running`
+with its attempt open — expiry alone moves nothing), then start fresh
+workers: the run resumes from the last completed step, pre-crash steps
+keeping their single attempt and single counter line. Packaging:
+`make demo-crash` runs `scripts/demo-crash.sh` against compose — Act 1
+kills the lease-holding worker container (holder found via
+`redis-cli XPENDING` + container-log matching), narrates the reclaim
+countdown, watches to completion, and prints the per-step attempt table;
+Act 2 SIGKILLs api + every worker mid-run and boots the stack back up to
+show restart resume. The script asserts its own claims (exits non-zero
+unless both runs succeed with the exact expected attempt shapes) and is
+documented in `docs/demos/crash-recovery.md` with a mechanism-to-ADR map.
+Verified live on compose.
+
+**Production enablers (deliberately small).**
+- **Queue names became config** (`AGENTLOOM_QUEUE_STREAM`/`_GROUP`/
+  `_DELAYED_KEY` on `config.QueueConfig`, empty = ADR-005 defaults;
+  tuning-table row added): 4.2's recorded "worth a knob if it ever bites
+  CI" bit — subprocess workers on a shared Redis need per-test keys. The
+  crash suite passes queuetest's isolated names straight through, so it
+  composes with every other parallel integration test.
+- **`counter` became the fifth test step type** (dag catalog + schema
+  regen + kitchen-sink coverage; `exec.CounterExecutor` appends one
+  `attempt=N` line to the file at `config.path`, `O_APPEND` for
+  cross-process integrity). The ticket's "echo-side-effect counter"
+  cannot be an in-process wrapper when workers are subprocesses; a real
+  externally observable effect was needed. `StepContext` carries no step
+  identity (4.1's minimal SPI, unchanged), so distinctness comes from
+  per-step paths. This is also M5's exit-criterion probe ("side-effect
+  counter proves no double-fire") arriving one milestone early.
+- `storetest.NewDBWithDSN` (NewDB that also returns the DSN, for
+  subprocess env); compose passes `AGENTLOOM_QUEUE_LEASE_TTL` through to
+  workers (default preserved) so the demo can shorten the lease without
+  editing the file.
+
+**Non-obvious decisions.**
+- **The reconciler is pushed out of the picture** (10m interval in the
+  suite's worker env) so the reclaim path is the *single* recovery
+  mechanism under test — the reconciler heal has its own 4.5 suite, and
+  a test where either mechanism could win proves neither.
+- **Synchronization is poll-until-state, never sleep**: on Postgres
+  (step/run status, attempt counts) and Redis (PEL holder, PEL idle
+  exceeding the TTL — the freeze proof). The only wall-clock waits are
+  the workload itself (the sleep executor) and ADR-005's convention of
+  shrinking the lease TTL (1s) rather than faking the Redis idle clock.
+- **Kill timing is made safe by construction**: the killed step sleeps
+  4s and the kill lands within ~100ms of observing `running`, so it is
+  always mid-execution; the sleep step is the crash target precisely
+  because re-executing it is harmless, while the counters bracketing it
+  prove completed work is never re-run.
+- **Demo kills are SIGKILL too** — `docker compose restart` would
+  SIGTERM, the consumer would drain the in-flight handler, and the
+  interrupted executor would record a real failure (4.5's recorded
+  graceful-drain gap, owned by M5). Crash recovery is about the worker
+  that never said goodbye; the doc says so explicitly.
+- **Attempt history + PEL, not new schema, prove "A claimed, B
+  completed"**: the holder was killed while provably owning the entry,
+  and only one worker survived to make attempt 2 — no `worker_id`
+  column needed (4.5's `lost`-outcome design carried the legibility).
+
+**Tests.** The suite is the deliverable (above); the enablers got unit
+coverage in their homes: config knob defaults/overrides + worker
+config-mapping pin (`DelayedKey`), counter executor (append/accumulate
+semantics, attempt stamping, config-vs-I/O error classification), dag
+validation of `counter.path`, kitchen-sink coverage test extended by
+registration. Full `make test-integration` green; both crash scenarios
+run in parallel (~7s each) against the shared stack.
+
+**Deferred.** Graceful-drain semantics for interrupted executors (M5, as
+recorded at 4.5); the demo assumes an otherwise idle stack (holder
+lookup reads the fleet PEL) — fine for a demo, and the CI suite is fully
+isolated; api-process participation in the CI restart scenario (the api
+is stateless and its restart is exercised by the demo's Act 2 — the CI
+scenario proves the part that can lose state, the fleet).
