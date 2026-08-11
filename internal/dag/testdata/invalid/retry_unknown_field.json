@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "retry-unknown-field",
+  "steps": [{"id": "a", "type": "noop", "retry": {"max_tries": 3}}],
+  "edges": []
+}

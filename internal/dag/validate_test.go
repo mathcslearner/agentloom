@@ -130,6 +130,21 @@ var structuralCases = map[string][]issueRef{
 		{dag.CodeLoopFieldForbidden, "edges[0].condition"},
 		{dag.CodeLoopFieldForbidden, "edges[0].max_iterations"},
 	},
+	"retry_missing_cap.json": {{dag.CodeRetryFieldRequired, "steps[0].retry.backoff.cap"}},
+	"retry_bad_bounds.json": {
+		{dag.CodeRetryFieldInvalid, "steps[0].retry.max_attempts"},
+		{dag.CodeRetryFieldInvalid, "steps[0].retry.backoff.cap"},
+		{dag.CodeRetryFieldInvalid, "steps[0].retry.backoff.multiplier"},
+		{dag.CodeRetryFieldInvalid, "steps[1].retry.max_attempts"},
+		{dag.CodeRetryFieldInvalid, "steps[1].retry.backoff.initial"},
+		{dag.CodeRetryFieldInvalid, "steps[1].retry.backoff.cap"},
+	},
+	"retry_on_invalid.json": {
+		{dag.CodeRetryFieldInvalid, "steps[0].retry.retry_on[0]"},
+		{dag.CodeRetryFieldInvalid, "steps[0].retry.retry_on[1]"},
+		{dag.CodeRetryFieldInvalid, "steps[0].retry.retry_on[3]"},
+		{dag.CodeRetryFieldInvalid, "steps[1].retry.retry_on"},
+	},
 	"name_too_long.json": {{dag.CodeLimitExceeded, "name"}},
 	"expr_too_long.json": {{dag.CodeLimitExceeded, "edges[0].when"}},
 	"when_syntax_error.json": {
@@ -519,6 +534,35 @@ func TestValidateTableDriven(t *testing.T) {
 // TestValidateCountLimits exercises the step/edge count limits with
 // generated definitions (committing multi-hundred-KB fixtures would be
 // noise; the limit rule is the same code path either way).
+// TestValidateRetryHandBuilt covers retry checks only reachable by
+// bypassing the codec: an unknown error class string (Decode rejects it
+// first; Validate must still report it for programmatically built
+// definitions) and an empty backoff block (both durations required).
+func TestValidateRetryHandBuilt(t *testing.T) {
+	t.Parallel()
+
+	def := &dag.Definition{
+		SchemaVersion: dag.CurrentSchemaVersion,
+		Name:          "t",
+		Steps: []dag.Step{
+			{ID: "a", Type: dag.StepNoop, Retry: &dag.RetryPolicy{
+				Backoff: &dag.BackoffSpec{},
+				RetryOn: []dag.ErrorClass{"flaky"},
+			}},
+		},
+		Edges: []dag.Edge{},
+	}
+	issues, err := dag.Validate(def)
+	if err == nil {
+		t.Fatal("Validate: want error, got nil")
+	}
+	wantIssues(t, issues, []issueRef{
+		{dag.CodeRetryFieldRequired, "steps[0].retry.backoff.initial"},
+		{dag.CodeRetryFieldRequired, "steps[0].retry.backoff.cap"},
+		{dag.CodeRetryFieldInvalid, "steps[0].retry.retry_on[0]"},
+	}, nil)
+}
+
 func TestValidateCountLimits(t *testing.T) {
 	t.Parallel()
 

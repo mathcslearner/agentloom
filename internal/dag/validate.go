@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"time"
 )
 
@@ -56,6 +57,8 @@ const (
 	CodeBranchEdgeUnconditioned ValidationCode = "branch_edge_unconditioned"
 	CodeLoopFieldRequired       ValidationCode = "loop_field_required"
 	CodeLoopFieldForbidden      ValidationCode = "loop_field_forbidden"
+	CodeRetryFieldRequired      ValidationCode = "retry_field_required"
+	CodeRetryFieldInvalid       ValidationCode = "retry_field_invalid"
 	CodeLimitExceeded           ValidationCode = "limit_exceeded"
 	CodeCycle                   ValidationCode = "cycle_detected"
 	CodeLoopEdgeNotAncestor     ValidationCode = "loop_edge_not_ancestor"
@@ -198,8 +201,86 @@ func (v *validator) checkSteps(def *Definition) map[string]int {
 			v.add(CodeUnknownStepType, path+".type", "unknown step type %q", string(s.Type))
 		}
 		v.checkStepConfig(path, s)
+		v.checkRetry(path, s.Retry)
 	}
 	return index
+}
+
+// checkRetry enforces ADR-006's retry-policy bounds. The codec already
+// rejected unknown fields and unknown enum spellings; here the numeric
+// and duration bounds apply, plus which classes `retry_on` may name —
+// only the retryable subset (transient, timeout): permanent and
+// cancelled are never retryable by construction, and validation_failed
+// is reserved until M11 wires the semantic-retry loop. Unknown class
+// strings are re-checked so hand-built definitions (which never pass
+// the codec) report cleanly.
+func (v *validator) checkRetry(path string, rp *RetryPolicy) {
+	if rp == nil {
+		return
+	}
+	path += ".retry"
+	if rp.MaxAttempts < 0 || rp.MaxAttempts > MaxRetryAttempts {
+		v.add(CodeRetryFieldInvalid, path+".max_attempts", "must be between 1 and %d, got %d", MaxRetryAttempts, rp.MaxAttempts)
+	}
+	if rp.Jitter != "" && !slices.Contains(jitterModes, rp.Jitter) {
+		v.add(CodeRetryFieldInvalid, path+".jitter", "unknown jitter mode %q", string(rp.Jitter))
+	}
+	if b := rp.Backoff; b != nil {
+		initial := v.checkBackoffDuration(path+".backoff.initial", b.Initial, MaxBackoffInitial)
+		ceiling := v.checkBackoffDuration(path+".backoff.cap", b.Cap, MaxBackoffCap)
+		if initial > 0 && ceiling > 0 && ceiling < initial {
+			v.add(CodeRetryFieldInvalid, path+".backoff.cap", "must be at least backoff.initial (%s), got %s", b.Initial, b.Cap)
+		}
+		if b.Multiplier != 0 && (b.Multiplier < 1 || b.Multiplier > MaxBackoffMultiplier) {
+			v.add(CodeRetryFieldInvalid, path+".backoff.multiplier", "must be between 1 and %d, got %v", MaxBackoffMultiplier, b.Multiplier)
+		}
+	}
+	if rp.RetryOn != nil && len(rp.RetryOn) == 0 {
+		v.add(CodeRetryFieldInvalid, path+".retry_on", "must not be empty when present (omit the key for the engine default)")
+	}
+	seen := make(map[ErrorClass]bool, len(rp.RetryOn))
+	for i, c := range rp.RetryOn {
+		entry := fmt.Sprintf("%s.retry_on[%d]", path, i)
+		if seen[c] {
+			v.add(CodeRetryFieldInvalid, entry, "duplicate error class %q", string(c))
+			continue
+		}
+		seen[c] = true
+		switch c {
+		case ClassTransient, ClassTimeout:
+		case ClassValidationFailed:
+			v.add(CodeRetryFieldInvalid, entry, "%q is reserved for semantic retries (M11, ADR-013) and cannot be used yet", string(c))
+		case ClassPermanent, ClassCancelled:
+			v.add(CodeRetryFieldInvalid, entry, "%q is never retryable", string(c))
+		default:
+			v.add(CodeRetryFieldInvalid, entry, "unknown error class %q", string(c))
+		}
+	}
+}
+
+// checkBackoffDuration enforces one backoff duration field: required
+// (both initial and cap must be explicit when a backoff block is
+// present — ADR-006), parseable, positive, bounded. Returns the parsed
+// duration, or 0 when invalid (the caller's cap ≥ initial check runs
+// only on valid pairs).
+func (v *validator) checkBackoffDuration(path, val string, bound time.Duration) time.Duration {
+	if val == "" {
+		v.add(CodeRetryFieldRequired, path, "required field is missing")
+		return 0
+	}
+	d, err := time.ParseDuration(val)
+	switch {
+	case err != nil:
+		v.add(CodeRetryFieldInvalid, path, "not a Go duration string: %v", err)
+		return 0
+	case d <= 0:
+		v.add(CodeRetryFieldInvalid, path, "must be positive, got %q", val)
+		return 0
+	case d > bound:
+		v.add(CodeRetryFieldInvalid, path, "must be at most %s, got %q", bound, val)
+		return 0
+	}
+	return d
 }
 
 // cfg returns s.Config as *T, or a zero T when the config is absent or of

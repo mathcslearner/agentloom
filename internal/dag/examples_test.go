@@ -202,4 +202,27 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	if len(def.UI) == 0 {
 		t.Error("kitchen_sink.json has no ui block")
 	}
+
+	// ADR-006 constructs: an explicit failure policy, one full retry
+	// policy (backoff + jitter + retry_on) and one partial policy that
+	// inherits engine defaults for its absent fields.
+	if def.OnFailure == "" {
+		t.Error("no explicit on_failure policy in kitchen_sink.json")
+	}
+	var fullRetry, partialRetry bool
+	for _, s := range def.Steps {
+		switch r := s.Retry; {
+		case r == nil:
+		case r.Backoff != nil && r.Jitter != "" && r.RetryOn != nil:
+			fullRetry = true
+		default:
+			partialRetry = true
+		}
+	}
+	if !fullRetry {
+		t.Error("no full retry policy (backoff + jitter + retry_on) in kitchen_sink.json")
+	}
+	if !partialRetry {
+		t.Error("no partial retry policy (inheriting engine defaults) in kitchen_sink.json")
+	}
 }

@@ -30,6 +30,12 @@ func Encode(def *Definition) ([]byte, error) {
 			return nil, err
 		}
 	}
+	if def.OnFailure != "" {
+		buf.WriteString(`,"on_failure":`)
+		if err := writeJSON(&buf, def.OnFailure); err != nil {
+			return nil, err
+		}
+	}
 	if len(def.Params) > 0 {
 		buf.WriteString(`,"params":`)
 		if err := writeJSON(&buf, def.Params); err != nil {

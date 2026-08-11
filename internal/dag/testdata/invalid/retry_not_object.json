@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "retry-not-object",
+  "steps": [{"id": "a", "type": "noop", "retry": 3}],
+  "edges": []
+}

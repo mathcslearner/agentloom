@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "retry-wrong-type",
+  "steps": [{"id": "a", "type": "noop", "retry": {"max_attempts": "three"}}],
+  "edges": []
+}

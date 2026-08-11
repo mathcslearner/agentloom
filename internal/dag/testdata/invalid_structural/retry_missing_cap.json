@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "retry-missing-cap",
+  "steps": [{"id": "a", "type": "noop", "retry": {"backoff": {"initial": "1s"}}}],
+  "edges": []
+}

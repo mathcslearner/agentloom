@@ -34,24 +34,31 @@ var decodeInvalidCases = map[string][]string{
 		"steps: required field is missing",
 		"edges: required field is missing",
 	},
-	"unknown_top_field.json":      {"descriptionz: unknown field"},
-	"wrong_type_name.json":        {"name: expected string, got number"},
-	"steps_not_array.json":        {"steps: expected array, got object"},
-	"step_missing_id_type.json":   {"steps[0].id: required field is missing", "steps[0].type: required field is missing"},
-	"unknown_step_type.json":      {`steps[0].type: unknown step type "llmz"`},
-	"unknown_step_field.json":     {"steps[0].retires: unknown field"},
-	"config_unknown_field.json":   {"steps[0].config.modle: unknown field"},
-	"config_wrong_type.json":      {"steps[0].config.max_tokens: expected integer, got string"},
-	"config_nested_unknown.json":  {"steps[0].config.messages[0].contnt: unknown field"},
-	"config_not_object.json":      {"steps[0].config: expected object, got array"},
-	"join_bad_mode.json":          {`steps[0].config.mode: unknown join mode "eventually"`},
-	"edge_missing_from.json":      {"edges[0].from: required field is missing"},
-	"unknown_edge_field.json":     {"edges[0].whenever: unknown field"},
-	"unknown_edge_type.json":      {`edges[0].type: unknown edge type "loopy"`},
-	"param_missing_type.json":     {"params.goal.type: required field is missing"},
-	"bad_param_type.json":         {`params.goal.type: unknown param type "text"`},
-	"param_entry_not_object.json": {"params.goal: expected object, got string"},
-	"ui_not_object.json":          {"ui: expected object, got array"},
+	"unknown_top_field.json":           {"descriptionz: unknown field"},
+	"wrong_type_name.json":             {"name: expected string, got number"},
+	"steps_not_array.json":             {"steps: expected array, got object"},
+	"step_missing_id_type.json":        {"steps[0].id: required field is missing", "steps[0].type: required field is missing"},
+	"unknown_step_type.json":           {`steps[0].type: unknown step type "llmz"`},
+	"unknown_step_field.json":          {"steps[0].retires: unknown field"},
+	"config_unknown_field.json":        {"steps[0].config.modle: unknown field"},
+	"config_wrong_type.json":           {"steps[0].config.max_tokens: expected integer, got string"},
+	"config_nested_unknown.json":       {"steps[0].config.messages[0].contnt: unknown field"},
+	"config_not_object.json":           {"steps[0].config: expected object, got array"},
+	"join_bad_mode.json":               {`steps[0].config.mode: unknown join mode "eventually"`},
+	"bad_on_failure.json":              {`on_failure: unknown failure policy "explode"`},
+	"retry_not_object.json":            {"steps[0].retry: expected object, got number"},
+	"retry_unknown_field.json":         {"steps[0].retry.max_tries: unknown field"},
+	"retry_backoff_unknown_field.json": {"steps[0].retry.backoff.floor: unknown field"},
+	"retry_bad_jitter.json":            {`steps[0].retry.jitter: unknown jitter mode "half"`},
+	"retry_bad_class.json":             {`steps[0].retry.retry_on[1]: unknown error class "flaky"`},
+	"retry_wrong_type.json":            {"steps[0].retry.max_attempts: expected integer, got string"},
+	"edge_missing_from.json":           {"edges[0].from: required field is missing"},
+	"unknown_edge_field.json":          {"edges[0].whenever: unknown field"},
+	"unknown_edge_type.json":           {`edges[0].type: unknown edge type "loopy"`},
+	"param_missing_type.json":          {"params.goal.type: required field is missing"},
+	"bad_param_type.json":              {`params.goal.type: unknown param type "text"`},
+	"param_entry_not_object.json":      {"params.goal: expected object, got string"},
+	"ui_not_object.json":               {"ui: expected object, got array"},
 	"multi_error.json": {
 		"name: expected string, got number",
 		`steps[0].type: unknown step type "llmz"`,
@@ -215,6 +222,51 @@ func TestDecodeTypedConfigs(t *testing.T) {
 
 	if cfg := byID["start"].Config; cfg != nil {
 		t.Errorf("start (noop, no config key) config = %#v, want nil", cfg)
+	}
+}
+
+// TestDecodeRetryPolicy covers the ADR-006 step envelope fields: the
+// typed retry policy in full and partial spellings, absent-key nils, and
+// the top-level failure policy.
+func TestDecodeRetryPolicy(t *testing.T) {
+	t.Parallel()
+
+	def, err := dag.Decode(readFixture(t, "valid", "kitchen_sink.json"))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if def.OnFailure != dag.ContinueIndependentBranches {
+		t.Errorf("OnFailure = %q, want %q", def.OnFailure, dag.ContinueIndependentBranches)
+	}
+	byID := make(map[string]dag.Step, len(def.Steps))
+	for _, s := range def.Steps {
+		byID[s.ID] = s
+	}
+
+	full := byID["flaky_probe"].Retry
+	if full == nil {
+		t.Fatal("flaky_probe has no decoded retry policy")
+	}
+	if full.MaxAttempts != 4 || full.Jitter != dag.JitterFull {
+		t.Errorf("flaky_probe retry = %+v, want max_attempts 4, jitter full", full)
+	}
+	if full.Backoff == nil || full.Backoff.Initial != "100ms" || full.Backoff.Cap != "2s" || full.Backoff.Multiplier != 2 {
+		t.Errorf("flaky_probe backoff = %+v, want {100ms 2s 2}", full.Backoff)
+	}
+	if len(full.RetryOn) != 2 || full.RetryOn[0] != dag.ClassTransient || full.RetryOn[1] != dag.ClassTimeout {
+		t.Errorf("flaky_probe retry_on = %v, want [transient timeout]", full.RetryOn)
+	}
+
+	partial := byID["fetch"].Retry
+	if partial == nil || partial.MaxAttempts != 2 {
+		t.Fatalf("fetch retry = %+v, want partial policy with max_attempts 2", partial)
+	}
+	if partial.Backoff != nil || partial.Jitter != "" || partial.RetryOn != nil {
+		t.Errorf("fetch retry decoded absent keys as non-zero: %+v", partial)
+	}
+
+	if r := byID["start"].Retry; r != nil {
+		t.Errorf("start (no retry key) retry = %+v, want nil", r)
 	}
 }
 

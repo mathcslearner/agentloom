@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
   "name": "kitchen-sink",
-  "description": "Exercises every step type, edge feature, and the ui block.",
+  "description": "Exercises every step type, edge feature, retry policies, the failure policy, and the ui block.",
+  "on_failure": "continue_independent_branches",
   "params": {
     "goal": {"type": "string", "required": true},
     "budget": {"type": "number", "required": false},
@@ -11,7 +12,7 @@
   },
   "steps": [
     {"id": "start", "type": "noop"},
-    {"id": "fetch", "type": "tool", "config": {"tool": "http_request", "input": {"method": "GET", "url": "https://example.internal/api?a=1&b=2"}}},
+    {"id": "fetch", "type": "tool", "config": {"tool": "http_request", "input": {"method": "GET", "url": "https://example.internal/api?a=1&b=2"}}, "retry": {"max_attempts": 2}},
     {"id": "find_similar", "type": "retrieve", "config": {"retriever": "pg_fulltext", "query": "${{ run.params.goal }}", "top_k": 5}},
     {"id": "plan", "type": "planner", "config": {"model": "anthropic/claude-sonnet-5", "prompt": "Break down: ${{ run.params.goal }}"}},
     {"id": "draft", "type": "llm", "config": {"model": "anthropic/claude-sonnet-5", "messages": [{"role": "user", "content": "Draft it if x < 3 & y > 2"}], "max_tokens": 1024, "temperature": 0}},
@@ -21,9 +22,9 @@
     {"id": "refund_flow", "type": "echo", "config": {"input": {"hello": "world"}}},
     {"id": "generic_flow", "type": "noop"},
     {"id": "gather", "type": "join", "config": {"mode": "all"}},
-    {"id": "flaky_probe", "type": "fail_n_times", "config": {"n": 2}},
+    {"id": "flaky_probe", "type": "fail_n_times", "config": {"n": 2}, "retry": {"max_attempts": 4, "backoff": {"initial": "100ms", "cap": "2s", "multiplier": 2}, "jitter": "full", "retry_on": ["transient", "timeout"]}},
     {"id": "approve", "type": "human_approval", "config": {"prompt": "OK to send?"}},
-    {"id": "cooldown", "type": "sleep", "config": {"duration": "250ms"}},
+    {"id": "cooldown", "type": "sleep", "config": {"duration": "250ms"}, "retry": {"backoff": {"initial": "500ms", "cap": "500ms", "multiplier": 1.5}, "jitter": "none"}},
     {"id": "tally", "type": "counter", "config": {"path": "/tmp/kitchen-sink-tally"}}
   ],
   "edges": [

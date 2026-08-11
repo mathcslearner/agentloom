@@ -129,3 +129,22 @@ func (JoinMode) JSONSchema() *jsonschema.Schema {
 func (ParamType) JSONSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "string", Enum: enumAny(paramTypes)}
 }
+
+// JSONSchema declares the failure-policy enum in the generated schema.
+func (FailurePolicy) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny(failurePolicies)}
+}
+
+// JSONSchema declares the error-class enum in the generated schema. The
+// full vocabulary is published; which classes `retry_on` admits today
+// (the retryable subset — validation_failed is reserved for M11) is
+// validation, like the branch edge-firing rule (ADR-003: the schema is
+// documentation-grade, Decode and Validate are the authority).
+func (ErrorClass) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny(errorClasses)}
+}
+
+// JSONSchema declares the jitter-mode enum in the generated schema.
+func (JitterMode) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny(jitterModes)}
+}

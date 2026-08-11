@@ -51,7 +51,7 @@ func TestGeneratedSchemaContent(t *testing.T) {
 	// Every registered config struct must be present so the oneOf refs
 	// resolve.
 	for _, name := range []string{
-		"Definition", "Step", "Edge", "ParamSpec",
+		"Definition", "Step", "Edge", "ParamSpec", "RetryPolicy", "BackoffSpec",
 		"LLMConfig", "ToolConfig", "RetrieveConfig", "MapConfig", "PlannerConfig",
 		"AgentConfig", "HumanApprovalConfig", "JoinConfig", "BranchConfig",
 		"NoopConfig", "EchoConfig", "SleepConfig", "FailNTimesConfig", "CounterConfig",
@@ -68,6 +68,9 @@ func TestGeneratedSchemaContent(t *testing.T) {
 		`"const": "human_approval"`,
 		"oneOf",
 		"round-tripped byte-for-byte",
+		`"on_failure"`,
+		`"max_attempts"`,
+		`"validation_failed"`,
 	} {
 		if !bytes.Contains(data, []byte(marker)) {
 			t.Errorf("generated schema does not contain %q", marker)

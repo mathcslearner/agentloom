@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "name": "retry-bad-bounds",
+  "steps": [
+    {"id": "a", "type": "noop", "retry": {"max_attempts": 1000, "backoff": {"initial": "2m", "cap": "1s", "multiplier": 0.5}}},
+    {"id": "b", "type": "noop", "retry": {"max_attempts": -1, "backoff": {"initial": "fast", "cap": "25h"}}}
+  ],
+  "edges": [{"from": "a", "to": "b"}]
+}

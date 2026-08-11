@@ -14,6 +14,21 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "BackoffSpec": {
+      "properties": {
+        "initial": {
+          "type": "string"
+        },
+        "cap": {
+          "type": "string"
+        },
+        "multiplier": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "BranchConfig": {
       "properties": {
         "input": true
@@ -40,6 +55,9 @@
         },
         "description": {
           "type": "string"
+        },
+        "on_failure": {
+          "$ref": "#/$defs/FailurePolicy"
         },
         "params": {
           "additionalProperties": {
@@ -115,6 +133,16 @@
         "loop"
       ]
     },
+    "ErrorClass": {
+      "type": "string",
+      "enum": [
+        "transient",
+        "permanent",
+        "timeout",
+        "cancelled",
+        "validation_failed"
+      ]
+    },
     "FailNTimesConfig": {
       "properties": {
         "n": {
@@ -124,6 +152,13 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "FailurePolicy": {
+      "type": "string",
+      "enum": [
+        "fail_fast",
+        "continue_independent_branches"
+      ]
+    },
     "HumanApprovalConfig": {
       "properties": {
         "prompt": {
@@ -132,6 +167,13 @@
       },
       "additionalProperties": false,
       "type": "object"
+    },
+    "JitterMode": {
+      "type": "string",
+      "enum": [
+        "full",
+        "none"
+      ]
     },
     "JoinConfig": {
       "properties": {
@@ -261,6 +303,27 @@
         },
         "top_k": {
           "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "RetryPolicy": {
+      "properties": {
+        "max_attempts": {
+          "type": "integer"
+        },
+        "backoff": {
+          "$ref": "#/$defs/BackoffSpec"
+        },
+        "jitter": {
+          "$ref": "#/$defs/JitterMode"
+        },
+        "retry_on": {
+          "items": {
+            "$ref": "#/$defs/ErrorClass"
+          },
+          "type": "array"
         }
       },
       "additionalProperties": false,
@@ -428,6 +491,9 @@
         "config": {
           "type": "object",
           "description": "Typed per step type; Step's oneOf variants bind each type to its config shape."
+        },
+        "retry": {
+          "$ref": "#/$defs/RetryPolicy"
         }
       },
       "additionalProperties": false,

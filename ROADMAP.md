@@ -415,13 +415,13 @@ The headline guarantee, automated: harness (or compose-driven test) starts 2 wor
 
 **Exit criteria:** `fail_n_times` fixtures retry per policy and land in DLQ when exhausted; DLQ requeue works; side-effect counter proves no double-fire across kill/reclaim/retry; rolling worker restart loses nothing; chaos suite green in CI short mode.
 
-#### 5.1 — ADR-006 & retry policy schema
+#### 5.1 — ADR-006 & retry policy schema ✅
 **Depends on:** 0.4, 4.3
 **ADR-006:** error classification (transient / permanent / timeout / cancelled; `validation_failed` reserved for M11), step-vs-run failure semantics, workflow failure policy (`fail_fast` vs `continue_independent_branches`), DLQ model (Postgres as truth; steps become `dead_lettered`), retry policy fields on steps (`max_attempts`, backoff base/cap/multiplier, jitter, retryable error classes) with engine defaults. Definition schema + validation updated (M1 types extended).
 **Done when:**
-- [ ] Taxonomy table maps every executor error path to a class and disposition
-- [ ] Policy schema validated with sensible bounds (e.g., backoff cap required)
-- [ ] Defaults documented; fixtures updated with explicit policies
+- [x] Taxonomy table maps every executor error path to a class and disposition
+- [x] Policy schema validated with sensible bounds (e.g., backoff cap required)
+- [x] Defaults documented; fixtures updated with explicit policies
 
 #### 5.2 — Retry engine with backoff
 **Depends on:** 5.1, 3.5

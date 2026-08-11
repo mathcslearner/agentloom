@@ -21,7 +21,9 @@ each example's "header comment" is its top-level `description` field.
 - **[linear.json](linear.json)** — the smallest realistic pipeline: fetch
   (tool) → summarize (llm) → store (echo) in a straight chain. Start here
   to learn the top-level shape: `schema_version`, `params`, `steps`,
-  `edges`.
+  `edges` — plus an explicit `retry` policy on the network-bound fetch
+  step ([ADR-006](../../docs/adr/006-failure-taxonomy-and-retries.md));
+  the other steps inherit the engine's default policy.
 - **[fanout.json](fanout.json)** — parallel fan-out/fan-in: one entry step
   with three unconditioned out-edges (all three successors run in
   parallel) converging on a `join` with `mode: all` before a synthesis
@@ -39,9 +41,12 @@ each example's "header comment" is its top-level `description` field.
   research-and-publish pipeline exercising every construct: all 14 step
   types, both join modes (`any` and `all`), conditioned and unconditioned
   edges, `has()` guards, a branch with a trailing default, a loop edge,
-  all five param types, and an engine-opaque `ui` block that round-trips
-  byte-for-byte. A test asserts this file's coverage, so a new step type
-  fails CI until the example uses it.
+  all five param types, explicit retry policies (one full block, one
+  partial block inheriting engine defaults) with the
+  `continue_independent_branches` failure policy (ADR-006), and an
+  engine-opaque `ui` block that round-trips byte-for-byte. A test asserts
+  this file's coverage, so a new step type fails CI until the example
+  uses it.
 
 Notes on provisional shapes: the `map` step's `config.body` names the
 per-item sub-workflow by convention only until M13 (ADR-015) pins the

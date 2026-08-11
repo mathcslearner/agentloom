@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "retry-bad-jitter",
+  "steps": [{"id": "a", "type": "noop", "retry": {"jitter": "half"}}],
+  "edges": []
+}

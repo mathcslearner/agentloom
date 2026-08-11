@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "name": "bad-on-failure",
+  "on_failure": "explode",
+  "steps": [{"id": "a", "type": "noop"}],
+  "edges": []
+}

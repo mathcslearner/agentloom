@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "retry-backoff-unknown-field",
+  "steps": [{"id": "a", "type": "noop", "retry": {"backoff": {"initial": "1s", "cap": "2s", "floor": "1s"}}}],
+  "edges": []
+}

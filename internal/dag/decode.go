@@ -74,6 +74,14 @@ func Decode(data []byte) (*Definition, error) {
 	if raw, ok := fields["description"]; ok {
 		def.Description, _ = decodeString(raw, "description", &errs)
 	}
+	if raw, ok := fields["on_failure"]; ok {
+		if s, sok := decodeString(raw, "on_failure", &errs); sok {
+			def.OnFailure = FailurePolicy(s)
+			if !slices.Contains(failurePolicies, def.OnFailure) {
+				errs.add("on_failure", "unknown failure policy %q (expected one of: %s)", s, joinEnum(failurePolicies))
+			}
+		}
+	}
 	if raw, ok := fields["params"]; ok {
 		def.Params = decodeParams(raw, &errs)
 	}
@@ -97,7 +105,8 @@ func Decode(data []byte) (*Definition, error) {
 
 	topLevel := map[string]bool{
 		"schema_version": true, "name": true, "description": true,
-		"params": true, "steps": true, "edges": true, "ui": true,
+		"on_failure": true, "params": true, "steps": true, "edges": true,
+		"ui": true,
 	}
 	for _, k := range sortedKeys(fields) {
 		if !topLevel[k] {
@@ -176,14 +185,36 @@ func decodeStep(raw json.RawMessage, path string, errs *errList) Step {
 	if cfgRaw, present := m["config"]; present && typeKnown {
 		step.Config = decodeStepConfig(step.Type, cfgRaw, path+".config", errs)
 	}
+	if retryRaw, present := m["retry"]; present {
+		step.Retry = decodeRetry(retryRaw, path+".retry", errs)
+	}
 	for _, k := range sortedKeys(m) {
 		switch k {
-		case "id", "type", "config":
+		case "id", "type", "config", "retry":
 		default:
 			errs.add(path+"."+k, "unknown field")
 		}
 	}
 	return step
+}
+
+// decodeRetry decodes a step's retry policy (ADR-006). The codec level
+// enforces shape and closed enums — unknown fields, mistyped values, an
+// unknown jitter mode or error class; the numeric and duration bounds
+// (and which classes `retry_on` may name) are structural validation
+// (Validate), mirroring the config split between 1.2 and 1.3.
+func decodeRetry(raw json.RawMessage, path string, errs *errList) *RetryPolicy {
+	var rp RetryPolicy
+	strictUnmarshal(raw, &rp, path, errs)
+	if rp.Jitter != "" && !slices.Contains(jitterModes, rp.Jitter) {
+		errs.add(path+".jitter", "unknown jitter mode %q (expected one of: %s)", string(rp.Jitter), joinEnum(jitterModes))
+	}
+	for i, c := range rp.RetryOn {
+		if !slices.Contains(errorClasses, c) {
+			errs.add(fmt.Sprintf("%s.retry_on[%d]", path, i), "unknown error class %q (expected one of: %s)", string(c), joinEnum(errorClasses))
+		}
+	}
+	return &rp
 }
 
 // decodeStepConfig decodes a step's config into the typed struct for its

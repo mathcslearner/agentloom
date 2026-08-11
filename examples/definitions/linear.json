@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "linear-pipeline",
-  "description": "The simplest possible workflow: a straight three-step chain with no conditions — fetch a page (tool), summarize it (llm), record the result (echo). Demonstrates sequential dependency edges and a required run parameter referenced from step config.",
+  "description": "The simplest possible workflow: a straight three-step chain with no conditions — fetch a page (tool), summarize it (llm), record the result (echo). Demonstrates sequential dependency edges, a required run parameter referenced from step config, and an explicit retry policy on the network-bound step (ADR-006; the other steps inherit engine defaults).",
   "params": {
     "url": {
       "type": "string",
@@ -17,6 +17,13 @@
         "input": {
           "method": "GET",
           "url": "${{ run.params.url }}"
+        }
+      },
+      "retry": {
+        "max_attempts": 3,
+        "backoff": {
+          "initial": "1s",
+          "cap": "30s"
         }
       }
     },

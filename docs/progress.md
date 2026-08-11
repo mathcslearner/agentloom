@@ -1871,3 +1871,95 @@ sustained backlog amplifies with load (bounded by the advisory lock +
 per-sweep Limit; correctness-safe); GETs are three pool reads by design;
 `ctl` links pgx transitively (recorded at 4.6, M6.6); `errFencedCompletion`
 is matched by no caller — kept as documentation of the no-ACK contract.
+
+## Milestone 5 — Fault tolerance & execution control
+
+### 5.1 — ADR-006 & retry policy schema ✅
+
+**Delivered.** [ADR-006](adr/006-failure-taxonomy-and-retries.md)
+(failure taxonomy & retry semantics), and the definition-contract half
+of it in `internal/dag`: the per-step `retry` field, the top-level
+`on_failure` workflow failure policy, bounds validation, regenerated
+JSON Schema, and fixtures carrying explicit policies. No engine, store,
+or queue code changed — 5.2–5.6 implement against the ADR.
+
+**The ADR's decisions**, in brief: five error classes (`transient` /
+`permanent` / `timeout` / `cancelled`, with `validation_failed`
+reserved-and-rejected until M11) recorded as attempt outcomes; a
+14-row taxonomy table mapping every 4.x failure path to class +
+disposition, with rows 4–7 (registry miss, invalid config, CEL edge
+failures, corrupt stored content) force-classified permanent;
+**unclassified executor errors default to transient** (idempotency
+keys make retry safe; the reverse default fails runs on network
+blips); **`lost` attempts do not consume the retry budget** (crash
+loops are bounded by the queue's delivery-count poison threshold —
+the two counters never mix); backoff = `min(cap, initial ×
+multiplier^(n−1))` with full jitter, served by 3.5's delayed ZSET
+under new reason `retry`; `failed` becomes a routing state passed
+through in the completion transaction (`→ retrying → ready` or
+`→ dead_lettered`), with Postgres as the DLQ (a `dead_letters` table,
+sources `retries_exhausted | permanent | poison`, requeue counting the
+budget from a recorded baseline since attempt rows are immutable);
+`fail_fast` (default, today's behavior) vs
+`continue_independent_branches` (eager write-off of blocked
+descendants to `cancelled` so the run rollup stays a counter check);
+effective policies are materialized onto `run_steps` at instantiation
+(5.2's migration) so failure paths never reparse the snapshot and
+worker upgrades cannot change an in-flight run's policy.
+
+**Schema changes** (all additive, `schema_version` stays 1 per
+ADR-003): `Step.Retry *RetryPolicy` (`max_attempts`, `backoff`
+{`initial`, `cap`, `multiplier`}, `jitter`, `retry_on`) and
+`Definition.OnFailure` in `definition.go`/`retry.go`; `ErrorClass`
+lives in dag (the contract references it; exec will alias it in 5.2).
+Decode enforces shape + closed enums (unknown jitter mode, unknown
+error class, unknown failure policy — `decodeRetry` mirroring the
+JoinMode convention); Validate enforces the bounds table under two new
+codes `retry_field_required` / `retry_field_invalid` (`max_attempts`
+1–100 with 0-means-absent per the `max_iterations` convention;
+**backoff `initial` and `cap` both required when a backoff block is
+present**, parseable positive durations ≤ 1h/24h, cap ≥ initial;
+multiplier 1–100; `retry_on` non-empty, duplicate-free, from
+{transient, timeout} — `validation_failed` rejected with a
+reserved-for-M11 message, `permanent`/`cancelled` as never-retryable).
+Canonical encoding: `on_failure` after `description`, omitted when
+absent (absent = fail_fast, the EdgeNormal convention); `retry` rides
+Step's struct order after `config`.
+
+**Tests.** Seven new decode-corpus fixtures (bad policy/jitter/class,
+unknown fields at both nesting levels, wrong types, non-object) and
+three structural fixtures (missing cap; a two-step bounds gauntlet;
+retry_on abuse incl. the M11 reservation) — both corpus-coverage
+pinning tests extend automatically; typed-decode test asserts full,
+partial, and absent policies plus `on_failure`; a hand-built Validate
+test covers codec-bypassing paths (unknown class string, empty backoff
+block); the kitchen-sink construct-coverage test now also requires an
+explicit `on_failure`, one full retry block, and one partial block, so
+the fixtures cannot go stale. Schema `$defs` test pins RetryPolicy +
+BackoffSpec. Full integration suite (compose stores) re-run green,
+crash suite included.
+
+**Fixtures.** `examples/definitions/kitchen_sink.json` gained
+`on_failure: continue_independent_branches`, a full retry block on
+`flaky_probe` (the step type built to exercise 5.2), and a partial
+`max_attempts: 5` on `fetch_sources`; `linear.json` gained a minimal
+policy on its network-bound `fetch`; testdata/valid/kitchen_sink.json
+mirrors all three spellings for the roundtrip corpus; READMEs updated.
+
+**Non-obvious decisions / deferred.**
+- The classification *mechanism* (typed `ClassifiedError` in exec,
+  default-transient rule) is specified in the ADR but deliberately not
+  implemented — 5.2 lands it with its first consumer, keeping this
+  ticket schema-only.
+- `retry_on` decode accepts all five classes (they are the enum);
+  which classes are *admissible* is validation — so the M11 unlock is
+  a validator change, not a codec change.
+- An explicit `"max_attempts": 0` is indistinguishable from an absent
+  key (Go zero value) and silently means "engine default" — same
+  accepted ambiguity as `max_iterations`/`fail_n_times.n`, recorded in
+  the struct docs.
+- An empty `"retry": {}` block is valid and means all-engine-defaults;
+  no warning issued.
+- ADR-003/004/005 needed no amendments: all three had reserved exactly
+  the slots this ADR fills (the `retry` field, the M5 statuses and
+  outcome vocabulary, the `retry`/`dlq_requeue` reasons).

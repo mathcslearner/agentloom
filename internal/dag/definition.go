@@ -24,12 +24,19 @@ const CurrentSchemaVersion = 1
 // Definition is a complete workflow definition — the top-level JSON
 // document (ADR-003 "Top-level shape").
 type Definition struct {
-	SchemaVersion int                  `json:"schema_version"`
-	Name          string               `json:"name"`
-	Description   string               `json:"description,omitempty"`
-	Params        map[string]ParamSpec `json:"params,omitempty"`
-	Steps         []Step               `json:"steps"`
-	Edges         []Edge               `json:"edges"`
+	SchemaVersion int    `json:"schema_version"`
+	Name          string `json:"name"`
+	Description   string `json:"description,omitempty"`
+
+	// OnFailure is the workflow failure policy (ADR-006): what happens
+	// to the run when a step dead-letters. Empty means the key was
+	// absent — the engine default, FailFast. Encode omits the empty
+	// value, so the canonical spelling of the default is no key.
+	OnFailure FailurePolicy `json:"on_failure,omitempty"`
+
+	Params map[string]ParamSpec `json:"params,omitempty"`
+	Steps  []Step               `json:"steps"`
+	Edges  []Edge               `json:"edges"`
 
 	// UI is the engine-opaque builder state: an arbitrary JSON object that
 	// is never interpreted and is round-tripped byte-for-byte exactly as it
@@ -90,6 +97,12 @@ type Step struct {
 	// document had no config key). Its concrete type is the pointer config
 	// struct registered for Type, e.g. *LLMConfig for StepLLM.
 	Config StepConfig `json:"config,omitempty"`
+
+	// Retry is the step's authored retry policy (ADR-006); nil when the
+	// source document had no retry key (engine defaults apply). Uniform
+	// across step types, so it lives on the step envelope, not in the
+	// per-type config.
+	Retry *RetryPolicy `json:"retry,omitempty"`
 }
 
 // EdgeType distinguishes normal dependency edges from marked loop edges.
