@@ -1321,3 +1321,90 @@ can strand are exactly what 4.4's reconciler and 4.3's completion tx
 exist to close. The start/stop test uses the global `steps:ready` stream
 (names are not yet configurable) — fine against a dev stack, worth a
 knob if it ever bites CI.
+
+### 4.3 — Execute & complete pipeline (readiness fan-out) ✅
+
+**What shipped.** The completion tail (`internal/engine/complete.go`):
+after the executor returns, one transaction settles everything —
+claim-fenced `running → succeeded` with the output persisted
+(`store.SucceedStep`), out-edge resolution, skip propagation, readiness
+fan-out with outbox rows for newly-ready steps, and the run rollup
+attempt — with the ACK moved after commit, closing ADR-005's
+"completion/failure transition committed → ACK" row. Edge verdicts are
+computed by `planEdges`, a pure pre-transaction function (unit-tested
+without a database): non-branch sources fire every edge whose `when` is
+absent or true (all-matching); branch sources apply ADR-003's
+first-match-in-ordinal-order rule with the trailing `when`-less default,
+and deliberately do not evaluate predicates past the match (their errors
+could not matter). Loop edges are excluded everywhere. Inside the
+transaction, `fanOut` chases a worklist to the fixed point: each
+`ResolveEdge` returns the target's updated counters; `fired_deps ≥ 1 ∧
+(remaining_deps = 0 ∨ join-any)` → `ReadyStep` + outbox row;
+`remaining_deps = 0 ∧ fired_deps = 0` → `SkipStep` and the skipped
+step's own out-edges join the worklist all-skipped (propagation). The
+2.6 transition primitives compose exactly as designed — no store
+mutation surface changed. New store read: `ListRunEdgesFromStep`
+(ordinal-ordered, sqlc + `StepRepo`).
+
+**Failure completion (the scope call beyond the ticket's headline).**
+Executor errors — and registry misses / config-decode failures, which
+are deterministic version-skew/corrupt-state cases — now land a real
+failure transaction (`FailStep` with `{"message": …}` recorded, then
+`FailRun`, conflicts dropped) instead of 4.2's log-and-strand. ADR-005's
+ACK table already prescribed this for 4.3, and without it a failed
+executor left the step `running` forever. `FailRun` after any step
+failure is the v1-minimum rollup 2.6 built; *when* a failure halts a run
+is still ADR-006's (M5) — the failed step's out-edges stay unresolved,
+so dependents block, never skip.
+
+**Non-obvious decisions.**
+- **CEL evaluation errors fail the step** (ADR-003: "recorded as a
+  step-level failure of the completing step's transition; never coerced
+  to false"): `planEdges` errors — including predicates over a nil
+  output — reroute the success path into `completeFailure`. Same for
+  run-params that no longer decode: deterministic content failures must
+  not become redelivery loops.
+- **Join-any absorption is status-based, not conflict-based:** the
+  worklist checks the counter-updated target row it already holds (under
+  the run lock) and simply skips non-`pending` targets, so a late firing
+  resolves its edge but never re-dispatches. Exactly-once readiness is
+  asserted via `step_ready` event counts.
+- **"Nudge the dispatcher" became a seam:** `engine.WithDispatchNudge`
+  (no-op default) fires post-commit when outbox rows were written; 4.4
+  wires its drain loop's wake channel here. The integration suite stands
+  in with a test-local drainer (List → Enqueue → Delete-after-enqueue —
+  at-least-once by construction; duplicates ACK-drop at claim).
+- **Single-transaction proof** reuses 2.5's failpoint pattern: a
+  package-global hook (`SetCompleteFailpoint`, export_test) aborts the
+  transaction at `after_step_transition` / `after_fan_out` /
+  `after_outbox`; the test drives `Handle` directly (no queue) and
+  asserts byte-exact pre-completion state — claim intact, no output, no
+  events, edges unresolved, counters untouched, outbox unchanged.
+- **`join` and `branch` got trivial builtin executors** (pass-through of
+  config input / rendered input, mirroring echo's convention and
+  `BranchConfig`'s documented contract). Both are control-flow types
+  whose semantics live in the engine (counters, edge firing), so their
+  executors are legitimately trivial; join fixtures cannot run
+  end-to-end without one. `Builtins()` now registers six.
+
+**Tests.** Unit: `planEdges` (all-matching, first-match, default edge,
+no-match-all-skip, post-match predicates unevaluated, loop exclusion,
+typed `*dag.EvalError` on missing fields / nil output), `isJoinAny`
+(mode table + corrupt-config error), `allSkippedVerdicts`, the two new
+executors. Integration (2 workers, Batch 1, test drainer): linear,
+fan-out/fan-in (join `all` readied exactly once, after every parent —
+asserted by event seq), conditional branch with skip propagation
+(statuses, skip counters, zero attempts/dispatches for skipped arms, all
+8 edge resolutions pinned), join `any` late-firing absorption (one
+`step_ready`, both edges still resolve fired), executor failure (step +
+run failed, error on step and attempt, dependent never dispatched,
+queue quiescent), and the three-stage failure-injection
+single-transaction test. 4.2's claim-race test updated: the winner's
+step (and single-step run) now ends `succeeded`.
+
+**Deferred.** A completion transaction that fails transiently leaves the
+step `running` with the entry un-ACKed — the redelivery then hits the
+reclaimed-`running` no-ACK path until 4.5's takeover lands (4.2's known
+spin, unchanged). Failure policy, retries, and DLQ are M5;
+`docs/architecture.md`'s realized execution walkthrough is deferred to
+the milestone exit (4.7).

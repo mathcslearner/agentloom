@@ -152,8 +152,8 @@ func TestClaimRaceExactlyOneExecutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading step: %v", err)
 	}
-	if step.Status != store.StepStatusRunning {
-		t.Errorf("step status = %q, want %q (completion is ticket 4.3)", step.Status, store.StepStatusRunning)
+	if step.Status != store.StepStatusSucceeded {
+		t.Errorf("step status = %q, want %q (the winner's completion transaction, ticket 4.3)", step.Status, store.StepStatusSucceeded)
 	}
 	if step.ClaimID == nil {
 		t.Error("step has no claim_id after a won claim")
@@ -170,6 +170,14 @@ func TestClaimRaceExactlyOneExecutes(t *testing.T) {
 	}
 	if got := countEvents(t, s, runID, store.EventStepClaimed); got != 1 {
 		t.Errorf("step_claimed events = %d, want exactly 1", got)
+	}
+	// The single-step run rolled up in the winner's completion transaction.
+	run, err := s.Runs().Get(ctx, runID)
+	if err != nil {
+		t.Fatalf("reading run: %v", err)
+	}
+	if run.Status != store.RunStatusSucceeded {
+		t.Errorf("run status = %q, want %q", run.Status, store.RunStatusSucceeded)
 	}
 }
 

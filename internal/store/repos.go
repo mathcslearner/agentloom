@@ -151,6 +151,10 @@ type StepRepo interface {
 	// ListEdgesByRun returns edges in ordinal (declaration) order — the
 	// order the branch first-match rule evaluates them in.
 	ListEdgesByRun(ctx context.Context, runID uuid.UUID) ([]gen.RunEdge, error)
+	// ListEdgesFromStep returns one step's outgoing edges in ordinal
+	// (declaration) order — the completion transaction's fan-out read
+	// (M4.3).
+	ListEdgesFromStep(ctx context.Context, runID uuid.UUID, fromStep string) ([]gen.RunEdge, error)
 }
 
 type stepRepo struct{ q *gen.Queries }
@@ -222,6 +226,11 @@ func (r stepRepo) CreateEdgeBatch(ctx context.Context, args []gen.CreateRunEdges
 func (r stepRepo) ListEdgesByRun(ctx context.Context, runID uuid.UUID) ([]gen.RunEdge, error) {
 	edges, err := r.q.ListRunEdges(ctx, runID)
 	return edges, wrapErr("list run edges", err)
+}
+
+func (r stepRepo) ListEdgesFromStep(ctx context.Context, runID uuid.UUID, fromStep string) ([]gen.RunEdge, error) {
+	edges, err := r.q.ListRunEdgesFromStep(ctx, gen.ListRunEdgesFromStepParams{RunID: runID, FromStep: fromStep})
+	return edges, wrapErr("list run edges from step", err)
 }
 
 // AttemptRepo stores step_attempts rows. Outcome/error/finished_at are

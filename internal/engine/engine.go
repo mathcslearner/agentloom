@@ -2,9 +2,11 @@
 // that turns a queue delivery into durable state transitions against
 // Postgres. Ticket 4.2 provides the claim path — a queue.Handler that
 // attempts the guarded CAS ready → running and applies ADR-005's ACK
-// discipline to every outcome; the execute-and-complete transaction
-// (4.3), the outbox dispatcher and reconciler (4.4), and fencing
-// enforcement on completion (4.5) build on it.
+// discipline to every outcome. Ticket 4.3 provides the tail: the executor
+// runs and its result settles in one completion transaction (output, the
+// claim-fenced terminal CAS, edge resolution, readiness fan-out, outbox
+// rows, run rollup), with the ACK after commit. The outbox dispatcher and
+// reconciler (4.4) and fencing enforcement (4.5) build on these.
 //
 // The engine is transport-agnostic on purpose: it knows deliveries and
 // the store, never Redis. Which entries redeliver, heartbeat, or expire
@@ -31,8 +33,14 @@ type Engine struct {
 	// By convention it is the queue consumer name, so log lines join
 	// against XINFO CONSUMERS output during an incident.
 	workerID string
-	// now is the injected clock stamped onto claim transitions.
+	// now is the injected clock stamped onto claim and completion
+	// transitions.
 	now func() time.Time
+	// nudge, when set, is called after a completion transaction commits
+	// with newly-ready steps in the outbox — the "nudge the dispatcher"
+	// seam. The outbox drain loop (ticket 4.4) wires its wake channel
+	// here; nil means no one to nudge (drain cadence alone dispatches).
+	nudge func()
 }
 
 // Option customizes an Engine.
@@ -42,6 +50,15 @@ type Option func(*Engine)
 // injectable; tests pass a fixed clock).
 func WithClock(now func() time.Time) Option {
 	return func(e *Engine) { e.now = now }
+}
+
+// WithDispatchNudge sets the function called after a completion
+// transaction commits having outboxed newly-ready steps. Ticket 4.4's
+// outbox drain loop registers its wake signal here so fan-out latency is
+// one nudge, not one poll interval. The function must be safe for
+// concurrent calls and must not block.
+func WithDispatchNudge(nudge func()) Option {
+	return func(e *Engine) { e.nudge = nudge }
 }
 
 // New builds an Engine over the given store and executor registry.

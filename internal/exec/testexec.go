@@ -10,11 +10,15 @@ import (
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 )
 
-// Builtins returns a registry holding the four M4 test executors: noop,
-// echo, sleep, and fail_n_times. Real executors (llm, tool, retrieve, …)
-// register through the M8 plugin SPI, not here.
+// Builtins returns a registry holding the M4 executors: the four test
+// executors (noop, echo, sleep, fail_n_times) plus the two control-flow
+// types (join, branch), whose real semantics live in the engine — readiness
+// counters and the edge-firing rule — so their executors are trivial by
+// design. Real executors (llm, tool, retrieve, …) register through the M8
+// plugin SPI, not here.
 func Builtins() *Registry {
-	r, err := NewRegistry(NoopExecutor{}, EchoExecutor{}, NewSleep(), FailNTimesExecutor{})
+	r, err := NewRegistry(NoopExecutor{}, EchoExecutor{}, NewSleep(), FailNTimesExecutor{},
+		JoinExecutor{}, BranchExecutor{})
 	if err != nil {
 		panic(err) // unreachable: a fixed set of distinct, non-empty types
 	}
@@ -102,6 +106,43 @@ func (e *SleepExecutor) Execute(ctx context.Context, sc StepContext) (Output, er
 		return Output{}, err
 	}
 	return Output{Data: json.RawMessage(fmt.Sprintf(`{"slept":%q}`, c.Duration))}, nil
+}
+
+// JoinExecutor runs join steps. A join is a fan-in barrier whose whole
+// meaning is *when* it becomes ready (the engine's counter guard, ADR-004);
+// executing one is a pass-through of its rendered input (nil until M6
+// rendering merges upstream outputs). Mode is readiness semantics, not
+// execution semantics, so the config is not consulted here.
+type JoinExecutor struct{}
+
+// Type implements Executor.
+func (JoinExecutor) Type() string { return string(dag.StepJoin) }
+
+// Execute implements Executor.
+func (JoinExecutor) Execute(_ context.Context, sc StepContext) (Output, error) {
+	return Output{Data: sc.Input}, nil
+}
+
+// BranchExecutor runs branch steps: a pass-through whose output feeds the
+// `when` predicates on its outgoing edges (the exclusive first-match rule
+// lives in the engine's edge firing, ADR-003). Output is the configured
+// input, falling back to the rendered input — the same convention as echo,
+// and per BranchConfig's contract.
+type BranchExecutor struct{}
+
+// Type implements Executor.
+func (BranchExecutor) Type() string { return string(dag.StepBranch) }
+
+// Execute implements Executor.
+func (BranchExecutor) Execute(_ context.Context, sc StepContext) (Output, error) {
+	c, err := configAs[*dag.BranchConfig](sc)
+	if err != nil {
+		return Output{}, err
+	}
+	if c != nil && len(c.Input) > 0 {
+		return Output{Data: c.Input}, nil
+	}
+	return Output{Data: sc.Input}, nil
 }
 
 // FailNTimesExecutor runs fail_n_times steps: fail attempts 1..n, succeed

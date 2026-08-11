@@ -67,6 +67,64 @@ func TestEcho(t *testing.T) {
 	})
 }
 
+func TestJoin(t *testing.T) {
+	t.Parallel()
+
+	// Pass-through of the rendered input; mode is readiness semantics, so
+	// any valid config is inert here.
+	for _, cfg := range []json.RawMessage{nil, json.RawMessage(`{}`), json.RawMessage(`{"mode": "any"}`)} {
+		out, err := (JoinExecutor{}).Execute(context.Background(), StepContext{
+			StepType: dag.StepJoin, Config: cfg, Input: json.RawMessage(`{"merged":true}`),
+		})
+		if err != nil {
+			t.Errorf("Execute(config=%s): %v", cfg, err)
+		}
+		if string(out.Data) != `{"merged":true}` {
+			t.Errorf("Execute(config=%s) output = %s, want the input passed through", cfg, out.Data)
+		}
+	}
+}
+
+func TestBranch(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		config json.RawMessage
+		input  json.RawMessage
+		want   string
+	}{
+		{"config input wins", json.RawMessage(`{"input": {"category": "refund"}}`), json.RawMessage(`{"b":2}`), `{"category":"refund"}`},
+		{"falls back to rendered input", json.RawMessage(`{}`), json.RawMessage(`{"b":2}`), `{"b":2}`},
+		{"absent config falls back", nil, json.RawMessage(`{"b":2}`), `{"b":2}`},
+		{"no input at all", nil, nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := (BranchExecutor{}).Execute(context.Background(), StepContext{
+				StepType: dag.StepBranch, Config: tc.config, Input: tc.input,
+			})
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if string(out.Data) != tc.want {
+				t.Errorf("output = %q, want %q", out.Data, tc.want)
+			}
+		})
+	}
+
+	t.Run("bad config", func(t *testing.T) {
+		t.Parallel()
+		_, err := (BranchExecutor{}).Execute(context.Background(), StepContext{
+			StepType: dag.StepBranch, Config: json.RawMessage(`{"unknown_field": 1}`),
+		})
+		if !errors.Is(err, ErrInvalidConfig) {
+			t.Errorf("error = %v, want ErrInvalidConfig", err)
+		}
+	})
+}
+
 func TestSleep(t *testing.T) {
 	t.Parallel()
 

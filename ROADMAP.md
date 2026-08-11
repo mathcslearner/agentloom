@@ -363,13 +363,13 @@ Two protocol gaps found by the M3 completion audit. (a) Retention: `XACK` clears
 - [x] Duplicate delivery of a completed step is ACKed-and-dropped without side effects
 - [x] Worker starts/stops cleanly under compose with health logging
 
-#### 4.3 — Execute & complete pipeline (readiness fan-out)
+#### 4.3 — Execute & complete pipeline (readiness fan-out) ✅
 **Depends on:** 4.2, 1.5
 After executor success, one transaction: persist output, CAS `running → succeeded` (fenced by `claim_id`), evaluate outgoing edges (CEL conditions; skip propagation), decrement successors' `remaining_deps`, collect newly-ready steps, write their outbox rows, append events. Then ACK the message and nudge the dispatcher.
 **Done when:**
-- [ ] Linear, fan-out/fan-in, and conditional fixtures complete correctly across 2 workers
-- [ ] Join `all`/`any` and skip propagation verified end-to-end
-- [ ] Completion is a single tx (asserted by failure-injection leaving pre-completion state)
+- [x] Linear, fan-out/fan-in, and conditional fixtures complete correctly across 2 workers
+- [x] Join `all`/`any` and skip propagation verified end-to-end
+- [x] Completion is a single tx (asserted by failure-injection leaving pre-completion state)
 
 #### 4.4 — Outbox dispatcher & reconciler
 **Depends on:** 4.3

@@ -17,12 +17,13 @@ import (
 // delivered step and act per ADR-005's ACK discipline. A nil return acks
 // the entry; an error leaves it in the PEL to redeliver via reclaim.
 //
-// On a won claim the executor runs, but its result is only logged and the
-// step deliberately stays `running`: the completion transaction (persist
-// output, CAS running → terminal, edge fan-out) is ticket 4.3, which
-// replaces this tail and moves the ACK after that transaction commits.
-// Until then the entry is acked once the claim has decided — redelivery
-// could only bounce off the running-status CAS, so retrying buys nothing.
+// On a won claim the executor runs and its result feeds the completion
+// pipeline (complete.go): one transaction persisting the outcome, fencing
+// the terminal CAS on claim_id, resolving out-edges, and fanning readiness
+// out to successors. The ACK happens only after that transaction commits —
+// ADR-005's "completion/failure transition committed → ACK" row — so a
+// crash anywhere before commit redelivers, and the redelivery bounces off
+// the claim CAS as a duplicate of finished work when the commit did land.
 func (e *Engine) Handle(ctx context.Context, d queue.Delivery) error {
 	// The consumer already stamped entry_id, delivery_count, run_id,
 	// step_id, and reason into the log context.
@@ -50,15 +51,14 @@ func (e *Engine) Handle(ctx context.Context, d queue.Delivery) error {
 		return err
 	}
 
-	e.execute(ctx, step)
-	return nil
+	return e.execute(ctx, step)
 }
 
-// execute runs the claimed step's executor and logs the outcome. v0 tail
-// (ticket 4.2): the output is discarded and the step stays `running` —
-// persisting it and computing successor readiness is the completion
-// transaction, ticket 4.3.
-func (e *Engine) execute(ctx context.Context, step gen.RunStep) {
+// execute runs the claimed step's executor and settles the result through
+// the completion pipeline (complete.go). The returned error follows the
+// Handle/ACK contract: nil means a completion transaction committed (ACK);
+// non-nil means nothing was decided and the entry must redeliver.
+func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 	ctx = log.With(ctx, log.Attempt(int(step.AttemptCount)))
 	logger := log.From(ctx)
 	logger.InfoContext(ctx, "step claimed",
@@ -69,28 +69,25 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) {
 	if err != nil {
 		// Step types are validated against the catalog at submit time, so
 		// a miss here means worker/definition version skew or corrupt
-		// state — permanent, not retryable. Log loudly and drop; the step
-		// stays running until reconciliation semantics (M4.4/M5) reap it.
-		logger.ErrorContext(ctx, "no executor registered for step type; discarding delivery",
+		// state — deterministic and permanent, so a recorded step failure,
+		// never a redelivery loop.
+		logger.ErrorContext(ctx, "no executor registered for step type; recording step failure",
 			slog.String("step_type", step.StepType),
 			slog.Any("error", err))
-		return
+		return e.completeFailure(ctx, step, err)
 	}
 
-	out, err := executor.Execute(ctx, exec.StepContext{
+	out, execErr := executor.Execute(ctx, exec.StepContext{
 		StepType: dag.StepType(step.StepType),
 		Config:   step.Config,
 		Input:    nil, // input rendering is M6; run_steps carries no input yet
 		Attempt:  int(step.AttemptCount),
 		Logger:   logger,
 	})
-	if err != nil {
-		logger.WarnContext(ctx, "executor failed; result discarded (completion pipeline is ticket 4.3)",
-			slog.Any("error", err))
-		return
+	if execErr != nil {
+		return e.completeFailure(ctx, step, execErr)
 	}
-	logger.InfoContext(ctx, "executor succeeded; result discarded (completion pipeline is ticket 4.3)",
-		slog.Int("output_bytes", len(out.Data)))
+	return e.completeSuccess(ctx, step, out)
 }
 
 // claimDecision is what the handler does with a delivery whose claim

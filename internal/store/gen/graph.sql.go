@@ -214,6 +214,48 @@ func (q *Queries) ListRunEdges(ctx context.Context, runID uuid.UUID) ([]RunEdge,
 	return items, nil
 }
 
+const listRunEdgesFromStep = `-- name: ListRunEdgesFromStep :many
+SELECT run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version FROM run_edges WHERE run_id = $1 AND from_step = $2 ORDER BY ordinal
+`
+
+type ListRunEdgesFromStepParams struct {
+	RunID    uuid.UUID
+	FromStep string
+}
+
+// The completion transaction's out-edge read (M4.3): one step's outgoing
+// edges, in the ordinal order the branch first-match rule requires.
+func (q *Queries) ListRunEdgesFromStep(ctx context.Context, arg ListRunEdgesFromStepParams) ([]RunEdge, error) {
+	rows, err := q.db.Query(ctx, listRunEdgesFromStep, arg.RunID, arg.FromStep)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RunEdge
+	for rows.Next() {
+		var i RunEdge
+		if err := rows.Scan(
+			&i.RunID,
+			&i.Ordinal,
+			&i.FromStep,
+			&i.ToStep,
+			&i.EdgeType,
+			&i.WhenExpr,
+			&i.Condition,
+			&i.MaxIterations,
+			&i.Resolution,
+			&i.GraphVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRunSteps = `-- name: ListRunSteps :many
 SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at FROM run_steps WHERE run_id = $1 ORDER BY step_id
 `

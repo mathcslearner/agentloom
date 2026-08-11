@@ -41,3 +41,8 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 -- out-edges in declaration order (ADR-004).
 -- name: ListRunEdges :many
 SELECT * FROM run_edges WHERE run_id = $1 ORDER BY ordinal;
+
+-- The completion transaction's out-edge read (M4.3): one step's outgoing
+-- edges, in the ordinal order the branch first-match rule requires.
+-- name: ListRunEdgesFromStep :many
+SELECT * FROM run_edges WHERE run_id = $1 AND from_step = $2 ORDER BY ordinal;
