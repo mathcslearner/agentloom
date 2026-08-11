@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -150,5 +151,24 @@ func TestReconcilerJitterBounds(t *testing.T) {
 		if d := r.jittered(); d < lo || d > hi {
 			t.Fatalf("jittered() = %v, want within [%v, %v]", d, lo, hi)
 		}
+	}
+}
+
+// TestRecoverPassContainsPanic (post-M4 audit): a panic in a background
+// duty pass becomes an error for the loop's log-and-retry path — never a
+// worker-killing crash — while normal results pass through untouched.
+func TestRecoverPassContainsPanic(t *testing.T) {
+	t.Parallel()
+
+	if err := recoverPass(func() error { panic("pass bug") }); err == nil ||
+		!strings.Contains(err.Error(), "background pass panic: pass bug") {
+		t.Errorf("recoverPass(panic) = %v, want the contained panic with its message", err)
+	}
+	if err := recoverPass(func() error { return nil }); err != nil {
+		t.Errorf("recoverPass(nil) = %v, want nil", err)
+	}
+	want := errors.New("ordinary failure")
+	if err := recoverPass(func() error { return want }); !errors.Is(err, want) {
+		t.Errorf("recoverPass(err) = %v, want the error passed through", err)
 	}
 }

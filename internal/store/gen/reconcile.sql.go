@@ -36,11 +36,11 @@ type ListStaleReadyStepsRow struct {
 	UpdatedAt time.Time
 }
 
-// Reconciler scans (ticket 4.4): the periodic healer's read side. All of
-// these are point-in-time diagnostics over durable state — the reconciler
-// re-outboxes or flags; it never transitions state (ADR-005: every
-// recovery is "redeliver and let the claim CAS decide" or "re-outbox from
-// Postgres state").
+// Reconciler scans (tickets 4.4 + 4.5): the periodic healer's read side.
+// All of these are point-in-time diagnostics over durable state. The heals
+// the reconciler composes from them live elsewhere: Outbox().Create for
+// the re-outbox, and — since 4.5 — the TakeoverStep transition
+// (transitions.go) for stale-running steps.
 // Steps stuck in ready past a staleness threshold with no pending dispatch
 // row — ADR-005 crash cells P2/R1(a): the stream entry was lost after the
 // outbox row was drained. The anti-join keeps the sweep idempotent: a step
@@ -67,7 +67,10 @@ func (q *Queries) ListStaleReadySteps(ctx context.Context, arg ListStaleReadySte
 }
 
 const listStaleRunningSteps = `-- name: ListStaleRunningSteps :many
-SELECT rs.run_id, rs.step_id, rs.updated_at, rs.claim_id
+SELECT rs.run_id, rs.step_id, rs.updated_at, rs.claim_id,
+  EXISTS (
+      SELECT 1 FROM task_outbox o
+      WHERE o.run_id = rs.run_id AND o.step_id = rs.step_id) AS has_pending_outbox
 FROM run_steps rs
 WHERE rs.status = 'running'
   AND rs.updated_at < $1::timestamptz
@@ -81,16 +84,21 @@ type ListStaleRunningStepsParams struct {
 }
 
 type ListStaleRunningStepsRow struct {
-	RunID     uuid.UUID
-	StepID    string
-	UpdatedAt time.Time
-	ClaimID   *uuid.UUID
+	RunID            uuid.UUID
+	StepID           string
+	UpdatedAt        time.Time
+	ClaimID          *uuid.UUID
+	HasPendingOutbox bool
 }
 
 // Steps running past a staleness threshold ≫ lease TTL — ADR-005 R1(c):
 // a dead worker whose PEL entry Redis lost, so no reclaim will ever fire.
 // updated_at moves on transitions, not heartbeats, hence the generous
-// threshold. Flag-only in 4.4; the takeover heal lands with 4.5.
+// threshold — in effect RunningStale is a hard cap on a step's wall-clock
+// execution time (see config.WorkerConfig). Healed since 4.5: takeover +
+// re-outbox. has_pending_outbox lets the healer skip the re-outbox when a
+// pending dispatch row already exists (the P1 shape sustained past the
+// threshold), so the takeover never doubles a pending dispatch.
 func (q *Queries) ListStaleRunningSteps(ctx context.Context, arg ListStaleRunningStepsParams) ([]ListStaleRunningStepsRow, error) {
 	rows, err := q.db.Query(ctx, listStaleRunningSteps, arg.StaleBefore, arg.RowLimit)
 	if err != nil {
@@ -105,6 +113,7 @@ func (q *Queries) ListStaleRunningSteps(ctx context.Context, arg ListStaleRunnin
 			&i.StepID,
 			&i.UpdatedAt,
 			&i.ClaimID,
+			&i.HasPendingOutbox,
 		); err != nil {
 			return nil, err
 		}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -525,6 +526,129 @@ func TestExecutorFailureFailsStepAndRun(t *testing.T) {
 	}
 	if got := countEvents(t, s, runID, store.EventRunFailed); got != 1 {
 		t.Errorf("run_failed events = %d, want exactly 1", got)
+	}
+}
+
+const corruptJoinDef = `{
+	"schema_version": 1,
+	"name": "corrupt-join-config",
+	"steps": [
+		{"id": "a", "type": "noop"},
+		{"id": "race", "type": "join", "config": {"mode": "any"}},
+		{"id": "after", "type": "noop"}
+	],
+	"edges": [
+		{"from": "a", "to": "race"},
+		{"from": "race", "to": "after"}
+	]
+}`
+
+// TestCorruptJoinConfigFailsCompletingStep (post-M4 audit): a join target
+// whose stored config no longer decodes is discovered inside the fan-out
+// transaction. That is deterministic corrupt content — the completing
+// step must land a real failure completion (step + run failed, delivery
+// ACKed), not abort the transaction into a redelivery loop that, since
+// 4.5's takeover, would re-execute the step once per delivery until the
+// poison threshold.
+func TestCorruptJoinConfigFailsCompletingStep(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	pool := storetest.NewDB(t)
+	s := store.NewFromPool(pool)
+	h := queuetest.New(t)
+	def := mustDecode(t, corruptJoinDef)
+	res, err := s.CreateRun(ctx, store.CreateRunArgs{Definition: def, Now: testNow})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	runID := res.Run.ID
+	h.EnsureGroup(ctx)
+
+	// Corrupt the join's materialized config: `mode` must be a string, so
+	// the strict DecodeStepConfig in isJoinAny fails deterministically.
+	if _, err := pool.Exec(ctx,
+		`UPDATE run_steps SET config = '{"mode": 123}' WHERE run_id = $1 AND step_id = 'race'`,
+		runID); err != nil {
+		t.Fatalf("corrupting join config: %v", err)
+	}
+
+	d := startDispatcher(t, s, h.Queue())
+	spawnWorkers(t, s, h, d)
+
+	waitRun(t, s, runID, store.RunStatusFailed)
+	h.WaitQuiescent(ctx)
+	h.RequireHandledOncePerClaim()
+
+	// The completing step carries the failure; the corrupt join was never
+	// readied, its dependent never reached.
+	requireStepStatuses(t, s, runID, map[string]string{
+		"a": store.StepStatusFailed, "race": store.StepStatusPending,
+		"after": store.StepStatusPending,
+	})
+	requireOutboxEmpty(t, s)
+	a, err := s.Steps().Get(ctx, runID, "a")
+	if err != nil {
+		t.Fatalf("reading step: %v", err)
+	}
+	if !strings.Contains(string(a.Error), "decoding join config") {
+		t.Errorf("step error = %s, want the join-config decode failure recorded", a.Error)
+	}
+	// Exactly one attempt: the deterministic failure must not redeliver.
+	requireSingleAttempts(t, s, runID, []string{"a"})
+	if got := countStepReadyEvents(t, s, runID, "race"); got != 0 {
+		t.Errorf("step_ready(race) events = %d, want 0", got)
+	}
+}
+
+const soloDef = `{
+	"schema_version": 1,
+	"name": "solo",
+	"steps": [{"id": "solo", "type": "noop"}],
+	"edges": []
+}`
+
+// TestDispatchNudgeFiredOnlyWhenStepsReadied (post-M4 audit): the
+// dispatcher nudge fires exactly when the completion wrote outbox rows —
+// once for a completion that readies a successor, never for one that
+// readies nothing.
+func TestDispatchNudgeFiredOnlyWhenStepsReadied(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	var nudges atomic.Int64
+	nudge := func() { nudges.Add(1) }
+
+	// A completion that readies nothing: no nudge.
+	s := store.NewFromPool(storetest.NewDB(t))
+	res, err := s.CreateRun(ctx, store.CreateRunArgs{Definition: mustDecode(t, soloDef), Now: testNow})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	e := newWorker(t, s, "worker-a", engine.WithDispatchNudge(nudge))
+	if err := e.Handle(ctx, queue.Delivery{
+		ID: "0-1", Envelope: stepEnvelope(res.Run.ID, "solo"), DeliveryCount: 1,
+	}); err != nil {
+		t.Fatalf("Handle(solo): %v", err)
+	}
+	waitRun(t, s, res.Run.ID, store.RunStatusSucceeded)
+	if got := nudges.Load(); got != 0 {
+		t.Errorf("nudges after a ready-nothing completion = %d, want 0", got)
+	}
+
+	// A completion that readies a successor: exactly one nudge.
+	s2 := store.NewFromPool(storetest.NewDB(t))
+	res2, err := s2.CreateRun(ctx, store.CreateRunArgs{Definition: mustDecode(t, linearDef), Now: testNow})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	e2 := newWorker(t, s2, "worker-a", engine.WithDispatchNudge(nudge))
+	if err := e2.Handle(ctx, queue.Delivery{
+		ID: "0-1", Envelope: stepEnvelope(res2.Run.ID, "a"), DeliveryCount: 1,
+	}); err != nil {
+		t.Fatalf("Handle(a): %v", err)
+	}
+	if got := nudges.Load(); got != 1 {
+		t.Errorf("nudges after a readies-one completion = %d, want exactly 1", got)
 	}
 }
 

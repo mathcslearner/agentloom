@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/mathcslearner/agentloom/internal/dag"
 )
 
 // stubExecutor is a minimal Executor with a settable type.
@@ -85,5 +87,51 @@ func TestBuiltinsRegistersAllTestExecutors(t *testing.T) {
 		if e.Type() != typ {
 			t.Errorf("Get(%q).Type() = %q", typ, e.Type())
 		}
+	}
+}
+
+// deferredStepTypes are the dag catalog types deliberately without an
+// executor yet. A definition using one passes submit-time validation and
+// then fails permanently at claim time (registry miss → FailStep), which
+// includes the canonical kitchen_sink.json example — a known M4 gap, not
+// an accident. Shrink this set as the executors land; never let it grow
+// silently (the sync test below fails on any unlisted mismatch).
+var deferredStepTypes = map[dag.StepType]string{
+	dag.StepMap:           "M13 (map fan-out expansion)",
+	dag.StepPlanner:       "M13 (dynamic planner expansion)",
+	dag.StepAgent:         "M12 (multi-agent roles)",
+	dag.StepHumanApproval: "M15 (human-in-the-loop approvals)",
+}
+
+// TestBuiltinsSyncWithCatalog pins the exec registry to the dag step-type
+// catalog exactly (post-M4 audit): every catalog type either has a
+// builtin executor or is explicitly deferred with a ticket reference, and
+// the registry contains nothing outside the catalog. Adding a 15th step
+// type without deciding its executor story fails here.
+func TestBuiltinsSyncWithCatalog(t *testing.T) {
+	t.Parallel()
+
+	r := Builtins()
+	catalog := make(map[string]bool)
+	for _, st := range dag.StepTypes() {
+		catalog[string(st)] = true
+		_, err := r.Get(string(st))
+		_, deferred := deferredStepTypes[st]
+		switch {
+		case err != nil && !deferred:
+			t.Errorf("catalog type %q has no executor and is not in deferredStepTypes", st)
+		case err == nil && deferred:
+			t.Errorf("catalog type %q has an executor but is still listed as deferred (%s) — remove it from deferredStepTypes",
+				st, deferredStepTypes[st])
+		}
+	}
+	for _, typ := range r.Types() {
+		if !catalog[typ] {
+			t.Errorf("registry type %q is not in the dag catalog — executors must be first-class step types", typ)
+		}
+	}
+	if got, want := len(r.Types())+len(deferredStepTypes), len(dag.StepTypes()); got != want {
+		t.Errorf("registry (%d) + deferred (%d) = %d types, catalog has %d — the accounting no longer partitions the catalog",
+			len(r.Types()), len(deferredStepTypes), got, want)
 	}
 }

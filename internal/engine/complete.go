@@ -304,6 +304,24 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		if fenced != nil {
 			return e.abandonFenced(ctx, step, fenced, txErr)
 		}
+		// A dag decode error surfacing from the transaction is isJoinAny
+		// hitting a join target whose stored config no longer decodes —
+		// deterministic corrupt content, like the pre-transaction decode
+		// failures above. The transaction rolled back; record a real step
+		// failure instead of redelivering into the same error forever
+		// (post-M4 audit: since 4.5 a redelivery of a running step takes
+		// over and re-executes, so a deterministic loop now re-runs the
+		// executor once per delivery until the poison threshold).
+		// ResolveEdge's graph-integrity errors deliberately stay on the
+		// redeliver path: they mean the run's bookkeeping is corrupt, and
+		// a FailStep over the same corrupt rows is not a safer outcome
+		// than surfacing on the poison path.
+		var de *dag.DecodeError
+		if errors.As(txErr, &de) {
+			logger.WarnContext(ctx, "corrupt step config discovered during fan-out; recording step failure",
+				slog.Any("error", txErr))
+			return e.completeFailure(ctx, step, txErr)
+		}
 		logger.ErrorContext(ctx, "completion transaction failed; delivery will redeliver",
 			slog.Any("error", txErr))
 		return txErr

@@ -28,6 +28,9 @@ func newWatchCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if interval <= 0 {
+				return fmt.Errorf("--interval must be positive, got %s", interval)
+			}
 			ctx := cmd.Context()
 			if timeout > 0 {
 				var cancel context.CancelFunc

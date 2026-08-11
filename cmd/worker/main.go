@@ -105,13 +105,18 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 
 	// The dispatch duties stop on the same ctx as the consumer; wait for
 	// them before the deferred store/client closes tear down their
-	// backends (an in-flight drain transaction simply rolls back).
+	// backends (an in-flight drain transaction simply rolls back). The
+	// cancel is deferred AFTER wg.Wait so LIFO runs it first: if
+	// consumer.Run returns on its own (group bootstrap failure), the
+	// loops still stop instead of deadlocking the wait.
+	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	defer wg.Wait()
-	wg.Add(2)
+	defer cancel()
+	wg.Add(3)
 	go func() { defer wg.Done(); dispatcher.Run(ctx) }()
 	go func() { defer wg.Done(); reconciler.Run(ctx) }()
-	go healthLoop(ctx, q, cfg.Worker.HealthInterval)
+	go func() { defer wg.Done(); healthLoop(ctx, q, cfg.Worker.HealthInterval) }()
 
 	// Blocks until ctx is canceled, then drains the in-flight handler
 	// (3.3's contract). The only error it can return is group bootstrap.

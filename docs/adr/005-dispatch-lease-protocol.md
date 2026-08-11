@@ -226,7 +226,7 @@ explicit rationale.
 | W5 | After `XACK` | Nothing pending anywhere | Nothing to recover — rationale: ACK is the last protocol step; all durable effects committed in W4's transaction | rationale (no test needed) |
 | P1 | Outbox drainer, between `XADD` and the outbox-row `DELETE` committing | Entry in stream *and* outbox row still present | Row re-drained → duplicate entry → ACK-and-drop at claim. Enqueue is at-least-once by design | 4.4 (kill between commit and XADD; duplicate-dispatch assertion) |
 | P2 | Stream entry lost after drain (never delivered, no PEL trace) | Step stuck `ready`, no message anywhere | Reconciler re-outboxes steps `ready` longer than a threshold (ADR-004's partial index on `(status, updated_at)` serves the scan) | 4.4 reconciler test |
-| R1 | Redis loses stream + PEL + delayed set (crash beyond AOF's fsync window, failover) | Postgres intact: steps `ready` with no messages, steps `running` with no leases | Three-part: (a) `ready` steps — as P2. (b) `running` steps with a **live** worker — unaffected: the fence is Postgres `claim_id`, which survived; the worker's heartbeat starts failing (entry gone), it logs and continues, and its completion commits normally. (c) `running` steps with a **dead** worker — no PEL entry will ever expire, so the reconciler is the backstop: steps `running` with `updated_at` staler than a threshold ≫ lease TTL get the takeover (the same fenced CAS as the reclaim path, guarded on the scanned claim so a step re-claimed between snapshot and row lock is left alone) + a re-outbox with reason `reconcile_running` (4.5). The threshold is generous because `updated_at` moves on transitions, not heartbeats; a false positive is safe (fencing rejects the live holder's completion) and merely wasteful. (d) delayed entries — recovered by their owners' durable state (a `retrying` step visibly stuck, M5.2's reconciler concern; v1 has no production tenant of the delayed set) | (a) 4.4; (b) 4.5; (c) flagged 4.4, healed 4.5; full-loss drill in 5.8 chaos (Redis restart blip) |
+| R1 | Redis loses stream + PEL + delayed set (crash beyond AOF's fsync window, failover) | Postgres intact: steps `ready` with no messages, steps `running` with no leases | Three-part: (a) `ready` steps — as P2. (b) `running` steps with a **live** worker — unaffected: the fence is Postgres `claim_id`, which survived; the worker's heartbeat starts failing (entry gone), it logs and continues, and its completion commits normally. (c) `running` steps with a **dead** worker — no PEL entry will ever expire, so the reconciler is the backstop: steps `running` with `updated_at` staler than a threshold ≫ lease TTL get the takeover (the same fenced CAS as the reclaim path, guarded on the scanned claim so a step re-claimed between snapshot and row lock is left alone) + a re-outbox with reason `reconcile_running` (4.5). The threshold is generous because `updated_at` moves on transitions, not heartbeats — it is effectively a cap on step wall-clock time; a false positive keeps durable state correct (fencing rejects the live holder's completion) but re-runs the step's side effects. The heal skips its re-outbox when the step already carries a pending outbox row (the P1 shape sustained past the threshold), so a takeover never doubles a pending dispatch. (d) delayed entries — recovered by their owners' durable state (a `retrying` step visibly stuck, M5.2's reconciler concern; v1 has no production tenant of the delayed set) | (a) 4.4; (b) 4.5; (c) flagged 4.4, healed 4.5; full-loss drill in 5.8 chaos (Redis restart blip) |
 
 The uniform shape: **every recovery is either "redeliver and let the
 claim CAS decide" or "reconciler re-outboxes from Postgres state."** No
@@ -450,15 +450,37 @@ Negative:
   wasted work — and with side effects, wasted *external* calls until
   M5.5's journal absorbs them. Mitigated by heartbeat = TTL/3 and the
   takeover CAS window being race-free; not eliminated.
-- **The duplicate-reclaim takeover race** (fresh duplicate's reader
+- **The duplicate-reclaim takeover race** (a duplicate entry's reader
   crashes; its reclaim steals a live claim) is accepted as rare, bounded,
   and fenced rather than engineered away — closing it would need
-  PEL-wide by-step introspection on every reclaim.
+  PEL-wide by-step introspection on every reclaim. *Post-M4 audit:* the
+  likelier trigger is now the reconciler itself — a `reconcile_running`
+  re-outbox creates exactly such a duplicate next to the original
+  holder's entry, so a false-positive takeover of a live worker can
+  ping-pong (original entry goes stale after its handler errors on the
+  fence, redelivers, takes over the new holder). Same bound applies: each
+  round costs one fenced execution, and the poison threshold caps the
+  loop; M5.5's side-effect journal absorbs the external effects.
+- **A failed completion transaction now re-executes, not just
+  redelivers** (*post-M4 audit*). Before 4.5 a transient completion-tx
+  failure left the entry to bounce off the claim CAS; with the takeover
+  in place, the redelivery (delivery count > 1, step `running`) takes
+  over and runs the executor again. Correct for a dead holder, and the
+  right trade for a transient blip — but it means completion-tx failures
+  are bounded by the poison threshold, not free. Deterministic in-tx
+  content failures (a join target's corrupt config) are therefore routed
+  to the failure completion instead of the transaction abort; only
+  graph-integrity corruption still rides the redeliver-to-poison path,
+  deliberately loud.
 - **Reclaim latency for the Redis-loss case is poor.** R1(c) waits for a
   reconciler threshold ≫ lease TTL because `updated_at` does not move on
   heartbeats. Accepted: the case is rare (Redis loss *and* worker death
   together), and heartbeating into Postgres to tighten it would put the
-  fleet's steady-state load on the hot store.
+  fleet's steady-state load on the hot store. The flip side (*post-M4
+  audit*): that same threshold is a de-facto hard cap on step wall-clock
+  execution time — a live executor running past `RunningStale` is taken
+  over and its side effects double. Until M5.3 adds real step timeouts,
+  operators must size `RunningStale` above their longest expected step.
 - **PEL observability requires deliberate work** — pending counts, oldest
   idle, delivery-count histograms come from `XPENDING`/`XINFO` polling
   (3.2's introspection helpers, M7's metrics), not from anything the

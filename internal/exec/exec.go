@@ -1,8 +1,8 @@
 // Package exec defines the executor SPI v0 (ticket 4.1): the Executor
 // interface the worker's execute pipeline (4.3) invokes for each claimed
-// step, the Registry mapping step types to executors, and the four test
+// step, the Registry mapping step types to executors, and the five test
 // executors M4/M5's fixtures and chaos suites are built from (noop, echo,
-// sleep, fail_n_times).
+// sleep, fail_n_times, and — since 4.7 — counter).
 //
 // This is deliberately minimal — no middleware chain, no side-effect
 // journal, no config schemas. The full plugin SPI arrives in M8 and will

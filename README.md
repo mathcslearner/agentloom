@@ -44,6 +44,14 @@ go run ./cmd/ctl watch "$(go run ./cmd/ctl submit examples/definitions/fanout.js
 
 (`llm`/`tool`/`retrieve` steps run as deterministic dev stubs until the real executors land in M8/M9.)
 
+To see the headline crash-recovery guarantee live — a worker SIGKILLed mid-step, the survivor reclaiming and finishing the run, then a full-stack restart resuming mid-run — run the narrated two-act demo against the stack:
+
+```sh
+make demo-crash
+```
+
+It is documented in [docs/demos/crash-recovery.md](docs/demos/crash-recovery.md).
+
 The stack works out of the box with dev-only defaults; to change credentials or host ports (e.g. if 5432/6379 are taken by a Postgres/Redis already on your machine), copy [.env.example](.env.example) to `.env` and edit it — both Compose and the Make targets pick it up automatically, so keep the `AGENTLOOM_*_DSN` entries in sync with the ports. `.env` is gitignored; never commit it.
 
 Data lives in named Docker volumes and survives `make down && make up`. To start over from scratch:

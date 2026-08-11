@@ -248,6 +248,19 @@ func TestWatchFailedRunExitsNonZero(t *testing.T) {
 	}
 }
 
+func TestWatchRejectsNonPositiveInterval(t *testing.T) {
+	t.Parallel()
+
+	// time.NewTicker panics on a non-positive duration; the flag must be
+	// rejected up front instead (post-M4 audit).
+	for _, interval := range []string{"0s", "-1s"} {
+		_, _, err := runCtl(t, nil, "watch", "run-1", "--api", "http://127.0.0.1:0", "--interval", interval)
+		if err == nil || !strings.Contains(err.Error(), "--interval must be positive") {
+			t.Errorf("watch --interval %s: err = %v, want positive-interval rejection", interval, err)
+		}
+	}
+}
+
 func TestAPIBaseFromEnv(t *testing.T) {
 	t.Parallel()
 

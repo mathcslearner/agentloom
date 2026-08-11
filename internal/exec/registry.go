@@ -3,6 +3,7 @@ package exec
 import (
 	"errors"
 	"fmt"
+	"slices"
 )
 
 // Registry maps step types to their executors. It is populated at worker
@@ -50,4 +51,16 @@ func (r *Registry) Get(stepType string) (Executor, error) {
 		return nil, &UnknownTypeError{Type: stepType}
 	}
 	return e, nil
+}
+
+// Types returns every registered step type, sorted. It exists for
+// exhaustiveness checks against the dag catalog (and, come M8, plugin
+// listing) — execution paths look up by type, never enumerate.
+func (r *Registry) Types() []string {
+	types := make([]string, 0, len(r.execs))
+	for t := range r.execs {
+		types = append(types, t)
+	}
+	slices.Sort(types)
+	return types
 }

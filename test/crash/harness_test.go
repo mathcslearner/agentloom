@@ -43,8 +43,12 @@ import (
 
 // leaseTTL is the tuned-down lease the worker subprocesses run with.
 // Heartbeat (TTL/3) and reclaim (TTL/2) intervals derive from it, so a
-// dead worker's step is reclaimed within ~1.5×TTL.
-const leaseTTL = time.Second
+// dead worker's step is reclaimed within ~1.5×TTL. 2s rather than the
+// minimum viable 1s (post-M4 audit): the survivor must heartbeat a 4s
+// sleep step to completion, so the TTL is also the stall budget a loaded
+// CI runner gets before a *spurious* reclaim breaks the exactly-one-
+// reclaim assertions — 2s doubles that margin for ~1s of extra test time.
+const leaseTTL = 2 * time.Second
 
 // waitTimeout bounds every poll loop. Generous relative to the scenario
 // budget (a reclaim plus a full sleep re-execution is ~6s) so CI machines

@@ -63,8 +63,13 @@ type WorkerConfig struct {
 	// comfortably exceed DispatchInterval. Must be positive.
 	ReconcileReadyStale time.Duration
 	// ReconcileRunningStale is how long a step may sit in running before
-	// the reconciler flags it as a dead-worker suspect. Must be ≫ the
-	// lease TTL. Must be positive.
+	// the reconciler presumes its holder dead and takes the step over.
+	// Must be ≫ the lease TTL — and, in effect, it is a hard cap on a
+	// step's wall-clock execution time: a live executor still running
+	// past it gets taken over and its side effects run twice (state stays
+	// correct; the fenced completion is rejected). Until M5.3 adds real
+	// step timeouts, size this above the longest step you expect to run.
+	// Must be positive.
 	ReconcileRunningStale time.Duration
 	// ReconcileLimit caps each reconciler scan's rows per sweep. Must be
 	// positive.

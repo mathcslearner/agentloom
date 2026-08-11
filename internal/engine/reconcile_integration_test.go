@@ -4,6 +4,7 @@ package engine_test
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -295,6 +296,102 @@ func TestReconcilerTakesOverStaleRunning(t *testing.T) {
 	}
 	if reasons["a"] != store.OutboxReasonReconcileRunning {
 		t.Errorf("step a dispatched with reason %q, want %q", reasons["a"], store.OutboxReasonReconcileRunning)
+	}
+}
+
+// TestReconcilerNudgesDispatcherOnHeal (post-M4 audit): a sweep that
+// wrote outbox rows fires the wired nudge exactly once; a no-op sweep
+// stays silent — WithReconcilerNudge's contract, previously unexercised.
+func TestReconcilerNudgesDispatcherOnHeal(t *testing.T) {
+	t.Parallel()
+	s, _, _ := setup(t, linearDef)
+	if n := loseDispatch(t, s); n != 1 {
+		t.Fatalf("lost drain dispatched %d rows, want 1", n)
+	}
+
+	var nudges atomic.Int64
+	r, err := engine.NewReconciler(s, engine.ReconcilerConfig{
+		Interval:     time.Hour,
+		ReadyStale:   time.Minute,
+		RunningStale: 5 * time.Minute,
+		Limit:        10,
+	},
+		engine.WithReconcilerClock(func() time.Time { return testNow.Add(10 * time.Minute) }),
+		engine.WithReconcilerNudge(func() { nudges.Add(1) }))
+	if err != nil {
+		t.Fatalf("NewReconciler: %v", err)
+	}
+
+	if res := reconcileOnce(t, r); len(res.Requeued) != 1 {
+		t.Fatalf("sweep requeued %+v, want exactly one step", res.Requeued)
+	}
+	if got := nudges.Load(); got != 1 {
+		t.Errorf("nudges after a healing sweep = %d, want exactly 1", got)
+	}
+	if res := reconcileOnce(t, r); len(res.Requeued) != 0 || len(res.TakenOver) != 0 {
+		t.Fatalf("second sweep = %+v, want a no-op", res)
+	}
+	if got := nudges.Load(); got != 1 {
+		t.Errorf("nudges after a no-op sweep = %d, want still 1", got)
+	}
+}
+
+// TestTakeoverSkipsReoutboxWhenRowPending (post-M4 audit): a stale
+// running step can already carry an undrained outbox row — the P1 shape
+// (dispatch row committed, stream entry fate unknown, step claimed off a
+// duplicate) sustained past the staleness threshold. The takeover must
+// still heal the dangling claim, but must not add a second dispatch row:
+// the pending one already carries the dispatch.
+func TestTakeoverSkipsReoutboxWhenRowPending(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, _, runID := setup(t, linearDef)
+
+	// Claim the entry step as a dead worker while its instantiation
+	// outbox row is still undrained: running in Postgres, row pending.
+	var claimA uuid.UUID
+	err := s.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+		step, err := store.ClaimStep(ctx, q, store.ClaimStepArgs{RunID: runID, StepID: "a", Now: testNow})
+		if err != nil {
+			return err
+		}
+		claimA = *step.ClaimID
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("claiming as the dead worker: %v", err)
+	}
+
+	res := reconcileOnce(t, reconcilerAt(t, s, testNow.Add(10*time.Minute)))
+	if len(res.TakenOver) != 1 || res.TakenOver[0].StepID != "a" {
+		t.Fatalf("sweep took over %+v, want exactly step a", res.TakenOver)
+	}
+	if !res.TakenOver[0].HasPendingOutbox {
+		t.Error("TakenOver.HasPendingOutbox = false, want true (the row was never drained)")
+	}
+
+	// The takeover healed the claim…
+	stepA, err := s.Steps().Get(ctx, runID, "a")
+	if err != nil {
+		t.Fatalf("reading step a: %v", err)
+	}
+	if stepA.Status != store.StepStatusReady || stepA.ClaimID != nil {
+		t.Errorf("step a after takeover = %s claim=%v, want ready with the claim cleared", stepA.Status, stepA.ClaimID)
+	}
+	if got := countStepEvents(t, s, runID, store.EventStepReclaimed, "a"); got != 1 {
+		t.Errorf("step_reclaimed(a) events = %d, want exactly 1", got)
+	}
+	// …and left exactly the original dispatch row: no reconcile_running
+	// duplicate next to it.
+	tasks, err := s.Outbox().List(ctx, 10)
+	if err != nil {
+		t.Fatalf("listing outbox: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].StepID != "a" || tasks[0].Reason != store.OutboxReasonStepReady {
+		t.Fatalf("outbox after sweep = %+v, want only the original step_ready row for a", tasks)
+	}
+	if claimA == uuid.Nil {
+		t.Fatal("sanity: dead worker's claim never captured")
 	}
 }
 

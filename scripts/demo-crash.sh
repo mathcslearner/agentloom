@@ -74,9 +74,13 @@ wait_for() {
 
 # lease_holder prints the consumer name holding the (sole) pending entry
 # on the fleet stream — the worker mid-step right now. --no-raw forces the
-# numbered reply format even without a TTY, so the parse is stable.
+# numbered reply format even without a TTY, so the parse is stable. The
+# stream/group names honor the 4.7 env knobs (this script sources .env,
+# so an override there must not silently break the lookup).
+QUEUE_STREAM="${AGENTLOOM_QUEUE_STREAM:-steps:ready}"
+QUEUE_GROUP="${AGENTLOOM_QUEUE_GROUP:-workers}"
 lease_holder() {
-  docker compose exec -T redis redis-cli --no-raw XPENDING steps:ready workers - + 10 |
+  docker compose exec -T redis redis-cli --no-raw XPENDING "$QUEUE_STREAM" "$QUEUE_GROUP" - + 10 |
     sed -n 's/^ *2) "\(.*\)"$/\1/p' | head -1
 }
 

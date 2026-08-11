@@ -91,7 +91,9 @@ CREATE TABLE run_edges (
 );
 
 -- One row per execution try. outcome is nullable TEXT with no CHECK yet:
--- v1 writes succeeded/failed; the full taxonomy is ADR-006's (M5).
+-- v1 writes succeeded/failed plus the administrative `lost` (ticket 4.5's
+-- takeover closes a displaced holder's attempt); the full taxonomy is
+-- ADR-006's (M5).
 CREATE TABLE step_attempts (
     run_id      UUID NOT NULL,
     step_id     TEXT NOT NULL,

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -60,6 +61,7 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger) (*Handler, 
 
 	r := chi.NewRouter()
 	r.Use(h.requestLog)
+	r.Use(h.recoverPanic)
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, ErrorDetail{Code: ErrCodeNotFound, Message: "no such route"})
 	})
@@ -103,6 +105,34 @@ func (h *Handler) requestLog(next http.Handler) http.Handler {
 			slog.String("path", r.URL.Path),
 			slog.Int("status", rec.status),
 			slog.Duration("duration", h.now().Sub(start)))
+	})
+}
+
+// recoverPanic converts a handler panic into a logged 500 carrying the
+// JSON error envelope instead of a dropped connection (post-M4 audit).
+// Registered inside requestLog so the request line records the 500.
+// http.ErrAbortHandler passes through — it is net/http's sanctioned way
+// to abort a response and must keep its meaning.
+func (h *Handler) recoverPanic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			rec := recover()
+			if rec == nil {
+				return
+			}
+			if err, ok := rec.(error); ok && errors.Is(err, http.ErrAbortHandler) {
+				panic(rec)
+			}
+			log.From(r.Context()).ErrorContext(r.Context(), "api: handler panic",
+				slog.Any("panic", rec),
+				slog.String("stack", string(debug.Stack())))
+			// If the handler already wrote headers this is a no-op write
+			// logged by net/http; the connection still ends cleanly.
+			writeError(w, http.StatusInternalServerError, ErrorDetail{
+				Code: ErrCodeInternal, Message: "internal error",
+			})
+		}()
+		next.ServeHTTP(w, r)
 	})
 }
 

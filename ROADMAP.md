@@ -349,7 +349,7 @@ Two protocol gaps found by the M3 completion audit. (a) Retention: `XACK` clears
 
 #### 4.1 — Executor interface v0 & test executors ✅
 **Depends on:** 1.2
-`internal/exec`: `Executor` interface (`Type() string`, `Execute(ctx, StepContext) (Output, error)`), registry keyed by step type, typed config decoding. Test executors: `noop`, `echo` (returns input), `sleep` (duration), `fail_n_times` (state via attempt number). Full plugin SPI arrives in M8 — keep v0 minimal but shaped for that refactor.
+`internal/exec`: `Executor` interface (`Type() string`, `Execute(ctx, StepContext) (Output, error)`), registry keyed by step type, typed config decoding. Test executors: `noop`, `echo` (returns input), `sleep` (duration), `fail_n_times` (state via attempt number). Full plugin SPI arrives in M8 — keep v0 minimal but shaped for that refactor. *(As built: a fifth test executor, `counter`, joined in 4.7.)*
 **Done when:**
 - [x] Registry lookup + config decode unit-tested (unknown type → typed error)
 - [x] `StepContext` exposes step config, rendered input, attempt number, logger
@@ -425,7 +425,7 @@ The headline guarantee, automated: harness (or compose-driven test) starts 2 wor
 
 #### 5.2 — Retry engine with backoff
 **Depends on:** 5.1, 3.5
-On classified-transient failure: record failed attempt, compute backoff (exponential + full jitter), CAS step to a retry-wait state, schedule re-dispatch via the delayed ZSET, ACK the original message. Exhausted attempts → permanent failure path (5.4). Attempt counter durable in Postgres (survives worker death).
+On classified-transient failure: record failed attempt, compute backoff (exponential + full jitter), CAS step to a retry-wait state, schedule re-dispatch via the delayed ZSET, ACK the original message. Exhausted attempts → permanent failure path (5.4). Attempt counter durable in Postgres (survives worker death). *(Post-M4 audit note: if retry re-dispatch keeps the outbox non-trivially populated, add an index on `task_outbox(run_id, step_id)` — the reconciler's anti-join and the stale-running pending-row probe currently scan the identity PK only.)*
 **Done when:**
 - [ ] `fail_n_times(2)` with `max_attempts=3` succeeds on attempt 3; timings honor backoff (fake clock)
 - [ ] Exhaustion transitions to the permanent-failure path with full error history
@@ -501,7 +501,7 @@ Chaos test: continuous submitter (mixed fixtures incl. retries and effectful ste
 
 #### 6.2 — Auth middleware
 **Depends on:** 6.1
-Bearer parsing, prefix lookup + constant-time hash compare, revocation/expiry checks, scope enforcement per route, `key_id` injected into request context/logs. `/healthz`, `/readyz`, `/metrics` exempt. 401 vs 403 semantics per ADR.
+Bearer parsing, prefix lookup + constant-time hash compare, revocation/expiry checks, scope enforcement per route, `key_id` injected into request context/logs. `/healthz`, `/readyz`, `/metrics` exempt. 401 vs 403 semantics per ADR. *(Post-M4 audit notes for this ticket: compose publishes the dev API on `0.0.0.0` — flip to `127.0.0.1` or make auth the gate here; and the `counter` test executor writes to an arbitrary submitted filesystem path — decide whether test executors stay registered on authed deployments.)*
 **Done when:**
 - [ ] Every `/v1` route rejects missing/invalid/revoked keys (table-driven route test)
 - [ ] Scope violations → 403 with machine-readable error body
@@ -525,7 +525,7 @@ Per-`key_id` buckets (configurable per scope/route class: submits stricter than 
 
 #### 6.5 — Run & definition lifecycle endpoints
 **Depends on:** 6.2, 5.4, 5.6
-Definitions: create (validated), new-version, list, get. Runs: submit (by definition ref or inline; `Idempotency-Key` header honored), list with keyset pagination + filters (status, definition, time range), get (status tree, attempts, timings), cancel, park/unpark, requeue-dead-lettered-step. Consistent error envelope with codes.
+Definitions: create (validated), new-version, list, get. Runs: submit (by definition ref or inline; `Idempotency-Key` header honored), list with keyset pagination + filters (status, definition, time range), get (status tree, attempts, timings), cancel, park/unpark, requeue-dead-lettered-step. Consistent error envelope with codes. *(Post-M4 audit notes: bound the idempotency token's length with a 400 — today an over-long token 500s on the btree index limit — and fingerprint the token to its payload so replaying a token with a different definition 409s instead of silently returning the original run.)*
 **Done when:**
 - [ ] Contract tests for every endpoint (success + auth + validation failures)
 - [ ] Keyset pagination stable under concurrent inserts (no skips/dupes across pages)

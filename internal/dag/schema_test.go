@@ -54,7 +54,7 @@ func TestGeneratedSchemaContent(t *testing.T) {
 		"Definition", "Step", "Edge", "ParamSpec",
 		"LLMConfig", "ToolConfig", "RetrieveConfig", "MapConfig", "PlannerConfig",
 		"AgentConfig", "HumanApprovalConfig", "JoinConfig", "BranchConfig",
-		"NoopConfig", "EchoConfig",
+		"NoopConfig", "EchoConfig", "SleepConfig", "FailNTimesConfig", "CounterConfig",
 	} {
 		if _, ok := defs[name]; !ok {
 			t.Errorf("$defs is missing %s", name)

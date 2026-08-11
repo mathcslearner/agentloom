@@ -16,6 +16,13 @@ var stepTypes = []StepType{
 	StepSleep, StepFailNTimes, StepCounter,
 }
 
+// StepTypes returns the step-type catalog in documentation order. It
+// exists for exhaustiveness checks outside the package — notably the
+// exec-registry sync test pinning which catalog types carry executors
+// (post-M4 audit) — never for validation, which consults the catalog
+// maps directly.
+func StepTypes() []StepType { return append([]StepType(nil), stepTypes...) }
+
 // JSONSchema builds the JSON Schema for the workflow definition format
 // from the same Go structs the decoder uses, so the published schema
 // cannot drift from what the engine accepts. The schema is documentation-

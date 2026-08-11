@@ -51,9 +51,12 @@ type ReconcilerConfig struct {
 	// RunningStale is how long a step may sit in running before its holder
 	// is presumed dead and the step is taken over + re-outboxed. Must be
 	// ≫ the lease TTL: updated_at moves on transitions, not heartbeats, so
-	// a healthy long-running step looks stale on any tighter bound (a
-	// false positive is safe — the live holder's completion is fenced —
-	// and merely wasteful). Must be positive.
+	// a healthy long-running step looks stale on any tighter bound. In
+	// effect this is a hard cap on a step's wall-clock execution time: a
+	// live holder still executing past it gets taken over, and while its
+	// eventual completion is fenced (state stays correct), the step's side
+	// effects run twice. Until M5.3 gives steps real timeouts, size this
+	// above the longest executor you expect to run. Must be positive.
 	RunningStale time.Duration
 	// Limit caps each scan's rows per sweep. Must be positive.
 	Limit int
@@ -137,7 +140,10 @@ func (r *Reconciler) Run(ctx context.Context) {
 			return
 		case <-timer.C:
 		}
-		if _, err := r.ReconcileOnce(ctx); err != nil && ctx.Err() == nil {
+		if err := recoverPass(func() error {
+			_, err := r.ReconcileOnce(ctx)
+			return err
+		}); err != nil && ctx.Err() == nil {
 			log.From(ctx).WarnContext(ctx, "reconciler sweep failed; retrying next tick",
 				slog.Any("error", err))
 		}
@@ -206,8 +212,14 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 				}
 				return err
 			}
-			if _, err := q.Outbox().Create(ctx, st.RunID, st.StepID, store.OutboxReasonReconcileRunning); err != nil {
-				return err
+			// Skip the re-outbox when an undrained dispatch row already
+			// exists (P1 sustained past the threshold): the takeover above
+			// healed the dangling claim, and the pending row carries the
+			// dispatch — a second row would just double it.
+			if !st.HasPendingOutbox {
+				if _, err := q.Outbox().Create(ctx, st.RunID, st.StepID, store.OutboxReasonReconcileRunning); err != nil {
+					return err
+				}
 			}
 			res.TakenOver = append(res.TakenOver, st)
 		}

@@ -12,7 +12,9 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/mathcslearner/agentloom/internal/obs/log"
@@ -108,7 +110,10 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		case <-ticker.C:
 		case <-d.wake:
 		}
-		if _, err := d.drainAll(ctx); err != nil && ctx.Err() == nil {
+		if err := recoverPass(func() error {
+			_, err := d.drainAll(ctx)
+			return err
+		}); err != nil && ctx.Err() == nil {
 			log.From(ctx).WarnContext(ctx, "outbox drain failed; retrying next tick",
 				slog.Any("error", err))
 		}
@@ -116,7 +121,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 }
 
 // drainAll repeats DrainOnce until a batch comes back short (the outbox
-// is empty or nearly so) or an error stops the pass.
+// is empty or nearly so), an error stops the pass, or ctx ends.
 func (d *Dispatcher) drainAll(ctx context.Context) (int, error) {
 	total := 0
 	for {
@@ -125,7 +130,24 @@ func (d *Dispatcher) drainAll(ctx context.Context) (int, error) {
 		if err != nil || n < d.cfg.Batch {
 			return total, err
 		}
+		if ctx.Err() != nil {
+			return total, ctx.Err()
+		}
 	}
+}
+
+// recoverPass runs one background-duty pass, converting a panic into an
+// error so the loop's "must never kill the worker" contract holds even
+// against a bug in the pass itself (post-M4 audit). The consumer's
+// handler path has its own containment (queue.safeHandle); this covers
+// the dispatch and reconcile loops.
+func recoverPass(pass func() error) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("engine: background pass panic: %v\n%s", rec, debug.Stack())
+		}
+	}()
+	return pass()
 }
 
 // DrainOnce runs one drain transaction — ADR-005's happy-path producer

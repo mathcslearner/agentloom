@@ -23,6 +23,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -199,15 +200,25 @@ func (h *Harness) Stats(ctx context.Context) queue.StreamStats {
 // WaitStats polls Stats until cond is satisfied or the deadline passes,
 // returning the last snapshot. Redis-side effects (ACKs, PEL changes)
 // have no completion signal beyond the commands themselves, so
-// observation polls.
+// observation polls. ErrNoGroup is treated as not-yet-ready, not fatal:
+// a spawned consumer creates the group asynchronously inside Run, so a
+// poll racing that bootstrap must keep waiting (post-M4 audit — this
+// race flaked TestConsumerTrimsAckedEntries under parallel-package CI
+// load).
 func (h *Harness) WaitStats(ctx context.Context, cond func(queue.StreamStats) bool) queue.StreamStats {
 	h.tb.Helper()
 	var stats queue.StreamStats
 	deadline := time.Now().Add(opTimeout)
 	for time.Now().Before(deadline) && ctx.Err() == nil {
-		stats = h.Stats(ctx)
-		if cond(stats) {
-			return stats
+		s, err := h.queue.Stats(ctx)
+		if err != nil && !errors.Is(err, queue.ErrNoGroup) {
+			h.tb.Fatalf("Stats: %v", err)
+		}
+		if err == nil {
+			stats = s
+			if cond(stats) {
+				return stats
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

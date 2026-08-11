@@ -133,6 +133,88 @@ func TestConcurrentDrainersDispatchExactlyOnce(t *testing.T) {
 	}
 }
 
+// cancelAfterEnqueuer performs the real XADD, then cancels the drain's
+// context — everything after the XADD (the delete, the commit) fails, so
+// the whole transaction rolls back. This is the P1 *rollback* branch
+// (post-M4 audit): distinct from failAfterEnqueuer, whose partial-batch
+// pass still commits.
+type cancelAfterEnqueuer struct {
+	inner  engine.Enqueuer
+	cancel context.CancelFunc
+	n      atomic.Int64
+}
+
+func (c *cancelAfterEnqueuer) Enqueue(ctx context.Context, env queue.Envelope) (string, error) {
+	id, err := c.inner.Enqueue(ctx, env)
+	if err == nil && c.n.Add(-1) >= 0 {
+		c.cancel()
+	}
+	return id, err
+}
+
+// TestDrainRollbackKeepsRowAndEntry pins DrainOnce's rollback branch: a
+// drain transaction that dies after the XADD leaves the entry in the
+// stream AND the row in the outbox — the P1 shape via rollback rather
+// than partial commit. The re-drain then produces the duplicate pair,
+// absorbed at claim.
+func TestDrainRollbackKeepsRowAndEntry(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, h, runID := setup(t, singleNoop)
+
+	cctx, ccancel := context.WithCancel(ctx)
+	defer ccancel()
+	crashing := &cancelAfterEnqueuer{inner: h.Queue(), cancel: ccancel}
+	crashing.n.Store(1)
+	d, err := engine.NewDispatcher(s, crashing, engine.DispatcherConfig{
+		Interval: time.Hour, Batch: 16, // manual DrainOnce only
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+
+	// The pass rolls back: XADD landed, nothing committed.
+	if n, err := d.DrainOnce(cctx); err == nil || n != 0 {
+		t.Fatalf("DrainOnce with mid-tx crash = (%d, %v), want (0, error)", n, err)
+	}
+	tasks, err := s.Outbox().List(ctx, 10)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("outbox after rolled-back drain = %+v (err %v), want the row kept", tasks, err)
+	}
+	if envs := h.StreamEnvelopes(ctx); len(envs) != 1 {
+		t.Fatalf("stream entries after rolled-back drain = %d, want the orphaned XADD", len(envs))
+	}
+
+	// A healthy dispatcher re-drains into the duplicate pair; exactly one
+	// execution survives the claim CAS.
+	d2, err := engine.NewDispatcher(s, h.Queue(), engine.DispatcherConfig{
+		Interval: time.Hour, Batch: 16,
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	if n := drainOnce(t, d2); n != 1 {
+		t.Fatalf("re-drain dispatched %d rows, want 1", n)
+	}
+	if envs := h.StreamEnvelopes(ctx); len(envs) != 2 {
+		t.Fatalf("stream entries = %d, want the P1 duplicate pair", len(envs))
+	}
+
+	counting := &countingNoop{}
+	cfg := queue.ConsumerConfig{Block: 500 * time.Millisecond, Batch: 1}
+	h.Spawn("worker-a", newEngine(t, s, counting, "worker-a").Handle, cfg)
+	h.Spawn("worker-b", newEngine(t, s, counting, "worker-b").Handle, cfg)
+	h.WaitQuiescent(ctx)
+	h.RequireHandledOncePerClaim()
+
+	if got := counting.calls.Load(); got != 1 {
+		t.Errorf("executor ran %d times, want exactly 1 (duplicate must ACK-drop)", got)
+	}
+	requireSingleAttempts(t, s, runID, []string{"only"})
+	waitRun(t, s, runID, store.RunStatusSucceeded)
+	requireOutboxEmpty(t, s)
+}
+
 // TestDrainFailureAfterXADDAbsorbedAtClaim is ADR-005 P1: the XADD lands
 // but the drain does not commit the delete, so the row re-drains and the
 // step gets a duplicate stream entry — which the claim CAS ACK-drops.

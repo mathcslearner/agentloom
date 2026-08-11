@@ -6,7 +6,9 @@ package dag
 // kitchen-sink example fails the suite.
 
 // RegisteredStepTypes returns the step-type catalog in documentation order.
-func RegisteredStepTypes() []StepType { return append([]StepType(nil), stepTypes...) }
+// Kept as an alias of the exported StepTypes so existing corpus tests need
+// no churn.
+func RegisteredStepTypes() []StepType { return StepTypes() }
 
 // RegisteredParamTypes returns the param-type catalog in documentation order.
 func RegisteredParamTypes() []ParamType { return append([]ParamType(nil), paramTypes...) }

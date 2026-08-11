@@ -21,7 +21,10 @@
     {"id": "refund_flow", "type": "echo", "config": {"input": {"hello": "world"}}},
     {"id": "generic_flow", "type": "noop"},
     {"id": "gather", "type": "join", "config": {"mode": "all"}},
-    {"id": "approve", "type": "human_approval", "config": {"prompt": "OK to send?"}}
+    {"id": "flaky_probe", "type": "fail_n_times", "config": {"n": 2}},
+    {"id": "approve", "type": "human_approval", "config": {"prompt": "OK to send?"}},
+    {"id": "cooldown", "type": "sleep", "config": {"duration": "250ms"}},
+    {"id": "tally", "type": "counter", "config": {"path": "/tmp/kitchen-sink-tally"}}
   ],
   "edges": [
     {"from": "start", "to": "fetch"},
@@ -36,7 +39,11 @@
     {"from": "refund_flow", "to": "gather"},
     {"from": "generic_flow", "to": "gather"},
     {"from": "summarize_each", "to": "gather"},
+    {"from": "start", "to": "flaky_probe"},
+    {"from": "flaky_probe", "to": "gather"},
     {"from": "gather", "to": "approve"},
+    {"from": "approve", "to": "cooldown"},
+    {"from": "cooldown", "to": "tally"},
     {"from": "critique", "to": "draft", "type": "loop", "condition": "output.verdict == 'revise'", "max_iterations": 3}
   ],
   "ui": {

@@ -42,6 +42,11 @@ type StaleRunningStep struct {
 	// ClaimID is the (presumed dead) holder's fencing token — the observed
 	// claim the takeover CAS is fenced on.
 	ClaimID *uuid.UUID
+	// HasPendingOutbox reports an undrained task_outbox row for this step
+	// (the P1 shape sustained past the threshold). The healer still takes
+	// the step over but skips its re-outbox: the pending row already
+	// carries the dispatch (post-M4 audit).
+	HasPendingOutbox bool
 }
 
 // reconcileQueries is transitionQueries minus the clock requirement: the
@@ -99,9 +104,12 @@ func ListStaleReadySteps(ctx context.Context, q Querier, staleBefore time.Time, 
 // staleBefore — dead-worker suspects with no reclaimable lease (ADR-005
 // R1(c)). The threshold must be ≫ the lease TTL: updated_at moves on
 // transitions, not heartbeats, so a healthy long-running step looks stale
-// on any tighter bound. The reconciler heals each hit with TakeoverStep +
-// a reconcile_running outbox row (ticket 4.5); a false positive is safe —
-// the live holder's completion is fenced — and merely wasteful.
+// on any tighter bound — the threshold is effectively a cap on step
+// wall-clock execution time. The reconciler heals each hit with
+// TakeoverStep + a reconcile_running outbox row (ticket 4.5); a false
+// positive keeps state correct — the live holder's completion is fenced —
+// but re-runs the step's side effects, so "safe" here means durable
+// state, not effect-once (that is M5.5's side-effect journal).
 func ListStaleRunningSteps(ctx context.Context, q Querier, staleBefore time.Time, limit int32) ([]StaleRunningStep, error) {
 	const op = "list stale running steps"
 	gq, err := reconcileQueries(ctx, q, op)
@@ -117,8 +125,9 @@ func ListStaleRunningSteps(ctx context.Context, q Querier, staleBefore time.Time
 	steps := make([]StaleRunningStep, len(rows))
 	for i, r := range rows {
 		steps[i] = StaleRunningStep{
-			StepRef: StepRef{RunID: r.RunID, StepID: r.StepID, UpdatedAt: r.UpdatedAt},
-			ClaimID: r.ClaimID,
+			StepRef:          StepRef{RunID: r.RunID, StepID: r.StepID, UpdatedAt: r.UpdatedAt},
+			ClaimID:          r.ClaimID,
+			HasPendingOutbox: r.HasPendingOutbox,
 		}
 	}
 	return steps, nil

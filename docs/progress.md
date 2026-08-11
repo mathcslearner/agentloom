@@ -1774,3 +1774,100 @@ lookup reads the fleet PEL) — fine for a demo, and the CI suite is fully
 isolated; api-process participation in the CI restart scenario (the api
 is stateless and its restart is exercised by the demo's Act 2 — the CI
 scenario proves the part that can lose state, the fleet).
+
+### Post-M4 audit & hardening pass (2026-08-10)
+
+A full audit of M4 against its acceptance criteria confirmed every
+ticket's deliverables real and tested (including the milestone-exit
+architecture walkthrough, which 4.3 deferred to 4.7 and 4.7 delivered in
+commit ef88fa1 without recording it — noted here to close the ledger).
+The audit surfaced one real bug, one reproducible CI flake, two behavior
+gaps that contradicted recorded design notes, and assorted drift — all
+fixed in this pass.
+
+**Bugs fixed.**
+- **`cmd/worker` deadlocked instead of exiting on consumer bootstrap
+  failure**: `defer wg.Wait()` ran before anything canceled the context
+  the dispatcher/reconciler loops wait on, so an `EnsureGroup` error
+  (wrong-type stream key, Redis ACL) hung the process holding its pools.
+  Fixed by deferring a `cancel` *after* `wg.Wait` (LIFO runs it first);
+  the health loop joined the WaitGroup while there (it was the one
+  unjoined goroutine). Regression test plants a wrong-type stream key
+  and asserts `run` returns the error promptly.
+- **`TestConsumerTrimsAckedEntries` flaked under parallel-package CI
+  load** (~1 in 20 under contention, reproduced locally): the test
+  spawns a consumer without `EnsureGroup`, the group is created
+  asynchronously inside `Consumer.Run`, and the harness's `Stats` treated
+  the `ErrNoGroup` race as fatal. Fixed in the harness — `WaitStats` now
+  treats `ErrNoGroup` as not-yet-ready and keeps polling, curing every
+  future spawn-then-wait test at once.
+- **`ctl watch --interval 0` panicked** on `time.NewTicker`; now rejected
+  up front with a proper error (unit-tested).
+
+**Behavior gaps closed.**
+- **Deterministic in-tx content failures no longer redeliver forever.**
+  `isJoinAny` hitting a corrupt join-target config aborted the completion
+  transaction into a redelivery loop — which, post-4.5, *re-executes* the
+  step via takeover once per delivery until the poison threshold. A
+  `*dag.DecodeError` surfacing from the transaction now reroutes to
+  `completeFailure` (real `FailStep`/`FailRun`, ACK), matching the 4.3
+  design note. `ResolveEdge`'s graph-integrity errors deliberately stay
+  on the loud redeliver-to-poison path: bookkeeping corruption is not
+  step content, and a `FailStep` over the same corrupt rows is no safer.
+  Integration test corrupts a join config raw and asserts one attempt,
+  step+run failed, queue quiescent.
+- **The stale-`running` takeover no longer doubles a pending dispatch.**
+  `ListStaleRunningSteps` grew a `has_pending_outbox` probe (the ready
+  scan's anti-join, adapted); the healer still takes the step over but
+  skips the `reconcile_running` re-outbox when an undrained row already
+  carries the dispatch (the P1 shape sustained past the threshold).
+  Tested: takeover with a pending row leaves exactly the original row.
+
+**Hardening.**
+- Panic containment: chi-level `recoverPanic` middleware in the API (500
+  with the JSON envelope, `http.ErrAbortHandler` passed through) and
+  `recoverPass` around dispatcher/reconciler passes (a pass panic becomes
+  a logged retry, honoring the "must never kill the worker" contract the
+  comments already claimed). `drainAll` also checks ctx between passes.
+- Crash-suite determinism margin: `leaseTTL` 1s → 2s. The TTL is the
+  stall budget a loaded CI runner gets before a spurious reclaim breaks
+  the exactly-one-reclaim assertions; 2s doubles it for ~1s of test time.
+- `scripts/demo-crash.sh` honors `AGENTLOOM_QUEUE_STREAM`/`_GROUP` (it
+  sources `.env`, so an override there used to silently break the
+  XPENDING holder lookup).
+
+**Documented semantics (ADR-005 amended, config docs).** Three post-4.5
+realities now recorded: `RunningStale` is a de-facto hard cap on step
+wall-clock time (a live executor past it is taken over and its side
+effects double — size it above the longest step until M5.3 timeouts); a
+transient completion-tx failure now costs a re-execution (bounded by the
+poison threshold), not just a redelivery; and the accepted
+duplicate-reclaim race's likeliest trigger is now the reconciler's own
+`reconcile_running` duplicate (same bound, named explicitly).
+
+**Coverage added.** Exec-registry ↔ dag-catalog sync test with an
+explicit deferred set (`map`/`planner`/`agent`/`human_approval`, ticket
+refs) — adding a step type without deciding its executor story now fails;
+`dag.StepTypes()` exported and `Registry.Types()` added to support it.
+`cmd/api` got its missing lifecycle test (the `ready` channel 4.6's
+entry described was dead code — now consumed: boot on `:0`, live healthz,
+graceful drain). Nudge contracts pinned both ways (fires once on
+readied/healed, never on no-ops). DrainOnce's rollback branch tested via
+a context-canceling enqueuer (entry orphaned in stream + row kept → P1
+duplicate pair absorbed at claim). Decode-corpus kitchen sink refreshed
+with the three M4 step types and pinned to the catalog so it cannot go
+stale again; schema test's `$defs` list extended likewise.
+
+**Drift swept.** `queries/reconcile.sql` header ("never transitions
+state" / "flag-only in 4.4" — false since 4.5, regenerated into gen/);
+`exec.go` package doc (four → five test executors); the 0002 migration's
+outcome-vocabulary comment (now names `lost`); README gained the
+`make demo-crash` pointer; ROADMAP 4.1 notes the fifth executor, and
+record-only audit notes landed on 5.2 (outbox index), 6.2 (API bind +
+test-executor gating), and 6.5 (idempotency-token bound + fingerprint).
+
+**Known-and-accepted (no code change).** `ReadyStale` re-dispatch under
+sustained backlog amplifies with load (bounded by the advisory lock +
+per-sweep Limit; correctness-safe); GETs are three pool reads by design;
+`ctl` links pgx transitively (recorded at 4.6, M6.6); `errFencedCompletion`
+is matched by no caller — kept as documentation of the no-ACK contract.

@@ -131,6 +131,28 @@ func TestDecodeVersionGate(t *testing.T) {
 	}
 }
 
+// TestFixtureKitchenSinkCoversCatalog pins the decode-corpus kitchen sink
+// to the step-type catalog, like examples_test does for the canonical
+// example (post-M4 audit: this fixture silently went stale when 4.1/4.7
+// added step types).
+func TestFixtureKitchenSinkCoversCatalog(t *testing.T) {
+	t.Parallel()
+
+	def, err := dag.Decode(readFixture(t, "valid", "kitchen_sink.json"))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	used := make(map[dag.StepType]bool)
+	for _, s := range def.Steps {
+		used[s.Type] = true
+	}
+	for _, st := range dag.StepTypes() {
+		if !used[st] {
+			t.Errorf("step type %q is in the catalog but unused in testdata/valid/kitchen_sink.json", st)
+		}
+	}
+}
+
 func TestDecodeEdgeTypeNormalization(t *testing.T) {
 	t.Parallel()
 
