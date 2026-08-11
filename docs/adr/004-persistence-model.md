@@ -132,7 +132,7 @@ from that milestone on; v1 rows are enforced from 2.6.
 | `ready` | `running` | **claim**: status matches, a fresh `claim_id` is set, an attempt row is inserted, `attempt_count` increments | 2.6 |
 | `running` | `succeeded` | **completion**: supplied `claim_id` matches the row's (fencing); output persisted; out-edges resolved | 2.6 |
 | `running` | `failed` | matching `claim_id`; error recorded on the attempt | 2.6 |
-| `running` | `ready` | reclaim after lease expiry: row's `claim_id` cleared so the zombie's write is fenced | M4 |
+| `running` | `ready` | reclaim after lease expiry (**takeover**): guarded on the *observed* holder's `claim_id` (a stale observation must not steal a newer live claim), which is cleared so the zombie's write is fenced; the holder's dangling attempt row closes with the administrative outcome `lost` | 4.5 |
 | `running` | `awaiting_human` | approval executor parks; matching `claim_id`; queue message ACKed after commit | M15 |
 | `awaiting_human` | `ready` | decision recorded (single winner vs timeout under CAS) | M15 |
 | `failed` | `retrying` | retry policy admits another attempt; backoff scheduled via the delayed queue | M5 |
@@ -214,8 +214,10 @@ number.
 
 `type` is free-form `TEXT` in v1 (2.5/2.6 write `run_created`,
 `step_ready`, `step_claimed`, `step_succeeded`, `step_failed`,
-`step_skipped`, `run_succeeded`, `run_failed`); ADR-018 (M16) owns
-formalizing the envelope and payload versioning. Append-only is a
+`step_skipped`, `run_succeeded`, `run_failed`; 4.5 adds
+`step_reclaimed` for the lease-expiry takeover, payload carrying the
+displaced holder's `claim_id` and the attempt it strands); ADR-018 (M16)
+owns formalizing the envelope and payload versioning. Append-only is a
 discipline enforced by code review and the store layer's API surface (no
 update/delete queries generated), not by triggers — a trigger would add a
 hot-path cost to guard against a write the codebase never issues.
@@ -270,9 +272,11 @@ to expansion (M14), which this schema anticipates but does not implement.
 **`step_attempts`** — one row per execution try, keyed
 `(run_id, step_id, attempt_no)` with a composite FK to `run_steps`.
 `claim_id` ties the attempt to its lease; `outcome` is nullable `TEXT`
-(null while in flight; v1 writes `succeeded`/`failed`, the full taxonomy —
-`timeout`, `cancelled`, `validation_failed` — is ADR-006's, so no CHECK
-constraint yet); `error` (JSONB), `started_at`, `finished_at`.
+(null while in flight; v1 writes `succeeded`/`failed`, plus `lost` — the
+administrative closure 4.5's takeover stamps on the displaced holder's
+dangling attempt, deliberately outside the failure taxonomy; the full
+taxonomy — `timeout`, `cancelled`, `validation_failed` — is ADR-006's, so
+no CHECK constraint yet); `error` (JSONB), `started_at`, `finished_at`.
 
 **`events`** — `(run_id, seq)` PK, `type`, `payload` (JSONB),
 `created_at`. Append-only.

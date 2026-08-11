@@ -1,21 +1,29 @@
 package engine
 
-// The reconciler (ticket 4.4): the periodic healer closing every
+// The reconciler (tickets 4.4 + 4.5): the periodic healer closing every
 // Postgres→Redis dual-write gap the outbox alone cannot (ADR-002). Each
 // sweep runs in one transaction under a fleet-wide advisory lock: steps
 // stuck in ready past a threshold with no pending outbox row get a fresh
 // row (reason reconcile_ready) — the lost-dispatch heal for ADR-005 crash
-// cells P2 and R1(a) — and impossible states are flagged loudly: running
-// steps staler than a threshold ≫ lease TTL (R1(c) dead-worker suspects;
-// flag-only until 4.5's lease-expiry takeover makes a re-outbox useful)
-// and runs still running with no live step (an invariant violation).
+// cells P2 and R1(a); running steps staler than a threshold ≫ lease TTL
+// (R1(c) dead-worker suspects, e.g. after Redis lost the PEL so no lease
+// will ever expire) get the lease-expiry takeover — store.TakeoverStep,
+// fenced on the observed claim, running → ready — plus a re-outbox
+// (reason reconcile_running); runs still running with no live step (an
+// invariant violation) are flagged loudly and left untouched.
 //
 // Rate-bounding is layered: the advisory lock admits one sweep fleet-wide
 // at a time, the interval is jittered so worker fleets do not align, each
-// sweep is capped at Limit rows, and the anti-join in the stale-ready scan
-// makes sweeps idempotent — a re-outboxed step stops matching until its
-// row is drained, so a stuck step costs at most one duplicate dispatch
-// per drain-plus-threshold period, never one per sweep.
+// sweep is capped at Limit rows, and both heals are idempotent per sweep —
+// a re-outboxed ready step stops matching the anti-join until its row is
+// drained, and a taken-over step is ready with a fresh updated_at and a
+// pending outbox row, so it matches neither scan again.
+//
+// Deadlock note: takeovers make the sweep take run locks (TakeoverStep
+// locks the run first, like every transition) for several runs in one
+// transaction, in scan order. That cannot deadlock against claim and
+// completion transactions — they hold locks on a single run — and sweeps
+// cannot overlap each other (the advisory lock).
 
 import (
 	"context"
@@ -40,9 +48,12 @@ type ReconcilerConfig struct {
 	// interval, or healthy steps get duplicate dispatches (safe, wasteful).
 	// Must be positive.
 	ReadyStale time.Duration
-	// RunningStale is how long a step may sit in running before it is
-	// flagged as a dead-worker suspect. Must be ≫ the lease TTL:
-	// updated_at moves on transitions, not heartbeats. Must be positive.
+	// RunningStale is how long a step may sit in running before its holder
+	// is presumed dead and the step is taken over + re-outboxed. Must be
+	// ≫ the lease TTL: updated_at moves on transitions, not heartbeats, so
+	// a healthy long-running step looks stale on any tighter bound (a
+	// false positive is safe — the live holder's completion is fenced —
+	// and merely wasteful). Must be positive.
 	RunningStale time.Duration
 	// Limit caps each scan's rows per sweep. Must be positive.
 	Limit int
@@ -105,8 +116,9 @@ type ReconcileResult struct {
 	Skipped bool
 	// Requeued lists the stuck-ready steps this sweep re-outboxed.
 	Requeued []store.StepRef
-	// StaleRunning lists dead-worker suspects (flagged, not healed).
-	StaleRunning []store.StaleRunningStep
+	// TakenOver lists the stale-running steps this sweep healed with the
+	// lease-expiry takeover + re-outbox (ADR-005 R1(c), ticket 4.5).
+	TakenOver []store.StaleRunningStep
 	// StalledRuns lists runs in an impossible state (flagged, untouched).
 	StalledRuns []uuid.UUID
 	// LimitHit: some scan returned exactly Limit rows — there may be more;
@@ -144,6 +156,11 @@ func (r *Reconciler) jittered() time.Duration {
 // found and nudges the dispatcher if it wrote outbox rows.
 func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error) {
 	var res ReconcileResult
+	// Stale-running steps the takeover could not heal, logged post-commit:
+	// lostRace moved on between the scan snapshot and the fenced CAS
+	// (benign — the guard did its job); corrupt carried no claim to fence
+	// on (impossible state, running always has one).
+	var lostRace, corrupt []store.StaleRunningStep
 	now := r.now()
 	limit := int32(r.cfg.Limit) //nolint:gosec // Limit is a small validated positive
 	err := r.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
@@ -165,16 +182,41 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 			}
 		}
 		res.Requeued = stale
-		res.StaleRunning, err = store.ListStaleRunningSteps(ctx, q, now.Add(-r.cfg.RunningStale), limit)
+		staleRunning, err := store.ListStaleRunningSteps(ctx, q, now.Add(-r.cfg.RunningStale), limit)
 		if err != nil {
 			return err
+		}
+		for _, st := range staleRunning {
+			if st.ClaimID == nil {
+				corrupt = append(corrupt, st)
+				continue
+			}
+			if _, err := store.TakeoverStep(ctx, q, store.TakeoverStepArgs{
+				RunID: st.RunID, StepID: st.StepID, ClaimID: *st.ClaimID, Now: now,
+			}); err != nil {
+				// A typed conflict means the step moved on (completed, or
+				// taken over and re-claimed) between the scan snapshot and
+				// the row lock — drop this heal, never the sweep. A
+				// rejected transition writes nothing, so the transaction
+				// stays clean.
+				var te *store.TransitionError
+				if errors.As(err, &te) {
+					lostRace = append(lostRace, st)
+					continue
+				}
+				return err
+			}
+			if _, err := q.Outbox().Create(ctx, st.RunID, st.StepID, store.OutboxReasonReconcileRunning); err != nil {
+				return err
+			}
+			res.TakenOver = append(res.TakenOver, st)
 		}
 		res.StalledRuns, err = store.ListStalledRuns(ctx, q, limit)
 		if err != nil {
 			return err
 		}
 		res.LimitHit = len(res.Requeued) == int(limit) ||
-			len(res.StaleRunning) == int(limit) || len(res.StalledRuns) == int(limit)
+			len(staleRunning) == int(limit) || len(res.StalledRuns) == int(limit)
 		return nil
 	})
 	if err != nil {
@@ -190,11 +232,20 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 			log.RunID(ref.RunID.String()), log.StepID(ref.StepID),
 			slog.Time("stuck_since", ref.UpdatedAt))
 	}
-	for _, st := range res.StaleRunning {
-		logger.WarnContext(ctx, "step running past staleness threshold — dead-worker suspect (takeover lands in ticket 4.5)",
+	for _, st := range res.TakenOver {
+		logger.WarnContext(ctx, "reconciler took over a stale running step — holder presumed dead, re-outboxed",
 			log.RunID(st.RunID.String()), log.StepID(st.StepID),
 			slog.Time("running_since", st.UpdatedAt),
-			slog.String("claim_id", claimIDRefString(st.ClaimID)))
+			slog.String("displaced_claim_id", claimIDRefString(st.ClaimID)))
+	}
+	for _, st := range lostRace {
+		logger.InfoContext(ctx, "stale running step moved on before takeover — heal dropped",
+			log.RunID(st.RunID.String()), log.StepID(st.StepID))
+	}
+	for _, st := range corrupt {
+		logger.ErrorContext(ctx, "running step has no claim_id — corrupt state, cannot take over, investigate",
+			log.RunID(st.RunID.String()), log.StepID(st.StepID),
+			slog.Time("running_since", st.UpdatedAt))
 	}
 	for _, runID := range res.StalledRuns {
 		logger.ErrorContext(ctx, "run running with no live step — impossible state, investigate",
@@ -204,13 +255,13 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 		logger.WarnContext(ctx, "reconciler sweep hit its row limit; more may remain for the next sweep",
 			slog.Int("limit", r.cfg.Limit))
 	}
-	if len(res.Requeued) > 0 || len(res.StaleRunning) > 0 || len(res.StalledRuns) > 0 {
+	if len(res.Requeued) > 0 || len(res.TakenOver) > 0 || len(res.StalledRuns) > 0 {
 		logger.InfoContext(ctx, "reconciler sweep complete",
 			slog.Int("requeued", len(res.Requeued)),
-			slog.Int("stale_running", len(res.StaleRunning)),
+			slog.Int("taken_over", len(res.TakenOver)),
 			slog.Int("stalled_runs", len(res.StalledRuns)))
 	}
-	if len(res.Requeued) > 0 && r.nudge != nil {
+	if (len(res.Requeued) > 0 || len(res.TakenOver) > 0) && r.nudge != nil {
 		r.nudge()
 	}
 	return res, nil

@@ -337,6 +337,15 @@ func TestStepTransitionMatrix(t *testing.T) {
 			},
 		},
 		{
+			name: "TakeoverStep", legalFrom: store.StepStatusRunning,
+			call: func(ctx context.Context, q store.Querier, runID uuid.UUID, stepID string, claim uuid.UUID) error {
+				_, err := store.TakeoverStep(ctx, q, store.TakeoverStepArgs{
+					RunID: runID, StepID: stepID, ClaimID: claim, Now: testNow,
+				})
+				return err
+			},
+		},
+		{
 			name: "ReadyStep", legalFrom: store.StepStatusPending,
 			pendingRemaining: 0, pendingFired: 1,
 			call: func(ctx context.Context, q store.Querier, runID uuid.UUID, stepID string, _ uuid.UUID) error {
@@ -516,6 +525,143 @@ func TestStepGuardsAndFencing(t *testing.T) {
 		}
 		if _, err := claimStep(t, s, uuid.New(), "s"); !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("claim in missing run: %v, want ErrNotFound", err)
+		}
+	})
+}
+
+// TestTakeoverStep covers the lease-expiry takeover (ticket 4.5): the
+// happy path — running → ready with the claim cleared, the holder's
+// dangling attempt closed as `lost`, and the step_reclaimed event — plus
+// the fenced rejections (stale observed claim, already completed) and the
+// full takeover → re-claim → complete cycle the attempt history must
+// legibly record.
+func TestTakeoverStep(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := t.Context()
+
+	takeover := func(runID uuid.UUID, stepID string, claim uuid.UUID) (gen.RunStep, error) {
+		var step gen.RunStep
+		err := s.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+			var err error
+			step, err = store.TakeoverStep(ctx, q, store.TakeoverStepArgs{
+				RunID: runID, StepID: stepID, ClaimID: claim, Now: testNow,
+			})
+			return err
+		})
+		return step, err
+	}
+	seedReady := func(runID uuid.UUID, stepID string) {
+		if _, err := s.Steps().Create(ctx, gen.CreateRunStepParams{
+			RunID: runID, StepID: stepID, StepType: "noop",
+			Status: store.StepStatusReady, FiredDeps: 1, UpdatedAt: testNow,
+		}); err != nil {
+			t.Fatalf("seeding step: %v", err)
+		}
+	}
+
+	t.Run("takeover then reclaim", func(t *testing.T) {
+		t.Parallel()
+		run := mustCreateRun(t, s, nil)
+		seedReady(run.ID, "s")
+		claimedA := mustClaim(t, s, run.ID, "s")
+		claimA := *claimedA.ClaimID
+
+		step, err := takeover(run.ID, "s", claimA)
+		if err != nil {
+			t.Fatalf("TakeoverStep: %v", err)
+		}
+		if step.Status != store.StepStatusReady || step.ClaimID != nil {
+			t.Errorf("step after takeover = %s claim=%v, want ready with the claim cleared", step.Status, step.ClaimID)
+		}
+		if step.AttemptCount != 1 {
+			t.Errorf("attempt_count = %d, want 1 (takeover claims nothing)", step.AttemptCount)
+		}
+		if step.StartedAt == nil || !step.StartedAt.Equal(testNow) {
+			t.Errorf("started_at = %v, want the first claim's %v preserved", step.StartedAt, testNow)
+		}
+		attempts, err := s.Attempts().ListByStep(ctx, run.ID, "s")
+		if err != nil {
+			t.Fatalf("listing attempts: %v", err)
+		}
+		if len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != store.AttemptOutcomeLost {
+			t.Fatalf("attempts = %+v, want the holder's attempt closed with outcome lost", attempts)
+		}
+		if attempts[0].FinishedAt == nil {
+			t.Error("lost attempt has no finished_at")
+		}
+		types := eventTypes(t, s, run.ID)
+		want := []string{store.EventStepClaimed, store.EventStepReclaimed}
+		if len(types) != len(want) || types[0] != want[0] || types[1] != want[1] {
+			t.Errorf("event types = %v, want %v", types, want)
+		}
+
+		// The new holder claims normally: fresh claim, attempt 2, the
+		// original started_at preserved — the reclaim legible in history.
+		claimedB := mustClaim(t, s, run.ID, "s")
+		if claimedB.ClaimID == nil || *claimedB.ClaimID == claimA {
+			t.Error("re-claim after takeover did not issue a fresh claim_id")
+		}
+		if claimedB.AttemptCount != 2 {
+			t.Errorf("attempt_count after re-claim = %d, want 2", claimedB.AttemptCount)
+		}
+		mustSucceed(t, s, run.ID, "s", *claimedB.ClaimID)
+		attempts, err = s.Attempts().ListByStep(ctx, run.ID, "s")
+		if err != nil {
+			t.Fatalf("listing attempts: %v", err)
+		}
+		if len(attempts) != 2 {
+			t.Fatalf("attempts = %+v, want 2 rows", attempts)
+		}
+		if attempts[0].ClaimID != claimA || *attempts[0].Outcome != store.AttemptOutcomeLost {
+			t.Errorf("attempt 1 = %+v, want the displaced holder's claim closed lost", attempts[0])
+		}
+		if attempts[1].ClaimID != *claimedB.ClaimID || attempts[1].Outcome == nil || *attempts[1].Outcome != store.StepStatusSucceeded {
+			t.Errorf("attempt 2 = %+v, want the new holder's claim closed succeeded", attempts[1])
+		}
+	})
+
+	t.Run("stale observed claim is fenced", func(t *testing.T) {
+		t.Parallel()
+		run := mustCreateRun(t, s, nil)
+		seedReady(run.ID, "s")
+		liveClaim := *mustClaim(t, s, run.ID, "s").ClaimID
+		stale := uuid.New()
+
+		_, err := takeover(run.ID, "s", stale)
+		te := conflictError(t, err, store.ConflictClaimMismatch)
+		if te.CallerClaimID == nil || *te.CallerClaimID != stale {
+			t.Errorf("CallerClaimID = %v, want %s", te.CallerClaimID, stale)
+		}
+		if te.CurrentClaimID == nil || *te.CurrentClaimID != liveClaim {
+			t.Errorf("CurrentClaimID = %v, want %s", te.CurrentClaimID, liveClaim)
+		}
+		step, err := s.Steps().Get(ctx, run.ID, "s")
+		if err != nil {
+			t.Fatalf("reading step: %v", err)
+		}
+		if step.Status != store.StepStatusRunning || step.ClaimID == nil || *step.ClaimID != liveClaim {
+			t.Errorf("fenced takeover mutated the step: %+v", step)
+		}
+	})
+
+	t.Run("completed between observation and takeover", func(t *testing.T) {
+		t.Parallel()
+		run := mustCreateRun(t, s, nil)
+		seedReady(run.ID, "s")
+		claim := *mustClaim(t, s, run.ID, "s").ClaimID
+		mustSucceed(t, s, run.ID, "s", claim)
+
+		// ADR-005's race rule: the holder's completion landed first; the
+		// takeover finds the step terminal and fails typed, reporting the
+		// claim still on the row.
+		_, err := takeover(run.ID, "s", claim)
+		te := conflictError(t, err, store.ConflictWrongStatus)
+		if te.From != store.StepStatusSucceeded {
+			t.Errorf("TransitionError.From = %q, want succeeded", te.From)
+		}
+		if te.CurrentClaimID == nil || *te.CurrentClaimID != claim {
+			t.Errorf("CurrentClaimID = %v, want %s", te.CurrentClaimID, claim)
 		}
 	})
 }

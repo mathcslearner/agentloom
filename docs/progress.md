@@ -1491,3 +1491,96 @@ written).
 ROADMAP); reconciler/dispatcher metrics — sweep counts, drain latency
 from `enqueued_at_ms` — are M7; delayed-set reconciliation has no v1
 tenant (M5.2).
+
+### 4.5 — Fencing enforcement (zombie writes) ✅
+
+**What shipped.** The last piece of the effectively-once story: what
+happens when a worker that lost its lease keeps writing. Store side, the
+`running → ready` **takeover CAS** (`store.TakeoverStep`, ADR-004's M4
+matrix row, now owned by 4.5): fenced on the *observed* holder's
+`claim_id` — not just status — it clears the claim (the moment the zombie
+loses its fence), closes the holder's dangling attempt row with the new
+administrative outcome `lost`, and appends the new `step_reclaimed` event
+(payload: step, displaced claim, stranded attempt number). Engine side,
+three behaviors: (1) the **claim-path takeover** — a reclaimed delivery
+(`DeliveryCount > 1`) of a `running` step now runs one transaction
+composing `TakeoverStep` + `ClaimStep` and proceeds to execute, replacing
+4.2's deliberate no-ACK spin (the classifier grew a three-way action:
+ack-drop / redeliver / takeover); (2) **fenced completion abandon** — a
+completion/failure transaction whose terminal CAS is rejected with a
+typed conflict logs one distinct error carrying both claim IDs
+(`claim_id_caller` / `claim_id_current`) and returns
+`errFencedCompletion` so the consumer ACKs nothing (for a reclaimed entry
+an ACK would delete the *new* holder's lease); (3) the **reconciler
+heal** — stale-`running` steps (R1(c)) go from flag to takeover +
+re-outbox with new reason `reconcile_running`, per-step conflicts dropped
+(the step moved on — the fence did its job) without aborting the sweep,
+`ReconcileResult.StaleRunning` renamed to `TakenOver`, nudge extended.
+
+**Non-obvious decisions.**
+- **The takeover is claim-guarded, not just status-guarded.** Both
+  callers observe the holder's claim before taking over (the worker from
+  the claim conflict's `CurrentClaimID`, the reconciler from its scan);
+  guarding the CAS on it closes the ABA window where the step was taken
+  over *and re-claimed by a live worker* between observation and CAS —
+  without it a stale takeover could steal a live claim. To feed this,
+  `stepConflict` now always reports `CurrentClaimID` (the row's claim at
+  rejection time) and reports `CallerClaimID` for any claim-guarded
+  rejection — a fenced zombie most often sees `wrong_status` (the new
+  holder already completed), not `claim_mismatch`, and the ticket's
+  both-IDs logging requirement covers that case too.
+- **Worker takeover + re-claim is one transaction.** ADR-005 shows two
+  CASes without mandating boundaries; one tx removes the intermediate
+  ready-with-no-entry state, and the run-lock-first discipline makes the
+  pair race-free. If the reconciler's takeover won in between
+  (`wrong_status` from `ready`), the conflict is swallowed — a rejected
+  transition writes nothing — and the claim proceeds on the entry in
+  hand. A takeover finding the step terminal ACK-drops (ADR-005's race
+  rule: the holder's completion committed between reclaim and takeover).
+- **The dangling attempt closes as `lost`.** Leaving it open would be
+  indistinguishable from in-flight; `succeeded`/`failed` would lie.
+  `lost` is administrative, deliberately outside ADR-006's future
+  outcome taxonomy (recorded in ADR-004). It is also what makes 4.7's
+  "attempt history proves the reclaim" legible: attempt 1 = dead claim /
+  `lost`, attempt 2 = fresh claim / `succeeded`.
+- **Abandon is uniform: any terminal-CAS conflict → no ACK.** Also on
+  `wrong_status` from `ready` (a false-positive reconciler takeover of a
+  live worker): the zombie's own entry goes stale after its heartbeater
+  stops, redelivers, and bounces off the claim CAS — self-healing, no
+  special case.
+- **No outbox schema change for "keyed idempotently per transition":**
+  successor outbox rows exist only inside a committed completion tx, and
+  the fence admits exactly one completion per step — dispatch-exactly-once
+  is asserted on `step_ready` event counts.
+- **Reconciler sweeps now take multiple run locks in one tx** (takeover
+  locks the run first, like every transition). No deadlock: claim and
+  completion transactions hold locks on a single run (no cycle possible),
+  and the advisory lock serializes sweeps against each other. Documented
+  in the package comment.
+
+**Tests.** Unit: both classifiers' full decision tables (claim: takeover
+carries the holder claim, nil-claim running is corrupt-state redeliver;
+takeover: newer-holder mismatch and completed-in-between both ack-drop).
+Store integration: `TakeoverStep` joined the transition matrix (legal
+only from `running`); a dedicated suite covering takeover → re-claim →
+complete (attempt history `lost`→`succeeded`, `started_at` preserved,
+`step_reclaimed` in the event log), the stale-claim fence (both IDs on
+the error), and the completed-before-takeover race. Engine integration:
+the ticket's headline — worker A claims and stalls (its `Handle` driven
+directly over a PEL entry it never heartbeats: a perfectly silent
+holder), B reclaims/takes over/completes the run, A resumes and is
+rejected — state reflects B's output only, successors dispatched exactly
+once (event-log asserted), the rejection error names both claim IDs, no
+ACK from A (error return), queue quiescent; the claim-path takeover after
+a dead worker (delivery count 2 → takeover → run completes, two claims
+journal-asserted); the reconciler heal end-to-end (nothing before the
+threshold, exactly one takeover + `reconcile_running` row past it, second
+sweep a no-op, healed run completes with the reason visible on the wire);
+the impossible-state flag test slimmed to stalled runs only.
+
+**Deferred.** ADR-005's known duplicate-reclaim takeover race (duplicate
+entry's reader crashes pre-drop, later reclaimed while the real holder
+lives) remains accepted — bounded to one wasted execution, absorbed by
+fencing now and side-effect idempotency in M5.5. Graceful-drain semantics
+for an executor interrupted by shutdown (today it records a real failure)
+are M5's retry/timeout work.

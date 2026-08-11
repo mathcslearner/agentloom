@@ -38,6 +38,8 @@ import (
 
 // Transition event payloads (v1 minimal shapes; ADR-018 owns the formal
 // envelope). step_ready/step_skipped use stepIDPayload (instantiate.go).
+// stepClaimedPayload is shared by step_claimed (ClaimID = the fresh fence)
+// and step_reclaimed (ClaimID = the displaced holder's cleared fence).
 type stepClaimedPayload struct {
 	StepID    string `json:"step_id"`
 	ClaimID   string `json:"claim_id"`
@@ -98,6 +100,61 @@ func ClaimStep(ctx context.Context, q Querier, args ClaimStepArgs) (gen.RunStep,
 	}
 	log.From(ctx).DebugContext(ctx, "step claimed",
 		log.RunID(args.RunID.String()), log.StepID(args.StepID), log.Attempt(int(step.AttemptCount)))
+	return step, nil
+}
+
+// TakeoverStepArgs are the inputs to TakeoverStep.
+type TakeoverStepArgs struct {
+	RunID  uuid.UUID
+	StepID string
+	// ClaimID is the observed holder's fencing token — from the claim
+	// conflict's CurrentClaimID (worker path) or the staleness scan
+	// (reconciler). The CAS is fenced on it: if the step was already taken
+	// over and re-claimed by a live worker, the observation is stale and
+	// the takeover is rejected instead of stealing the live claim.
+	ClaimID uuid.UUID
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// TakeoverStep transitions a step running → ready after its holder's lease
+// expired (ADR-005 lease-expiry takeover; ADR-004's M4 running → ready
+// row): it clears claim_id — the moment the zombie loses its fence — closes
+// the holder's dangling attempt row with the administrative outcome `lost`,
+// and appends the step_reclaimed event. Re-dispatch is the caller's move:
+// the worker path claims in the same transaction (its reclaimed entry is in
+// hand, no message needed); the reconciler writes an outbox row instead.
+func TakeoverStep(ctx context.Context, q Querier, args TakeoverStepArgs) (gen.RunStep, error) {
+	const op = "takeover step"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.RunStep{}, err
+	}
+	step, err := gq.TakeoverRunStep(ctx, gen.TakeoverRunStepParams{
+		RunID: args.RunID, StepID: args.StepID, ClaimID: &args.ClaimID, Now: args.Now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.RunStep{}, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
+			want: StepStatusRunning, to: StepStatusReady, claim: &args.ClaimID,
+		})
+	}
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op, err)
+	}
+	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeLost, nil, args.Now); err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepReclaimed, stepClaimedPayload{
+		StepID: args.StepID, ClaimID: args.ClaimID.String(), AttemptNo: step.AttemptCount,
+	}); err != nil {
+		return gen.RunStep{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "step taken over",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID),
+		log.Attempt(int(step.AttemptCount)))
 	return step, nil
 }
 
@@ -582,14 +639,20 @@ func stepConflict(ctx context.Context, gq *gen.Queries, op string, runID uuid.UU
 	if err != nil {
 		return wrapErr(op, err)
 	}
-	te := &TransitionError{Entity: "step", RunID: runID, StepID: stepID, From: row.Status, To: args.to}
+	// The row's claim at rejection time is always reported: a rejected
+	// ClaimStep on a running step reads it as the observed holder to fence
+	// the 4.5 takeover on, and a fenced completion logs it as the claim
+	// that displaced the caller's. CallerClaimID only exists when the
+	// transition was claim-guarded.
+	te := &TransitionError{
+		Entity: "step", RunID: runID, StepID: stepID, From: row.Status, To: args.to,
+		CallerClaimID: args.claim, CurrentClaimID: row.ClaimID,
+	}
 	switch {
 	case row.Status != args.want:
 		te.Reason = ConflictWrongStatus
 	case args.claim != nil && (row.ClaimID == nil || *row.ClaimID != *args.claim):
 		te.Reason = ConflictClaimMismatch
-		te.CallerClaimID = args.claim
-		te.CurrentClaimID = row.ClaimID
 	default:
 		te.Reason = ConflictGuardFailed
 	}

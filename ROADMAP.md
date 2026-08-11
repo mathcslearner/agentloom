@@ -379,13 +379,13 @@ Every worker runs: (a) outbox drain loop — `SELECT … FOR UPDATE SKIP LOCKED`
 - [x] SKIP LOCKED drain shows no duplicate dispatch under 4 concurrent drainers (dupes that do occur are ACK-dropped at claim — asserted)
 - [x] Reconciler is idempotent and rate-bounded (no thundering herd)
 
-#### 4.5 — Fencing enforcement (zombie writes)
+#### 4.5 — Fencing enforcement (zombie writes) ✅
 **Depends on:** 4.3
 Completion/failure transitions require the matching `claim_id`; a stale worker (lease expired, step reclaimed) gets a typed fencing error, logs it, ACKs nothing new, and abandons. Integration test: pause worker A past lease TTL (simulated stall), let B reclaim and complete, resume A → A's write is rejected; no duplicate successor dispatch (outbox keyed idempotently per step transition). Also upgrades 4.4's reconciler on stale-`running` steps from flag to heal (takeover + re-outbox, ADR-005 R1(c)) — the `running → ready` takeover CAS it needs is built here.
 **Done when:**
-- [ ] Zombie write rejected with fencing error; state reflects B's result only
-- [ ] Successors dispatched exactly once (event log asserted)
-- [ ] Fencing rejection visible in logs with both claim IDs
+- [x] Zombie write rejected with fencing error; state reflects B's result only
+- [x] Successors dispatched exactly once (event log asserted)
+- [x] Fencing rejection visible in logs with both claim IDs
 
 #### 4.6 — Minimal ingest API & `ctl` CLI
 **Depends on:** 2.5

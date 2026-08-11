@@ -2,11 +2,12 @@ package store
 
 // Reconciler read surface (ticket 4.4): the periodic healer's scans and
 // its fleet-wide sweep lock. Everything here is read-only diagnostics over
-// durable state — the reconciler re-outboxes (Outbox().Create) or flags;
-// it never transitions state. All functions must run inside a WithTx
-// callback: the staleness scan and the re-outbox insert are only coherent
-// as one atomic sweep, and an advisory *xact* lock outside a transaction
-// is meaningless. Anything else fails fast with ErrNoTx, mirroring the
+// durable state — the heals the reconciler composes from these reads
+// (Outbox().Create re-outboxes, and since 4.5 the TakeoverStep transition)
+// live in repos.go/transitions.go. All functions must run inside a WithTx
+// callback: the staleness scan and the heal it feeds are only coherent as
+// one atomic sweep, and an advisory *xact* lock outside a transaction is
+// meaningless. Anything else fails fast with ErrNoTx, mirroring the
 // transition functions.
 
 import (
@@ -34,10 +35,12 @@ type StepRef struct {
 }
 
 // StaleRunningStep is a running step whose updated_at exceeded the
-// reconciler's threshold — ADR-005 R1(c), flag-only until 4.5's takeover.
+// reconciler's threshold — ADR-005 R1(c), healed by takeover + re-outbox
+// (ticket 4.5).
 type StaleRunningStep struct {
 	StepRef
-	// ClaimID is the (presumed dead) holder's fencing token, for logs.
+	// ClaimID is the (presumed dead) holder's fencing token — the observed
+	// claim the takeover CAS is fenced on.
 	ClaimID *uuid.UUID
 }
 
@@ -96,9 +99,9 @@ func ListStaleReadySteps(ctx context.Context, q Querier, staleBefore time.Time, 
 // staleBefore — dead-worker suspects with no reclaimable lease (ADR-005
 // R1(c)). The threshold must be ≫ the lease TTL: updated_at moves on
 // transitions, not heartbeats, so a healthy long-running step looks stale
-// on any tighter bound. Flag-only in 4.4 (a re-outbox would be
-// ACK-dropped as a fresh-delivery duplicate); 4.5's lease-expiry takeover
-// upgrades this to a heal.
+// on any tighter bound. The reconciler heals each hit with TakeoverStep +
+// a reconcile_running outbox row (ticket 4.5); a false positive is safe —
+// the live holder's completion is fenced — and merely wasteful.
 func ListStaleRunningSteps(ctx context.Context, q Querier, staleBefore time.Time, limit int32) ([]StaleRunningStep, error) {
 	const op = "list stale running steps"
 	gq, err := reconcileQueries(ctx, q, op)

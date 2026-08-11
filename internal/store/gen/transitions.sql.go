@@ -484,3 +484,55 @@ func (q *Queries) SucceedRunStep(ctx context.Context, arg SucceedRunStepParams) 
 	)
 	return i, err
 }
+
+const takeoverRunStep = `-- name: TakeoverRunStep :one
+UPDATE run_steps
+SET status     = 'ready',
+    claim_id   = NULL,
+    updated_at = $1::timestamptz
+WHERE run_id = $2 AND step_id = $3
+  AND status = 'running' AND claim_id = $4
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at
+`
+
+type TakeoverRunStepParams struct {
+	Now     time.Time
+	RunID   uuid.UUID
+	StepID  string
+	ClaimID *uuid.UUID
+}
+
+// Lease-expiry takeover: running → ready, fenced on the observed holder's
+// claim_id (ADR-005). Clearing claim_id is the moment the zombie loses its
+// fence; guarding on the observed claim closes the ABA window where the
+// step was already taken over and re-claimed by a live worker between
+// observation and this CAS — without it a takeover could steal a live
+// claim.
+func (q *Queries) TakeoverRunStep(ctx context.Context, arg TakeoverRunStepParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, takeoverRunStep,
+		arg.Now,
+		arg.RunID,
+		arg.StepID,
+		arg.ClaimID,
+	)
+	var i RunStep
+	err := row.Scan(
+		&i.RunID,
+		&i.StepID,
+		&i.StepType,
+		&i.Config,
+		&i.Status,
+		&i.RemainingDeps,
+		&i.FiredDeps,
+		&i.ClaimID,
+		&i.AttemptCount,
+		&i.Output,
+		&i.Error,
+		&i.GraphVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+	)
+	return i, err
+}

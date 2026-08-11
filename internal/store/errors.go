@@ -78,9 +78,14 @@ type TransitionError struct {
 	// target status.
 	From, To string
 	Reason   ConflictReason
-	// CallerClaimID and CurrentClaimID are set on claim_mismatch: the
-	// fencing token the caller presented vs the one on the row (nil =
-	// none) — M4.5 logs both on zombie rejections.
+	// CallerClaimID is the fencing token the caller presented; set only
+	// when the rejected transition was claim-guarded (completion,
+	// takeover). CurrentClaimID is the claim on the row at rejection time
+	// (nil = none) and is always set for step conflicts: 4.5's zombie
+	// rejections log both — whatever the rejection reason, since a fenced
+	// worker most often sees wrong_status (the new holder already
+	// completed) — and a rejected claim on a running step reads it as the
+	// observed holder to fence the takeover CAS on.
 	CallerClaimID  *uuid.UUID
 	CurrentClaimID *uuid.UUID
 }
@@ -91,7 +96,7 @@ func (e *TransitionError) Error() string {
 		subject = fmt.Sprintf("%s %q", e.Entity, e.StepID)
 	}
 	msg := fmt.Sprintf("%s: %s transition to %q rejected (status %q)", subject, e.Reason, e.To, e.From)
-	if e.Reason == ConflictClaimMismatch {
+	if e.CallerClaimID != nil {
 		msg += fmt.Sprintf(" [caller claim %s, current claim %s]",
 			uuidOrNone(e.CallerClaimID), uuidOrNone(e.CurrentClaimID))
 	}

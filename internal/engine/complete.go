@@ -263,12 +263,18 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 
 	now := e.now()
 	var fanned fanOutResult
+	var fenced *store.TransitionError
 	runDone := false
 	txErr := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
 		if _, err := store.SucceedStep(ctx, q, store.SucceedStepArgs{
 			RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
 			Output: out.Data, Now: now,
 		}); err != nil {
+			// A typed conflict on the terminal CAS is the fence firing:
+			// this worker's claim is no longer current (zombie write,
+			// ADR-005). Recorded for the post-tx abandon; the error return
+			// still rolls the transaction back.
+			errors.As(err, &fenced)
 			return err
 		}
 		if err := failpoint(stageAfterStepTransition); err != nil {
@@ -295,6 +301,9 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		return rerr
 	})
 	if txErr != nil {
+		if fenced != nil {
+			return e.abandonFenced(ctx, step, fenced, txErr)
+		}
 		logger.ErrorContext(ctx, "completion transaction failed; delivery will redeliver",
 			slog.Any("error", txErr))
 		return txErr
@@ -342,11 +351,14 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 
 	now := e.now()
 	runFailed := false
+	var fenced *store.TransitionError
 	txErr := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
 		if _, err := store.FailStep(ctx, q, store.FailStepArgs{
 			RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
 			Error: payload, Now: now,
 		}); err != nil {
+			// The fence firing on the failure path — see completeSuccess.
+			errors.As(err, &fenced)
 			return err
 		}
 		if err := failpoint(stageAfterStepTransition); err != nil {
@@ -366,6 +378,9 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 		return err
 	})
 	if txErr != nil {
+		if fenced != nil {
+			return e.abandonFenced(ctx, step, fenced, txErr)
+		}
 		logger.ErrorContext(ctx, "failure-completion transaction failed; delivery will redeliver",
 			slog.Any("error", txErr))
 		return txErr
@@ -375,4 +390,30 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 		slog.Any("error", execErr),
 		slog.Bool("run_failed", runFailed))
 	return nil
+}
+
+// errFencedCompletion marks a completion abandoned because its terminal CAS
+// was rejected — this worker's claim is no longer current. Returned (never
+// nil) so the consumer does not ACK: for a reclaimed entry the ACK would
+// delete the new holder's lease mid-execution. The abandoned entry heals on
+// its own — the new holder ACKs it after completing, or (a false-positive
+// takeover of a live worker) this worker's own entry goes stale, redelivers,
+// and bounces off the claim CAS.
+var errFencedCompletion = errors.New("engine: completion fenced by a lost claim — abandoned")
+
+// abandonFenced is the zombie-write rejection (ticket 4.5, ADR-005's
+// "log both claim IDs, abandon, no ACK"): one distinct error log carrying
+// the claim this worker presented and the one currently on the row, then
+// the typed abandon error. Reached from any terminal-CAS conflict —
+// claim_mismatch (the step was taken over and re-claimed), or wrong_status
+// from a terminal state (the new holder already completed) or from ready
+// (taken over, not yet re-claimed).
+func (e *Engine) abandonFenced(ctx context.Context, step gen.RunStep, te *store.TransitionError, cause error) error {
+	log.From(ctx).ErrorContext(ctx, "completion fenced: claim no longer current — abandoning without ACK",
+		slog.String("claim_id_caller", claimIDString(step)),
+		slog.String("claim_id_current", claimIDRefString(te.CurrentClaimID)),
+		slog.String("step_status", te.From),
+		slog.String("conflict_reason", string(te.Reason)),
+		slog.Any("error", cause))
+	return fmt.Errorf("%w: %w", errFencedCompletion, cause)
 }

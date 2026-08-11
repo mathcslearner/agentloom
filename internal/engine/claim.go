@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/google/uuid"
+
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
@@ -24,6 +26,12 @@ import (
 // ADR-005's "completion/failure transition committed → ACK" row — so a
 // crash anywhere before commit redelivers, and the redelivery bounces off
 // the claim CAS as a duplicate of finished work when the commit did land.
+//
+// A reclaimed delivery of a running step — the holder went silent past the
+// lease TTL — takes the third path: the lease-expiry takeover (ticket 4.5).
+// The takeover CAS (running → ready, clearing the holder's claim_id — the
+// moment the zombie loses its fence) and a fresh claim run in one
+// transaction, then the step executes normally.
 func (e *Engine) Handle(ctx context.Context, d queue.Delivery) error {
 	// The consumer already stamped entry_id, delivery_count, run_id,
 	// step_id, and reason into the log context.
@@ -43,14 +51,68 @@ func (e *Engine) Handle(ctx context.Context, d queue.Delivery) error {
 	if err != nil {
 		dec := classifyClaimFailure(err, d.DeliveryCount)
 		log.From(ctx).LogAttrs(ctx, dec.level, "claim rejected: "+dec.reason,
-			slog.Bool("ack", dec.ack),
+			slog.String("action", dec.action.String()),
 			slog.Any("error", err))
-		if dec.ack {
+		switch dec.action {
+		case claimAckDrop:
+			return nil
+		case claimTakeover:
+			return e.takeoverAndClaim(ctx, d, *dec.holderClaim)
+		default:
+			return err
+		}
+	}
+
+	return e.execute(ctx, step)
+}
+
+// takeoverAndClaim is the lease-expiry takeover (ADR-005): one transaction
+// composing TakeoverStep (running → ready, fenced on the observed holder's
+// claim, closing its attempt as lost) with a fresh ClaimStep, then normal
+// execution. One transaction removes the intermediate ready-with-no-entry
+// state; both primitives take the run lock first, so the pair is race-free.
+// If the reconciler's takeover won in between (step already ready), the
+// takeover conflict is swallowed — a rejected transition writes nothing —
+// and the claim proceeds on the entry already in hand.
+func (e *Engine) takeoverAndClaim(ctx context.Context, d queue.Delivery, holderClaim uuid.UUID) error {
+	now := e.now()
+	var step gen.RunStep
+	err := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+		_, terr := store.TakeoverStep(ctx, q, store.TakeoverStepArgs{
+			RunID: d.Envelope.RunID, StepID: d.Envelope.StepID,
+			ClaimID: holderClaim, Now: now,
+		})
+		if terr != nil {
+			var te *store.TransitionError
+			already := errors.As(terr, &te) &&
+				te.Reason == store.ConflictWrongStatus && te.From == store.StepStatusReady
+			if !already {
+				return terr
+			}
+			// Another takeover (the reconciler's) landed since this entry
+			// was reclaimed; claim the ready step directly.
+		}
+		var cerr error
+		step, cerr = store.ClaimStep(ctx, q, store.ClaimStepArgs{
+			RunID: d.Envelope.RunID, StepID: d.Envelope.StepID, Now: now,
+		})
+		return cerr
+	})
+	if err != nil {
+		dec := classifyTakeoverFailure(err)
+		log.From(ctx).LogAttrs(ctx, dec.level, "takeover rejected: "+dec.reason,
+			slog.String("action", dec.action.String()),
+			slog.String("holder_claim_id", holderClaim.String()),
+			slog.Any("error", err))
+		if dec.action == claimAckDrop {
 			return nil
 		}
 		return err
 	}
 
+	log.From(ctx).InfoContext(ctx, "lease-expiry takeover: step reclaimed from silent holder",
+		slog.String("displaced_claim_id", holderClaim.String()),
+		slog.String("claim_id", claimIDString(step)))
 	return e.execute(ctx, step)
 }
 
@@ -90,14 +152,41 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 	return e.completeSuccess(ctx, step, out)
 }
 
-// claimDecision is what the handler does with a delivery whose claim
-// transaction failed.
+// claimAction is what the handler does with a delivery whose claim (or
+// takeover) transaction failed.
+type claimAction int
+
+const (
+	// claimRedeliver: nothing was decided — leave the entry in the PEL.
+	claimRedeliver claimAction = iota
+	// claimAckDrop: consuming this delivery is provably unnecessary — ACK
+	// and drop.
+	claimAckDrop
+	// claimTakeover: reclaimed delivery of a running step — perform the
+	// lease-expiry takeover (4.5) and execute.
+	claimTakeover
+)
+
+// String renders the action for structured logs.
+func (a claimAction) String() string {
+	switch a {
+	case claimAckDrop:
+		return "ack_drop"
+	case claimTakeover:
+		return "takeover"
+	default:
+		return "redeliver"
+	}
+}
+
+// claimDecision is a classified claim/takeover failure.
 type claimDecision struct {
-	// ack: true = consuming this delivery is provably unnecessary — ACK
-	// and drop; false = leave the entry in the PEL to redeliver.
-	ack    bool
+	action claimAction
 	reason string
 	level  slog.Level
+	// holderClaim is the observed holder's fencing token, set only for
+	// claimTakeover — the takeover CAS is fenced on it.
+	holderClaim *uuid.UUID
 }
 
 // classifyClaimFailure maps a failed claim onto ADR-005's ACK-discipline
@@ -111,14 +200,14 @@ func classifyClaimFailure(err error, deliveryCount int64) claimDecision {
 			// protocol surprise; keep the entry pending — the rising
 			// delivery count walks it to the visible poison path.
 			return claimDecision{
-				ack: false, level: slog.LevelError,
+				action: claimRedeliver, level: slog.LevelError,
 				reason: "unexpected conflict reason " + string(te.Reason),
 			}
 		}
 		switch te.From {
 		case store.StepStatusSucceeded, store.StepStatusFailed, store.StepStatusSkipped:
 			return claimDecision{
-				ack: true, level: slog.LevelInfo,
+				action: claimAckDrop, level: slog.LevelInfo,
 				reason: "step already terminal (" + te.From + ") — duplicate of finished work",
 			}
 		case store.StepStatusRunning:
@@ -126,23 +215,31 @@ func classifyClaimFailure(err error, deliveryCount int64) claimDecision {
 				// Fresh-delivery path: a concurrent duplicate. The live
 				// holder's own entry covers the crash case.
 				return claimDecision{
-					ack: true, level: slog.LevelInfo,
+					action: claimAckDrop, level: slog.LevelInfo,
 					reason: "step already running — concurrent duplicate delivery",
 				}
 			}
-			// Reclaim path: the holder's lease expired. Lease-expiry
-			// takeover (running → ready, clear claim_id, reclaim) is
-			// ticket 4.5; until it lands the entry stays pending, rising
-			// toward the poison path — visible, never silently dropped.
+			// Reclaim path: the holder went silent past the lease TTL —
+			// take over (ADR-005's lease-expiry takeover, ticket 4.5).
+			if te.CurrentClaimID == nil {
+				// A running step always carries a claim; nil is corrupt
+				// state, and without an observed claim the fenced takeover
+				// CAS cannot run. Keep the entry pending — visible.
+				return claimDecision{
+					action: claimRedeliver, level: slog.LevelError,
+					reason: "running step has no claim_id — corrupt state, cannot take over",
+				}
+			}
 			return claimDecision{
-				ack: false, level: slog.LevelWarn,
-				reason: "reclaimed delivery of a running step — lease-expiry takeover lands in ticket 4.5",
+				action: claimTakeover, level: slog.LevelWarn,
+				reason:      "reclaimed delivery of a running step — holder presumed dead, taking over",
+				holderClaim: te.CurrentClaimID,
 			}
 		default:
 			// pending (never dispatched → outbox bug) or an unknown
 			// status: not provably unnecessary, keep it pending.
 			return claimDecision{
-				ack: false, level: slog.LevelError,
+				action: claimRedeliver, level: slog.LevelError,
 				reason: "step in unexpected status " + te.From,
 			}
 		}
@@ -150,14 +247,66 @@ func classifyClaimFailure(err error, deliveryCount int64) claimDecision {
 		// Dangling reference: run or step row gone (e.g. deleted under a
 		// retention policy).
 		return claimDecision{
-			ack: true, level: slog.LevelWarn,
+			action: claimAckDrop, level: slog.LevelWarn,
 			reason: "run or step not found — dangling reference",
 		}
 	default:
 		// Transport/transaction failure: nothing was decided; redeliver.
 		return claimDecision{
-			ack: false, level: slog.LevelError,
+			action: claimRedeliver, level: slog.LevelError,
 			reason: "claim transaction failed",
+		}
+	}
+}
+
+// classifyTakeoverFailure maps a failed takeover-and-claim transaction onto
+// the ACK discipline. Pure — unit-tested without a database. The From=ready
+// takeover conflict never reaches here (swallowed inside the transaction);
+// a claim conflict (To=running) cannot race under the held run lock, so it
+// is a protocol surprise.
+func classifyTakeoverFailure(err error) claimDecision {
+	var te *store.TransitionError
+	switch {
+	case errors.As(err, &te):
+		if te.To != store.StepStatusReady {
+			return claimDecision{
+				action: claimRedeliver, level: slog.LevelError,
+				reason: "unexpected conflict on the post-takeover claim",
+			}
+		}
+		switch {
+		case te.Reason == store.ConflictClaimMismatch:
+			// The step was taken over and re-claimed by a live holder since
+			// this entry's observation — the observed claim is stale. The
+			// new holder claimed off its own entry, which covers its crash
+			// case, so dropping this one is safe.
+			return claimDecision{
+				action: claimAckDrop, level: slog.LevelWarn,
+				reason: "step re-claimed by a newer holder since observation — stale takeover dropped",
+			}
+		case te.Reason == store.ConflictWrongStatus &&
+			(te.From == store.StepStatusSucceeded || te.From == store.StepStatusFailed || te.From == store.StepStatusSkipped):
+			// ADR-005's takeover race rule: the holder's completion
+			// committed between the reclaim and the takeover CAS.
+			return claimDecision{
+				action: claimAckDrop, level: slog.LevelInfo,
+				reason: "step completed between reclaim and takeover (" + te.From + ") — duplicate of finished work",
+			}
+		default:
+			return claimDecision{
+				action: claimRedeliver, level: slog.LevelError,
+				reason: "unexpected takeover conflict (" + string(te.Reason) + " from " + te.From + ")",
+			}
+		}
+	case errors.Is(err, store.ErrNotFound):
+		return claimDecision{
+			action: claimAckDrop, level: slog.LevelWarn,
+			reason: "run or step not found — dangling reference",
+		}
+	default:
+		return claimDecision{
+			action: claimRedeliver, level: slog.LevelError,
+			reason: "takeover transaction failed",
 		}
 	}
 }

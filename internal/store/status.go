@@ -47,6 +47,19 @@ const (
 	// reason exists so healed dispatches are visible in stream entries and
 	// logs.
 	OutboxReasonReconcileReady = "reconcile_ready"
+	// OutboxReasonReconcileRunning: the reconciler took over a stale
+	// running step — its holder is presumed dead with no reclaimable lease
+	// (ticket 4.5, ADR-005 R1(c)) — and re-outboxed it for a fresh claim.
+	OutboxReasonReconcileRunning = "reconcile_running"
+)
+
+// Attempt outcomes beyond the step statuses the completion transitions
+// reuse (succeeded/failed). ADR-006 (M5) owns the full failure taxonomy.
+const (
+	// AttemptOutcomeLost: the holder went silent past the lease TTL and the
+	// step was taken over (TakeoverStep) — administrative closure of the
+	// dangling attempt, deliberately outside ADR-006's outcome taxonomy.
+	AttemptOutcomeLost = "lost"
 )
 
 // Event types written by run instantiation (2.5) and the guarded
@@ -60,6 +73,10 @@ const (
 	EventStepSucceeded = "step_succeeded"
 	EventStepFailed    = "step_failed"
 	EventStepSkipped   = "step_skipped"
+	// EventStepReclaimed: lease-expiry takeover (running → ready, claim
+	// cleared — ticket 4.5, ADR-005). The payload carries the displaced
+	// holder's claim_id and the attempt it strands.
+	EventStepReclaimed = "step_reclaimed"
 	EventRunSucceeded  = "run_succeeded"
 	EventRunFailed     = "run_failed"
 )

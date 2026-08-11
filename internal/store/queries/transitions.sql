@@ -43,6 +43,21 @@ WHERE run_id = @run_id AND step_id = @step_id
   AND status = 'running' AND claim_id = @claim_id
 RETURNING *;
 
+-- Lease-expiry takeover: running → ready, fenced on the observed holder's
+-- claim_id (ADR-005). Clearing claim_id is the moment the zombie loses its
+-- fence; guarding on the observed claim closes the ABA window where the
+-- step was already taken over and re-claimed by a live worker between
+-- observation and this CAS — without it a takeover could steal a live
+-- claim.
+-- name: TakeoverRunStep :one
+UPDATE run_steps
+SET status     = 'ready',
+    claim_id   = NULL,
+    updated_at = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id
+  AND status = 'running' AND claim_id = @claim_id
+RETURNING *;
+
 -- Edge resolution bookkeeping (not a status transition): the unresolved
 -- guard is what makes retried completion transactions idempotent — an
 -- already-resolved edge matches nothing, so counters can never
