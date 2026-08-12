@@ -2194,3 +2194,140 @@ Full unit + integration + crash suites green; lint clean.
 - Deferred to 5.6: assigning `cancelled` on parent-context
   cancellation; today a shutdown mid-execution still redelivers (4.x
   behavior, unchanged).
+
+### 5.4 — Dead-letter handling ✅
+
+**Delivered.** ADR-006's terminal-failure half, end to end: the
+`dead_lettered` and `cancelled` step statuses, the `dead_letters` table
+(Postgres as the DLQ), the run disposition per the materialized workflow
+failure policy (`fail_fast` vs `continue_independent_branches` with eager
+write-off of blocked descendants), the poison-handler wiring that turns
+3.4's delivery-count callback into a durable DLQ record + ACK, and the
+internal requeue op (`Engine.Requeue`; API exposure lands in M6.5) with
+run revival, descendant revival, and the budget-from-baseline re-arm.
+
+**Migration 0005** (`dead_letters`): step-status CHECK gains
+`dead_lettered` + `cancelled` (`failed` stays for pre-5.4 rows — retired
+as a resting state, nothing writes it); `runs.on_failure` (TEXT NOT NULL
+default `fail_fast` — the policy materialized at instantiation like
+`retry_policy`, the dead-letter path never reparses the snapshot) and
+`runs.steps_cancelled` (the write-off counter, keeping the rollup a
+counter check); the `dead_letters` table — `(run_id, step_id, seq)` PK
+with FK to `run_steps`, `seq` = per-step death count, `source`
+(`retries_exhausted | permanent | poison`), nullable `class` (NULL for
+poison — nothing judged it), `error`, `payload` (raw envelope, poison
+only), `attempts_at_death` (the requeue baseline). Down migration
+collapses `dead_lettered → failed`, `cancelled → pending`.
+
+**Store.** `FailStep` is gone, replaced by **`DeadLetterStep`** — the
+claim-fenced `running → dead_lettered` CAS (the conceptual `failed`
+routing state passed through in-tx, exactly like `RetryStep`): closes the
+attempt with its judged class, bumps `steps_failed`, inserts the
+`dead_letters` row (seq allocated under the run lock), appends
+`step_dead_lettered`. **`PoisonDeadLetterStep`** — unfenced, from any of
+`{pending, ready, running, retrying}`: clears `claim_id` (a zombie
+holder's completion then fences off), closes a running step's dangling
+attempt as `lost`, records source `poison` with NULL class + raw payload.
+**`CancelStep`** (`pending → cancelled`, `steps_cancelled`++, event
+reason `upstream_dead_lettered`), **`ReviveStep`** (`cancelled →
+pending`, the undo — legal because write-off never touches counters or
+edges), **`RequeueStep`** (`dead_lettered → ready`, error/schedule state
+cleared, `steps_failed`--, `step_requeued`), **`ResumeRun`** (`failed →
+running`, `run_resumed` — requeue's revival; 5.6's unpark is separate),
+and **`FailRunRollup`** (`running → failed` when all steps are terminal
+with ≥1 failed — the continue-mode terminalizer). `runConflict` grew a
+`want` parameter for the non-running from-statuses.
+`CountCountedFailures` now counts attempts past
+`MAX(dead_letters.attempts_at_death)` — the requeue re-arms the full
+budget with attempt history untouched. New read surface: `DeadLetterRepo`
+(list by step/run) and `StepRepo.ListReadyWithoutOutbox` (the requeue
+re-dispatch set). The three reconciler step scans (`stale-ready`,
+`stale-running`, `overdue-retrying`) now require the run to be `running`
+— a failed run legitimately strands ready/running/retrying steps, and
+healing them forever would churn re-outbox → deliver → ack-drop every
+sweep.
+
+**Engine** (`internal/engine/deadletter.go`). **`planWriteOff`** — a pure
+fixed-point over the run's steps + edges: sources in `{dead_lettered,
+cancelled, failed}` never resolve their out-edges; a pending non-join-any
+target is impossible when any unresolved incoming edge is blocked; a
+join-any only when `fired_deps = 0` and every unresolved incoming edge is
+blocked (ADR-006's survival rule); newly-impossible steps propagate. A
+corrupt join config errors out to the redeliver-to-poison path rather
+than guessing. **`deadLetterDisposition`** (shared by the judged and
+poison paths, in-tx): `fail_fast` → `FailRun` (conflict dropped);
+`continue` → write-off walk + `FailRunRollup` attempt.
+`completeFailure`'s terminal branch now dead-letters with source
+`retries_exhausted` (retryable class out of budget) or `permanent`
+(everything else: declared/forced permanent, class outside `retry_on`,
+corrupt policy), reads `on_failure` in-tx under the run lock, and applies
+the disposition. `attemptRunRollup` became the dual attempt —
+`SucceedRun`, then on guard conflict `FailRunRollup` — so the last
+terminal step of a partially-failed continue run lands the run `failed`.
+**`HandlePoison`** (wired as `cmd/worker`'s `PoisonHandler`):
+envelope-decodable poison dead-letters the step + disposition in one tx,
+then ACKs — the one failure-path ACK, because the DLQ row is the durable
+consumption; an undecodable envelope has no step identity to key a row
+to, so it is logged loudly with its raw contents and consumed (ending the
+pre-5.4 designed pending spin); already-terminal and dangling-reference
+entries are consumed as stale; transport failures stay pending for the
+next reclaim pass. **`Requeue`** — one tx: `RequeueStep`, `ResumeRun` if
+the run was failed, revival recompute (rerun `planWriteOff` with
+cancelled treated as pending and only the remaining dead-lettered steps
+as seeds; cancelled steps outside the recomputed set revive), and
+`dlq_requeue` outbox rows for every ready step with no pending dispatch
+(the requeued step plus fail_fast siblings whose deliveries were
+ack-dropped while the run was failed); post-commit dispatcher nudge. The
+claim and takeover classifiers ack-drop on the two new terminal statuses
+— without this, the delayed retry entry of a poison-dead-lettered
+retrying step would redeliver forever and re-poison.
+
+**Wiring.** `cmd/worker` passes `eng.HandlePoison` through
+`consumerConfig` (the mapping test now asserts pass-through); `ctl watch`
+renders `dead_lettered` (`†`) and `cancelled` (`⊘`) and prints the error
+line for dead-lettered steps.
+
+**Tests.** Unit: `planWriteOff` table (chain propagation, independent
+branch, join-all vs join-any survival, transitive join-any death, legacy
+`failed` source, resolved/loop edges ignored, corrupt join config), the
+four new claim/takeover classifier branches. Store integration:
+`DeadLetterStep` full-context (source vocabulary + fencing + counters +
+event + baseline), `PoisonDeadLetterStep` per-status (running loses fence
+and attempt, ready dies with zero attempts, terminal rejects typed),
+die → requeue → die (seq 2, `attempts_at_death` 3, budget re-armed,
+double-requeue conflict), `CancelStep`/`ReviveStep` counter symmetry +
+`FailRunRollup` guard, `on_failure` materialization; the transition
+matrix grew the three new transitions and the two new from-statuses;
+migration round-trip walks version 5. Engine integration:
+`TestContinueIndependentBranches` (dead-letter cancels exactly the
+blocked descendant with reason recorded, independent branch delivers
+partial results, run terminalizes failed once),
+`TestPoisonMessageReachesDLQ` (panicking executor walks the entry to the
+threshold; every judged-nothing attempt closed `lost`; raw envelope in
+`payload`; queue quiesces instead of redelivering forever),
+`TestRequeueReExecutesAndCompletesRun` (fail_fast death → requeue →
+attempt 3 fails again but *retries* on the re-armed baseline instead of
+re-dead-lettering → succeeds; run succeeded with `steps_failed` 0),
+`TestRequeueRevivesWrittenOffDescendants` (continue-mode requeue revives
+the cancelled descendant and the run completes clean). The 4.x/5.2/5.3
+failure tests updated to the new terminal state. Full unit + integration
++ crash suites green; lint clean.
+
+**Non-obvious decisions / deferred.**
+- `steps_failed` counts `dead_lettered` (continuous with legacy `failed`
+  rows); requeue decrements it — so a cured run passes the unchanged
+  SucceedRun guard.
+- Undecodable-envelope poison: log-with-contents + ACK, no DLQ row — the
+  table is keyed to a real step, and an orphan row would be
+  unrequeueable. Recorded in ADR-005's as-built note.
+- Requeue revival is a full recompute, not provenance tracking — correct
+  with multiple dead steps. 5.6 interaction noted: once run-cancel also
+  writes `cancelled`, revival must not resurrect those (the recompute
+  treats every cancelled step as revivable today; 5.6 will need a
+  reason column or an equivalent guard).
+- The dispatcher still drains outbox rows of failed runs (deliveries
+  ack-drop at the run-status guard) — dispatch gating deferred to 5.6,
+  which needs it uniformly for park.
+- Poison on a `retrying` step dead-letters it even though its delayed
+  retry entry is still out there — the claim classifier's new
+  terminal-status drop consumes that entry harmlessly when it fires.

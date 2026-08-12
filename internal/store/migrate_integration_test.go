@@ -41,7 +41,7 @@ func columnExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table, 
 // latestVersion is the highest migration in internal/store/migrations —
 // bump when adding a migration (the round-trip test below walks every
 // down migration regardless, so forgetting only fails the version check).
-const latestVersion = 4
+const latestVersion = 5
 
 func TestMigrateUpDownRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -84,13 +84,23 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 	}
 
 	// Down rolls back one step: the newest migration's additions are gone,
-	// earlier ones untouched — 0004's timeout column disappears from
-	// run_steps while 0003's retry columns and the 0002 tables survive.
+	// earlier ones untouched — 0005's dead_letters table and runs columns
+	// disappear while 0004's timeout column, 0003's retry columns, and the
+	// 0002 tables survive.
 	if err := mg.Down(); err != nil {
 		t.Fatalf("Down: %v", err)
 	}
-	if columnExists(ctx, t, pool, "run_steps", "timeout") {
-		t.Fatal("after one Down: run_steps.timeout still exists")
+	if tableExists(ctx, t, pool, "dead_letters") {
+		t.Fatal("after one Down: dead_letters still exists")
+	}
+	if columnExists(ctx, t, pool, "runs", "on_failure") {
+		t.Fatal("after one Down: runs.on_failure still exists")
+	}
+	if columnExists(ctx, t, pool, "runs", "steps_cancelled") {
+		t.Fatal("after one Down: runs.steps_cancelled still exists")
+	}
+	if !columnExists(ctx, t, pool, "run_steps", "timeout") {
+		t.Fatal("after one Down: run_steps.timeout was dropped by the wrong migration")
 	}
 	if !columnExists(ctx, t, pool, "run_steps", "retry_policy") {
 		t.Fatal("after one Down: run_steps.retry_policy was dropped by the wrong migration")

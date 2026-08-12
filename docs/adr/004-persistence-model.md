@@ -97,12 +97,17 @@ constraint and re-adds it with the extended list.
   transaction, so there is no pending-run state.
 - **Steps:** `pending`, `ready`, `running`, `succeeded`, `failed`,
   `skipped`; since 5.2 also `retrying` (a failed attempt recorded, the
-  next one due at `next_attempt_at` — not terminal).
+  next one due at `next_attempt_at` — not terminal); since 5.4 also
+  `dead_lettered` (the terminal failure state — ADR-006's DLQ) and
+  `cancelled` (written off: readiness made impossible by a dead-lettered
+  upstream step; M5.6's run-cancel writes the same status). `failed` is
+  retired as a resting state by 5.4 — it remains in the CHECK for pre-5.4
+  rows and as ADR-006's conceptual routing state, but nothing writes it.
 
 Reserved for later milestones (listed so the matrix below is complete;
 each lands via the CHECK-constraint recipe in its owning milestone):
 runs — `cancelling`, `cancelled`, `parked` (M5.6); steps —
-`dead_lettered`, `cancelled` (M5.4), `awaiting_human` (M15).
+`awaiting_human` (M15).
 
 ### Allowed-transition matrix
 
@@ -117,7 +122,8 @@ from that milestone on; v1 rows are enforced from 2.6.
 |---|---|---|---|
 | — | `running` | run instantiation transaction (2.5) | 2.5 |
 | `running` | `succeeded` | every step terminal, none `failed`/`dead_lettered` | 2.6 |
-| `running` | `failed` | a step failed and the workflow failure policy halts the run (policy: ADR-006) | 2.6/M5 |
+| `running` | `failed` | as built in 5.4, two guards per the workflow failure policy (ADR-006): **fail_fast** — `steps_failed ≥ 1`, fired by the dead-lettering transaction immediately; **all-terminal rollup** (`continue_independent_branches`) — `steps_failed ≥ 1 AND succeeded + failed + skipped + cancelled = total`, attempted (conflict dropped) by every completion transaction alongside the succeed rollup | 2.6/5.4 |
+| `failed` | `running` | **DLQ requeue resume** (5.4): the requeue op re-opens a failed run so the claim path admits its steps again; `finished_at` clears | 5.4 |
 | `running` | `parked` | typed reason: `manual`, `budget_exceeded` (M10), `awaiting_human` (M15) | M5.6 |
 | `parked` | `running` | unpark; re-outboxes all `ready` steps | M5.6 |
 | `running`, `parked` | `cancelling` | cancel requested | M5.6 |
@@ -132,21 +138,23 @@ from that milestone on; v1 rows are enforced from 2.6.
 | `pending` | `skipped` | `remaining_deps = 0 AND fired_deps = 0` (skip propagation) | 2.6 |
 | `ready` | `running` | **claim**: status matches, a fresh `claim_id` is set, an attempt row is inserted, `attempt_count` increments; since 5.2 additionally guarded on the run being `running` (typed rejection `run_not_running` — ADR-006's "claim path refuses terminal runs", reused by M5.6 park/cancel) | 2.6 |
 | `running` | `succeeded` | **completion**: supplied `claim_id` matches the row's (fencing); output persisted; out-edges resolved | 2.6 |
-| `running` | `failed` | matching `claim_id`; error recorded on the attempt | 2.6 |
+| `running` | `failed` | matching `claim_id`; error recorded on the attempt *(retired by 5.4 — the terminal failure CAS now lands `dead_lettered` directly; listed for pre-5.4 history)* | 2.6–5.3 |
 | `running` | `ready` | reclaim after lease expiry (**takeover**): guarded on the *observed* holder's `claim_id` (a stale observation must not steal a newer live claim), which is cleared so the zombie's write is fenced; the holder's dangling attempt row closes with the administrative outcome `lost` | 4.5 |
 | `running` | `awaiting_human` | approval executor parks; matching `claim_id`; queue message ACKed after commit | M15 |
 | `awaiting_human` | `ready` | decision recorded (single winner vs timeout under CAS) | M15 |
 | `running` | `retrying` | **retry routing** (as built in 5.2; the reserved `failed → retrying` row was realized as a direct CAS — ADR-006's `failed` routing state is passed through *inside* the completion transaction, never rested): matching `claim_id`; the policy admits another attempt; the attempt row closes with its error class; `claim_id` clears and `next_attempt_at` is stamped; the delayed re-dispatch is scheduled post-commit | 5.2 |
 | `retrying` | `running` | **claim once due** (as built in 5.2; the reserved `retrying → ready` row: delayed promotion is a pure Redis event with no Postgres write, so the hop to `ready` is realized at claim time): the claim CAS additionally guards `next_attempt_at ≤ now`, which is what makes backoff enforceable against early duplicate deliveries | 5.2 |
-| `failed` | `dead_lettered` | retries exhausted / permanent class / poison | M5.4 |
-| `dead_lettered` | `ready` | manual DLQ requeue (`ctl`) | M5.4 |
+| `running` | `dead_lettered` | **terminal failure** (as built in 5.4; the reserved `failed → dead_lettered` row was realized as a direct CAS, like the retry route): matching `claim_id`; retries exhausted or class never retryable; the attempt closes with its judged class, `steps_failed` bumps, and the `dead_letters` record (source, class, attempts-at-death) inserts in the same transaction, followed by the run disposition | 5.4 |
+| `pending`, `ready`, `running`, `retrying` | `dead_lettered` | **poison** (5.4): no claim fence — the entry's handlers kept dying without recording a judgment; `claim_id` clears (a zombie holder's completion then fences off) and a running step's dangling attempt closes `lost`; the `dead_letters` record carries source `poison`, NULL class, and the raw envelope payload | 5.4 |
+| `pending` | `cancelled` | **write-off** (5.4, `continue_independent_branches`): a dead-lettered upstream step made readiness impossible (the fixed-point walk of ADR-006); `steps_cancelled` bumps; dependency counters and edges untouched | 5.4 |
+| `dead_lettered` | `ready` | **DLQ requeue** (5.4 internal op; API M6.5): error and schedule state clear, `steps_failed` un-bumps, `dlq_requeue` outbox row; the budget re-arms via the `dead_letters` baseline, attempt history immutable | 5.4 |
+| `cancelled` | `pending` | **revival** (5.4): a requeue made a written-off step's readiness possible again (recomputed write-off set); `steps_cancelled` un-bumps — a pure status flip, since the write-off never touched counters | 5.4 |
 | any non-terminal | `cancelled` | run cancellation sweep | M5.6 |
 
-Terminal step states: `succeeded`, `failed`, `skipped` (`failed` stays
-terminal through 5.2 — exhausted and never-retryable failures land there —
-until M5.4 retires it in favor of `dead_lettered`). `retrying` is not
+Terminal step states: `succeeded`, `skipped`, `dead_lettered`,
+`cancelled` (and the retired `failed` on pre-5.4 rows). `retrying` is not
 terminal. A step never leaves a terminal state except through the
-explicitly-listed M5.4 requeue transition.
+explicitly-listed 5.4 requeue/revival transitions.
 
 ### Dependency bookkeeping: two counters + per-edge resolutions
 
@@ -248,9 +256,14 @@ once written; a new version is a new row.
   `ExpandRun` increments it (M13).
 - `next_seq` — the event sequence counter (above).
 - Aggregate counters `steps_total`, `steps_succeeded`, `steps_failed`,
-  `steps_skipped`, maintained by instantiation/completion transactions —
-  the run-status rollup read path (list views, progress bars) without a
-  `run_steps` aggregate scan.
+  `steps_skipped` — and since 5.4 `steps_cancelled` (the write-off
+  counter) — maintained by instantiation/completion transactions — the
+  run-status rollup read path (list views, progress bars) without a
+  `run_steps` aggregate scan. `steps_failed` counts terminal failures
+  (`dead_lettered` since 5.4; the requeue op decrements it).
+- `on_failure` (TEXT, NOT NULL, default `fail_fast`; since 5.4) — the
+  workflow failure policy, materialized at instantiation like the steps'
+  `retry_policy` and for the same reasons (ADR-006 "Run disposition").
 - `created_at` (DB default), `started_at`, `finished_at` (application-
   written; see Timestamps).
 
@@ -289,6 +302,18 @@ the pre-M5 bare `failed` was backfilled to `permanent` by migration 0003
 (under pre-M5 semantics every failure was terminal). `validation_failed`
 joins the CHECK when M11 unlocks it. Also `error` (JSONB), `started_at`,
 `finished_at`.
+
+**`dead_letters`** (since 5.4) — the DLQ (ADR-006 "Dead-letter model":
+Postgres is the DLQ, not a Redis stream). One row per dead-lettering,
+keyed `(run_id, step_id, seq)` with a composite FK to `run_steps` — `seq`
+is the per-step death count (a step can die, be requeued, and die again;
+attempt history is immutable, so the requeue budget counts attempts past
+the latest row's `attempts_at_death` baseline). `source`
+(`retries_exhausted | permanent | poison`), `class` (the judged ADR-006
+class; NULL for poison — nothing judged it), `error` (JSONB), `payload`
+(JSONB — the raw envelope contents, poison entries only), and
+`attempts_at_death`. Written exclusively inside the dead-lettering
+transitions, never updated or deleted.
 
 **`events`** — `(run_id, seq)` PK, `type`, `payload` (JSONB),
 `created_at`. Append-only.

@@ -67,7 +67,7 @@ func TestTimeoutRetriesPerPolicy(t *testing.T) {
 	h.RequireHandledOncePerClaim()
 
 	requireStepStatuses(t, s, runID, map[string]string{
-		"slow": store.StepStatusFailed, "never": store.StepStatusPending,
+		"slow": store.StepStatusDeadLettered, "never": store.StepStatusPending,
 	})
 	requireAttemptOutcomes(t, s, runID, "slow", []string{
 		store.AttemptOutcomeTimeout, store.AttemptOutcomeTimeout,

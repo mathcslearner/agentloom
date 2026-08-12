@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"reflect"
 	"testing"
 	"time"
@@ -41,11 +42,13 @@ func TestConsumerConfigMapping(t *testing.T) {
 		PromoterTick:         7 * time.Second,
 		TrimInterval:         8 * time.Second,
 	}
-	got := consumerConfig(in)
+	poison := func(context.Context, queue.PoisonMessage) error { return nil }
+	got := consumerConfig(in, poison)
 	// ConsumerConfig carries two non-comparable fields (PoisonHandler,
-	// PhaseHook); both must stay nil through the mapping.
-	if got.PoisonHandler != nil {
-		t.Error("PoisonHandler is set; must stay nil until M5.4 wires dead-lettering")
+	// PhaseHook): the poison handler must pass through (ticket 5.4 wires
+	// the engine's dead-lettering here), the phase hook must stay nil.
+	if got.PoisonHandler == nil {
+		t.Error("PoisonHandler is nil; the mapping must pass the engine's dead-lettering handler through")
 	}
 	if got.PhaseHook != nil {
 		t.Error("PhaseHook is set; it is test instrumentation, never production config")

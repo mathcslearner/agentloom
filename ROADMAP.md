@@ -439,13 +439,13 @@ Per-step `timeout` config: executor context cancelled at deadline; attempt recor
 - [x] Executor goroutine actually terminates (no leak — asserted with goroutine count)
 - [x] Timeout vs crash distinguishable in attempt history/events
 
-#### 5.4 — Dead-letter handling
+#### 5.4 — Dead-letter handling ✅
 **Depends on:** 5.2, 3.4
-Terminal failures (exhausted retries, permanent class, poison messages from 3.4's delivery-count cap): step → `dead_lettered` with a `dead_letters` record (full attempt/error context, payload ref); run disposition per workflow failure policy; events emitted. Internal requeue op (reset to `ready`, clear attempts counter per policy, outbox) — exposed via API in M6.5.
+Terminal failures (exhausted retries, permanent class, poison messages from 3.4's delivery-count cap): step → `dead_lettered` with a `dead_letters` record (full attempt/error context, payload ref); run disposition per workflow failure policy; events emitted. Internal requeue op (reset to `ready`, clear attempts counter per policy, outbox) — exposed via API in M6.5. *(As built: `running → dead_lettered` is a direct claim-fenced CAS like 5.2's retry route; `runs.on_failure` + `steps_cancelled` materialized by migration 0005; the continue write-off is a pure fixed-point walk (`planWriteOff`) that resolves no edges, making requeue revival a recompute + status flip; attempt history stays immutable — the requeue budget counts from the `dead_letters.attempts_at_death` baseline inside `CountCountedFailures`; poison dead-letters unfenced from any non-terminal status with the raw envelope preserved, undecodable-envelope poison is logged-and-consumed; the reconciler's step scans now require the run to be running, ending the failed-run re-outbox churn loop.)*
 **Done when:**
-- [ ] Exhausted step lands in DLQ with complete context; `fail_fast` fails the run, `continue` lets independent branches finish
-- [ ] Poison message (handler crash loop) reaches DLQ instead of redelivering forever
-- [ ] Requeue op re-executes the step and completes the run (integration test)
+- [x] Exhausted step lands in DLQ with complete context; `fail_fast` fails the run, `continue` lets independent branches finish
+- [x] Poison message (handler crash loop) reaches DLQ instead of redelivering forever
+- [x] Requeue op re-executes the step and completes the run (integration test)
 
 #### 5.5 — Idempotency keys & side-effect journal
 **Depends on:** 4.5

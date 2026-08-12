@@ -95,7 +95,7 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	if err != nil {
 		return err
 	}
-	consumer := q.NewConsumer(workerID, eng.Handle, consumerConfig(cfg.Queue))
+	consumer := q.NewConsumer(workerID, eng.Handle, consumerConfig(cfg.Queue, eng.HandlePoison))
 
 	logger = logger.With(log.WorkerID(workerID))
 	ctx = log.Into(ctx, logger)
@@ -130,10 +130,11 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 
 // consumerConfig maps the deployable's queue tuning onto the consumer's.
 // The mapping lives here because config must not import queue (queue logs
-// through obs/log, which imports config). PoisonHandler stays nil on
-// purpose: 3.4's default logs and leaves poison entries pending — visible
-// spin beats a silent drop — until M5.4 wires dead-lettering.
-func consumerConfig(cfg config.QueueConfig) queue.ConsumerConfig {
+// through obs/log, which imports config). The poison handler is the
+// engine's dead-lettering path (ticket 5.4, ADR-006): an over-threshold
+// entry lands its step in the DLQ and is acked — the durable row is the
+// consumption of the message.
+func consumerConfig(cfg config.QueueConfig, poison queue.PoisonHandler) queue.ConsumerConfig {
 	return queue.ConsumerConfig{
 		DelayedKey:           cfg.DelayedKey,
 		Batch:                cfg.ConsumerBatch,
@@ -142,6 +143,7 @@ func consumerConfig(cfg config.QueueConfig) queue.ConsumerConfig {
 		HeartbeatInterval:    cfg.HeartbeatInterval,
 		ReclaimInterval:      cfg.ReclaimInterval,
 		PoisonThreshold:      cfg.PoisonThreshold,
+		PoisonHandler:        poison,
 		JanitorInterval:      cfg.JanitorInterval,
 		JanitorIdleThreshold: cfg.JanitorIdleThreshold,
 		TrimInterval:         cfg.TrimInterval,

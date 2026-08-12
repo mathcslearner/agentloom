@@ -93,6 +93,11 @@ func (r runRepo) Create(ctx context.Context, arg gen.CreateRunParams) (gen.Run, 
 	if arg.Params == nil {
 		arg.Params = emptyJSON
 	}
+	if arg.OnFailure == "" {
+		// Absent on_failure means fail_fast (ADR-006); run instantiation
+		// always materializes explicitly, like retry_policy.
+		arg.OnFailure = string(dag.FailFast)
+	}
 	run, err := r.q.CreateRun(ctx, arg)
 	return run, wrapErr("create run", err)
 }
@@ -159,6 +164,11 @@ type StepRepo interface {
 	// (declaration) order — the completion transaction's fan-out read
 	// (M4.3).
 	ListEdgesFromStep(ctx context.Context, runID uuid.UUID, fromStep string) ([]gen.RunEdge, error)
+	// ListReadyWithoutOutbox returns the run's ready steps with no pending
+	// task_outbox row, in step_id order — the requeue op's re-dispatch set
+	// (ticket 5.4): the requeued step itself plus fail_fast siblings whose
+	// deliveries were consumed while the run was failed.
+	ListReadyWithoutOutbox(ctx context.Context, runID uuid.UUID) ([]string, error)
 }
 
 type stepRepo struct{ q *gen.Queries }
@@ -251,6 +261,11 @@ func (r stepRepo) ListEdgesFromStep(ctx context.Context, runID uuid.UUID, fromSt
 	return edges, wrapErr("list run edges from step", err)
 }
 
+func (r stepRepo) ListReadyWithoutOutbox(ctx context.Context, runID uuid.UUID) ([]string, error) {
+	ids, err := r.q.ListReadyStepsWithoutOutbox(ctx, runID)
+	return ids, wrapErr("list ready steps without outbox", err)
+}
+
 // AttemptRepo stores step_attempts rows. Outcome/error/finished_at are
 // written by the completion transitions (2.6).
 type AttemptRepo interface {
@@ -286,6 +301,33 @@ func (r attemptRepo) ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.Step
 func (r attemptRepo) CountCountedFailures(ctx context.Context, runID uuid.UUID, stepID string) (int64, error) {
 	n, err := r.q.CountCountedFailures(ctx, gen.CountCountedFailuresParams{RunID: runID, StepID: stepID})
 	return n, wrapErr("count counted failures", err)
+}
+
+// DeadLetterRepo reads dead_letters rows (ticket 5.4). Read-only by
+// design: rows are written exclusively inside the dead-lettering
+// transitions (transitions.go), in the same transaction as the step's
+// terminal CAS, and are never updated or deleted — like attempt history,
+// the death record is immutable audit state (requeue counts from its
+// baseline instead of erasing it).
+type DeadLetterRepo interface {
+	// ListByStep returns a step's dead-letter records in seq (death)
+	// order.
+	ListByStep(ctx context.Context, runID uuid.UUID, stepID string) ([]gen.DeadLetter, error)
+	// ListByRun returns every dead-letter record of the run in
+	// (step_id, seq) order.
+	ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.DeadLetter, error)
+}
+
+type deadLetterRepo struct{ q *gen.Queries }
+
+func (r deadLetterRepo) ListByStep(ctx context.Context, runID uuid.UUID, stepID string) ([]gen.DeadLetter, error) {
+	rows, err := r.q.ListDeadLettersByStep(ctx, gen.ListDeadLettersByStepParams{RunID: runID, StepID: stepID})
+	return rows, wrapErr("list dead letters by step", err)
+}
+
+func (r deadLetterRepo) ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.DeadLetter, error) {
+	rows, err := r.q.ListDeadLettersByRun(ctx, runID)
+	return rows, wrapErr("list dead letters by run", err)
 }
 
 // EventRepo stores the append-only per-run event log. Append-only is

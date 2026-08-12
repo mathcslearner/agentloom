@@ -39,16 +39,72 @@ WHERE run_id = @run_id AND step_id = @step_id
   AND status = 'running' AND claim_id = @claim_id
 RETURNING *;
 
--- Completion: running → failed, fenced by claim_id. error holds the last
--- failure summary; per-attempt detail lives on step_attempts.
--- name: FailRunStep :one
+-- Terminal failure: running → dead_lettered, fenced by claim_id (ticket
+-- 5.4, ADR-006 — the conceptual `failed` routing state is passed through
+-- inside the completion transaction, exactly like the retry route). error
+-- holds the last failure summary; per-attempt detail lives on
+-- step_attempts, the full death context on dead_letters.
+-- name: DeadLetterRunStep :one
 UPDATE run_steps
-SET status      = 'failed',
+SET status      = 'dead_lettered',
     error       = @error,
     finished_at = @now::timestamptz,
     updated_at  = @now::timestamptz
 WHERE run_id = @run_id AND step_id = @step_id
   AND status = 'running' AND claim_id = @claim_id
+RETURNING *;
+
+-- Poison dead-lettering: any non-terminal status → dead_lettered, with no
+-- claim fence — the poison path holds no claim; the entry's handlers kept
+-- dying without ever recording a judgment (ticket 5.4, ADR-006 sources
+-- table). Clearing claim_id defences any zombie holder: its eventual
+-- completion CAS rejects on claim_mismatch and abandons.
+-- name: PoisonDeadLetterRunStep :one
+UPDATE run_steps
+SET status          = 'dead_lettered',
+    error           = @error,
+    claim_id        = NULL,
+    next_attempt_at = NULL,
+    finished_at     = @now::timestamptz,
+    updated_at      = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id
+  AND status IN ('pending', 'ready', 'running', 'retrying')
+RETURNING *;
+
+-- Write-off: pending → cancelled, when a dead-lettered upstream step made
+-- readiness impossible (ADR-006 continue_independent_branches; 5.6's
+-- run-cancel writes the same status with a different event reason).
+-- finished_at stays NULL — the step never ran, like skipped.
+-- name: CancelRunStep :one
+UPDATE run_steps
+SET status     = 'cancelled',
+    updated_at = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id AND status = 'pending'
+RETURNING *;
+
+-- Requeue: dead_lettered → ready (ticket 5.4, ADR-006 "Requeue"). The
+-- step re-arms with its full policy — error and schedule state cleared,
+-- attempt history untouched (the budget counts from the dead_letters
+-- baseline).
+-- name: RequeueRunStep :one
+UPDATE run_steps
+SET status          = 'ready',
+    error           = NULL,
+    next_attempt_at = NULL,
+    finished_at     = NULL,
+    updated_at      = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id AND status = 'dead_lettered'
+RETURNING *;
+
+-- Revival: cancelled → pending, when a requeue made a written-off step's
+-- readiness possible again. Dependency counters were never touched by the
+-- write-off (edges of a dead step stay unresolved), so the status flip
+-- alone restores the pre-write-off state.
+-- name: ReviveRunStep :one
+UPDATE run_steps
+SET status     = 'pending',
+    updated_at = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id AND status = 'cancelled'
 RETURNING *;
 
 -- Retry routing: running → retrying, fenced by claim_id (ticket 5.2,
@@ -138,7 +194,8 @@ RETURNING *;
 UPDATE runs
 SET steps_succeeded = steps_succeeded + @d_succeeded::int,
     steps_failed    = steps_failed + @d_failed::int,
-    steps_skipped   = steps_skipped + @d_skipped::int
+    steps_skipped   = steps_skipped + @d_skipped::int,
+    steps_cancelled = steps_cancelled + @d_cancelled::int
 WHERE id = @run_id;
 
 -- Rollup: running → succeeded when every step is terminal and none failed
@@ -153,11 +210,35 @@ WHERE id = @run_id AND status = 'running'
   AND steps_failed = 0 AND steps_succeeded + steps_skipped = steps_total
 RETURNING *;
 
--- Rollup: running → failed. The guard is the v1 minimum (some step
--- failed); *when* to halt a run is workflow failure policy (ADR-006, M5).
+-- Rollup: running → failed, immediately — the fail_fast disposition
+-- (ADR-006): the guard requires only that some step failed terminally.
 -- name: FailRun :one
 UPDATE runs
 SET status      = 'failed',
     finished_at = @now::timestamptz
 WHERE id = @run_id AND status = 'running' AND steps_failed >= 1
+RETURNING *;
+
+-- Rollup: running → failed, once every step is terminal — the
+-- continue_independent_branches terminalizer (ticket 5.4, ADR-006): the
+-- run keeps running while independent branches finish and lands failed
+-- when the counters account for every step with at least one terminal
+-- failure. Attempted (and its conflict dropped) by every completion
+-- transaction, mirroring SucceedRun.
+-- name: FailRunRollup :one
+UPDATE runs
+SET status      = 'failed',
+    finished_at = @now::timestamptz
+WHERE id = @run_id AND status = 'running' AND steps_failed >= 1
+  AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled = steps_total
+RETURNING *;
+
+-- Requeue revival: failed → running (ticket 5.4). An operator requeueing
+-- a dead-lettered step of a failed run re-opens the run so the claim path
+-- admits its steps again; finished_at clears — the run is live.
+-- name: ResumeRun :one
+UPDATE runs
+SET status      = 'running',
+    finished_at = NULL
+WHERE id = @run_id AND status = 'failed'
 RETURNING *;

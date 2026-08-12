@@ -243,17 +243,18 @@ func TestCountCountedFailuresExcludesLost(t *testing.T) {
 		t.Errorf("counted failures = %d, want 1", got)
 	}
 
-	// Attempt 3: claimed at the due time, failed terminally with the
-	// class recorded → also counts.
+	// Attempt 3: claimed at the due time, dead-lettered terminally with
+	// the class recorded. permanent is not a counted class — and since
+	// 5.4 the dead-lettering also moves the requeue baseline past every
+	// prior attempt, so the budget reads fully re-armed (0).
 	claimed, err := claimStepAt(t, s, run.ID, "a", testNow.Add(time.Second))
 	if err != nil {
 		t.Fatalf("due-time claim: %v", err)
 	}
 	if err := failStep(t, s, run.ID, "a", *claimed.ClaimID, nil); err != nil {
-		t.Fatalf("FailStep: %v", err)
+		t.Fatalf("DeadLetterStep: %v", err)
 	}
-	// failStep records permanent, which is not a counted class.
-	if got := countCounted(t, s, run.ID, "a"); got != 1 {
-		t.Errorf("counted failures after permanent = %d, want 1 (permanent is uncounted)", got)
+	if got := countCounted(t, s, run.ID, "a"); got != 0 {
+		t.Errorf("counted failures after dead-letter = %d, want 0 (budget counts from the death baseline)", got)
 	}
 }

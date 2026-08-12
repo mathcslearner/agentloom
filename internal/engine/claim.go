@@ -239,7 +239,8 @@ func classifyClaimFailure(err error, deliveryCount int64) claimDecision {
 			}
 		}
 		switch te.From {
-		case store.StepStatusSucceeded, store.StepStatusFailed, store.StepStatusSkipped:
+		case store.StepStatusSucceeded, store.StepStatusFailed, store.StepStatusSkipped,
+			store.StepStatusDeadLettered, store.StepStatusCancelled:
 			return claimDecision{
 				action: claimAckDrop, level: slog.LevelInfo,
 				reason: "step already terminal (" + te.From + ") — duplicate of finished work",
@@ -340,11 +341,13 @@ func classifyTakeoverFailure(err error) claimDecision {
 			}
 		case te.Reason == store.ConflictWrongStatus &&
 			(te.From == store.StepStatusSucceeded || te.From == store.StepStatusFailed ||
-				te.From == store.StepStatusSkipped || te.From == store.StepStatusRetrying):
+				te.From == store.StepStatusSkipped || te.From == store.StepStatusRetrying ||
+				te.From == store.StepStatusDeadLettered || te.From == store.StepStatusCancelled):
 			// ADR-005's takeover race rule: the holder's completion — a
-			// terminal one, or since 5.2 a retry routing — committed
-			// between the reclaim and the takeover CAS. Either way that
-			// commit consumed the work this entry carried.
+			// terminal one, or since 5.2 a retry routing (5.4: or a
+			// dead-lettering) — committed between the reclaim and the
+			// takeover CAS. Either way that commit consumed the work this
+			// entry carried.
 			return claimDecision{
 				action: claimAckDrop, level: slog.LevelInfo,
 				reason: "step completed between reclaim and takeover (" + te.From + ") — duplicate of finished work",

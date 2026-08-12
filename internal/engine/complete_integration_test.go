@@ -487,10 +487,11 @@ const failDef = `{
 }`
 
 // TestExecutorFailureFailsStepAndRun: an executor error whose policy
-// admits no retry lands the terminal failure completion — step failed
-// with the error recorded and the attempt classed (transient — the judged
-// class survives even when the disposition is terminal), run failed,
-// dependents never dispatched, and the delivery ACKed (queue quiescent).
+// admits no retry lands the terminal failure completion — step
+// dead_lettered (ticket 5.4) with the error recorded and the attempt
+// classed (transient — the judged class survives even when the
+// disposition is terminal), run failed per fail_fast, dependents never
+// dispatched, and the delivery ACKed (queue quiescent).
 func TestExecutorFailureFailsStepAndRun(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -503,7 +504,7 @@ func TestExecutorFailureFailsStepAndRun(t *testing.T) {
 	h.RequireHandledOncePerClaim()
 
 	requireStepStatuses(t, s, runID, map[string]string{
-		"boom": store.StepStatusFailed, "never": store.StepStatusPending,
+		"boom": store.StepStatusDeadLettered, "never": store.StepStatusPending,
 	})
 	requireOutboxEmpty(t, s)
 	if run.StepsFailed != 1 || run.StepsSucceeded != 0 {
@@ -550,10 +551,10 @@ const corruptJoinDef = `{
 // TestCorruptJoinConfigFailsCompletingStep (post-M4 audit): a join target
 // whose stored config no longer decodes is discovered inside the fan-out
 // transaction. That is deterministic corrupt content — the completing
-// step must land a real failure completion (step + run failed, delivery
-// ACKed), not abort the transaction into a redelivery loop that, since
-// 4.5's takeover, would re-execute the step once per delivery until the
-// poison threshold.
+// step must land a real failure completion (step dead_lettered + run
+// failed, delivery ACKed), not abort the transaction into a redelivery
+// loop that, since 4.5's takeover, would re-execute the step once per
+// delivery until the poison threshold.
 func TestCorruptJoinConfigFailsCompletingStep(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -586,7 +587,7 @@ func TestCorruptJoinConfigFailsCompletingStep(t *testing.T) {
 	// The completing step carries the failure; the corrupt join was never
 	// readied, its dependent never reached.
 	requireStepStatuses(t, s, runID, map[string]string{
-		"a": store.StepStatusFailed, "race": store.StepStatusPending,
+		"a": store.StepStatusDeadLettered, "race": store.StepStatusPending,
 		"after": store.StepStatusPending,
 	})
 	requireOutboxEmpty(t, s)

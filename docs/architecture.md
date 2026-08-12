@@ -165,9 +165,15 @@ definition and watch two independent worker processes execute it:
    double effects; a full-fleet restart resumes from the last completed
    step.
 
-Not yet realized: retries/timeouts/DLQ (M5), park/resume (M5), input
-rendering and auth (M6), observability (M7), the middleware chain and
-real providers (M8–M12), expansion (M13+).
+Since then M5 has landed retries with backoff (5.2), per-step execution
+timeouts (5.3), and dead-letter handling with requeue (5.4 — terminal
+failures land `dead_lettered` with a durable `dead_letters` record, the
+run disposition follows the workflow failure policy, and poison messages
+are consumed into the DLQ instead of redelivering forever).
+
+Not yet realized: idempotency keys / side-effect journal and park/resume
+(M5), input rendering and auth (M6), observability (M7), the middleware
+chain and real providers (M8–M12), expansion (M13+).
 
 ### Step lifecycle
 
@@ -181,12 +187,15 @@ stateDiagram-v2
     ready --> running: worker claim (CAS + fresh claim_id)
     running --> succeeded: completion tx (fenced)
     running --> ready: retryable failure (delayed requeue) or lease reclaim
-    running --> failed: retries exhausted (dead-letter)
+    running --> dead_lettered: retries exhausted / permanent / poison
+    pending --> cancelled: upstream dead-lettered (write-off)
+    dead_lettered --> ready: DLQ requeue
     ready --> parked: budget / approval / manual
     running --> parked: budget / approval / manual
     parked --> ready: resume or approval decision
     succeeded --> [*]
-    failed --> [*]
+    dead_lettered --> [*]
+    cancelled --> [*]
     skipped --> [*]
 ```
 

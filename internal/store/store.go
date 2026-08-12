@@ -28,6 +28,7 @@ type Querier interface {
 	Runs() RunRepo
 	Steps() StepRepo
 	Attempts() AttemptRepo
+	DeadLetters() DeadLetterRepo
 	Events() EventRepo
 	Outbox() OutboxRepo
 }
@@ -85,5 +86,6 @@ func (r repos) Definitions() DefinitionRepo { return definitionRepo(r) }
 func (r repos) Runs() RunRepo               { return runRepo(r) }
 func (r repos) Steps() StepRepo             { return stepRepo(r) }
 func (r repos) Attempts() AttemptRepo       { return attemptRepo(r) }
+func (r repos) DeadLetters() DeadLetterRepo { return deadLetterRepo(r) }
 func (r repos) Events() EventRepo           { return eventRepo(r) }
 func (r repos) Outbox() OutboxRepo          { return outboxRepo(r) }

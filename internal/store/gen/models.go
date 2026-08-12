@@ -11,6 +11,18 @@ import (
 	"github.com/google/uuid"
 )
 
+type DeadLetter struct {
+	RunID           uuid.UUID
+	StepID          string
+	Seq             int32
+	Source          string
+	Class           *string
+	Error           json.RawMessage
+	Payload         json.RawMessage
+	AttemptsAtDeath int32
+	CreatedAt       time.Time
+}
+
 type Event struct {
 	RunID     uuid.UUID
 	Seq       int64
@@ -35,6 +47,8 @@ type Run struct {
 	CreatedAt        time.Time
 	StartedAt        *time.Time
 	FinishedAt       *time.Time
+	OnFailure        string
+	StepsCancelled   int32
 }
 
 type RunEdge struct {

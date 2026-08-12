@@ -92,7 +92,7 @@ func TestBuiltinsRegistersAllTestExecutors(t *testing.T) {
 
 // deferredStepTypes are the dag catalog types deliberately without an
 // executor yet. A definition using one passes submit-time validation and
-// then fails permanently at claim time (registry miss → FailStep), which
+// then fails permanently at claim time (registry miss → dead-letter), which
 // includes the canonical kitchen_sink.json example — a known M4 gap, not
 // an accident. Shrink this set as the executors land; never let it grow
 // silently (the sync test below fails on any unlisted mismatch).

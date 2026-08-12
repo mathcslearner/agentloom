@@ -390,6 +390,68 @@ with a different event reason.
 time, like enum fields everywhere), omitted from canonical encoding
 when absent, and absent means `fail_fast`.
 
+### Dead-letter handling (as built, 5.4)
+
+The terminal hop collapsed like the retry route: **`running →
+dead_lettered` is a direct claim-fenced CAS** (`failed` passed through
+inside the completion transaction, never rested), closing the attempt
+with its judged class, bumping `steps_failed`, inserting the
+`dead_letters` row, and appending `step_dead_lettered` — then the run
+disposition in the same transaction. **Source selection:**
+`retries_exhausted` iff a retryable class ran out of budget; `permanent`
+otherwise (declared/forced permanent, class outside `retry_on`, or a
+corrupt materialized policy). The failure policy is materialized onto
+`runs.on_failure` at instantiation (default `fail_fast`), so the
+dead-letter path reads a column, never the snapshot; an unrecognized
+materialized value is treated as `fail_fast` — corrupt stored state fails
+the run rather than silently continuing.
+
+**The write-off** is a pure fixed-point function over the run's steps and
+edges (read inside the dead-lettering transaction, under the run lock): a
+source in `{dead_lettered, cancelled, failed}` never resolves its
+out-edges (`failed` covers pre-5.4 rows); a pending non-join-any target
+is impossible when any unresolved incoming edge has a blocked source; a
+join-any target only when `fired_deps = 0` and *every* unresolved
+incoming edge is blocked. Newly-impossible steps propagate. Write-off
+resolves no edges and touches no counters — which is exactly what makes
+revival a pure status flip. A join config that no longer decodes fails
+the transaction onto the redeliver-to-poison path (like ResolveEdge
+integrity errors) rather than guessing survival semantics. The
+run-terminalizing rollup became a dual attempt in every completion
+transaction: `SucceedRun`, then on guard conflict the all-terminal
+`FailRunRollup` (`steps_failed ≥ 1` and all steps accounted for),
+conflicts dropped.
+
+**Poison** got its own unfenced transition: any non-terminal status →
+`dead_lettered`, clearing `claim_id` (a zombie holder's completion then
+fences off) and closing a running step's dangling attempt as `lost` —
+nothing judged it, so `class` is NULL and the raw envelope rides
+`payload`. The handler ACKs after the commit; an undecodable envelope
+(no step identity to key a DLQ row to) is logged with its raw contents
+and consumed — see ADR-005's as-built note. A poison entry for an
+already-terminal step is consumed as a stale duplicate; transport
+failures leave it pending for the next reclaim pass.
+
+**Requeue** (engine op `Requeue`; API M6.5) is one transaction:
+`dead_lettered → ready` (error/schedule state cleared, `steps_failed`
+un-bumped, `step_requeued` event), `failed → running` if the run was
+failed (`run_resumed`), revival of written-off descendants — the
+impossible set is *recomputed* with cancelled steps treated as pending
+and only the remaining dead-lettered steps as seeds; cancelled steps
+outside it revive (`cancelled → pending`, `step_revived`) — and
+`dlq_requeue` outbox rows for every ready step with no pending dispatch
+(the requeued step, plus fail_fast siblings whose deliveries were
+ack-dropped while the run was failed). The budget-from-baseline needed no
+new bookkeeping: `CountCountedFailures` counts attempts past the latest
+`dead_letters.attempts_at_death`.
+
+Two consumers of the vocabulary were extended: the claim/takeover
+classifiers ack-drop on the new terminal statuses (without this, the
+delayed retry entry of a poison-dead-lettered step would redeliver
+forever and re-poison), and the reconciler's three step scans require the
+run to be `running` (a failed run's stranded ready/running/retrying steps
+would otherwise churn re-outbox → deliver → ack-drop every sweep).
+
 ### Enforcement points
 
 **5.1** (this ticket) — the schema: `retry` on steps, `on_failure`

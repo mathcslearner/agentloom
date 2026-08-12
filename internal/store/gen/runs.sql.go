@@ -29,9 +29,9 @@ func (q *Queries) AllocateEventSeq(ctx context.Context, id uuid.UUID) (int64, er
 const createRun = `-- name: CreateRun :one
 
 INSERT INTO runs (id, definition_id, definition, status, params,
-                  idempotency_token, steps_total, started_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at
+                  idempotency_token, on_failure, steps_total, started_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled
 `
 
 type CreateRunParams struct {
@@ -41,6 +41,7 @@ type CreateRunParams struct {
 	Status           string
 	Params           json.RawMessage
 	IdempotencyToken *string
+	OnFailure        string
 	StepsTotal       int32
 	StartedAt        *time.Time
 }
@@ -55,6 +56,7 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 		arg.Status,
 		arg.Params,
 		arg.IdempotencyToken,
+		arg.OnFailure,
 		arg.StepsTotal,
 		arg.StartedAt,
 	)
@@ -75,6 +77,8 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.OnFailure,
+		&i.StepsCancelled,
 	)
 	return i, err
 }
@@ -92,7 +96,7 @@ func (q *Queries) DeleteRun(ctx context.Context, id uuid.UUID) (int64, error) {
 }
 
 const getRun = `-- name: GetRun :one
-SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at FROM runs WHERE id = $1
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled FROM runs WHERE id = $1
 `
 
 func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (Run, error) {
@@ -114,12 +118,14 @@ func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (Run, error) {
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.OnFailure,
+		&i.StepsCancelled,
 	)
 	return i, err
 }
 
 const getRunByIdempotencyToken = `-- name: GetRunByIdempotencyToken :one
-SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at FROM runs WHERE idempotency_token = $1::text
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled FROM runs WHERE idempotency_token = $1::text
 `
 
 func (q *Queries) GetRunByIdempotencyToken(ctx context.Context, token string) (Run, error) {
@@ -141,12 +147,14 @@ func (q *Queries) GetRunByIdempotencyToken(ctx context.Context, token string) (R
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.OnFailure,
+		&i.StepsCancelled,
 	)
 	return i, err
 }
 
 const listRuns = `-- name: ListRuns :many
-SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at FROM runs ORDER BY created_at DESC, id LIMIT $1
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled FROM runs ORDER BY created_at DESC, id LIMIT $1
 `
 
 func (q *Queries) ListRuns(ctx context.Context, limit int32) ([]Run, error) {
@@ -174,6 +182,8 @@ func (q *Queries) ListRuns(ctx context.Context, limit int32) ([]Run, error) {
 			&i.CreatedAt,
 			&i.StartedAt,
 			&i.FinishedAt,
+			&i.OnFailure,
+			&i.StepsCancelled,
 		); err != nil {
 			return nil, err
 		}
@@ -186,7 +196,7 @@ func (q *Queries) ListRuns(ctx context.Context, limit int32) ([]Run, error) {
 }
 
 const listRunsByStatus = `-- name: ListRunsByStatus :many
-SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at FROM runs WHERE status = $1 ORDER BY created_at DESC, id LIMIT $2
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled FROM runs WHERE status = $1 ORDER BY created_at DESC, id LIMIT $2
 `
 
 type ListRunsByStatusParams struct {
@@ -219,6 +229,8 @@ func (q *Queries) ListRunsByStatus(ctx context.Context, arg ListRunsByStatusPara
 			&i.CreatedAt,
 			&i.StartedAt,
 			&i.FinishedAt,
+			&i.OnFailure,
+			&i.StepsCancelled,
 		); err != nil {
 			return nil, err
 		}

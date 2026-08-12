@@ -218,6 +218,13 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		token = &args.IdempotencyToken
 	}
 	startedAt := args.Now
+	// The effective failure policy is materialized like the steps'
+	// retry_policy (ticket 5.4, ADR-006): absent means fail_fast, and the
+	// dead-lettering path never reparses the snapshot.
+	onFailure := p.def.OnFailure
+	if onFailure == "" {
+		onFailure = dag.FailFast
+	}
 	run, err := q.Runs().Create(ctx, gen.CreateRunParams{
 		ID:               args.RunID,
 		DefinitionID:     args.DefinitionID,
@@ -225,6 +232,7 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		Status:           RunStatusRunning,
 		Params:           args.Params,
 		IdempotencyToken: token,
+		OnFailure:        string(onFailure),
 		StepsTotal:       int32(len(p.def.Steps)), //nolint:gosec // step count is validation-bounded
 		StartedAt:        &startedAt,
 	})

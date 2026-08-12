@@ -235,7 +235,7 @@ func TestRetryExhaustionFailsRun(t *testing.T) {
 	h.RequireHandledOncePerClaim()
 
 	requireStepStatuses(t, s, runID, map[string]string{
-		"doomed": store.StepStatusFailed, "never": store.StepStatusPending,
+		"doomed": store.StepStatusDeadLettered, "never": store.StepStatusPending,
 	})
 	requireAttemptOutcomes(t, s, runID, "doomed", []string{
 		store.AttemptOutcomeTransient, store.AttemptOutcomeTransient,
@@ -254,8 +254,16 @@ func TestRetryExhaustionFailsRun(t *testing.T) {
 	if got := countEvents(t, s, runID, store.EventStepRetryScheduled); got != 1 {
 		t.Errorf("step_retry_scheduled events = %d, want 1", got)
 	}
-	if got := countEvents(t, s, runID, store.EventStepFailed); got != 1 {
-		t.Errorf("step_failed events = %d, want 1", got)
+	if got := countEvents(t, s, runID, store.EventStepDeadLettered); got != 1 {
+		t.Errorf("step_dead_lettered events = %d, want 1", got)
+	}
+	dls, err := s.DeadLetters().ListByStep(ctx, runID, "doomed")
+	if err != nil {
+		t.Fatalf("listing dead letters: %v", err)
+	}
+	if len(dls) != 1 || dls[0].Source != store.DeadLetterSourceRetriesExhausted ||
+		dls[0].Class == nil || *dls[0].Class != store.AttemptOutcomeTransient || dls[0].AttemptsAtDeath != 2 {
+		t.Errorf("dead letters = %+v, want one retries_exhausted/transient row at attempt 2", dls)
 	}
 	if h.DelayedLen(ctx) != 0 {
 		t.Error("delayed set not empty after exhaustion")
@@ -305,6 +313,10 @@ func TestPermanentClassSkipsRetry(t *testing.T) {
 	}
 	if h.DelayedLen(ctx) != 0 {
 		t.Error("delayed set not empty — a permanent failure must not schedule")
+	}
+	dls, err := s.DeadLetters().ListByStep(ctx, runID, "solo")
+	if err != nil || len(dls) != 1 || dls[0].Source != store.DeadLetterSourcePermanent {
+		t.Errorf("dead letters = %v (err %v), want one row with source permanent (5.4)", dls, err)
 	}
 }
 

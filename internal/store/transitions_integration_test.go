@@ -65,12 +65,26 @@ func succeedStep(t *testing.T, s *store.Store, runID uuid.UUID, stepID string, c
 	return step, err
 }
 
+// failStep is the terminal failure path (dead-lettering with source
+// permanent since ticket 5.4 — the pre-5.4 FailStep is retired).
 func failStep(t *testing.T, s *store.Store, runID uuid.UUID, stepID string, claim uuid.UUID, errJSON json.RawMessage) error {
 	t.Helper()
 	return s.WithTx(t.Context(), func(ctx context.Context, q store.Querier) error {
-		_, err := store.FailStep(ctx, q, store.FailStepArgs{
+		_, err := store.DeadLetterStep(ctx, q, store.DeadLetterStepArgs{
 			RunID: runID, StepID: stepID, ClaimID: claim,
+			Source:  store.DeadLetterSourcePermanent,
 			Outcome: store.AttemptOutcomePermanent, Error: errJSON, Now: testNow,
+		})
+		return err
+	})
+}
+
+func cancelStep(t *testing.T, s *store.Store, runID uuid.UUID, stepID string) error {
+	t.Helper()
+	return s.WithTx(t.Context(), func(ctx context.Context, q store.Querier) error {
+		_, err := store.CancelStep(ctx, q, store.CancelStepArgs{
+			RunID: runID, StepID: stepID,
+			Reason: store.CancelReasonUpstreamDeadLettered, Now: testNow,
 		})
 		return err
 	})
@@ -329,11 +343,42 @@ func TestStepTransitionMatrix(t *testing.T) {
 			},
 		},
 		{
-			name: "FailStep", legalFrom: store.StepStatusRunning,
+			name: "DeadLetterStep", legalFrom: store.StepStatusRunning,
 			call: func(ctx context.Context, q store.Querier, runID uuid.UUID, stepID string, claim uuid.UUID) error {
-				_, err := store.FailStep(ctx, q, store.FailStepArgs{
+				_, err := store.DeadLetterStep(ctx, q, store.DeadLetterStepArgs{
 					RunID: runID, StepID: stepID, ClaimID: claim,
+					Source:  store.DeadLetterSourcePermanent,
 					Outcome: store.AttemptOutcomePermanent, Now: testNow,
+				})
+				return err
+			},
+		},
+		{
+			name: "CancelStep", legalFrom: store.StepStatusPending,
+			pendingRemaining: 1, pendingFired: 0,
+			call: func(ctx context.Context, q store.Querier, runID uuid.UUID, stepID string, _ uuid.UUID) error {
+				_, err := store.CancelStep(ctx, q, store.CancelStepArgs{
+					RunID: runID, StepID: stepID,
+					Reason: store.CancelReasonUpstreamDeadLettered, Now: testNow,
+				})
+				return err
+			},
+		},
+		{
+			name: "RequeueStep", legalFrom: store.StepStatusDeadLettered,
+			call: func(ctx context.Context, q store.Querier, runID uuid.UUID, stepID string, _ uuid.UUID) error {
+				_, err := store.RequeueStep(ctx, q, store.RequeueStepArgs{
+					RunID: runID, StepID: stepID, Now: testNow,
+				})
+				return err
+			},
+		},
+		{
+			name: "ReviveStep", legalFrom: store.StepStatusCancelled,
+			call: func(ctx context.Context, q store.Querier, runID uuid.UUID, stepID string, _ uuid.UUID) error {
+				_, err := store.ReviveStep(ctx, q, store.ReviveStepArgs{
+					RunID: runID, StepID: stepID,
+					Reason: store.OutboxReasonDLQRequeue, Now: testNow,
 				})
 				return err
 			},
@@ -366,7 +411,8 @@ func TestStepTransitionMatrix(t *testing.T) {
 	}
 	statuses := []string{
 		store.StepStatusPending, store.StepStatusReady, store.StepStatusRunning,
-		store.StepStatusSucceeded, store.StepStatusFailed, store.StepStatusSkipped,
+		store.StepStatusSucceeded, store.StepStatusDeadLettered, store.StepStatusSkipped,
+		store.StepStatusCancelled,
 	}
 
 	for _, tr := range transitions {
@@ -401,17 +447,22 @@ func TestStepTransitionMatrix(t *testing.T) {
 					c := *mustClaim(t, s, run.ID, stepID).ClaimID
 					mustSucceed(t, s, run.ID, stepID, c)
 					claim = c
-				case store.StepStatusFailed:
+				case store.StepStatusDeadLettered:
 					create(store.StepStatusReady, 0, 1)
 					c := *mustClaim(t, s, run.ID, stepID).ClaimID
 					if err := failStep(t, s, run.ID, stepID, c, nil); err != nil {
-						t.Fatalf("seeding failed step: %v", err)
+						t.Fatalf("seeding dead-lettered step: %v", err)
 					}
 					claim = c
 				case store.StepStatusSkipped:
 					create(store.StepStatusPending, 0, 0)
 					if _, err := skipStep(t, s, run.ID, stepID); err != nil {
 						t.Fatalf("seeding skipped step: %v", err)
+					}
+				case store.StepStatusCancelled:
+					create(store.StepStatusPending, 1, 0)
+					if err := cancelStep(t, s, run.ID, stepID); err != nil {
+						t.Fatalf("seeding cancelled step: %v", err)
 					}
 				}
 
@@ -509,7 +560,7 @@ func TestStepGuardsAndFencing(t *testing.T) {
 			t.Errorf("CurrentClaimID = %v, want %s", te.CurrentClaimID, liveClaim)
 		}
 		if err := failStep(t, s, run.ID, "s", stale, nil); err == nil {
-			t.Error("FailStep with a stale claim succeeded")
+			t.Error("DeadLetterStep with a stale claim succeeded")
 		}
 
 		// The real claim completes; a duplicate completion (redelivery)

@@ -26,13 +26,15 @@ func fprintln(w io.Writer, args ...any) {
 
 // statusGlyph marks each step status in the rendered tree.
 var statusGlyph = map[string]string{
-	"pending":   "·",
-	"ready":     "◌",
-	"running":   "▸",
-	"succeeded": "✓",
-	"failed":    "✗",
-	"skipped":   "-",
-	"retrying":  "↻",
+	"pending":       "·",
+	"ready":         "◌",
+	"running":       "▸",
+	"succeeded":     "✓",
+	"failed":        "✗",
+	"skipped":       "-",
+	"retrying":      "↻",
+	"dead_lettered": "†",
+	"cancelled":     "⊘",
 }
 
 // renderRun writes the run's status tree: a header with the rollup
@@ -76,7 +78,7 @@ func renderStep(w io.Writer, s api.StepView, depth int) {
 		line += fmt.Sprintf(" (%d attempts)", s.AttemptCount)
 	}
 	fprintln(w, line)
-	if s.Status == "failed" && len(s.Error) > 0 {
+	if (s.Status == "failed" || s.Status == "dead_lettered") && len(s.Error) > 0 {
 		var e struct {
 			Message string `json:"message"`
 		}

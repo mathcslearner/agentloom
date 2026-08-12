@@ -80,6 +80,22 @@ func TestClassifyClaimFailure(t *testing.T) {
 			wantInReason:  "already terminal",
 		},
 		{
+			name:          "terminal dead_lettered is duplicate of finished work (5.4)",
+			err:           transitionErr(store.ConflictWrongStatus, store.StepStatusDeadLettered, nil),
+			deliveryCount: 4,
+			wantAction:    claimAckDrop,
+			wantLevel:     slog.LevelInfo,
+			wantInReason:  "already terminal",
+		},
+		{
+			name:          "terminal cancelled is duplicate of finished work (5.4)",
+			err:           transitionErr(store.ConflictWrongStatus, store.StepStatusCancelled, nil),
+			deliveryCount: 1,
+			wantAction:    claimAckDrop,
+			wantLevel:     slog.LevelInfo,
+			wantInReason:  "already terminal",
+		},
+		{
 			name:          "retrying with backoff pending is dropped (5.2)",
 			err:           transitionErr(store.ConflictWrongStatus, store.StepStatusRetrying, nil),
 			deliveryCount: 1,
@@ -220,6 +236,20 @@ func TestClassifyTakeoverFailure(t *testing.T) {
 		{
 			name:         "retry-routed between reclaim and takeover — drop (5.2)",
 			err:          takeoverErr(store.ConflictWrongStatus, store.StepStatusRetrying),
+			wantAction:   claimAckDrop,
+			wantLevel:    slog.LevelInfo,
+			wantInReason: "duplicate of finished work",
+		},
+		{
+			name:         "dead-lettered between reclaim and takeover — drop (5.4)",
+			err:          takeoverErr(store.ConflictWrongStatus, store.StepStatusDeadLettered),
+			wantAction:   claimAckDrop,
+			wantLevel:    slog.LevelInfo,
+			wantInReason: "duplicate of finished work",
+		},
+		{
+			name:         "cancelled between reclaim and takeover — drop (5.4)",
+			err:          takeoverErr(store.ConflictWrongStatus, store.StepStatusCancelled),
 			wantAction:   claimAckDrop,
 			wantLevel:    slog.LevelInfo,
 			wantInReason: "duplicate of finished work",

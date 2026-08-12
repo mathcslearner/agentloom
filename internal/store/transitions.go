@@ -60,6 +60,25 @@ type stepRetryPayload struct {
 	NextAttemptAt time.Time `json:"next_attempt_at"`
 }
 
+// stepDeadLetteredPayload is the step_dead_lettered event body (ticket
+// 5.4): why the step died (source), the judged class (empty for poison),
+// the attempt count at death, and the dead_letters seq the full record
+// lives under.
+type stepDeadLetteredPayload struct {
+	StepID   string `json:"step_id"`
+	Source   string `json:"source"`
+	Class    string `json:"class,omitempty"`
+	Attempts int32  `json:"attempts"`
+	Seq      int32  `json:"seq"`
+}
+
+// stepCancelledPayload serves step_cancelled and step_revived (ticket
+// 5.4): the step and why it was written off / revived.
+type stepCancelledPayload struct {
+	StepID string `json:"step_id"`
+	Reason string `json:"reason"`
+}
+
 // ClaimStepArgs are the inputs to ClaimStep.
 type ClaimStepArgs struct {
 	RunID  uuid.UUID
@@ -240,33 +259,39 @@ func SucceedStep(ctx context.Context, q Querier, args SucceedStepArgs) (gen.RunS
 	return step, nil
 }
 
-// FailStepArgs are the inputs to FailStep.
-type FailStepArgs struct {
+// DeadLetterStepArgs are the inputs to DeadLetterStep.
+type DeadLetterStepArgs struct {
 	RunID  uuid.UUID
 	StepID string
 	// ClaimID is the fencing token ClaimStep issued to this caller.
 	ClaimID uuid.UUID
+	// Source is why the step dead-letters: DeadLetterSourceRetriesExhausted
+	// or DeadLetterSourcePermanent (the poison source has its own unfenced
+	// transition, PoisonDeadLetterStep). Required.
+	Source string
 	// Outcome is the attempt's ADR-006 error class (transient / permanent /
 	// timeout / cancelled) — what the judged failure *was*, even when the
 	// disposition is terminal (an exhausted transient records `transient`).
 	// Required; the retired bare `failed` is rejected by the schema CHECK.
 	Outcome string
-	// Error is the failure summary, stored on both the step (last failure)
-	// and the attempt; nil stores NULL.
+	// Error is the failure summary, stored on the step (last failure), the
+	// attempt, and the dead_letters record; nil stores NULL.
 	Error json.RawMessage
 	// Now is the injected current time. Required.
 	Now time.Time
 }
 
-// FailStep transitions a step running → failed, fenced by ClaimID: it
-// records the error on the step and its attempt row (outcome = the ADR-006
-// class), bumps the run's steps_failed aggregate, and appends the
-// step_failed event. Since 5.2 this is the *terminal* failure path —
-// budget exhausted or class not retryable; retryable failures route
-// through RetryStep instead. The failed step's out-edges stay unresolved
-// (ADR-004), blocking dependents until DLQ semantics arrive (5.4).
-func FailStep(ctx context.Context, q Querier, args FailStepArgs) (gen.RunStep, error) {
-	const op = "fail step"
+// DeadLetterStep transitions a step running → dead_lettered, fenced by
+// ClaimID — the terminal failure path (ticket 5.4, ADR-006; the conceptual
+// `failed` routing state is passed through inside this one transaction,
+// like RetryStep's): it records the error on the step and its attempt row
+// (outcome = the ADR-006 class), bumps the run's steps_failed aggregate,
+// inserts the dead_letters record (source, class, attempt count at death),
+// and appends the step_dead_lettered event. The dead step's out-edges stay
+// unresolved (ADR-004) — the run disposition (FailRun or the write-off
+// walk) is the caller's next move, inside the same transaction.
+func DeadLetterStep(ctx context.Context, q Querier, args DeadLetterStepArgs) (gen.RunStep, error) {
+	const op = "dead-letter step"
 	gq, err := transitionQueries(ctx, q, op, args.Now)
 	if err != nil {
 		return gen.RunStep{}, err
@@ -274,16 +299,20 @@ func FailStep(ctx context.Context, q Querier, args FailStepArgs) (gen.RunStep, e
 	if args.Outcome == "" {
 		return gen.RunStep{}, fmt.Errorf("store: %s: empty Outcome — pass the attempt's ADR-006 error class", op)
 	}
+	if args.Source != DeadLetterSourceRetriesExhausted && args.Source != DeadLetterSourcePermanent {
+		return gen.RunStep{}, fmt.Errorf(
+			"store: %s: source %q is not a fenced dead-letter source (retries_exhausted/permanent)", op, args.Source)
+	}
 	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
 		return gen.RunStep{}, err
 	}
-	step, err := gq.FailRunStep(ctx, gen.FailRunStepParams{
+	step, err := gq.DeadLetterRunStep(ctx, gen.DeadLetterRunStepParams{
 		RunID: args.RunID, StepID: args.StepID, ClaimID: &args.ClaimID,
 		Error: args.Error, Now: args.Now,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return gen.RunStep{}, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
-			want: StepStatusRunning, to: StepStatusFailed, claim: &args.ClaimID,
+			want: StepStatusRunning, to: StepStatusDeadLettered, claim: &args.ClaimID,
 		})
 	}
 	if err != nil {
@@ -295,13 +324,262 @@ func FailStep(ctx context.Context, q Querier, args FailStepArgs) (gen.RunStep, e
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DFailed: 1}); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepFailed, stepFinishedPayload{
-		StepID: args.StepID, AttemptNo: step.AttemptCount,
+	class := args.Outcome
+	dl, err := gq.CreateDeadLetter(ctx, gen.CreateDeadLetterParams{
+		RunID: args.RunID, StepID: args.StepID, Source: args.Source, Class: &class,
+		Error: args.Error, AttemptsAtDeath: step.AttemptCount, CreatedAt: args.Now,
+	})
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op+": insert dead letter", err)
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepDeadLettered, stepDeadLetteredPayload{
+		StepID: args.StepID, Source: args.Source, Class: args.Outcome,
+		Attempts: step.AttemptCount, Seq: dl.Seq,
 	}); err != nil {
 		return gen.RunStep{}, err
 	}
-	log.From(ctx).DebugContext(ctx, "step failed",
-		log.RunID(args.RunID.String()), log.StepID(args.StepID), log.Attempt(int(step.AttemptCount)))
+	log.From(ctx).DebugContext(ctx, "step dead-lettered",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID),
+		log.Attempt(int(step.AttemptCount)))
+	return step, nil
+}
+
+// PoisonDeadLetterStepArgs are the inputs to PoisonDeadLetterStep.
+type PoisonDeadLetterStepArgs struct {
+	RunID  uuid.UUID
+	StepID string
+	// Error is the poison summary (delivery count, threshold); nil stores
+	// NULL.
+	Error json.RawMessage
+	// Payload preserves the raw stream-entry contents (ADR-005 keeps them
+	// on the poison message for exactly this); nil stores NULL.
+	Payload json.RawMessage
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// PoisonDeadLetterStep transitions a step from any non-terminal status —
+// pending, ready, running, or retrying — to dead_lettered with no claim
+// fence (ticket 5.4, ADR-006 source `poison`): the poison path holds no
+// claim, because the entry's handlers kept dying without ever recording a
+// judgment. Clearing claim_id defences any zombie holder (its completion
+// CAS then rejects on claim_mismatch and abandons), and a running step's
+// dangling attempt closes with the administrative `lost` — nothing judged
+// it, matching the takeover convention. The dead_letters record carries a
+// NULL class and the raw envelope payload. The run disposition is the
+// caller's next move, inside the same transaction.
+func PoisonDeadLetterStep(ctx context.Context, q Querier, args PoisonDeadLetterStepArgs) (gen.RunStep, error) {
+	const op = "poison dead-letter step"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.RunStep{}, err
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.RunStep{}, err
+	}
+	// The pre-CAS read (race-free under the run lock) decides whether an
+	// open attempt needs closing: only a running step has one.
+	prior, err := gq.GetRunStep(ctx, gen.GetRunStepParams{RunID: args.RunID, StepID: args.StepID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.RunStep{}, fmt.Errorf("store: %s: step %q of run %s: %w", op, args.StepID, args.RunID, ErrNotFound)
+	}
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op, err)
+	}
+	wasRunning := prior.Status == StepStatusRunning
+	step, err := gq.PoisonDeadLetterRunStep(ctx, gen.PoisonDeadLetterRunStepParams{
+		RunID: args.RunID, StepID: args.StepID, Error: args.Error, Now: args.Now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The pre-CAS read pins the diagnosis: the step is terminal.
+		return gen.RunStep{}, fmt.Errorf("store: %s: %w", op, &TransitionError{
+			Entity: "step", RunID: args.RunID, StepID: args.StepID,
+			From: prior.Status, To: StepStatusDeadLettered,
+			Reason: ConflictWrongStatus, CurrentClaimID: prior.ClaimID,
+		})
+	}
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op, err)
+	}
+	if wasRunning {
+		if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeLost, args.Error, args.Now); err != nil {
+			return gen.RunStep{}, err
+		}
+	}
+	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DFailed: 1}); err != nil {
+		return gen.RunStep{}, err
+	}
+	dl, err := gq.CreateDeadLetter(ctx, gen.CreateDeadLetterParams{
+		RunID: args.RunID, StepID: args.StepID, Source: DeadLetterSourcePoison,
+		Error: args.Error, Payload: args.Payload,
+		AttemptsAtDeath: step.AttemptCount, CreatedAt: args.Now,
+	})
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op+": insert dead letter", err)
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepDeadLettered, stepDeadLetteredPayload{
+		StepID: args.StepID, Source: DeadLetterSourcePoison,
+		Attempts: step.AttemptCount, Seq: dl.Seq,
+	}); err != nil {
+		return gen.RunStep{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "step dead-lettered by poison",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID),
+		log.Attempt(int(step.AttemptCount)))
+	return step, nil
+}
+
+// CancelStepArgs are the inputs to CancelStep.
+type CancelStepArgs struct {
+	RunID  uuid.UUID
+	StepID string
+	// Reason records why the step was written off — the step_cancelled
+	// event payload (CancelReasonUpstreamDeadLettered in 5.4; M5.6 adds
+	// run-cancel reasons). Required.
+	Reason string
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// CancelStep transitions a step pending → cancelled (ticket 5.4): the
+// write-off of a step whose readiness a dead-lettered upstream step made
+// impossible (ADR-006 continue_independent_branches — the eager
+// alternative to permanent pending limbo). Bumps the run's
+// steps_cancelled aggregate and appends the step_cancelled event.
+// Dependency counters and the step's own out-edges stay untouched — that
+// is what makes ReviveStep a pure status flip.
+func CancelStep(ctx context.Context, q Querier, args CancelStepArgs) (gen.RunStep, error) {
+	const op = "cancel step"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.RunStep{}, err
+	}
+	if args.Reason == "" {
+		return gen.RunStep{}, fmt.Errorf("store: %s: empty Reason — pass the write-off reason", op)
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.RunStep{}, err
+	}
+	step, err := gq.CancelRunStep(ctx, gen.CancelRunStepParams{
+		RunID: args.RunID, StepID: args.StepID, Now: args.Now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.RunStep{}, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
+			want: StepStatusPending, to: StepStatusCancelled,
+		})
+	}
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op, err)
+	}
+	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DCancelled: 1}); err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepCancelled, stepCancelledPayload{
+		StepID: args.StepID, Reason: args.Reason,
+	}); err != nil {
+		return gen.RunStep{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "step cancelled",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID))
+	return step, nil
+}
+
+// RequeueStepArgs are the inputs to RequeueStep.
+type RequeueStepArgs struct {
+	RunID  uuid.UUID
+	StepID string
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// RequeueStep transitions a step dead_lettered → ready (ticket 5.4,
+// ADR-006 "Requeue"): error and schedule state clear, the run's
+// steps_failed aggregate un-bumps (the step is no longer a terminal
+// failure — a cured run must pass the SucceedRun guard), and the
+// step_requeued event appends. Attempt history is immutable: the retry
+// budget re-arms because CountCountedFailures counts from the latest
+// dead_letters baseline, not because anything resets. Re-dispatch (the
+// dlq_requeue outbox row) and run revival are the caller's — the engine's
+// Requeue op composes them in the same transaction.
+func RequeueStep(ctx context.Context, q Querier, args RequeueStepArgs) (gen.RunStep, error) {
+	const op = "requeue step"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.RunStep{}, err
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.RunStep{}, err
+	}
+	step, err := gq.RequeueRunStep(ctx, gen.RequeueRunStepParams{
+		RunID: args.RunID, StepID: args.StepID, Now: args.Now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.RunStep{}, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
+			want: StepStatusDeadLettered, to: StepStatusReady,
+		})
+	}
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op, err)
+	}
+	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DFailed: -1}); err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepRequeued, stepIDPayload{StepID: args.StepID}); err != nil {
+		return gen.RunStep{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "step requeued from DLQ",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID))
+	return step, nil
+}
+
+// ReviveStepArgs are the inputs to ReviveStep.
+type ReviveStepArgs struct {
+	RunID  uuid.UUID
+	StepID string
+	// Reason records what made the revival possible — the step_revived
+	// event payload (dlq_requeue in 5.4). Required.
+	Reason string
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// ReviveStep transitions a step cancelled → pending (ticket 5.4): the
+// requeue op's undo of a write-off whose blocking dead-lettered step was
+// requeued. A pure status flip — the write-off never touched dependency
+// counters — plus the steps_cancelled un-bump and the step_revived event.
+func ReviveStep(ctx context.Context, q Querier, args ReviveStepArgs) (gen.RunStep, error) {
+	const op = "revive step"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.RunStep{}, err
+	}
+	if args.Reason == "" {
+		return gen.RunStep{}, fmt.Errorf("store: %s: empty Reason — pass the revival reason", op)
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.RunStep{}, err
+	}
+	step, err := gq.ReviveRunStep(ctx, gen.ReviveRunStepParams{
+		RunID: args.RunID, StepID: args.StepID, Now: args.Now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.RunStep{}, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
+			want: StepStatusCancelled, to: StepStatusPending,
+		})
+	}
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op, err)
+	}
+	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DCancelled: -1}); err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepRevived, stepCancelledPayload{
+		StepID: args.StepID, Reason: args.Reason,
+	}); err != nil {
+		return gen.RunStep{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "step revived",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID))
 	return step, nil
 }
 
@@ -604,7 +882,7 @@ func SucceedRun(ctx context.Context, q Querier, args SucceedRunArgs) (gen.Run, e
 	}
 	run, err := gq.SucceedRun(ctx, gen.SucceedRunParams{RunID: args.RunID, Now: args.Now})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return gen.Run{}, runConflict(ctx, gq, op, args.RunID, RunStatusSucceeded)
+		return gen.Run{}, runConflict(ctx, gq, op, args.RunID, RunStatusRunning, RunStatusSucceeded)
 	}
 	if err != nil {
 		return gen.Run{}, wrapErr(op, err)
@@ -616,16 +894,16 @@ func SucceedRun(ctx context.Context, q Querier, args SucceedRunArgs) (gen.Run, e
 	return run, nil
 }
 
-// FailRunArgs are the inputs to FailRun.
+// FailRunArgs are the inputs to FailRun and FailRunRollup.
 type FailRunArgs struct {
 	RunID uuid.UUID
 	// Now is the injected current time. Required.
 	Now time.Time
 }
 
-// FailRun transitions a run running → failed. The guard is the v1 minimum
-// — at least one step failed; *when* a step failure halts a run is
-// workflow failure policy (ADR-006, M5). Appends the run_failed event.
+// FailRun transitions a run running → failed immediately — the fail_fast
+// disposition (ADR-006): the guard requires only that some step failed
+// terminally. Appends the run_failed event.
 func FailRun(ctx context.Context, q Querier, args FailRunArgs) (gen.Run, error) {
 	const op = "fail run"
 	gq, err := transitionQueries(ctx, q, op, args.Now)
@@ -637,7 +915,7 @@ func FailRun(ctx context.Context, q Querier, args FailRunArgs) (gen.Run, error) 
 	}
 	run, err := gq.FailRun(ctx, gen.FailRunParams{RunID: args.RunID, Now: args.Now})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return gen.Run{}, runConflict(ctx, gq, op, args.RunID, RunStatusFailed)
+		return gen.Run{}, runConflict(ctx, gq, op, args.RunID, RunStatusRunning, RunStatusFailed)
 	}
 	if err != nil {
 		return gen.Run{}, wrapErr(op, err)
@@ -646,6 +924,70 @@ func FailRun(ctx context.Context, q Querier, args FailRunArgs) (gen.Run, error) 
 		return gen.Run{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "run failed", log.RunID(args.RunID.String()))
+	return run, nil
+}
+
+// FailRunRollup transitions a run running → failed once every step is
+// terminal and at least one failed terminally (ticket 5.4, ADR-006
+// continue_independent_branches: succeeded + failed + skipped + cancelled
+// = total). Completion transactions attempt it after SucceedRun's guard
+// rejects and drop the conflict, exactly like SucceedRun — the guard
+// passes exactly once, on the transaction that terminalizes the last step
+// of a partially-failed run. Appends the run_failed event.
+func FailRunRollup(ctx context.Context, q Querier, args FailRunArgs) (gen.Run, error) {
+	const op = "fail run rollup"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.Run{}, err
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.Run{}, err
+	}
+	run, err := gq.FailRunRollup(ctx, gen.FailRunRollupParams{RunID: args.RunID, Now: args.Now})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.Run{}, runConflict(ctx, gq, op, args.RunID, RunStatusRunning, RunStatusFailed)
+	}
+	if err != nil {
+		return gen.Run{}, wrapErr(op, err)
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventRunFailed, struct{}{}); err != nil {
+		return gen.Run{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "run failed (rollup)", log.RunID(args.RunID.String()))
+	return run, nil
+}
+
+// ResumeRunArgs are the inputs to ResumeRun.
+type ResumeRunArgs struct {
+	RunID uuid.UUID
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// ResumeRun transitions a run failed → running (ticket 5.4): the requeue
+// op re-opens a failed run so the claim path admits its steps again.
+// finished_at clears and the run_resumed event appends. M5.6's unpark is
+// a different transition — this one exists solely for DLQ requeue.
+func ResumeRun(ctx context.Context, q Querier, args ResumeRunArgs) (gen.Run, error) {
+	const op = "resume run"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.Run{}, err
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.Run{}, err
+	}
+	run, err := gq.ResumeRun(ctx, args.RunID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.Run{}, runConflict(ctx, gq, op, args.RunID, RunStatusFailed, RunStatusRunning)
+	}
+	if err != nil {
+		return gen.Run{}, wrapErr(op, err)
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventRunResumed, struct{}{}); err != nil {
+		return gen.Run{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "run resumed", log.RunID(args.RunID.String()))
 	return run, nil
 }
 
@@ -771,15 +1113,15 @@ func stepConflict(ctx context.Context, gq *gen.Queries, op string, runID uuid.UU
 	return fmt.Errorf("store: %s: %w", op, te)
 }
 
-// runConflict is stepConflict for run transitions: from-status running,
-// no claim guard, counter guards diagnosed as guard_failed.
-func runConflict(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUID, to string) error {
+// runConflict is stepConflict for run transitions: no claim guard,
+// counter guards diagnosed as guard_failed when the from-status matched.
+func runConflict(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUID, want, to string) error {
 	row, err := gq.GetRun(ctx, runID)
 	if err != nil {
 		return wrapErr(op, err)
 	}
 	te := &TransitionError{Entity: "run", RunID: runID, From: row.Status, To: to}
-	if row.Status != RunStatusRunning {
+	if row.Status != want {
 		te.Reason = ConflictWrongStatus
 	} else {
 		te.Reason = ConflictGuardFailed

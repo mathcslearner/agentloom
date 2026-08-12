@@ -14,8 +14,11 @@ import (
 )
 
 const countCountedFailures = `-- name: CountCountedFailures :one
-SELECT count(*) FROM step_attempts
-WHERE run_id = $1 AND step_id = $2 AND outcome IN ('transient', 'timeout')
+SELECT count(*) FROM step_attempts sa
+WHERE sa.run_id = $1 AND sa.step_id = $2 AND sa.outcome IN ('transient', 'timeout')
+  AND sa.attempt_no > COALESCE((
+      SELECT MAX(dl.attempts_at_death) FROM dead_letters dl
+      WHERE dl.run_id = $1 AND dl.step_id = $2), 0)
 `
 
 type CountCountedFailuresParams struct {
@@ -26,8 +29,10 @@ type CountCountedFailuresParams struct {
 // CountCountedFailures is the durable retry budget (ADR-006 "Retry budget
 // vs. delivery count"): judged attempt failures only — outcomes transient
 // and timeout. `lost` closures are excluded by construction (a crashed
-// host recorded no judgment), and 5.4's requeue-from-baseline reuses the
-// same derivation.
+// host recorded no judgment). Since ticket 5.4 the count starts at the
+// requeue baseline: attempt history is immutable, so a requeued step
+// re-arms its full policy by counting only attempts past the latest
+// dead_letters row's attempts_at_death.
 func (q *Queries) CountCountedFailures(ctx context.Context, arg CountCountedFailuresParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countCountedFailures, arg.RunID, arg.StepID)
 	var count int64

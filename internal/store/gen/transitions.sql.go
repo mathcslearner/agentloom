@@ -70,14 +70,16 @@ const bumpRunStepCounters = `-- name: BumpRunStepCounters :execrows
 UPDATE runs
 SET steps_succeeded = steps_succeeded + $1::int,
     steps_failed    = steps_failed + $2::int,
-    steps_skipped   = steps_skipped + $3::int
-WHERE id = $4
+    steps_skipped   = steps_skipped + $3::int,
+    steps_cancelled = steps_cancelled + $4::int
+WHERE id = $5
 `
 
 type BumpRunStepCountersParams struct {
 	DSucceeded int32
 	DFailed    int32
 	DSkipped   int32
+	DCancelled int32
 	RunID      uuid.UUID
 }
 
@@ -88,12 +90,58 @@ func (q *Queries) BumpRunStepCounters(ctx context.Context, arg BumpRunStepCounte
 		arg.DSucceeded,
 		arg.DFailed,
 		arg.DSkipped,
+		arg.DCancelled,
 		arg.RunID,
 	)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const cancelRunStep = `-- name: CancelRunStep :one
+UPDATE run_steps
+SET status     = 'cancelled',
+    updated_at = $1::timestamptz
+WHERE run_id = $2 AND step_id = $3 AND status = 'pending'
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+`
+
+type CancelRunStepParams struct {
+	Now    time.Time
+	RunID  uuid.UUID
+	StepID string
+}
+
+// Write-off: pending → cancelled, when a dead-lettered upstream step made
+// readiness impossible (ADR-006 continue_independent_branches; 5.6's
+// run-cancel writes the same status with a different event reason).
+// finished_at stays NULL — the step never ran, like skipped.
+func (q *Queries) CancelRunStep(ctx context.Context, arg CancelRunStepParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, cancelRunStep, arg.Now, arg.RunID, arg.StepID)
+	var i RunStep
+	err := row.Scan(
+		&i.RunID,
+		&i.StepID,
+		&i.StepType,
+		&i.Config,
+		&i.Status,
+		&i.RemainingDeps,
+		&i.FiredDeps,
+		&i.ClaimID,
+		&i.AttemptCount,
+		&i.Output,
+		&i.Error,
+		&i.GraphVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
+		&i.Timeout,
+	)
+	return i, err
 }
 
 const claimRunStep = `-- name: ClaimRunStep :one
@@ -165,47 +213,9 @@ func (q *Queries) ClaimRunStep(ctx context.Context, arg ClaimRunStepParams) (Run
 	return i, err
 }
 
-const failRun = `-- name: FailRun :one
-UPDATE runs
-SET status      = 'failed',
-    finished_at = $1::timestamptz
-WHERE id = $2 AND status = 'running' AND steps_failed >= 1
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at
-`
-
-type FailRunParams struct {
-	Now   time.Time
-	RunID uuid.UUID
-}
-
-// Rollup: running → failed. The guard is the v1 minimum (some step
-// failed); *when* to halt a run is workflow failure policy (ADR-006, M5).
-func (q *Queries) FailRun(ctx context.Context, arg FailRunParams) (Run, error) {
-	row := q.db.QueryRow(ctx, failRun, arg.Now, arg.RunID)
-	var i Run
-	err := row.Scan(
-		&i.ID,
-		&i.DefinitionID,
-		&i.Definition,
-		&i.Status,
-		&i.Params,
-		&i.IdempotencyToken,
-		&i.GraphVersion,
-		&i.NextSeq,
-		&i.StepsTotal,
-		&i.StepsSucceeded,
-		&i.StepsFailed,
-		&i.StepsSkipped,
-		&i.CreatedAt,
-		&i.StartedAt,
-		&i.FinishedAt,
-	)
-	return i, err
-}
-
-const failRunStep = `-- name: FailRunStep :one
+const deadLetterRunStep = `-- name: DeadLetterRunStep :one
 UPDATE run_steps
-SET status      = 'failed',
+SET status      = 'dead_lettered',
     error       = $1,
     finished_at = $2::timestamptz,
     updated_at  = $2::timestamptz
@@ -214,7 +224,7 @@ WHERE run_id = $3 AND step_id = $4
 RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
 `
 
-type FailRunStepParams struct {
+type DeadLetterRunStepParams struct {
 	Error   json.RawMessage
 	Now     time.Time
 	RunID   uuid.UUID
@@ -222,10 +232,13 @@ type FailRunStepParams struct {
 	ClaimID *uuid.UUID
 }
 
-// Completion: running → failed, fenced by claim_id. error holds the last
-// failure summary; per-attempt detail lives on step_attempts.
-func (q *Queries) FailRunStep(ctx context.Context, arg FailRunStepParams) (RunStep, error) {
-	row := q.db.QueryRow(ctx, failRunStep,
+// Terminal failure: running → dead_lettered, fenced by claim_id (ticket
+// 5.4, ADR-006 — the conceptual `failed` routing state is passed through
+// inside the completion transaction, exactly like the retry route). error
+// holds the last failure summary; per-attempt detail lives on
+// step_attempts, the full death context on dead_letters.
+func (q *Queries) DeadLetterRunStep(ctx context.Context, arg DeadLetterRunStepParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, deadLetterRunStep,
 		arg.Error,
 		arg.Now,
 		arg.RunID,
@@ -257,6 +270,91 @@ func (q *Queries) FailRunStep(ctx context.Context, arg FailRunStepParams) (RunSt
 	return i, err
 }
 
+const failRun = `-- name: FailRun :one
+UPDATE runs
+SET status      = 'failed',
+    finished_at = $1::timestamptz
+WHERE id = $2 AND status = 'running' AND steps_failed >= 1
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled
+`
+
+type FailRunParams struct {
+	Now   time.Time
+	RunID uuid.UUID
+}
+
+// Rollup: running → failed, immediately — the fail_fast disposition
+// (ADR-006): the guard requires only that some step failed terminally.
+func (q *Queries) FailRun(ctx context.Context, arg FailRunParams) (Run, error) {
+	row := q.db.QueryRow(ctx, failRun, arg.Now, arg.RunID)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.DefinitionID,
+		&i.Definition,
+		&i.Status,
+		&i.Params,
+		&i.IdempotencyToken,
+		&i.GraphVersion,
+		&i.NextSeq,
+		&i.StepsTotal,
+		&i.StepsSucceeded,
+		&i.StepsFailed,
+		&i.StepsSkipped,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.OnFailure,
+		&i.StepsCancelled,
+	)
+	return i, err
+}
+
+const failRunRollup = `-- name: FailRunRollup :one
+UPDATE runs
+SET status      = 'failed',
+    finished_at = $1::timestamptz
+WHERE id = $2 AND status = 'running' AND steps_failed >= 1
+  AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled = steps_total
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled
+`
+
+type FailRunRollupParams struct {
+	Now   time.Time
+	RunID uuid.UUID
+}
+
+// Rollup: running → failed, once every step is terminal — the
+// continue_independent_branches terminalizer (ticket 5.4, ADR-006): the
+// run keeps running while independent branches finish and lands failed
+// when the counters account for every step with at least one terminal
+// failure. Attempted (and its conflict dropped) by every completion
+// transaction, mirroring SucceedRun.
+func (q *Queries) FailRunRollup(ctx context.Context, arg FailRunRollupParams) (Run, error) {
+	row := q.db.QueryRow(ctx, failRunRollup, arg.Now, arg.RunID)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.DefinitionID,
+		&i.Definition,
+		&i.Status,
+		&i.Params,
+		&i.IdempotencyToken,
+		&i.GraphVersion,
+		&i.NextSeq,
+		&i.StepsTotal,
+		&i.StepsSucceeded,
+		&i.StepsFailed,
+		&i.StepsSkipped,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.OnFailure,
+		&i.StepsCancelled,
+	)
+	return i, err
+}
+
 const getRunEdge = `-- name: GetRunEdge :one
 SELECT run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version FROM run_edges WHERE run_id = $1 AND ordinal = $2
 `
@@ -280,6 +378,63 @@ func (q *Queries) GetRunEdge(ctx context.Context, arg GetRunEdgeParams) (RunEdge
 		&i.MaxIterations,
 		&i.Resolution,
 		&i.GraphVersion,
+	)
+	return i, err
+}
+
+const poisonDeadLetterRunStep = `-- name: PoisonDeadLetterRunStep :one
+UPDATE run_steps
+SET status          = 'dead_lettered',
+    error           = $1,
+    claim_id        = NULL,
+    next_attempt_at = NULL,
+    finished_at     = $2::timestamptz,
+    updated_at      = $2::timestamptz
+WHERE run_id = $3 AND step_id = $4
+  AND status IN ('pending', 'ready', 'running', 'retrying')
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+`
+
+type PoisonDeadLetterRunStepParams struct {
+	Error  json.RawMessage
+	Now    time.Time
+	RunID  uuid.UUID
+	StepID string
+}
+
+// Poison dead-lettering: any non-terminal status → dead_lettered, with no
+// claim fence — the poison path holds no claim; the entry's handlers kept
+// dying without ever recording a judgment (ticket 5.4, ADR-006 sources
+// table). Clearing claim_id defences any zombie holder: its eventual
+// completion CAS rejects on claim_mismatch and abandons.
+func (q *Queries) PoisonDeadLetterRunStep(ctx context.Context, arg PoisonDeadLetterRunStepParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, poisonDeadLetterRunStep,
+		arg.Error,
+		arg.Now,
+		arg.RunID,
+		arg.StepID,
+	)
+	var i RunStep
+	err := row.Scan(
+		&i.RunID,
+		&i.StepID,
+		&i.StepType,
+		&i.Config,
+		&i.Status,
+		&i.RemainingDeps,
+		&i.FiredDeps,
+		&i.ClaimID,
+		&i.AttemptCount,
+		&i.Output,
+		&i.Error,
+		&i.GraphVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
+		&i.Timeout,
 	)
 	return i, err
 }
@@ -311,6 +466,54 @@ func (q *Queries) ReadyRunStep(ctx context.Context, arg ReadyRunStepParams) (Run
 		arg.StepID,
 		arg.JoinAny,
 	)
+	var i RunStep
+	err := row.Scan(
+		&i.RunID,
+		&i.StepID,
+		&i.StepType,
+		&i.Config,
+		&i.Status,
+		&i.RemainingDeps,
+		&i.FiredDeps,
+		&i.ClaimID,
+		&i.AttemptCount,
+		&i.Output,
+		&i.Error,
+		&i.GraphVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
+		&i.Timeout,
+	)
+	return i, err
+}
+
+const requeueRunStep = `-- name: RequeueRunStep :one
+UPDATE run_steps
+SET status          = 'ready',
+    error           = NULL,
+    next_attempt_at = NULL,
+    finished_at     = NULL,
+    updated_at      = $1::timestamptz
+WHERE run_id = $2 AND step_id = $3 AND status = 'dead_lettered'
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+`
+
+type RequeueRunStepParams struct {
+	Now    time.Time
+	RunID  uuid.UUID
+	StepID string
+}
+
+// Requeue: dead_lettered → ready (ticket 5.4, ADR-006 "Requeue"). The
+// step re-arms with its full policy — error and schedule state cleared,
+// attempt history untouched (the budget counts from the dead_letters
+// baseline).
+func (q *Queries) RequeueRunStep(ctx context.Context, arg RequeueRunStepParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, requeueRunStep, arg.Now, arg.RunID, arg.StepID)
 	var i RunStep
 	err := row.Scan(
 		&i.RunID,
@@ -372,6 +575,42 @@ func (q *Queries) ResolveRunEdge(ctx context.Context, arg ResolveRunEdgeParams) 
 	return i, err
 }
 
+const resumeRun = `-- name: ResumeRun :one
+UPDATE runs
+SET status      = 'running',
+    finished_at = NULL
+WHERE id = $1 AND status = 'failed'
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled
+`
+
+// Requeue revival: failed → running (ticket 5.4). An operator requeueing
+// a dead-lettered step of a failed run re-opens the run so the claim path
+// admits its steps again; finished_at clears — the run is live.
+func (q *Queries) ResumeRun(ctx context.Context, runID uuid.UUID) (Run, error) {
+	row := q.db.QueryRow(ctx, resumeRun, runID)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.DefinitionID,
+		&i.Definition,
+		&i.Status,
+		&i.Params,
+		&i.IdempotencyToken,
+		&i.GraphVersion,
+		&i.NextSeq,
+		&i.StepsTotal,
+		&i.StepsSucceeded,
+		&i.StepsFailed,
+		&i.StepsSkipped,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.OnFailure,
+		&i.StepsCancelled,
+	)
+	return i, err
+}
+
 const retryRunStep = `-- name: RetryRunStep :one
 UPDATE run_steps
 SET status          = 'retrying',
@@ -408,6 +647,51 @@ func (q *Queries) RetryRunStep(ctx context.Context, arg RetryRunStepParams) (Run
 		arg.StepID,
 		arg.ClaimID,
 	)
+	var i RunStep
+	err := row.Scan(
+		&i.RunID,
+		&i.StepID,
+		&i.StepType,
+		&i.Config,
+		&i.Status,
+		&i.RemainingDeps,
+		&i.FiredDeps,
+		&i.ClaimID,
+		&i.AttemptCount,
+		&i.Output,
+		&i.Error,
+		&i.GraphVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
+		&i.Timeout,
+	)
+	return i, err
+}
+
+const reviveRunStep = `-- name: ReviveRunStep :one
+UPDATE run_steps
+SET status     = 'pending',
+    updated_at = $1::timestamptz
+WHERE run_id = $2 AND step_id = $3 AND status = 'cancelled'
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+`
+
+type ReviveRunStepParams struct {
+	Now    time.Time
+	RunID  uuid.UUID
+	StepID string
+}
+
+// Revival: cancelled → pending, when a requeue made a written-off step's
+// readiness possible again. Dependency counters were never touched by the
+// write-off (edges of a dead step stay unresolved), so the status flip
+// alone restores the pre-write-off state.
+func (q *Queries) ReviveRunStep(ctx context.Context, arg ReviveRunStepParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, reviveRunStep, arg.Now, arg.RunID, arg.StepID)
 	var i RunStep
 	err := row.Scan(
 		&i.RunID,
@@ -483,7 +767,7 @@ SET status      = 'succeeded',
     finished_at = $1::timestamptz
 WHERE id = $2 AND status = 'running'
   AND steps_failed = 0 AND steps_succeeded + steps_skipped = steps_total
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled
 `
 
 type SucceedRunParams struct {
@@ -514,6 +798,8 @@ func (q *Queries) SucceedRun(ctx context.Context, arg SucceedRunParams) (Run, er
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.OnFailure,
+		&i.StepsCancelled,
 	)
 	return i, err
 }

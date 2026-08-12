@@ -18,12 +18,28 @@ const (
 	StepStatusReady     = "ready"
 	StepStatusRunning   = "running"
 	StepStatusSucceeded = "succeeded"
-	StepStatusFailed    = "failed"
-	StepStatusSkipped   = "skipped"
+	// StepStatusFailed: retired as a resting state by ticket 5.4 — ADR-006
+	// made `failed` a routing state the completion transaction passes
+	// through, and the terminal failure state is dead_lettered. The
+	// constant (and the schema CHECK entry) remain for pre-5.4 rows;
+	// nothing writes it anymore.
+	StepStatusFailed  = "failed"
+	StepStatusSkipped = "skipped"
 	// StepStatusRetrying: a failed attempt was recorded and another is due
 	// at run_steps.next_attempt_at (ticket 5.2, ADR-006). Not terminal —
 	// the claim CAS moves it back to running once the backoff elapses.
 	StepStatusRetrying = "retrying"
+	// StepStatusDeadLettered: the terminal failure state (ticket 5.4,
+	// ADR-006) — exhausted retries, a never-retryable class, or a poison
+	// message. Every dead_lettered step has at least one dead_letters row;
+	// the requeue op is the only way out (→ ready).
+	StepStatusDeadLettered = "dead_lettered"
+	// StepStatusCancelled: the step will never run — written off because a
+	// dead-lettered upstream step made its readiness impossible (ticket
+	// 5.4, under continue_independent_branches), or cancelled by run-level
+	// control flow (M5.6). Terminal unless a requeue revives it (→
+	// pending).
+	StepStatusCancelled = "cancelled"
 )
 
 // Edge types.
@@ -61,7 +77,35 @@ const (
 	// ADR-006). The step stays `retrying`; the claim CAS accepts it once
 	// due.
 	OutboxReasonReconcileRetry = "reconcile_retry"
+	// OutboxReasonDLQRequeue: the requeue op re-dispatched a dead-lettered
+	// step it just reset to ready (ticket 5.4, ADR-006 "Requeue") — plus
+	// any other ready step of the run whose dispatch was consumed while
+	// the run was failed.
+	OutboxReasonDLQRequeue = "dlq_requeue"
 )
+
+// Dead-letter sources (ticket 5.4, ADR-006 "Dead-letter model"): why a
+// step landed in the DLQ. Mirrored by the dead_letters_source_check
+// constraint.
+const (
+	// DeadLetterSourceRetriesExhausted: a retryable class ran out of
+	// budget — the final counted failure was the step's last attempt.
+	DeadLetterSourceRetriesExhausted = "retries_exhausted"
+	// DeadLetterSourcePermanent: the failure was never retryable — a
+	// permanent class, a class outside the step's retry_on, or a corrupt
+	// materialized policy that made the retry decision impossible.
+	DeadLetterSourcePermanent = "permanent"
+	// DeadLetterSourcePoison: the queue's delivery-count threshold tripped
+	// (ADR-005) — the entry's handlers kept dying without ever recording a
+	// judgment, so class is NULL and the raw envelope is preserved in
+	// payload.
+	DeadLetterSourcePoison = "poison"
+)
+
+// CancelReasonUpstreamDeadLettered is the step_cancelled event reason the
+// write-off records (ticket 5.4): a dead-lettered upstream step made this
+// step's readiness impossible. M5.6's run-cancel adds its own reasons.
+const CancelReasonUpstreamDeadLettered = "upstream_dead_lettered"
 
 // Attempt outcomes (ADR-006's error classes, plus `succeeded` and the
 // administrative `lost`). The bare `failed` written by 2.6–4.x is retired:
@@ -108,6 +152,24 @@ const (
 	// ADR-006). The payload carries the attempt, its class, and when the
 	// next attempt is due.
 	EventStepRetryScheduled = "step_retry_scheduled"
-	EventRunSucceeded       = "run_succeeded"
-	EventRunFailed          = "run_failed"
+	// EventStepDeadLettered: the step reached the terminal failure state
+	// (ticket 5.4, ADR-006). The payload carries the source, the judged
+	// class (empty for poison), the attempt count at death, and the
+	// dead_letters seq.
+	EventStepDeadLettered = "step_dead_lettered"
+	// EventStepCancelled: the step was written off — it can never become
+	// ready (ticket 5.4). The payload carries the reason
+	// (upstream_dead_lettered; M5.6 adds run-cancel reasons).
+	EventStepCancelled = "step_cancelled"
+	// EventStepRequeued: the requeue op reset a dead-lettered step to
+	// ready, re-arming its full retry policy (ticket 5.4).
+	EventStepRequeued = "step_requeued"
+	// EventStepRevived: a requeue made a written-off (cancelled) step's
+	// readiness possible again — back to pending (ticket 5.4).
+	EventStepRevived  = "step_revived"
+	EventRunSucceeded = "run_succeeded"
+	EventRunFailed    = "run_failed"
+	// EventRunResumed: a requeue re-opened a failed run (ticket 5.4) — the
+	// claim path admits its steps again.
+	EventRunResumed = "run_resumed"
 )

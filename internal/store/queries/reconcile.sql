@@ -9,11 +9,19 @@
 -- outbox row was drained. The anti-join keeps the sweep idempotent: a step
 -- with a pending task_outbox row is one drain away from dispatch and needs
 -- nothing. Served by ADR-004's partial index on (status, updated_at).
+-- Since ticket 5.4 every step scan requires the run to still be running:
+-- a failed run legitimately strands ready/running/retrying steps (the
+-- fail_fast disposition; the claim path refuses them), and healing those
+-- forever would be an infinite re-outbox → deliver → ack-drop churn loop.
+-- A requeue that re-opens the run re-outboxes its ready steps itself.
 -- name: ListStaleReadySteps :many
 SELECT rs.run_id, rs.step_id, rs.updated_at
 FROM run_steps rs
 WHERE rs.status = 'ready'
   AND rs.updated_at < @stale_before::timestamptz
+  AND EXISTS (
+      SELECT 1 FROM runs r
+      WHERE r.id = rs.run_id AND r.status = 'running')
   AND NOT EXISTS (
       SELECT 1 FROM task_outbox o
       WHERE o.run_id = rs.run_id AND o.step_id = rs.step_id)
@@ -36,6 +44,9 @@ SELECT rs.run_id, rs.step_id, rs.updated_at, rs.claim_id,
 FROM run_steps rs
 WHERE rs.status = 'running'
   AND rs.updated_at < @stale_before::timestamptz
+  AND EXISTS (
+      SELECT 1 FROM runs r
+      WHERE r.id = rs.run_id AND r.status = 'running')
 ORDER BY rs.updated_at
 LIMIT @row_limit;
 
@@ -52,6 +63,9 @@ SELECT rs.run_id, rs.step_id, rs.next_attempt_at
 FROM run_steps rs
 WHERE rs.status = 'retrying'
   AND rs.next_attempt_at < @stale_before::timestamptz
+  AND EXISTS (
+      SELECT 1 FROM runs r
+      WHERE r.id = rs.run_id AND r.status = 'running')
   AND NOT EXISTS (
       SELECT 1 FROM task_outbox o
       WHERE o.run_id = rs.run_id AND o.step_id = rs.step_id)

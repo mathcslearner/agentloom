@@ -316,8 +316,8 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		// executor once per delivery until the poison threshold).
 		// ResolveEdge's graph-integrity errors deliberately stay on the
 		// redeliver path: they mean the run's bookkeeping is corrupt, and
-		// a FailStep over the same corrupt rows is not a safer outcome
-		// than surfacing on the poison path.
+		// a dead-letter completion over the same corrupt rows is not a
+		// safer outcome than surfacing on the poison path.
 		var de *dag.DecodeError
 		if errors.As(txErr, &de) {
 			logger.WarnContext(ctx, "corrupt step config discovered during fan-out; recording step failure",
@@ -340,34 +340,47 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 	return nil
 }
 
-// attemptRunRollup tries running → succeeded and drops the conflict when
-// the guard does not (yet) hold — the completion transaction simply
-// attempts it after its step lands; the guard passes exactly once, on the
-// transaction that terminalizes the last step of a fully-successful run.
+// attemptRunRollup tries the terminal rollups and drops the conflicts
+// when neither guard (yet) holds — the completion transaction simply
+// attempts them after its step lands. SucceedRun passes exactly once, on
+// the transaction that terminalizes the last step of a fully-successful
+// run; FailRunRollup (ticket 5.4) passes exactly once on the transaction
+// that terminalizes the last step of a continue_independent_branches run
+// carrying a dead-lettered step — partial success is still a failed run,
+// with the per-step statuses carrying the nuance (ADR-006).
 func attemptRunRollup(ctx context.Context, q store.Querier, runID uuid.UUID, now time.Time) (bool, error) {
 	_, err := store.SucceedRun(ctx, q, store.SucceedRunArgs{RunID: runID, Now: now})
 	if err == nil {
 		return true, nil
 	}
 	var te *store.TransitionError
+	if !errors.As(err, &te) {
+		return false, err
+	}
+	_, err = store.FailRunRollup(ctx, q, store.FailRunArgs{RunID: runID, Now: now})
+	if err == nil {
+		return true, nil
+	}
 	if errors.As(err, &te) {
 		return false, nil
 	}
 	return false, err
 }
 
-// completeFailure is the failure router (ticket 5.2, ADR-006): one
+// completeFailure is the failure router (tickets 5.2 + 5.4, ADR-006): one
 // transaction that records the classed attempt failure and routes the
 // step by the materialized policy — running → retrying (the budget admits
 // another attempt of a retryable class, next_attempt_at stamped) or
-// running → failed plus the v1-minimum run rollup running → failed (the
-// terminal path; 5.4 upgrades it to dead_lettered and the failure
-// policy). On the retry route the delayed re-dispatch is scheduled
-// post-commit, best-effort: the envelope (reason retry, no EnqueuedAt so
-// the delayed member dedups) fires at next_attempt_at, and a crash or
-// Schedule failure after the commit is healed by the reconciler's
-// overdue-retrying scan — either way the entry is consumed (nil return,
-// ACK), because the durable row now carries the retry.
+// running → dead_lettered with its dead_letters record plus the run
+// disposition per the workflow failure policy (fail_fast fails the run;
+// continue_independent_branches writes off the newly-impossible
+// descendants and attempts the all-terminal rollup). On the retry route
+// the delayed re-dispatch is scheduled post-commit, best-effort: the
+// envelope (reason retry, no EnqueuedAt so the delayed member dedups)
+// fires at next_attempt_at, and a crash or Schedule failure after the
+// commit is healed by the reconciler's overdue-retrying scan — either way
+// the entry is consumed (nil return, ACK), because the durable row now
+// carries the retry.
 func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr error, class dag.ErrorClass) error {
 	logger := log.From(ctx)
 	if declared, ok := misdeclaredClass(execErr); ok {
@@ -391,21 +404,25 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 
 	now := e.now()
 	runFailed := false
+	var cancelledSteps []string
 	var fireAt time.Time
 	scheduled := false
 	var fenced *store.TransitionError
 	txErr := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
 		retry := perr == nil && policy.Retries(class)
+		exhausted := false
 		if retry {
 			prior, err := q.Attempts().CountCountedFailures(ctx, step.RunID, step.StepID)
 			if err != nil {
 				return err
 			}
 			// This failure is counted failure n; lost closures never count
-			// (ADR-006 — the budget is judged attempts only).
+			// (ADR-006 — the budget is judged attempts only), and after a
+			// requeue the count starts at the dead_letters baseline.
 			n := int(prior) + 1
 			if n >= policy.MaxAttempts {
 				retry = false // budget exhausted: this was the last attempt
+				exhausted = true
 			} else {
 				delay, derr := retryDelay(policy, n, e.jitterRand)
 				if derr != nil {
@@ -430,9 +447,17 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 			scheduled = true
 			return nil
 		}
-		if _, err := store.FailStep(ctx, q, store.FailStepArgs{
+		// The terminal path (ticket 5.4): dead-letter with the source the
+		// disposition records — retries_exhausted iff a retryable class ran
+		// out of budget; permanent otherwise (a never-retryable class, a
+		// class outside retry_on, or a corrupt policy).
+		source := store.DeadLetterSourcePermanent
+		if exhausted {
+			source = store.DeadLetterSourceRetriesExhausted
+		}
+		if _, err := store.DeadLetterStep(ctx, q, store.DeadLetterStepArgs{
 			RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
-			Outcome: string(class), Error: payload, Now: now,
+			Source: source, Outcome: string(class), Error: payload, Now: now,
 		}); err != nil {
 			// The fence firing on the failure path — see completeSuccess.
 			errors.As(err, &fenced)
@@ -441,18 +466,16 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 		if err := failpoint(stageAfterStepTransition); err != nil {
 			return err
 		}
-		_, err := store.FailRun(ctx, q, store.FailRunArgs{RunID: step.RunID, Now: now})
-		if err == nil {
-			runFailed = true
-			return nil
+		// The failure policy is immutable run state; reading it under the
+		// run lock DeadLetterStep took keeps the transaction's one read
+		// consistent with its writes.
+		run, err := q.Runs().Get(ctx, step.RunID)
+		if err != nil {
+			return err
 		}
-		// Wrong status (a parallel branch already failed the run) is the
-		// only conflict the guard can produce here; drop it.
-		var te *store.TransitionError
-		if errors.As(err, &te) {
-			return nil
-		}
-		return err
+		var derr error
+		cancelledSteps, runFailed, derr = deadLetterDisposition(ctx, q, run.OnFailure, step.RunID, now)
+		return derr
 	})
 	if txErr != nil {
 		if fenced != nil {
@@ -471,9 +494,10 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 			slog.Time("next_attempt_at", fireAt))
 		return nil
 	}
-	logger.WarnContext(ctx, "step failed",
+	logger.WarnContext(ctx, "step dead-lettered",
 		slog.Any("error", execErr),
 		slog.String("class", string(class)),
+		slog.Int("steps_cancelled", len(cancelledSteps)),
 		slog.Bool("run_failed", runFailed))
 	return nil
 }
