@@ -153,7 +153,7 @@ from that milestone on; v1 rows are enforced from 2.6.
 | `running` | `dead_lettered` | **terminal failure** (as built in 5.4; the reserved `failed → dead_lettered` row was realized as a direct CAS, like the retry route): matching `claim_id`; retries exhausted or class never retryable; the attempt closes with its judged class, `steps_failed` bumps, and the `dead_letters` record (source, class, attempts-at-death) inserts in the same transaction, followed by the run disposition | 5.4 |
 | `pending`, `ready`, `running`, `retrying` | `dead_lettered` | **poison** (5.4): no claim fence — the entry's handlers kept dying without recording a judgment; `claim_id` clears (a zombie holder's completion then fences off) and a running step's dangling attempt closes `lost`; the `dead_letters` record carries source `poison`, NULL class, and the raw envelope payload | 5.4 |
 | `pending` | `cancelled` | **write-off** (5.4, `continue_independent_branches`): a dead-lettered upstream step made readiness impossible (the fixed-point walk of ADR-006); `steps_cancelled` bumps; dependency counters and edges untouched | 5.4 |
-| `dead_lettered` | `ready` | **DLQ requeue** (5.4 internal op; API M6.5): error and schedule state clear, `steps_failed` un-bumps, `dlq_requeue` outbox row; the budget re-arms via the `dead_letters` baseline, attempt history immutable | 5.4 |
+| `dead_lettered` | `ready` | **DLQ requeue** (5.4 internal op; `POST /v1/runs/{id}/steps/{sid}/requeue` since 6.5): error and schedule state clear, `steps_failed` un-bumps, `dlq_requeue` outbox row; the budget re-arms via the `dead_letters` baseline, attempt history immutable | 5.4 |
 | `cancelled` | `pending` | **revival** (5.4): a requeue made a written-off step's readiness possible again (recomputed write-off set); `steps_cancelled` un-bumps — a pure status flip, since the write-off never touched counters | 5.4 |
 | `pending`, `ready`, `retrying` | `cancelled` | **run-cancel sweep** (as built in 5.6): the cancel request writes off every claimless non-terminal step in its own transaction (a `retrying` step's `next_attempt_at` clears); `steps_cancelled` bumps; no attempt closes — none is open. Same CAS as the 5.4 write-off, broadened from-set, event reason `run_cancelled` | 5.4/5.6 |
 | `running` | `cancelled` | **run-cancel settlement** (as built in 5.6): matching `claim_id`; the in-flight worker noticed its run is cancelling (the cancellation watch, or the completion transaction's run-status check under the run lock) and settles the step instead of routing its outcome — the attempt closes with the administrative outcome `cancelled` (never counted against the retry budget), the executor's error (if any) is recorded, `steps_cancelled` bumps. A worker that *died* instead is healed by the reconciler's cancelling-run scan: takeover (attempt `lost`) + the sweep CAS above | 5.6 |
@@ -258,7 +258,15 @@ once written; a new version is a new row.
   compatibility surface) and is the source `run_steps.config` is
   materialized from.
 - `status`, `params` (submitted run parameters), `idempotency_token`
-  (nullable; unique among non-null — 2.5's idempotent submission).
+  (nullable; unique among non-null — 2.5's idempotent submission), and
+  since 6.5 `idempotency_fingerprint` (nullable; the hex SHA-256 binding
+  the token to its payload — canonical definition snapshot,
+  canonicalized params, definition ref — so a token replayed with a
+  different payload is refused instead of silently returning the
+  original run; NULL on pre-0009 rows means unchecked reuse, ADR-007
+  "ticket 6.5"). Migration 0009 also added the run-list keyset indexes
+  `runs (created_at DESC, id DESC)` and the partial
+  `runs (definition_id, created_at DESC, id DESC)`.
 - `graph_version` — the run's current graph version, starting at 1;
   `ExpandRun` increments it (M13).
 - `next_seq` — the event sequence counter (above).

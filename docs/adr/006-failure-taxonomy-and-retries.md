@@ -337,7 +337,7 @@ audited requeue. Concretely (5.4's migration):
 - Events: `step_dead_lettered` (payload: source, class, attempts),
   joining the free-form event vocabulary.
 
-**Requeue** (internal op in 5.4; API in M6.5) is the guarded CAS
+**Requeue** (internal op in 5.4; `POST /v1/runs/{id}/steps/{sid}/requeue` since 6.5) is the guarded CAS
 `dead_lettered → ready` plus an outbox row with reason `dlq_requeue`.
 Attempt history is immutable — `attempt_count` never resets (attempt
 rows are keyed by `attempt_no`). Instead, the requeue records the
@@ -434,7 +434,7 @@ and consumed — see ADR-005's as-built note. A poison entry for an
 already-terminal step is consumed as a stale duplicate; transport
 failures leave it pending for the next reclaim pass.
 
-**Requeue** (engine op `Requeue`; API M6.5) is one transaction:
+**Requeue** (on `engine.Control` since 6.5, exposed as `POST /v1/runs/{id}/steps/{sid}/requeue`) is one transaction:
 `dead_lettered → ready` (error/schedule state cleared, `steps_failed`
 un-bumped, `step_requeued` event), `failed → running` if the run was
 failed (`run_resumed`), revival of written-off descendants — the
@@ -511,7 +511,8 @@ line. The 5.8 chaos suite counts those lines at quiescence.
 
 Runs gained `parked`, `cancelling`, and `cancelled` (migration 0007;
 ADR-004's reserved rows realized), three engine ops (`Cancel`, `Park`,
-`Unpark` — internal until M6.5's API), and an optional definition-level
+`Unpark` — on `engine.Control` since 6.5, exposed via the run-lifecycle
+API), and an optional definition-level
 `max_wall_clock` (a Go-duration string, ≤ 30 days, code
 `max_wall_clock_field_invalid`) materialized at instantiation as the
 absolute `runs.deadline_at`.

@@ -78,6 +78,12 @@ func keysServer(t *testing.T, rootKey string) (*store.Store, *httptest.Server, *
 // JSON body into out (may be nil) and returning the response.
 func doAuth(t *testing.T, srv *httptest.Server, method, path, bearer string, body []byte, out any) *http.Response {
 	t.Helper()
+	return doAuthHdr(t, srv, method, path, bearer, nil, body, out)
+}
+
+// doAuthHdr is doAuth with extra request headers (e.g. Idempotency-Key).
+func doAuthHdr(t *testing.T, srv *httptest.Server, method, path, bearer string, headers map[string]string, body []byte, out any) *http.Response {
+	t.Helper()
 	var rd io.Reader
 	if body != nil {
 		rd = bytes.NewReader(body)
@@ -91,6 +97,9 @@ func doAuth(t *testing.T, srv *httptest.Server, method, path, bearer string, bod
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	res, err := srv.Client().Do(req)
 	if err != nil {

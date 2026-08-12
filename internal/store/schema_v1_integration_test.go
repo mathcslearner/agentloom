@@ -79,9 +79,11 @@ func TestSchemaV1TablesAndIndexesExist(t *testing.T) {
 
 	// The hot-path indexes named in ADR-004.
 	for _, index := range []string{
-		"run_steps_inflight_idx",     // reconciler: in-flight steps by staleness
-		"runs_status_created_at_idx", // run listing / status rollup
-		"runs_idempotency_token_key", // idempotent submission (partial unique)
+		"run_steps_inflight_idx",      // reconciler: in-flight steps by staleness
+		"runs_status_created_at_idx",  // run listing / status rollup
+		"runs_idempotency_token_key",  // idempotent submission (partial unique)
+		"runs_created_at_id_idx",      // run-list keyset order (6.5)
+		"runs_definition_created_idx", // run-list definition filter (6.5)
 	} {
 		var one int
 		err := pool.QueryRow(ctx,

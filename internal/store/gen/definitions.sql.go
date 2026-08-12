@@ -12,6 +12,19 @@ import (
 	"github.com/google/uuid"
 )
 
+const acquireDefinitionNameLock = `-- name: AcquireDefinitionNameLock :exec
+SELECT pg_advisory_xact_lock($1::bigint)
+`
+
+// AcquireDefinitionNameLock serializes version allocation per name
+// (ticket 6.5): a transaction-scoped advisory lock keyed on the name's
+// hash, released at commit/rollback. A cross-name hash collision merely
+// serializes two unrelated appends.
+func (q *Queries) AcquireDefinitionNameLock(ctx context.Context, lockKey int64) error {
+	_, err := q.db.Exec(ctx, acquireDefinitionNameLock, lockKey)
+	return err
+}
+
 const createDefinition = `-- name: CreateDefinition :one
 
 INSERT INTO workflow_definitions (name, version, spec)
@@ -27,7 +40,8 @@ type CreateDefinitionParams struct {
 
 // Stored-definition registry storage (ADR-004). Rows are immutable: no
 // UPDATE queries by design. Registry semantics (version assignment,
-// creation API) arrive in M6.
+// creation API) are ticket 6.5's: Store.CreateDefinition /
+// Store.CreateDefinitionVersion in definitions.go.
 func (q *Queries) CreateDefinition(ctx context.Context, arg CreateDefinitionParams) (WorkflowDefinition, error) {
 	row := q.db.QueryRow(ctx, createDefinition, arg.Name, arg.Version, arg.Spec)
 	var i WorkflowDefinition
@@ -150,4 +164,60 @@ func (q *Queries) ListDefinitions(ctx context.Context) ([]WorkflowDefinition, er
 		return nil, err
 	}
 	return items, nil
+}
+
+const listDefinitionsLatest = `-- name: ListDefinitionsLatest :many
+SELECT DISTINCT ON (name) id, name, version, spec, created_at FROM workflow_definitions
+WHERE ($1::text IS NULL OR name > $1::text)
+ORDER BY name, version DESC
+LIMIT $2
+`
+
+type ListDefinitionsLatestParams struct {
+	CursorName *string
+	RowLimit   int32
+}
+
+// ListDefinitionsLatest returns the newest version of each name, keyset-
+// paginated by name (the definitions list API, 6.5).
+func (q *Queries) ListDefinitionsLatest(ctx context.Context, arg ListDefinitionsLatestParams) ([]WorkflowDefinition, error) {
+	rows, err := q.db.Query(ctx, listDefinitionsLatest, arg.CursorName, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowDefinition
+	for rows.Next() {
+		var i WorkflowDefinition
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Version,
+			&i.Spec,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const nextDefinitionVersion = `-- name: NextDefinitionVersion :one
+SELECT (COALESCE(MAX(version), 0) + 1)::int AS next_version
+FROM workflow_definitions WHERE name = $1
+`
+
+// NextDefinitionVersion computes the version a new row of this name should
+// take: 1 for an unseen name. Allocation is serialized by the per-name
+// advisory lock below (Store.CreateDefinitionVersion), not by row locks —
+// MAX cannot lock rows that do not exist yet.
+func (q *Queries) NextDefinitionVersion(ctx context.Context, name string) (int32, error) {
+	row := q.db.QueryRow(ctx, nextDefinitionVersion, name)
+	var next_version int32
+	err := row.Scan(&next_version)
+	return next_version, err
 }

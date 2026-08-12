@@ -3,9 +3,9 @@
 
 -- name: CreateRun :one
 INSERT INTO runs (id, definition_id, definition, status, params,
-                  idempotency_token, on_failure, steps_total, started_at,
-                  deadline_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                  idempotency_token, idempotency_fingerprint, on_failure,
+                  steps_total, started_at, deadline_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING *;
 
 -- name: GetRun :one
@@ -26,6 +26,22 @@ SELECT * FROM runs ORDER BY created_at DESC, id LIMIT $1;
 
 -- name: ListRunsByStatus :many
 SELECT * FROM runs WHERE status = $1 ORDER BY created_at DESC, id LIMIT $2;
+
+-- ListRunsPage is the run-list API's keyset page read (ticket 6.5). Every
+-- filter is optional (NULL disables it); the cursor is the last row of the
+-- previous page and the row-value comparison is exactly "strictly after the
+-- cursor in list order" because the order is uniformly descending. Served
+-- by runs_created_at_id_idx / runs_definition_created_idx (0009).
+-- name: ListRunsPage :many
+SELECT * FROM runs
+WHERE (sqlc.narg('status')::text IS NULL OR status = sqlc.narg('status')::text)
+  AND (sqlc.narg('definition_id')::uuid IS NULL OR definition_id = sqlc.narg('definition_id')::uuid)
+  AND (sqlc.narg('created_after')::timestamptz IS NULL OR created_at >= sqlc.narg('created_after')::timestamptz)
+  AND (sqlc.narg('created_before')::timestamptz IS NULL OR created_at < sqlc.narg('created_before')::timestamptz)
+  AND (sqlc.narg('cursor_created_at')::timestamptz IS NULL
+       OR (created_at, id) < (sqlc.narg('cursor_created_at')::timestamptz, sqlc.narg('cursor_id')::uuid))
+ORDER BY created_at DESC, id DESC
+LIMIT @row_limit;
 
 -- name: DeleteRun :execrows
 DELETE FROM runs WHERE id = $1;

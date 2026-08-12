@@ -26,6 +26,18 @@ type DefinitionRepo interface {
 	// ListVersions returns all versions of one definition, oldest first.
 	ListVersions(ctx context.Context, name string) ([]gen.WorkflowDefinition, error)
 	List(ctx context.Context) ([]gen.WorkflowDefinition, error)
+	// ListLatest returns the newest version of each name, in name order,
+	// keyset-paginated: names strictly after cursorName (nil = from the
+	// start), up to limit rows (the definitions list API, ticket 6.5).
+	ListLatest(ctx context.Context, cursorName *string, limit int32) ([]gen.WorkflowDefinition, error)
+	// NextVersion returns the version a new row of this name should take:
+	// 1 for an unseen name. Callers serialize via LockName first —
+	// Store.CreateDefinitionVersion is the composed op.
+	NextVersion(ctx context.Context, name string) (int32, error)
+	// LockName takes the name's transaction-scoped advisory lock,
+	// serializing version allocation. Must run inside WithTx (the lock is
+	// released at commit/rollback); any other Querier fails with ErrNoTx.
+	LockName(ctx context.Context, name string) error
 	// Delete fails with a ConflictError while runs reference the
 	// definition (ON DELETE RESTRICT).
 	Delete(ctx context.Context, id uuid.UUID) error
@@ -58,6 +70,23 @@ func (r definitionRepo) List(ctx context.Context) ([]gen.WorkflowDefinition, err
 	return defs, wrapErr("list definitions", err)
 }
 
+func (r definitionRepo) ListLatest(ctx context.Context, cursorName *string, limit int32) ([]gen.WorkflowDefinition, error) {
+	defs, err := r.q.ListDefinitionsLatest(ctx, gen.ListDefinitionsLatestParams{CursorName: cursorName, RowLimit: limit})
+	return defs, wrapErr("list latest definitions", err)
+}
+
+func (r definitionRepo) NextVersion(ctx context.Context, name string) (int32, error) {
+	v, err := r.q.NextDefinitionVersion(ctx, name)
+	return v, wrapErr("next definition version", err)
+}
+
+func (r definitionRepo) LockName(ctx context.Context, name string) error {
+	if ctx.Value(txMarker{}) == nil {
+		return fmt.Errorf("store: lock definition name: %w", ErrNoTx)
+	}
+	return wrapErr("lock definition name", r.q.AcquireDefinitionNameLock(ctx, definitionNameLockKey(name)))
+}
+
 func (r definitionRepo) Delete(ctx context.Context, id uuid.UUID) error {
 	rows, err := r.q.DeleteDefinition(ctx, id)
 	if err == nil && rows == 0 {
@@ -81,6 +110,11 @@ type RunRepo interface {
 	// List returns runs newest-first.
 	List(ctx context.Context, limit int32) ([]gen.Run, error)
 	ListByStatus(ctx context.Context, status string, limit int32) ([]gen.Run, error)
+	// ListPage is the run-list API's keyset page read (ticket 6.5): order
+	// (created_at DESC, id DESC), optional status/definition/time-range
+	// filters, cursor = the previous page's last row. Nil filter/cursor
+	// fields are disabled.
+	ListPage(ctx context.Context, arg gen.ListRunsPageParams) ([]gen.Run, error)
 	// Delete cascades to the run's steps, edges, attempts, and events.
 	Delete(ctx context.Context, id uuid.UUID) error
 	// AllocateEventSeq returns the next per-run event sequence number
@@ -130,6 +164,11 @@ func (r runRepo) List(ctx context.Context, limit int32) ([]gen.Run, error) {
 func (r runRepo) ListByStatus(ctx context.Context, status string, limit int32) ([]gen.Run, error) {
 	runs, err := r.q.ListRunsByStatus(ctx, gen.ListRunsByStatusParams{Status: status, Limit: limit})
 	return runs, wrapErr("list runs by status", err)
+}
+
+func (r runRepo) ListPage(ctx context.Context, arg gen.ListRunsPageParams) ([]gen.Run, error) {
+	runs, err := r.q.ListRunsPage(ctx, arg)
+	return runs, wrapErr("list runs page", err)
 }
 
 func (r runRepo) Delete(ctx context.Context, id uuid.UUID) error {

@@ -19,7 +19,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -320,13 +319,13 @@ func TestRateLimitSubmitClassOnRealSubmission(t *testing.T) {
 
 	def := []byte(`{"schema_version":1,"name":"rl-probe","steps":[{"id":"a","type":"noop"}],"edges":[]}`)
 	for i := 0; i < 2; i++ {
-		body := submitBody(t, def, "", fmt.Sprintf("rl-probe-%d", i))
+		body := submitBody(t, def, "")
 		res := doAuth(t, srv, http.MethodPost, "/v1/runs", client.Key, body, nil)
 		if res.StatusCode != http.StatusCreated {
 			t.Fatalf("submit %d: status = %d, want 201", i+1, res.StatusCode)
 		}
 	}
-	res := doAuth(t, srv, http.MethodPost, "/v1/runs", client.Key, submitBody(t, def, "", "rl-probe-final"), nil)
+	res := doAuth(t, srv, http.MethodPost, "/v1/runs", client.Key, submitBody(t, def, ""), nil)
 	if res.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("submit over threshold: status = %d, want 429", res.StatusCode)
 	}

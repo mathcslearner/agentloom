@@ -22,11 +22,21 @@ import (
 // requireScope on the route and extend the behavioral coverage in
 // ratelimit_integration_test.go.
 var routeClasses = map[string]routeClass{
-	"POST /v1/runs":           classSubmit,
-	"GET /v1/runs/{runID}":    classRead,
-	"POST /v1/keys":           classAdmin,
-	"GET /v1/keys":            classAdmin,
-	"DELETE /v1/keys/{keyID}": classAdmin,
+	"POST /v1/runs":                                classSubmit,
+	"GET /v1/runs":                                 classRead,
+	"GET /v1/runs/{runID}":                         classRead,
+	"POST /v1/runs/{runID}/cancel":                 classSubmit,
+	"POST /v1/runs/{runID}/park":                   classSubmit,
+	"POST /v1/runs/{runID}/unpark":                 classSubmit,
+	"POST /v1/runs/{runID}/steps/{stepID}/requeue": classSubmit,
+	"POST /v1/definitions":                         classSubmit,
+	"GET /v1/definitions":                          classRead,
+	"GET /v1/definitions/{defID}":                  classRead,
+	"GET /v1/definitions/{name}/versions":          classRead,
+	"POST /v1/definitions/{name}/versions":         classSubmit,
+	"POST /v1/keys":                                classAdmin,
+	"GET /v1/keys":                                 classAdmin,
+	"DELETE /v1/keys/{keyID}":                      classAdmin,
 }
 
 // TestV1RouteClassCoverage walks the live router and asserts every /v1

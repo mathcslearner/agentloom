@@ -3117,3 +3117,115 @@ script. `X-RateLimit-Reset` server-computed truth (growing the script
 reply) also waits for a real need. ctl gained no 429 backoff handling —
 its poll cadence sits far under the read defaults; revisit with 6.5's
 list endpoints if watch traffic grows.
+
+### 6.5 — Run & definition lifecycle endpoints ✅
+
+**Delivered.** The full lifecycle API: the definition registry
+(`POST /v1/definitions`, `POST /v1/definitions/{name}/versions`,
+`GET /v1/definitions` latest-per-name keyset listing,
+`GET /v1/definitions/{id}` with the stored spec,
+`GET /v1/definitions/{name}/versions`), the run list
+(`GET /v1/runs` — keyset pagination + status/definition/time-range
+filters), the four run-control endpoints (`POST /v1/runs/{id}/cancel`,
+`…/park`, `…/unpark`, `…/steps/{sid}/requeue`) over the 5.4/5.6 engine
+ops, and both post-M4-audit idempotency hardenings — the token now rides
+the `Idempotency-Key` header, is length-bounded (400 instead of the old
+btree-limit 500), and is fingerprinted to its payload so a mismatched
+replay 409s instead of silently returning the original run. Scopes and
+rate-limit classes land exactly on ADR-007's pre-assigned rows
+(lifecycle + definition-create = submit, listings = read), enforced by
+the existing walk-based coverage tests.
+
+**Engine: `Control` extraction.** Cancel/Park/Unpark/Requeue moved onto
+`engine.Control` (store + clock + optional nudge — their entire
+dependency footprint); `Engine` embeds `*Control` so every existing call
+site is untouched, and `engine.NewControl` gives the API a control
+surface without an executor registry or effects journal. `api.New`
+builds it internally over the same store/clock with a **nil nudge** —
+deliberate: the ops' outbox rows (`unpark`, `dlq_requeue`) are drained
+on the worker fleet's dispatch cadence, so ADR-002's "the API never
+talks to Redis for dispatch" holds. Requeue's cancelled-run refusal
+became the typed `engine.ErrRunNotRequeueable` so the handler can map it
+to 409 (it was a bare `fmt.Errorf` that would have 500'd).
+
+**Store.** Migration 0009: `runs.idempotency_fingerprint` (nullable
+TEXT) plus the run-list keyset indexes — `runs (created_at DESC, id
+DESC)` and partial `runs (definition_id, created_at DESC, id DESC)`.
+`CreateRun` computes the fingerprint (hex SHA-256 over the canonical
+snapshot, canonicalized params — key order and formatting normalized —
+and the definition ref or an inline marker), stores it beside the token,
+and both reuse paths (pre-check and lost-race conflict catch) compare it,
+returning the new `*store.IdempotencyMismatchError` (unwraps to
+`ErrConflict`) on divergence; NULL fingerprints (pre-0009 rows) are
+grandfathered as unchecked reuse. `MaxIdempotencyTokenLength` (200) is
+enforced at both layers. Registry ops: `Store.CreateDefinition`
+(canonical `dag.Encode` spec at version 1; existing name surfaces the
+`(name, version)` `*ConflictError`) and `Store.CreateDefinitionVersion`
+(one transaction: per-name `pg_advisory_xact_lock` via the new
+`DefinitionRepo.LockName`, then `NextVersion` MAX+1, then insert —
+serialized allocation, so concurrent appenders get consecutive versions
+with no retry loop; unseen name → `ErrNotFound`). New reads:
+`ListRunsPage` (nullable status/definition/created-range filters, cursor
+as a row-value comparison against the uniformly-descending order) and
+`ListDefinitionsLatest` (`DISTINCT ON (name)`, keyset by name).
+
+**API.** New envelope codes `conflict`, `idempotency_key_conflict`,
+`step_not_found` (all contract). Lifecycle handlers share
+`writeRunOpError` (TransitionError → 409 with the entity's actual
+status in the message, ErrNotFound → 404, requeue disambiguates
+run-vs-step 404 with one extra read). Cursors are opaque base64url
+(JSON `{t, id}` for runs, the bare name for definitions); a garbage
+cursor is a 400. `GET /v1/runs/{id}` now returns the run's
+`dead_letters` (how a client discovers requeueable steps — payload
+deliberately omitted from the wire) and `RunView` gained the 5.x
+columns (`definition_id`, `on_failure`, `steps_cancelled`,
+`park_reason`, `cancel_reason`, `deadline_at`). The submit body's
+`idempotency_token` field is **gone** (pre-1.0 break, ctl moved in the
+same change; 6.6 pins the contract). ctl grew `runs` (tabwriter page +
+next-cursor hint on stderr), `cancel`, `park`, `unpark`, `requeue`, and
+`--token` now sends the header.
+
+**Tests.** Unit: cursor round-trips/garbage, both route tables extended
+(the walk tests forced it), ctl command fakes including the
+header-not-body submit contract. Store integration: fingerprint
+semantics (reorder-tolerant, mismatch typed with the original run id,
+ref-vs-inline distinct, legacy NULL grandfathered), token length bound,
+registry semantics (canonical round-trip, conflict, unseen-name), and
+8-way concurrent version allocation proving consecutive gap-free
+versions. API integration: definitions round-trip + validation/conflict
+table + latest-per-name pagination; run-list filters, parameter
+validation table, and the acceptance keyset walk (12 seeded runs, page
+size 4, 3 inserts between every page — every seeded run exactly once,
+no duplicates); idempotency contract (400/200-reused/409 ×
+params/definition/ref-form, legacy reuse); lifecycle contract (idle
+cancel finalizes in the request tx, double-cancel 409, park/unpark
+cycle with both 409s, miss table incl. run-vs-step 404 split, and the
+requeue-on-cancelled-run 409 via a poison-manufactured dead letter);
+auth matrix rows for all ten new routes (stateful probes mint fresh
+runs per success invocation; the requeue probe's expected "success" is
+the handler's 409 — auth passed). The e2e suite (production dispatcher
++ 2 workers + retry scheduler + 50ms promoter/cancel-poll): DLQ requeue
+→ budget re-armed → succeeded on attempt 3 with `steps_failed` 0;
+in-flight 30s sleep cancelled via the API with attempt history exactly
+`[cancelled]`; park strands the successor (delivery consumed, 0
+attempts), unpark re-dispatches exactly it, run succeeds. Full
+`-race -tags integration ./...` (crash + chaos suites included) and
+lint green.
+
+**Non-obvious decisions / deferred.**
+- Version allocation uses a per-name advisory lock instead of a
+  retry-on-conflict loop: MAX+1 cannot lock rows that don't exist, and
+  bounded retries flake under real contention. Cross-name hash
+  collisions merely serialize two unrelated appends.
+- `ListRuns`' order flipped to uniform `(created_at DESC, id DESC)` so
+  one row-value predicate is exactly "strictly after the cursor";
+  keyset stability under concurrent inserts then holds by construction
+  (new rows sort before any issued cursor position).
+- Definition create is not upsert: an existing name is a 409 pointing
+  at the versions route — accidental fork vs deliberate version stays
+  explicit.
+- Idempotency tokens stay global (not per-key) — recorded in ADR-007;
+  scoping later is an additive column, not a contract break.
+- Deferred: ctl commands for the definitions registry (the API is the
+  contract surface; ctl can grow `defs` alongside 6.6's docs), and 429
+  backoff in ctl (unchanged from 6.4's note).

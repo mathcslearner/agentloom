@@ -64,11 +64,11 @@ type CancelResult struct {
 // terminal). In-flight steps settle as their workers notice — the
 // cancellation watch, the completion transaction's run-status check, or
 // the reconciler's cancelling-run heal.
-func (e *Engine) Cancel(ctx context.Context, runID uuid.UUID, reason string) (CancelResult, error) {
+func (c *Control) Cancel(ctx context.Context, runID uuid.UUID, reason string) (CancelResult, error) {
 	ctx = log.With(ctx, log.RunID(runID.String()))
-	now := e.now()
+	now := c.now()
 	var res CancelResult
-	txErr := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+	txErr := c.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
 		var err error
 		res, err = cancelRunTx(ctx, q, runID, reason, now)
 		return err
@@ -170,11 +170,11 @@ func healCancellingStep(ctx context.Context, q store.Querier, st store.StaleRunn
 // path's run-status guard; nothing else changes — in-flight steps settle
 // normally. A typed *store.TransitionError surfaces when the run is not
 // running.
-func (e *Engine) Park(ctx context.Context, runID uuid.UUID, reason string) (gen.Run, error) {
+func (c *Control) Park(ctx context.Context, runID uuid.UUID, reason string) (gen.Run, error) {
 	ctx = log.With(ctx, log.RunID(runID.String()))
-	now := e.now()
+	now := c.now()
 	var run gen.Run
-	txErr := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+	txErr := c.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
 		var err error
 		run, err = store.ParkRun(ctx, q, store.ParkRunArgs{RunID: runID, Reason: reason, Now: now})
 		return err
@@ -202,11 +202,11 @@ type UnparkResult struct {
 // deliberately left to the reconciler's overdue-retrying scan, which
 // admits them again once the run is running. Post-commit, the dispatcher
 // nudge fires.
-func (e *Engine) Unpark(ctx context.Context, runID uuid.UUID) (UnparkResult, error) {
+func (c *Control) Unpark(ctx context.Context, runID uuid.UUID) (UnparkResult, error) {
 	ctx = log.With(ctx, log.RunID(runID.String()))
-	now := e.now()
+	now := c.now()
 	var res UnparkResult
-	txErr := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+	txErr := c.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
 		run, err := store.UnparkRun(ctx, q, store.UnparkRunArgs{RunID: runID, Now: now})
 		if err != nil {
 			return err
@@ -229,8 +229,8 @@ func (e *Engine) Unpark(ctx context.Context, runID uuid.UUID) (UnparkResult, err
 	}
 	log.From(ctx).InfoContext(ctx, "run unparked",
 		slog.Int("steps_dispatched", len(res.Dispatched)))
-	if len(res.Dispatched) > 0 && e.nudge != nil {
-		e.nudge()
+	if len(res.Dispatched) > 0 && c.nudge != nil {
+		c.nudge()
 	}
 	return res, nil
 }

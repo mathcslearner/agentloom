@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mathcslearner/agentloom/internal/api"
 	"github.com/mathcslearner/agentloom/internal/engine"
@@ -37,7 +38,16 @@ var testNow = time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 // ADR-007's bootstrap flow prescribes.
 func newServer(t *testing.T) (*store.Store, *httptest.Server, string) {
 	t.Helper()
-	s := store.NewFromPool(storetest.NewDB(t))
+	_, s, srv, key := newServerWithPool(t)
+	return s, srv, key
+}
+
+// newServerWithPool is newServer exposing the underlying pool too, for
+// tests that need raw SQL access (e.g. manufacturing pre-0009 rows).
+func newServerWithPool(t *testing.T) (*pgxpool.Pool, *store.Store, *httptest.Server, string) {
+	t.Helper()
+	pool := storetest.NewDB(t)
+	s := store.NewFromPool(pool)
 	rootKey := mintTestKey(t)
 	h, err := api.New(s, func() time.Time { return testNow }, nil, rootKey, api.RateLimitOptions{})
 	if err != nil {
@@ -46,7 +56,7 @@ func newServer(t *testing.T) (*store.Store, *httptest.Server, string) {
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	client := createKey(t, srv, rootKey, api.CreateKeyRequest{Name: "test-client", Scopes: []string{"submit", "read"}})
-	return s, srv, client.Key
+	return pool, s, srv, client.Key
 }
 
 // postJSON POSTs body to the run-submission route with the bearer
@@ -67,9 +77,11 @@ func getJSON(t *testing.T, srv *httptest.Server, bearer, path string, out any) i
 }
 
 // submitBody wraps a definition document into a submission request.
-func submitBody(t *testing.T, def []byte, params string, token string) []byte {
+// Idempotent submission rides the Idempotency-Key header since 6.5 — see
+// postRunIdem.
+func submitBody(t *testing.T, def []byte, params string) []byte {
 	t.Helper()
-	req := api.SubmitRunRequest{Definition: def, IdempotencyToken: token}
+	req := api.SubmitRunRequest{Definition: def}
 	if params != "" {
 		req.Params = json.RawMessage(params)
 	}
@@ -78,6 +90,14 @@ func submitBody(t *testing.T, def []byte, params string, token string) []byte {
 		t.Fatalf("marshaling submit request: %v", err)
 	}
 	return body
+}
+
+// postRunIdem POSTs a run submission carrying the Idempotency-Key header.
+func postRunIdem(t *testing.T, srv *httptest.Server, bearer, idemKey string, body []byte, out any) int {
+	t.Helper()
+	res := doAuthHdr(t, srv, http.MethodPost, "/v1/runs", bearer,
+		map[string]string{api.IdempotencyKeyHeader: idemKey}, body, out)
+	return res.StatusCode
 }
 
 // fanoutJSON loads the canonical fanout fixture — the definition the
@@ -109,7 +129,7 @@ func TestSubmitAndGetRun(t *testing.T) {
 	_, srv, key := newServer(t)
 
 	var sub api.SubmitRunResponse
-	status := postJSON(t, srv, key, submitBody(t, fanoutJSON(t), `{"topic": "durable execution"}`, ""), &sub)
+	status := postJSON(t, srv, key, submitBody(t, fanoutJSON(t), `{"topic": "durable execution"}`), &sub)
 	if status != http.StatusCreated {
 		t.Fatalf("POST /v1/runs = %d, want 201", status)
 	}
@@ -166,7 +186,7 @@ func TestSubmitInvalidDefinitionRejected(t *testing.T) {
 		"edges": [{"from": "a", "to": "ghost"}]
 	}`)
 	var envelope api.ErrorBody
-	status := postJSON(t, srv, key, submitBody(t, bad, "", ""), &envelope)
+	status := postJSON(t, srv, key, submitBody(t, bad, ""), &envelope)
 	if status != http.StatusBadRequest {
 		t.Fatalf("POST invalid definition = %d, want 400", status)
 	}
@@ -218,13 +238,13 @@ func TestSubmitIdempotencyToken(t *testing.T) {
 	t.Parallel()
 	_, srv, key := newServer(t)
 
-	body := submitBody(t, fanoutJSON(t), `{"topic": "x"}`, "ctl-test-token")
+	body := submitBody(t, fanoutJSON(t), `{"topic": "x"}`)
 	var first api.SubmitRunResponse
-	if status := postJSON(t, srv, key, body, &first); status != http.StatusCreated {
+	if status := postRunIdem(t, srv, key, "ctl-test-token", body, &first); status != http.StatusCreated {
 		t.Fatalf("first POST = %d, want 201", status)
 	}
 	var second api.SubmitRunResponse
-	if status := postJSON(t, srv, key, body, &second); status != http.StatusOK {
+	if status := postRunIdem(t, srv, key, "ctl-test-token", body, &second); status != http.StatusOK {
 		t.Fatalf("second POST = %d, want 200", status)
 	}
 	if !second.Reused || second.RunID != first.RunID {
@@ -324,7 +344,7 @@ func TestSubmitFanoutRunsToCompletion(t *testing.T) {
 	}
 
 	var sub api.SubmitRunResponse
-	status := postJSON(t, srv, rootKey, submitBody(t, fanoutJSON(t), `{"topic": "durable execution"}`, ""), &sub)
+	status := postJSON(t, srv, rootKey, submitBody(t, fanoutJSON(t), `{"topic": "durable execution"}`), &sub)
 	if status != http.StatusCreated {
 		t.Fatalf("POST /v1/runs = %d, want 201", status)
 	}

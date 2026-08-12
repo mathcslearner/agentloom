@@ -87,14 +87,19 @@ func (c *client) revokeKey(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/keys/"+url.PathEscape(id), nil, nil)
 }
 
-// submitRun POSTs a run submission.
-func (c *client) submitRun(ctx context.Context, req api.SubmitRunRequest) (api.SubmitRunResponse, error) {
+// submitRun POSTs a run submission; a non-empty idempotencyKey rides the
+// Idempotency-Key header (ticket 6.5).
+func (c *client) submitRun(ctx context.Context, req api.SubmitRunRequest, idempotencyKey string) (api.SubmitRunResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return api.SubmitRunResponse{}, fmt.Errorf("encoding request: %w", err)
 	}
 	var resp api.SubmitRunResponse
-	err = c.do(ctx, http.MethodPost, "/v1/runs", body, &resp)
+	err = c.do(ctx, http.MethodPost, "/v1/runs", body, &resp, func(r *http.Request) {
+		if idempotencyKey != "" {
+			r.Header.Set(api.IdempotencyKeyHeader, idempotencyKey)
+		}
+	})
 	return resp, err
 }
 
@@ -105,9 +110,51 @@ func (c *client) getRun(ctx context.Context, runID string) (api.RunResponse, err
 	return resp, err
 }
 
+// listRuns GETs one keyset page of runs (ticket 6.5). query is the
+// pre-encoded query string ("" for the first unfiltered page).
+func (c *client) listRuns(ctx context.Context, query url.Values) (api.ListRunsResponse, error) {
+	path := "/v1/runs"
+	if enc := query.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	var resp api.ListRunsResponse
+	err := c.do(ctx, http.MethodGet, path, nil, &resp)
+	return resp, err
+}
+
+// cancelRun POSTs the run-cancel op (ticket 6.5).
+func (c *client) cancelRun(ctx context.Context, runID string) (api.CancelRunResponse, error) {
+	var resp api.CancelRunResponse
+	err := c.do(ctx, http.MethodPost, "/v1/runs/"+url.PathEscape(runID)+"/cancel", nil, &resp)
+	return resp, err
+}
+
+// parkRun POSTs the run-park op (ticket 6.5).
+func (c *client) parkRun(ctx context.Context, runID string) (api.ParkRunResponse, error) {
+	var resp api.ParkRunResponse
+	err := c.do(ctx, http.MethodPost, "/v1/runs/"+url.PathEscape(runID)+"/park", nil, &resp)
+	return resp, err
+}
+
+// unparkRun POSTs the run-unpark op (ticket 6.5).
+func (c *client) unparkRun(ctx context.Context, runID string) (api.UnparkRunResponse, error) {
+	var resp api.UnparkRunResponse
+	err := c.do(ctx, http.MethodPost, "/v1/runs/"+url.PathEscape(runID)+"/unpark", nil, &resp)
+	return resp, err
+}
+
+// requeueStep POSTs the dead-lettered-step requeue op (ticket 6.5).
+func (c *client) requeueStep(ctx context.Context, runID, stepID string) (api.RequeueStepResponse, error) {
+	var resp api.RequeueStepResponse
+	err := c.do(ctx, http.MethodPost,
+		"/v1/runs/"+url.PathEscape(runID)+"/steps/"+url.PathEscape(stepID)+"/requeue", nil, &resp)
+	return resp, err
+}
+
 // do runs one request, decoding 2xx into out and anything else into an
-// *apiError.
-func (c *client) do(ctx context.Context, method, path string, body []byte, out any) error {
+// *apiError. Each mod, if any, edits the request before it is sent (e.g.
+// extra headers).
+func (c *client) do(ctx context.Context, method, path string, body []byte, out any, mods ...func(*http.Request)) error {
 	var rd io.Reader
 	if body != nil {
 		rd = bytes.NewReader(body)
@@ -121,6 +168,9 @@ func (c *client) do(ctx context.Context, method, path string, body []byte, out a
 	}
 	if c.key != "" {
 		req.Header.Set("Authorization", "Bearer "+c.key)
+	}
+	for _, mod := range mods {
+		mod(req)
 	}
 	res, err := c.hc.Do(req)
 	if err != nil {

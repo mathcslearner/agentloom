@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +22,13 @@ import (
 // submission (schema v1). A unique violation naming it means another
 // submission with the same token already created the run.
 const constraintIdempotencyToken = "runs_idempotency_token_key"
+
+// MaxIdempotencyTokenLength bounds the idempotency token (ticket 6.5,
+// post-M4 audit): the token sits under a btree unique index, whose row
+// limit an unbounded token would hit as a raw Postgres error. The API
+// rejects longer tokens with a 400 before calling; CreateRun enforces the
+// same bound defensively.
+const MaxIdempotencyTokenLength = 200
 
 // Failpoint stages, in transaction order. Test-only: the instantiation
 // transaction consults instantiateFailpoint after each phase so the
@@ -62,12 +71,13 @@ type CreateRunArgs struct {
 	// definition's ParamSpecs is the submission API's (M6).
 	Params json.RawMessage
 	// IdempotencyToken makes submission idempotent: a second CreateRun with
-	// the same token returns the original run instead of creating another.
-	// Empty means not idempotent. The token is the sole identity — the
-	// submitted Definition is NOT compared against the original's snapshot,
-	// so reusing a token with a different workflow silently returns the old
-	// run (the returned EntrySteps always reflect the stored snapshot).
-	// Token scoping/validation policy is the submission API's (M6).
+	// the same token and the same payload returns the original run instead
+	// of creating another. Empty means not idempotent. The token is bound
+	// to its payload by a stored fingerprint (ticket 6.5): replaying it
+	// with a different definition, params, or definition ref fails with
+	// *IdempotencyMismatchError instead of silently returning the old run.
+	// Longer than MaxIdempotencyTokenLength is rejected. Tokens are global,
+	// not scoped per API key (recorded in ADR-007).
 	IdempotencyToken string
 	// Now is the injected current time (project invariant: no bare
 	// time.Now in logic under test); it becomes the run's started_at.
@@ -117,6 +127,9 @@ func (s *Store) CreateRun(ctx context.Context, args CreateRunArgs) (CreateRunRes
 	if args.Now.IsZero() {
 		return CreateRunResult{}, errors.New("store: CreateRun: zero Now — pass the injected current time")
 	}
+	if len(args.IdempotencyToken) > MaxIdempotencyTokenLength {
+		return CreateRunResult{}, fmt.Errorf("store: CreateRun: idempotency token exceeds %d bytes", MaxIdempotencyTokenLength)
+	}
 	if _, err := dag.Validate(args.Definition); err != nil {
 		return CreateRunResult{}, fmt.Errorf("store: CreateRun: %w", err)
 	}
@@ -126,10 +139,14 @@ func (s *Store) CreateRun(ctx context.Context, args CreateRunArgs) (CreateRunRes
 	}
 
 	if args.IdempotencyToken != "" {
+		plan.fingerprint, err = idempotencyFingerprint(plan.snapshot, args.Params, args.DefinitionID)
+		if err != nil {
+			return CreateRunResult{}, fmt.Errorf("store: CreateRun: fingerprinting payload: %w", err)
+		}
 		run, err := s.Runs().GetByIdempotencyToken(ctx, args.IdempotencyToken)
 		switch {
 		case err == nil:
-			return reusedResult(run)
+			return checkedReuse(run, args.IdempotencyToken, plan.fingerprint)
 		case !errors.Is(err, ErrNotFound):
 			return CreateRunResult{}, err
 		}
@@ -148,7 +165,7 @@ func (s *Store) CreateRun(ctx context.Context, args CreateRunArgs) (CreateRunRes
 		if args.IdempotencyToken != "" && errors.As(txErr, &conflict) &&
 			conflict.Constraint == constraintIdempotencyToken {
 			if run, err := s.Runs().GetByIdempotencyToken(ctx, args.IdempotencyToken); err == nil {
-				return reusedResult(run)
+				return checkedReuse(run, args.IdempotencyToken, plan.fingerprint)
 			}
 		}
 		return CreateRunResult{}, txErr
@@ -170,6 +187,10 @@ type instantiationPlan struct {
 	entry     []string // declaration order
 	entrySet  map[string]bool
 	remaining map[string]int32 // incoming normal edges per step id
+	// fingerprint is the payload fingerprint stored alongside a non-empty
+	// idempotency token (ticket 6.5); empty when the submission carries no
+	// token.
+	fingerprint string
 }
 
 // planInstantiation derives the plan from a validated definition. Entry
@@ -213,9 +234,10 @@ func planInstantiation(def *dag.Definition) (*instantiationPlan, error) {
 
 // insert writes the whole run inside the caller's transaction.
 func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRunArgs) (gen.Run, error) {
-	var token *string
+	var token, fingerprint *string
 	if args.IdempotencyToken != "" {
 		token = &args.IdempotencyToken
+		fingerprint = &p.fingerprint
 	}
 	startedAt := args.Now
 	// The effective failure policy is materialized like the steps'
@@ -239,16 +261,17 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		deadlineAt = &t
 	}
 	run, err := q.Runs().Create(ctx, gen.CreateRunParams{
-		ID:               args.RunID,
-		DefinitionID:     args.DefinitionID,
-		Definition:       p.snapshot,
-		Status:           RunStatusRunning,
-		Params:           args.Params,
-		IdempotencyToken: token,
-		OnFailure:        string(onFailure),
-		StepsTotal:       int32(len(p.def.Steps)), //nolint:gosec // step count is validation-bounded
-		StartedAt:        &startedAt,
-		DeadlineAt:       deadlineAt,
+		ID:                     args.RunID,
+		DefinitionID:           args.DefinitionID,
+		Definition:             p.snapshot,
+		Status:                 RunStatusRunning,
+		Params:                 args.Params,
+		IdempotencyToken:       token,
+		IdempotencyFingerprint: fingerprint,
+		OnFailure:              string(onFailure),
+		StepsTotal:             int32(len(p.def.Steps)), //nolint:gosec // step count is validation-bounded
+		StartedAt:              &startedAt,
+		DeadlineAt:             deadlineAt,
 	})
 	if err != nil {
 		return gen.Run{}, err
@@ -371,6 +394,57 @@ func (p *instantiationPlan) appendEvent(ctx context.Context, q Querier, runID uu
 	}
 	_, err = q.Events().Append(ctx, gen.AppendEventParams{RunID: runID, Seq: seq, Type: typ, Payload: body})
 	return err
+}
+
+// idempotencyFingerprint binds an idempotency token to its payload: the hex
+// SHA-256 over the canonical definition snapshot, the canonicalized params,
+// and the definition ref (or an inline marker). Both sides of a comparison
+// go through the same canonicalization, so JSON formatting differences —
+// key order, whitespace — never produce a spurious mismatch.
+func idempotencyFingerprint(snapshot, params json.RawMessage, defID *uuid.UUID) (string, error) {
+	canonParams, err := canonicalJSON(params)
+	if err != nil {
+		return "", fmt.Errorf("canonicalizing params: %w", err)
+	}
+	h := sha256.New()
+	h.Write(snapshot)
+	h.Write([]byte{0})
+	h.Write(canonParams)
+	h.Write([]byte{0})
+	if defID != nil {
+		h.Write([]byte(defID.String()))
+	} else {
+		h.Write([]byte("inline"))
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// canonicalJSON round-trips raw JSON through Go's decoder so semantically
+// equal documents serialize identically (object keys sorted, formatting
+// normalized). nil/empty means the empty object, mirroring what the run
+// row stores for absent params.
+func canonicalJSON(raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) == 0 {
+		return emptyJSON, nil
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	return json.Marshal(v)
+}
+
+// checkedReuse guards the duplicate-submission path (ticket 6.5): the
+// original run's stored fingerprint must match the replay's, or the token
+// is being reused for a different payload and the caller gets
+// *IdempotencyMismatchError. A NULL stored fingerprint (pre-0009 row) is
+// grandfathered — reuse is allowed unchecked.
+func checkedReuse(run gen.Run, token, fingerprint string) (CreateRunResult, error) {
+	if run.IdempotencyFingerprint != nil && *run.IdempotencyFingerprint != fingerprint {
+		return CreateRunResult{}, fmt.Errorf("store: CreateRun: %w",
+			&IdempotencyMismatchError{Token: token, RunID: run.ID})
+	}
+	return reusedResult(run)
 }
 
 // reusedResult builds the duplicate-submission result from the original

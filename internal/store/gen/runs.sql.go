@@ -29,23 +29,24 @@ func (q *Queries) AllocateEventSeq(ctx context.Context, id uuid.UUID) (int64, er
 const createRun = `-- name: CreateRun :one
 
 INSERT INTO runs (id, definition_id, definition, status, params,
-                  idempotency_token, on_failure, steps_total, started_at,
-                  deadline_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at
+                  idempotency_token, idempotency_fingerprint, on_failure,
+                  steps_total, started_at, deadline_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint
 `
 
 type CreateRunParams struct {
-	ID               uuid.UUID
-	DefinitionID     *uuid.UUID
-	Definition       json.RawMessage
-	Status           string
-	Params           json.RawMessage
-	IdempotencyToken *string
-	OnFailure        string
-	StepsTotal       int32
-	StartedAt        *time.Time
-	DeadlineAt       *time.Time
+	ID                     uuid.UUID
+	DefinitionID           *uuid.UUID
+	Definition             json.RawMessage
+	Status                 string
+	Params                 json.RawMessage
+	IdempotencyToken       *string
+	IdempotencyFingerprint *string
+	OnFailure              string
+	StepsTotal             int32
+	StartedAt              *time.Time
+	DeadlineAt             *time.Time
 }
 
 // Run rows. Inserts and reads only: status/counter mutations are guarded
@@ -58,6 +59,7 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 		arg.Status,
 		arg.Params,
 		arg.IdempotencyToken,
+		arg.IdempotencyFingerprint,
 		arg.OnFailure,
 		arg.StepsTotal,
 		arg.StartedAt,
@@ -85,6 +87,7 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 		&i.ParkReason,
 		&i.CancelReason,
 		&i.DeadlineAt,
+		&i.IdempotencyFingerprint,
 	)
 	return i, err
 }
@@ -102,7 +105,7 @@ func (q *Queries) DeleteRun(ctx context.Context, id uuid.UUID) (int64, error) {
 }
 
 const getRun = `-- name: GetRun :one
-SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at FROM runs WHERE id = $1
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint FROM runs WHERE id = $1
 `
 
 func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (Run, error) {
@@ -129,12 +132,13 @@ func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (Run, error) {
 		&i.ParkReason,
 		&i.CancelReason,
 		&i.DeadlineAt,
+		&i.IdempotencyFingerprint,
 	)
 	return i, err
 }
 
 const getRunByIdempotencyToken = `-- name: GetRunByIdempotencyToken :one
-SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at FROM runs WHERE idempotency_token = $1::text
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint FROM runs WHERE idempotency_token = $1::text
 `
 
 func (q *Queries) GetRunByIdempotencyToken(ctx context.Context, token string) (Run, error) {
@@ -161,6 +165,7 @@ func (q *Queries) GetRunByIdempotencyToken(ctx context.Context, token string) (R
 		&i.ParkReason,
 		&i.CancelReason,
 		&i.DeadlineAt,
+		&i.IdempotencyFingerprint,
 	)
 	return i, err
 }
@@ -181,7 +186,7 @@ func (q *Queries) GetRunStatus(ctx context.Context, id uuid.UUID) (string, error
 }
 
 const listRuns = `-- name: ListRuns :many
-SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at FROM runs ORDER BY created_at DESC, id LIMIT $1
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint FROM runs ORDER BY created_at DESC, id LIMIT $1
 `
 
 func (q *Queries) ListRuns(ctx context.Context, limit int32) ([]Run, error) {
@@ -214,6 +219,7 @@ func (q *Queries) ListRuns(ctx context.Context, limit int32) ([]Run, error) {
 			&i.ParkReason,
 			&i.CancelReason,
 			&i.DeadlineAt,
+			&i.IdempotencyFingerprint,
 		); err != nil {
 			return nil, err
 		}
@@ -226,7 +232,7 @@ func (q *Queries) ListRuns(ctx context.Context, limit int32) ([]Run, error) {
 }
 
 const listRunsByStatus = `-- name: ListRunsByStatus :many
-SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at FROM runs WHERE status = $1 ORDER BY created_at DESC, id LIMIT $2
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint FROM runs WHERE status = $1 ORDER BY created_at DESC, id LIMIT $2
 `
 
 type ListRunsByStatusParams struct {
@@ -264,6 +270,84 @@ func (q *Queries) ListRunsByStatus(ctx context.Context, arg ListRunsByStatusPara
 			&i.ParkReason,
 			&i.CancelReason,
 			&i.DeadlineAt,
+			&i.IdempotencyFingerprint,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunsPage = `-- name: ListRunsPage :many
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint FROM runs
+WHERE ($1::text IS NULL OR status = $1::text)
+  AND ($2::uuid IS NULL OR definition_id = $2::uuid)
+  AND ($3::timestamptz IS NULL OR created_at >= $3::timestamptz)
+  AND ($4::timestamptz IS NULL OR created_at < $4::timestamptz)
+  AND ($5::timestamptz IS NULL
+       OR (created_at, id) < ($5::timestamptz, $6::uuid))
+ORDER BY created_at DESC, id DESC
+LIMIT $7
+`
+
+type ListRunsPageParams struct {
+	Status          *string
+	DefinitionID    *uuid.UUID
+	CreatedAfter    *time.Time
+	CreatedBefore   *time.Time
+	CursorCreatedAt *time.Time
+	CursorID        *uuid.UUID
+	RowLimit        int32
+}
+
+// ListRunsPage is the run-list API's keyset page read (ticket 6.5). Every
+// filter is optional (NULL disables it); the cursor is the last row of the
+// previous page and the row-value comparison is exactly "strictly after the
+// cursor in list order" because the order is uniformly descending. Served
+// by runs_created_at_id_idx / runs_definition_created_idx (0009).
+func (q *Queries) ListRunsPage(ctx context.Context, arg ListRunsPageParams) ([]Run, error) {
+	rows, err := q.db.Query(ctx, listRunsPage,
+		arg.Status,
+		arg.DefinitionID,
+		arg.CreatedAfter,
+		arg.CreatedBefore,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Run
+	for rows.Next() {
+		var i Run
+		if err := rows.Scan(
+			&i.ID,
+			&i.DefinitionID,
+			&i.Definition,
+			&i.Status,
+			&i.Params,
+			&i.IdempotencyToken,
+			&i.GraphVersion,
+			&i.NextSeq,
+			&i.StepsTotal,
+			&i.StepsSucceeded,
+			&i.StepsFailed,
+			&i.StepsSkipped,
+			&i.CreatedAt,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.OnFailure,
+			&i.StepsCancelled,
+			&i.ParkReason,
+			&i.CancelReason,
+			&i.DeadlineAt,
+			&i.IdempotencyFingerprint,
 		); err != nil {
 			return nil, err
 		}

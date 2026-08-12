@@ -523,13 +523,13 @@ Per-`key_id` buckets (configurable per scope/route class: submits stricter than 
 - [x] Route classes configurable via config file/env (tested)
 - [x] Global bucket protects the API even when individual keys are under their limits
 
-#### 6.5 — Run & definition lifecycle endpoints
+#### 6.5 — Run & definition lifecycle endpoints ✅
 **Depends on:** 6.2, 5.4, 5.6
-Definitions: create (validated), new-version, list, get. Runs: submit (by definition ref or inline; `Idempotency-Key` header honored), list with keyset pagination + filters (status, definition, time range), get (status tree, attempts, timings), cancel, park/unpark, requeue-dead-lettered-step. Consistent error envelope with codes. *(Post-M4 audit notes: bound the idempotency token's length with a 400 — today an over-long token 500s on the btree index limit — and fingerprint the token to its payload so replaying a token with a different definition 409s instead of silently returning the original run.)*
+Definitions: create (validated), new-version, list, get. Runs: submit (by definition ref or inline; `Idempotency-Key` header honored), list with keyset pagination + filters (status, definition, time range), get (status tree, attempts, timings), cancel, park/unpark, requeue-dead-lettered-step. Consistent error envelope with codes. *(Post-M4 audit notes: bound the idempotency token's length with a 400 — today an over-long token 500s on the btree index limit — and fingerprint the token to its payload so replaying a token with a different definition 409s instead of silently returning the original run.)* *(As built: lifecycle handlers call `engine.Control` — Cancel/Park/Unpark/Requeue extracted from Engine, which now embeds it — built by `api.New` with no dispatcher nudge (worker drain cadence dispatches, ADR-002 untouched); wrong-state refusals → 409 with new envelope code `conflict` (Requeue's cancelled-run refusal became the typed `engine.ErrRunNotRequeueable`); definitions registry = `POST /v1/definitions` (canonical spec at version 1, 409 on an existing name) + `POST /v1/definitions/{name}/versions` (next version, allocation serialized by a per-name `pg_advisory_xact_lock` so concurrent appenders get consecutive versions) + get-by-id and both listings (latest-per-name keyset by name); `GET /v1/runs` = one `ListRunsPage` query, order flipped uniform `(created_at DESC, id DESC)` with a row-value cursor predicate served by migration 0009's two new indexes, opaque base64url cursors, nullable filters; idempotency per the audit notes — `Idempotency-Key` header replaces the body field, ≤ 200 bytes → 400, `runs.idempotency_fingerprint` (0009) binds token→payload with mismatch → 409 `idempotency_key_conflict`, params canonicalized before hashing, pre-0009 rows grandfathered, tokens deliberately global per ADR-007; `GET /v1/runs/{id}` gained `dead_letters` so clients can discover requeueable steps, and RunView the 5.x columns; ctl grew runs/cancel/park/unpark/requeue with `--token` moved to the header; e2e suites drive DLQ-requeue-to-success, in-flight cancel, and park/strand/unpark through the API against the production dispatcher + fleet.)*
 **Done when:**
-- [ ] Contract tests for every endpoint (success + auth + validation failures)
-- [ ] Keyset pagination stable under concurrent inserts (no skips/dupes across pages)
-- [ ] DLQ requeue + cancel + unpark round-trip through the API in integration tests
+- [x] Contract tests for every endpoint (success + auth + validation failures)
+- [x] Keyset pagination stable under concurrent inserts (no skips/dupes across pages)
+- [x] DLQ requeue + cancel + unpark round-trip through the API in integration tests
 
 #### 6.6 — OpenAPI contract & docs
 **Depends on:** 6.5

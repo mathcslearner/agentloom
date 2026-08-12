@@ -41,6 +41,11 @@ type RetryScheduler interface {
 // concurrent Handle calls (every field is read-only after New), though
 // v0's worker runs a single serialized consumer loop.
 type Engine struct {
+	// Control is the run-lifecycle op surface (Cancel/Park/Unpark/Requeue),
+	// embedded so engine call sites read e.Cancel(...) while the API server
+	// can hold a standalone Control (NewControl) without the rest of the
+	// engine. Built by New from the engine's own store, clock, and nudge.
+	*Control
 	store    *store.Store
 	registry *exec.Registry
 	// workerID identifies this worker in logs (canonical worker_id field).
@@ -151,5 +156,8 @@ func New(s *store.Store, r *exec.Registry, workerID string, opts ...Option) (*En
 		return nil, err
 	}
 	e.effects = j
+	// The lifecycle control surface shares the engine's store, clock, and
+	// dispatcher nudge (both read-only after New, so copying is safe).
+	e.Control = &Control{store: e.store, now: e.now, nudge: e.nudge}
 	return e, nil
 }

@@ -43,26 +43,27 @@ type Event struct {
 }
 
 type Run struct {
-	ID               uuid.UUID
-	DefinitionID     *uuid.UUID
-	Definition       json.RawMessage
-	Status           string
-	Params           json.RawMessage
-	IdempotencyToken *string
-	GraphVersion     int32
-	NextSeq          int64
-	StepsTotal       int32
-	StepsSucceeded   int32
-	StepsFailed      int32
-	StepsSkipped     int32
-	CreatedAt        time.Time
-	StartedAt        *time.Time
-	FinishedAt       *time.Time
-	OnFailure        string
-	StepsCancelled   int32
-	ParkReason       *string
-	CancelReason     *string
-	DeadlineAt       *time.Time
+	ID                     uuid.UUID
+	DefinitionID           *uuid.UUID
+	Definition             json.RawMessage
+	Status                 string
+	Params                 json.RawMessage
+	IdempotencyToken       *string
+	GraphVersion           int32
+	NextSeq                int64
+	StepsTotal             int32
+	StepsSucceeded         int32
+	StepsFailed            int32
+	StepsSkipped           int32
+	CreatedAt              time.Time
+	StartedAt              *time.Time
+	FinishedAt             *time.Time
+	OnFailure              string
+	StepsCancelled         int32
+	ParkReason             *string
+	CancelReason           *string
+	DeadlineAt             *time.Time
+	IdempotencyFingerprint *string
 }
 
 type RunEdge struct {

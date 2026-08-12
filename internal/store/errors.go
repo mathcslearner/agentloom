@@ -48,6 +48,22 @@ func (e *ConflictError) Error() string {
 
 func (e *ConflictError) Unwrap() error { return e.cause }
 
+// IdempotencyMismatchError reports a CreateRun whose idempotency token was
+// seen before but whose payload — definition snapshot, params, definition
+// ref — differs from the original submission's (ticket 6.5, post-M4 audit):
+// the replay is refused instead of silently returning the original run.
+// Unwraps to ErrConflict; RunID is the original (conflicting) run.
+type IdempotencyMismatchError struct {
+	Token string
+	RunID uuid.UUID
+}
+
+func (e *IdempotencyMismatchError) Error() string {
+	return fmt.Sprintf("idempotency token replayed with a different payload (original run %s)", e.RunID)
+}
+
+func (e *IdempotencyMismatchError) Unwrap() error { return ErrConflict }
+
 // ConflictReason classifies why a transition was rejected.
 type ConflictReason string
 

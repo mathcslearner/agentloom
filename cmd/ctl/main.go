@@ -1,9 +1,14 @@
 // Command ctl is agentloom's operator CLI (ticket 4.6):
 //
-//	ctl validate <file>    check a definition locally (M1 validation)
-//	ctl submit <file>      submit a definition to the API as a new run
-//	ctl watch <run-id>     poll a run and render its status tree
-//	ctl keys …             manage API keys (create/list/revoke; ticket 6.1)
+//	ctl validate <file>          check a definition locally (M1 validation)
+//	ctl submit <file>            submit a definition to the API as a new run
+//	ctl watch <run-id>           poll a run and render its status tree
+//	ctl runs                     list runs (filters + keyset pages; ticket 6.5)
+//	ctl cancel <run-id>          cancel a run (ticket 6.5)
+//	ctl park <run-id>            pause a run's dispatch (ticket 6.5)
+//	ctl unpark <run-id>          resume a parked run (ticket 6.5)
+//	ctl requeue <run-id> <step>  requeue a dead-lettered step (ticket 6.5)
+//	ctl keys …                   manage API keys (create/list/revoke; ticket 6.1)
 //
 // The API base URL comes from --api or AGENTLOOM_API_URL (default
 // http://localhost:8080); the bearer credential from --key or
@@ -44,6 +49,7 @@ func newRootCmd(lookup func(string) (string, bool)) *cobra.Command {
 	}
 	root.PersistentFlags().String("api", defaultAPI, "base URL of the agentloom API")
 	root.PersistentFlags().String("key", defaultKey, "bearer API key (default AGENTLOOM_API_KEY)")
-	root.AddCommand(newValidateCmd(), newSubmitCmd(), newWatchCmd(), newKeysCmd())
+	root.AddCommand(newValidateCmd(), newSubmitCmd(), newWatchCmd(), newRunsCmd(),
+		newCancelCmd(), newParkCmd(), newUnparkCmd(), newRequeueCmd(), newKeysCmd())
 	return root
 }

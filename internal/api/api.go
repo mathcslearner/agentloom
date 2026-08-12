@@ -12,12 +12,22 @@
 // Routes (scope per ADR-007's route→scope table, rate-limit route class
 // per its route→class table):
 //
-//	POST   /v1/runs        submit  submit  submit a run (inline definition or stored ref)
-//	GET    /v1/runs/{id}   read    read    run status + step tree + attempt history
-//	POST   /v1/keys        admin   admin   mint an API key (plaintext shown once)
-//	GET    /v1/keys        admin   admin   list API keys (prefixes only)
-//	DELETE /v1/keys/{id}   admin   admin   revoke an API key (soft, idempotent)
-//	GET    /healthz        exempt  exempt  liveness (Postgres ping)
+//	POST   /v1/runs                                 submit  submit  submit a run (inline definition or stored ref; Idempotency-Key header honored)
+//	GET    /v1/runs                                 read    read    list runs (keyset pagination + status/definition/time filters)
+//	GET    /v1/runs/{id}                            read    read    run status + step tree + attempt history + DLQ records
+//	POST   /v1/runs/{id}/cancel                     submit  submit  cancel a run (cooperative; converges via workers/reconciler)
+//	POST   /v1/runs/{id}/park                       submit  submit  pause dispatch
+//	POST   /v1/runs/{id}/unpark                     submit  submit  resume dispatch (re-outboxes stranded ready steps)
+//	POST   /v1/runs/{id}/steps/{sid}/requeue        submit  submit  requeue a dead-lettered step (budget re-armed)
+//	POST   /v1/definitions                          submit  submit  register a definition (version 1; name must be new)
+//	GET    /v1/definitions                          read    read    list definitions (latest version per name, keyset by name)
+//	GET    /v1/definitions/{id}                     read    read    one stored definition, spec included
+//	GET    /v1/definitions/{name}/versions          read    read    every version of one name
+//	POST   /v1/definitions/{name}/versions          submit  submit  append the next version of an existing name
+//	POST   /v1/keys                                 admin   admin   mint an API key (plaintext shown once)
+//	GET    /v1/keys                                 admin   admin   list API keys (prefixes only)
+//	DELETE /v1/keys/{id}                            admin   admin   revoke an API key (soft, idempotent)
+//	GET    /healthz                                 exempt  exempt  liveness (Postgres ping)
 //
 // Auth (tickets 6.1/6.2, ADR-007): every /v1 route requires a bearer API
 // key carrying the route's scope — a stored key, or the env-provided
@@ -55,6 +65,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/mathcslearner/agentloom/internal/engine"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store"
 )
@@ -67,6 +78,12 @@ const MaxBodyBytes = 1 << 20
 type Handler struct {
 	router chi.Router
 	st     *store.Store
+	// ctl is the run-lifecycle control surface (ticket 6.5): cancel, park,
+	// unpark, requeue. Built by New over the same store and clock, with no
+	// dispatcher nudge — the ops' outbox rows are drained on the worker
+	// fleet's dispatch cadence (ADR-002: the API never talks to Redis for
+	// dispatch).
+	ctl    *engine.Control
 	now    func() time.Time
 	logger *slog.Logger
 	// rootHash is the hex SHA-256 of the env-provided root key (ADR-007
@@ -103,7 +120,11 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 	if rl.Metrics == nil {
 		rl.Metrics = nopRateLimitMetrics{}
 	}
-	h := &Handler{st: st, now: now, logger: logger, keyRand: cryptoRand, rl: rl}
+	ctl, err := engine.NewControl(st, engine.WithControlClock(now))
+	if err != nil {
+		return nil, err
+	}
+	h := &Handler{st: st, ctl: ctl, now: now, logger: logger, keyRand: cryptoRand, rl: rl}
 	if rootKey != "" {
 		if !keyShapeOK(rootKey) {
 			// Deliberately no detail: the message must never echo the value.
@@ -130,7 +151,21 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 		// authenticated key_id; 401/403 requests consume no tokens), with
 		// the same coverage discipline in ratelimit_routes_test.go.
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/runs", h.handleSubmitRun)
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/runs", h.handleListRuns)
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/runs/{runID}", h.handleGetRun)
+		// Run lifecycle (ticket 6.5): steering work is the submit scope
+		// (ADR-007), so these mount per-route — the /runs subtree mixes
+		// read and submit.
+		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/runs/{runID}/cancel", h.handleCancelRun)
+		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/runs/{runID}/park", h.handleParkRun)
+		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/runs/{runID}/unpark", h.handleUnparkRun)
+		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/runs/{runID}/steps/{stepID}/requeue", h.handleRequeueStep)
+		// Definition registry (ticket 6.5).
+		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/definitions", h.handleCreateDefinition)
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/definitions", h.handleListDefinitions)
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/definitions/{defID}", h.handleGetDefinition)
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/definitions/{name}/versions", h.handleListDefinitionVersions)
+		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/definitions/{name}/versions", h.handleCreateDefinitionVersion)
 		r.Route("/keys", func(r chi.Router) {
 			r.Use(h.requireScope(ScopeAdmin))
 			r.Use(h.rateLimit(classAdmin))

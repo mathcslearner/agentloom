@@ -23,11 +23,21 @@ import (
 // behavioral coverage to TestV1AuthMatrix in
 // auth_routes_integration_test.go.
 var routeScopes = map[string]Scope{
-	"POST /v1/runs":           ScopeSubmit,
-	"GET /v1/runs/{runID}":    ScopeRead,
-	"POST /v1/keys":           ScopeAdmin,
-	"GET /v1/keys":            ScopeAdmin,
-	"DELETE /v1/keys/{keyID}": ScopeAdmin,
+	"POST /v1/runs":                                ScopeSubmit,
+	"GET /v1/runs":                                 ScopeRead,
+	"GET /v1/runs/{runID}":                         ScopeRead,
+	"POST /v1/runs/{runID}/cancel":                 ScopeSubmit,
+	"POST /v1/runs/{runID}/park":                   ScopeSubmit,
+	"POST /v1/runs/{runID}/unpark":                 ScopeSubmit,
+	"POST /v1/runs/{runID}/steps/{stepID}/requeue": ScopeSubmit,
+	"POST /v1/definitions":                         ScopeSubmit,
+	"GET /v1/definitions":                          ScopeRead,
+	"GET /v1/definitions/{defID}":                  ScopeRead,
+	"GET /v1/definitions/{name}/versions":          ScopeRead,
+	"POST /v1/definitions/{name}/versions":         ScopeSubmit,
+	"POST /v1/keys":                                ScopeAdmin,
+	"GET /v1/keys":                                 ScopeAdmin,
+	"DELETE /v1/keys/{keyID}":                      ScopeAdmin,
 }
 
 // TestV1RouteScopeCoverage walks the live router and asserts every /v1

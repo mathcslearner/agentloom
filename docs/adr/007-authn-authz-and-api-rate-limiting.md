@@ -306,6 +306,42 @@ remain an M9 shape). Decisions made here:
   decisions + fail-open events, no-op until M7 wires the 429 counters
   the roadmap names).
 
+### As built (ticket 6.5: lifecycle endpoints & idempotency)
+
+6.5 filled in the pre-assigned rows: every lifecycle route
+(`cancel`/`park`/`unpark`/`steps/{sid}/requeue`) and definition-create
+route mounts `requireScope(submit) + rateLimit(submit)`, the listings
+(`GET /v1/runs`, `GET /v1/definitions*`) mount read/read — route→class
+keeps mirroring the scope table, enforced by the same walk-based
+coverage tests. The API's lifecycle handlers call `engine.Control`
+(Cancel/Park/Unpark/Requeue extracted from Engine in 6.5), built by
+`api.New` over the same store and clock with **no dispatcher nudge**:
+the ops' outbox rows are drained on the worker fleet's dispatch cadence,
+keeping ADR-002's "the API never dispatches" intact. Wrong-state
+refusals surface as 409 with new envelope code `conflict`.
+
+Submission idempotency was hardened here (the post-M4 audit items):
+
+- **The token rides the `Idempotency-Key` header**, not the body — the
+  4.6 `idempotency_token` body field is gone (pre-1.0 break; ctl moved
+  with it, 6.6 pins the contract).
+- **Length is bounded** at `store.MaxIdempotencyTokenLength` (200
+  bytes) with a 400 — an unbounded token used to surface as a 500 on
+  the btree index row limit.
+- **The token is fingerprinted to its payload**: CreateRun stores the
+  hex SHA-256 over the canonical definition snapshot, the canonicalized
+  params, and the definition ref (`runs.idempotency_fingerprint`,
+  migration 0009). Replaying a token with the same payload returns the
+  original run (200, `reused`); a different payload is a 409 with new
+  code `idempotency_key_conflict` instead of silently returning the
+  original. Formatting-only differences (params key order) are not a
+  mismatch; pre-0009 rows (NULL fingerprint) are grandfathered as
+  unchecked reuse.
+- **Tokens are global, not per-key** — the unique index is on the bare
+  column, so two clients sharing a token collide. Recorded as accepted:
+  scoping later is an additive column keyed on `key_id`, not a contract
+  break, and v1's operator count makes collisions a non-issue.
+
 Easier:
 
 - 6.2 is pure wiring: the verifier, scope model, and error semantics are

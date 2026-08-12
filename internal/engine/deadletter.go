@@ -290,12 +290,13 @@ type RequeueResult struct {
 // it, revives written-off descendants that are no longer impossible, and
 // writes dlq_requeue outbox rows for every ready step with no pending
 // dispatch. A typed *store.TransitionError surfaces when the step is not
-// dead_lettered. Post-commit, the dispatcher nudge fires.
-func (e *Engine) Requeue(ctx context.Context, runID uuid.UUID, stepID string) (RequeueResult, error) {
+// dead_lettered, ErrRunNotRequeueable when the run is cancelling/cancelled.
+// Post-commit, the dispatcher nudge fires.
+func (c *Control) Requeue(ctx context.Context, runID uuid.UUID, stepID string) (RequeueResult, error) {
 	ctx = log.With(ctx, log.RunID(runID.String()), log.StepID(stepID))
-	now := e.now()
+	now := c.now()
 	var res RequeueResult
-	txErr := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+	txErr := c.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
 		step, err := store.RequeueStep(ctx, q, store.RequeueStepArgs{
 			RunID: runID, StepID: stepID, Now: now,
 		})
@@ -310,10 +311,9 @@ func (e *Engine) Requeue(ctx context.Context, runID uuid.UUID, stepID string) (R
 			return err
 		}
 		if run.Status == store.RunStatusCancelling || run.Status == store.RunStatusCancelled {
-			// A cancelled run is terminal by operator intent (ticket 5.6):
-			// requeueing a dead-lettered step of one would strand it —
-			// the claim path refuses the run — or silently undo the cancel.
-			return fmt.Errorf("engine: Requeue: run %s is %s — cancelled runs are not requeueable", runID, run.Status)
+			// A cancelled run is terminal by operator intent (ticket 5.6);
+			// typed so the API can map the refusal to a 409 (ticket 6.5).
+			return fmt.Errorf("engine: Requeue: run %s is %s — %w", runID, run.Status, ErrRunNotRequeueable)
 		}
 		if run.Status == store.RunStatusFailed {
 			if _, err := store.ResumeRun(ctx, q, store.ResumeRunArgs{RunID: runID, Now: now}); err != nil {
@@ -388,8 +388,8 @@ func (e *Engine) Requeue(ctx context.Context, runID uuid.UUID, stepID string) (R
 		slog.Bool("run_resumed", res.RunResumed),
 		slog.Int("steps_revived", len(res.Revived)),
 		slog.Int("steps_dispatched", len(res.Dispatched)))
-	if len(res.Dispatched) > 0 && e.nudge != nil {
-		e.nudge()
+	if len(res.Dispatched) > 0 && c.nudge != nil {
+		c.nudge()
 	}
 	return res, nil
 }

@@ -29,7 +29,7 @@ func newSubmitCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			req := api.SubmitRunRequest{Definition: raw, IdempotencyToken: token}
+			req := api.SubmitRunRequest{Definition: raw}
 			if params != "" {
 				if !json.Valid([]byte(params)) {
 					return fmt.Errorf("--params is not valid JSON")
@@ -41,7 +41,7 @@ func newSubmitCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resp, err := cl.submitRun(cmd.Context(), req)
+			resp, err := cl.submitRun(cmd.Context(), req, token)
 			if err != nil {
 				var ae *apiError
 				if errors.As(err, &ae) && len(ae.Detail.Issues) > 0 {
@@ -62,6 +62,6 @@ func newSubmitCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&params, "params", "", "run parameters as a JSON object")
-	cmd.Flags().StringVar(&token, "token", "", "idempotency token (resubmission returns the original run)")
+	cmd.Flags().StringVar(&token, "token", "", "idempotency key, sent as the Idempotency-Key header (resubmitting the same key and payload returns the original run)")
 	return cmd
 }
