@@ -48,8 +48,11 @@
 //
 // Every error response carries the JSON envelope {"error": {code, message,
 // issues?}}; definition problems surface M1's path-qualified issues
-// verbatim. Request and response types live in types.go — cmd/ctl imports
-// them as the wire contract until the OpenAPI spec (M6.6) takes over.
+// verbatim. The formal contract is api/openapi.yaml (ticket 6.6) —
+// TestOpenAPIRouteCoverage keeps it and this router in lockstep, so a new
+// route lands in the spec in the same change. Request and response types
+// live in types.go (cmd/ctl imports them); their spec schemas are
+// maintained by hand, so change both together.
 package api
 
 import (

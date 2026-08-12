@@ -531,13 +531,13 @@ Definitions: create (validated), new-version, list, get. Runs: submit (by defini
 - [x] Keyset pagination stable under concurrent inserts (no skips/dupes across pages)
 - [x] DLQ requeue + cancel + unpark round-trip through the API in integration tests
 
-#### 6.6 — OpenAPI contract & docs
+#### 6.6 — OpenAPI contract & docs ✅
 **Depends on:** 6.5
-Hand-maintained `api/openapi.yaml` as the contract: all routes, schemas (reusing generated JSON Schema for definitions), auth scheme, error envelope, examples. CI: spec lints, and a route-coverage check compares the chi route table against the spec (drift fails).
+Hand-maintained `api/openapi.yaml` as the contract: all routes, schemas (reusing generated JSON Schema for definitions), auth scheme, error envelope, examples. CI: spec lints, and a route-coverage check compares the chi route table against the spec (drift fails). *(As built: OpenAPI 3.1 — its schema dialect is JSON Schema 2020-12, so the workflow-definition schema is `$ref`'d straight from the generated `docs/schema/workflow-definition.v1.json` (root points at `#/$defs/Definition`) with zero duplication; every wire type in `internal/api/types.go` has a hand-maintained component schema with the closed vocabularies (run/step statuses, attempt outcomes, DLQ sources, scopes, error codes) as enums; request schemas are `additionalProperties: false` matching `DisallowUnknownFields`, responses left open for additive evolution. Lint = vacuum (Go-native, `go run`-pinned like sqlc) via `make openapi-lint` with `--fail-severity warn`; `api/vacuum.ruleset.yaml` disables exactly three recommended rules with in-file justifications (snake_case is the contract, untyped = any-JSON is deliberate, per-property examples are noise) — spec scores 100/100 with everything else on. Drift check = `TestOpenAPIRouteCoverage` in `internal/api` (plain unit test → runs in the existing CI test job): chi.Walk vs the spec's `paths` compared both directions with path-param names normalized (`{runID}` vs `{run_id}` don't matter, spec params stay snake_case); `TestOpenAPIOperationContracts` additionally pins operationId + a schema'd 2xx on every operation and 401/403/429 on every /v1 operation. `docs/api.md` walks auth bootstrap → submit/inspect/list → definition registry → cancel/park/unpark → DLQ requeue → error envelope + rate-limit headers, runnable against `make up-app`.)*
 **Done when:**
-- [ ] Spec validates; every implemented route present with request/response schemas
-- [ ] Route-coverage drift check wired into CI
-- [ ] `docs/api.md` renders usage examples (curl) for the main flows
+- [x] Spec validates; every implemented route present with request/response schemas
+- [x] Route-coverage drift check wired into CI
+- [x] `docs/api.md` renders usage examples (curl) for the main flows
 
 ---
 

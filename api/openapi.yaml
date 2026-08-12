@@ -1,0 +1,1464 @@
+# agentloom API contract (ticket 6.6). Hand-maintained — this file IS the
+# contract; internal/api implements it and cmd/ctl consumes it. Keep the
+# three in lockstep:
+#
+#   - Route drift is caught by TestOpenAPIRouteCoverage (internal/api),
+#     which compares the chi route table against `paths` in both
+#     directions — a new route cannot ship undocumented, and a documented
+#     path cannot outlive its handler.
+#   - `make openapi-lint` (vacuum) validates and lints the spec; CI runs
+#     both.
+#   - The workflow-definition schema is NOT duplicated here: it is
+#     $ref'd from the generated docs/schema/workflow-definition.v1.json
+#     (source of truth: the Go structs in internal/dag; regenerate with
+#     `make generate`). OpenAPI 3.1 speaks JSON Schema 2020-12, which is
+#     exactly what the generator emits.
+#
+# Wire-shape source: internal/api/types.go. Scope + rate-limit class per
+# route: ADR-007's tables (mirrored in internal/api/api.go's route
+# comment).
+openapi: 3.1.0
+
+info:
+  title: agentloom API
+  version: v1
+  summary: Durable execution engine for AI agent workflows — control-plane API.
+  description: |
+    The agentloom API submits and steers workflow runs, manages the stored
+    definition registry, and administers API keys. Execution itself is
+    asynchronous: submission writes the run and its outbox rows in one
+    Postgres transaction, and the worker fleet picks the work up from
+    there (ADR-002 — the API never dispatches).
+
+    ## Authentication
+
+    Every `/v1` route requires a bearer API key (`Authorization: Bearer
+    sk_...`) carrying the route's scope — `submit`, `read`, or `admin`
+    (`approve` is reserved until M15; `admin` implies all scopes). Any
+    credential failure is a uniform `401` with code `unauthorized`; a
+    valid key lacking the route's scope is a `403` with code `forbidden`
+    naming the missing scope. `GET /healthz` is the only anonymous route.
+    See ADR-007 for the key model (`sk_` + 43 base64url chars, hashed at
+    rest, plaintext shown exactly once by `POST /v1/keys`).
+
+    ## Rate limiting
+
+    After auth, every `/v1` request draws from the caller's per-key token
+    bucket for the route's class (`submit`, `read`, or `admin`) and from
+    a global safety bucket. When rate limiting is enabled, every `/v1`
+    response — success or denial — carries `X-RateLimit-Limit`,
+    `X-RateLimit-Remaining`, and `X-RateLimit-Reset` (whole seconds until
+    full) describing the caller's class bucket. A denial is `429` with
+    code `rate_limited` and a `Retry-After` header (whole seconds,
+    rounded up, from whichever bucket denied).
+
+    ## Errors
+
+    Every non-2xx response carries the JSON envelope
+    `{"error": {"code", "message", "issues?"}}`. `code` is a stable
+    machine-readable string (renaming one is a breaking change);
+    definition problems carry the path-qualified `issues` list verbatim
+    from validation.
+
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local compose stack (`make up-app`; binds 127.0.0.1 by default).
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Runs
+    description: Submit, inspect, and steer workflow runs.
+  - name: Definitions
+    description: The stored, versioned workflow-definition registry.
+  - name: Keys
+    description: API key administration (admin scope).
+  - name: Health
+    description: Unauthenticated liveness probe.
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      tags: [Health]
+      summary: Liveness probe
+      description: >
+        Reports liveness: `200` while Postgres answers a ping, `503`
+        otherwise. Anonymous by design — probes need no secret.
+      security: []
+      responses:
+        "200":
+          description: The API is serving and Postgres answers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+              example: { status: ok }
+        "503":
+          description: Postgres did not answer the ping.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+              example: { status: degraded }
+
+  /v1/runs:
+    post:
+      operationId: submitRun
+      tags: [Runs]
+      summary: Submit a run
+      description: |
+        Scope `submit`, rate-limit class `submit`. Instantiates a run from
+        an inline definition document or a stored definition reference
+        (exactly one of `definition` / `definition_id`). The run, its
+        per-run graph copy, entry-ready steps, and their dispatch outbox
+        rows are written in one transaction; workers pick the run up
+        asynchronously.
+
+        Idempotent submission rides the `Idempotency-Key` header:
+        resubmitting the same key with the same payload (definition
+        snapshot + canonicalized params + definition ref) returns the
+        original run as `200` with `reused: true`; the same key with a
+        different payload is refused with `409 idempotency_key_conflict`.
+        Keys are global, not per-API-key.
+
+        An inline definition that fails decoding or validation is a `400`
+        with code `invalid_definition` and the path-qualified `issues`
+        list. A `definition_id` that resolves to nothing is a `400` with
+        code `definition_not_found`.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        description: The definition (inline or by ref) and opaque run parameters.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitRunRequest"
+            examples:
+              inline:
+                summary: Inline definition
+                value:
+                  definition:
+                    schema_version: 1
+                    name: hello
+                    steps:
+                      - id: greet
+                        type: echo
+                        config: { input: { text: "hello, agentloom" } }
+                    edges: []
+                  params: { audience: world }
+              by-ref:
+                summary: Stored definition reference
+                value:
+                  definition_id: 018f3b1c-0000-7000-8000-000000000000
+                  params: { audience: world }
+      responses:
+        "201":
+          description: The run was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmitRunResponse"
+              example:
+                run_id: 018f3b1c-1111-7000-8000-000000000000
+                status: running
+                entry_steps: [greet]
+        "200":
+          description: >
+            The `Idempotency-Key` matched an earlier submission with the
+            same payload; this is the original run, replayed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmitRunResponse"
+              example:
+                run_id: 018f3b1c-1111-7000-8000-000000000000
+                status: succeeded
+                entry_steps: [greet]
+                reused: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/IdempotencyConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+    get:
+      operationId: listRuns
+      tags: [Runs]
+      summary: List runs
+      description: |
+        Scope `read`, rate-limit class `read`. One keyset page, newest
+        first — order `(created_at DESC, id DESC)` — with optional
+        filters. Feed `next_cursor` back verbatim as `?cursor=` for the
+        next page; its absence means this was the last page. Keyset
+        pagination is stable under concurrent inserts: new runs sort
+        before any already-issued cursor position, so a walk never skips
+        or repeats a row.
+      parameters:
+        - name: status
+          in: query
+          description: Only runs in this status.
+          schema:
+            $ref: "#/components/schemas/RunStatus"
+        - name: definition_id
+          in: query
+          description: Only runs instantiated from this stored definition.
+          schema:
+            type: string
+            format: uuid
+        - name: created_after
+          in: query
+          description: Only runs created strictly after this instant (RFC 3339).
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          description: Only runs created strictly before this instant (RFC 3339).
+          schema:
+            type: string
+            format: date-time
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageCursor"
+      responses:
+        "200":
+          description: One page of runs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListRunsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/runs/{run_id}:
+    get:
+      operationId: getRun
+      tags: [Runs]
+      summary: Get one run
+      description: |
+        Scope `read`, rate-limit class `read`. The run row, every step
+        with its full attempt history, every edge with its resolution,
+        and the run's dead-letter records (how a client discovers
+        requeueable steps — empty for healthy runs). Reads are not one
+        snapshot: a run mid-flight may show a step newer than its rollup
+        counters; the next poll heals it.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: The run in full.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/runs/{run_id}/cancel:
+    post:
+      operationId: cancelRun
+      tags: [Runs]
+      summary: Cancel a run
+      description: |
+        Scope `submit`, rate-limit class `submit`. Requests cooperative
+        cancellation (reason `manual`). The response reports what settled
+        in the request transaction — claimless pending/ready/retrying
+        steps are cancelled immediately; in-flight steps converge
+        afterwards as their workers notice (the run rests at `cancelling`
+        until then, `cancelled` when `finalized` is true). Cancelling a
+        run already in a terminal state is a `409` with code `conflict`.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: Cancellation requested (or finalized, when nothing was in flight).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelRunResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/runs/{run_id}/park:
+    post:
+      operationId: parkRun
+      tags: [Runs]
+      summary: Park a run
+      description: |
+        Scope `submit`, rate-limit class `submit`. Pauses dispatch
+        (reason `manual`): workers refuse new claims on the run's steps
+        while in-flight steps keep executing and settle normally. Parking
+        a run that is not `running` is a `409` with code `conflict`.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: The run is parked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParkRunResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/runs/{run_id}/unpark:
+    post:
+      operationId: unparkRun
+      tags: [Runs]
+      summary: Unpark a run
+      description: |
+        Scope `submit`, rate-limit class `submit`. Resumes dispatch,
+        re-dispatching every ready step whose queue delivery was consumed
+        while the run was parked (`dispatched`). Unparking a run that is
+        not `parked` is a `409` with code `conflict`.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: The run is running again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnparkRunResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/runs/{run_id}/steps/{step_id}/requeue:
+    post:
+      operationId: requeueStep
+      tags: [Runs]
+      summary: Requeue a dead-lettered step
+      description: |
+        Scope `submit`, rate-limit class `submit`. Resets a dead-lettered
+        step to `ready` with its retry budget re-armed (counted failures
+        restart from the dead-letter baseline; attempt history stays
+        immutable), re-opens the run when it rested at `failed`
+        (`run_resumed`), and revives written-off descendants (`revived`).
+        Requeueing a step that is not dead-lettered — or any step of a
+        cancelled run — is a `409` with code `conflict`. A missing run is
+        `404 run_not_found`; an existing run without that step is
+        `404 step_not_found`.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - $ref: "#/components/parameters/StepID"
+      responses:
+        "200":
+          description: The step is back in ready and dispatched.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequeueStepResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/definitions:
+    post:
+      operationId: createDefinition
+      tags: [Definitions]
+      summary: Register a definition
+      description: |
+        Scope `submit`, rate-limit class `submit`. Registers a validated
+        definition under its spec `name` at version 1; the stored spec is
+        the canonical encoding. An existing name is a `409` with code
+        `conflict` pointing at the versions route — appending versions is
+        deliberate, never accidental. A definition that fails decoding or
+        validation is a `400` with code `invalid_definition` and the
+        `issues` list.
+      requestBody:
+        required: true
+        description: The definition document to register.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDefinitionRequest"
+      responses:
+        "201":
+          description: The definition is stored at version 1.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DefinitionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+    get:
+      operationId: listDefinitions
+      tags: [Definitions]
+      summary: List definitions (latest per name)
+      description: |
+        Scope `read`, rate-limit class `read`. One keyset page of each
+        name's newest version, in name order. Feed `next_cursor` back
+        verbatim as `?cursor=` for the next page.
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageCursor"
+      responses:
+        "200":
+          description: One page of definitions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListDefinitionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/definitions/{definition_id}:
+    get:
+      operationId: getDefinition
+      tags: [Definitions]
+      summary: Get one stored definition
+      description: >
+        Scope `read`, rate-limit class `read`. One registry row with its
+        stored canonical spec.
+      parameters:
+        - name: definition_id
+          in: path
+          required: true
+          description: The stored definition's UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The stored definition, spec included.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DefinitionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/definitions/{name}/versions:
+    get:
+      operationId: listDefinitionVersions
+      tags: [Definitions]
+      summary: List every version of one name
+      description: >
+        Scope `read`, rate-limit class `read`. Every version of one
+        definition name, oldest first. An unknown name is a `404` — an
+        empty list would be indistinguishable from a typo.
+      parameters:
+        - $ref: "#/components/parameters/DefinitionName"
+      responses:
+        "200":
+          description: All versions of the name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DefinitionVersionsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+    post:
+      operationId: createDefinitionVersion
+      tags: [Definitions]
+      summary: Append the next version of an existing name
+      description: |
+        Scope `submit`, rate-limit class `submit`. Appends the next
+        version of an existing name; version numbers are allocated
+        serially, so concurrent appenders get consecutive versions. The
+        body's spec `name` must match the path — a mismatch is a `400`,
+        not a rename. An unknown name is a `404` pointing at
+        `POST /v1/definitions`.
+      parameters:
+        - $ref: "#/components/parameters/DefinitionName"
+      requestBody:
+        required: true
+        description: The new version's definition document; its `name` must match the path.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDefinitionRequest"
+      responses:
+        "201":
+          description: The new version is stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DefinitionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/keys:
+    post:
+      operationId: createKey
+      tags: [Keys]
+      summary: Mint an API key
+      description: |
+        Scope `admin`, rate-limit class `admin`. Mints a bearer key and
+        returns the plaintext — in this response once and recoverable
+        nowhere else (only the SHA-256 hash and an 11-character lookup
+        prefix are stored). Expiry is requested as a TTL (positive Go
+        duration, e.g. `"720h"`) and resolved against the server's clock;
+        empty means the key never expires. The first key is minted with
+        the env-provided root credential (`AGENTLOOM_API_ROOT_KEY`,
+        implicit admin) — set it, mint a stored admin key, unset it.
+      requestBody:
+        required: true
+        description: The key's label, scope set, and optional TTL.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateKeyRequest"
+            example:
+              name: ci-submitter
+              scopes: [submit, read]
+              ttl: 720h
+      responses:
+        "201":
+          description: The key, plaintext included — shown exactly once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateKeyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+    get:
+      operationId: listKeys
+      tags: [Keys]
+      summary: List API keys
+      description: >
+        Scope `admin`, rate-limit class `admin`. Every key, newest first,
+        revoked and expired included — lookup prefixes only, never hashes
+        or plaintext.
+      responses:
+        "200":
+          description: All keys.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListKeysResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/keys/{key_id}:
+    delete:
+      operationId: revokeKey
+      tags: [Keys]
+      summary: Revoke an API key
+      description: >
+        Scope `admin`, rate-limit class `admin`. Soft revocation, first
+        wins and idempotent — revoking an already-revoked key is a `204`
+        no-op keeping the original `revoked_at`.
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          description: The key's UUID (not its prefix).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: The key is revoked (or already was).
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: sk_<43 base64url chars>
+      description: >
+        API key per ADR-007. Scopes (`submit`, `read`, `approve`,
+        `admin`) are granted per key and checked per route; `admin`
+        implies all. Every credential failure is an indistinguishable
+        `401`; a missing scope is a `403` naming it.
+
+  parameters:
+    RunID:
+      name: run_id
+      in: path
+      required: true
+      description: The run's UUID.
+      schema:
+        type: string
+        format: uuid
+    StepID:
+      name: step_id
+      in: path
+      required: true
+      description: The step's id within the run's graph (the definition's step id).
+      schema:
+        type: string
+    DefinitionName:
+      name: name
+      in: path
+      required: true
+      description: The definition name (the spec's `name` field).
+      schema:
+        type: string
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        Client-chosen idempotency token, at most 200 bytes (longer is a
+        `400`). Same key + same payload replays the original run (`200`,
+        `reused: true`); same key + different payload is a `409` with
+        code `idempotency_key_conflict`. Tokens are global across API
+        keys.
+      schema:
+        type: string
+        maxLength: 200
+    PageLimit:
+      name: limit
+      in: query
+      description: Page size; an integer in [1, 200].
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    PageCursor:
+      name: cursor
+      in: query
+      description: >
+        Opaque keyset cursor from the previous page's `next_cursor`;
+        pass it back verbatim. A cursor from one list endpoint is not
+        valid on another. Garbage is a `400`.
+      schema:
+        type: string
+
+  headers:
+    RetryAfter:
+      description: >
+        Whole seconds (rounded up) until the denying bucket refills
+        enough to admit this request.
+      schema:
+        type: integer
+        minimum: 1
+    XRateLimitLimit:
+      description: The caller's class-bucket capacity.
+      schema:
+        type: integer
+    XRateLimitRemaining:
+      description: Whole tokens remaining in the caller's class bucket.
+      schema:
+        type: integer
+    XRateLimitReset:
+      description: Whole seconds until the caller's class bucket is full again.
+      schema:
+        type: integer
+    WWWAuthenticate:
+      description: Always `Bearer` — the API's only challenge scheme.
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: >
+        The request is malformed (code `invalid_request`), the submitted
+        definition failed decoding or validation (code
+        `invalid_definition`, with `issues`), or a referenced stored
+        definition does not exist (code `definition_not_found`, on
+        submit-by-ref).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            invalid-request:
+              summary: Malformed request
+              value:
+                error:
+                  code: invalid_request
+                  message: one of definition or definition_id is required
+            invalid-definition:
+              summary: Definition failed validation
+              value:
+                error:
+                  code: invalid_definition
+                  message: definition failed validation
+                  issues:
+                    - code: edge_endpoint_unknown
+                      severity: error
+                      path: $.edges[0].from
+                      msg: edge references unknown step "fethc"
+    Unauthorized:
+      description: >
+        Missing or invalid credential (code `unauthorized`). Every
+        credential failure — absent header, bad shape, unknown key,
+        revoked, expired — collapses to this one indistinguishable
+        response.
+      headers:
+        WWW-Authenticate:
+          $ref: "#/components/headers/WWWAuthenticate"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: { code: unauthorized, message: missing or invalid credentials }
+    Forbidden:
+      description: >
+        The credential is valid but lacks the route's scope (code
+        `forbidden`); the message names the missing scope.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: { code: forbidden, message: "missing scope: submit" }
+    NotFound:
+      description: >
+        The addressed entity does not exist — code `run_not_found`,
+        `step_not_found`, `definition_not_found`, or `key_not_found`
+        depending on the route. (Requests outside the route table answer
+        `404` with code `not_found`.)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: run_not_found
+              message: no run with id 018f3b1c-1111-7000-8000-000000000000
+    Conflict:
+      description: >
+        The request is well-formed but the entity's current state refuses
+        it (code `conflict`) — cancelling a finished run, unparking a
+        running run, requeueing a step that is not dead-lettered,
+        registering a definition name that already exists. The message
+        names the actual state.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: conflict
+              message: "run 018f3b1c-1111-7000-8000-000000000000 is succeeded, not running"
+    IdempotencyConflict:
+      description: >
+        The `Idempotency-Key` was seen before with a different payload
+        (code `idempotency_key_conflict`); the replay is refused instead
+        of returning the original run.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: idempotency_key_conflict
+              message: Idempotency-Key was already used by run 018f3b1c-1111-7000-8000-000000000000 with a different payload
+    RateLimited:
+      description: >
+        Over a rate limit (code `rate_limited`). `Retry-After` comes from
+        whichever bucket denied (per-key class bucket or the global
+        safety bucket); the `X-RateLimit-*` headers always describe the
+        caller's class bucket.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+        X-RateLimit-Limit:
+          $ref: "#/components/headers/XRateLimitLimit"
+        X-RateLimit-Remaining:
+          $ref: "#/components/headers/XRateLimitRemaining"
+        X-RateLimit-Reset:
+          $ref: "#/components/headers/XRateLimitReset"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: { code: rate_limited, message: rate limit exceeded }
+    Internal:
+      description: The request was fine, the server was not (code `internal`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: { code: internal, message: creating run failed }
+
+  schemas:
+    # --- The workflow definition contract (generated; do not inline). ---
+    WorkflowDefinition:
+      $ref: "../docs/schema/workflow-definition.v1.json"
+      description: >
+        A workflow definition document (ADR-003, contract version 1). The
+        schema is generated from the Go structs by `make generate`; this
+        spec references the generated file rather than duplicating it.
+
+    # --- Error envelope. ---
+    Error:
+      type: object
+      description: The envelope every non-2xx response carries.
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorDetail"
+    ErrorDetail:
+      type: object
+      description: The error payload inside the envelope.
+      required: [code, message]
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+          description: Human-readable explanation; not machine-stable.
+        issues:
+          type: array
+          description: >
+            Path-qualified definition problems (decode errors and M1
+            validation findings, warnings included), present only with
+            code `invalid_definition`.
+          items:
+            $ref: "#/components/schemas/Issue"
+    ErrorCode:
+      type: string
+      description: >
+        Stable machine-readable error code; renaming one is a breaking
+        change.
+      enum:
+        - invalid_request
+        - invalid_definition
+        - definition_not_found
+        - run_not_found
+        - step_not_found
+        - key_not_found
+        - unauthorized
+        - forbidden
+        - rate_limited
+        - conflict
+        - idempotency_key_conflict
+        - not_found
+        - method_not_allowed
+        - internal
+    Issue:
+      type: object
+      description: One path-qualified definition problem.
+      required: [severity, msg]
+      properties:
+        code:
+          type: string
+          description: The dag validation code; empty for codec-level errors.
+        severity:
+          type: string
+          enum: [error, warning]
+        path:
+          type: string
+          description: JSON path of the offender; empty means the document.
+        msg:
+          type: string
+
+    # --- Vocabularies (ADR-004/006 status machines, ADR-007 scopes). ---
+    RunStatus:
+      type: string
+      description: >
+        Run states. `parked` and `cancelling` are non-terminal;
+        `succeeded`, `failed`, and `cancelled` are terminal (a `failed`
+        run can be re-opened by a dead-letter requeue).
+      enum: [running, succeeded, failed, parked, cancelling, cancelled]
+    StepStatus:
+      type: string
+      description: >
+        Step states. `dead_lettered` is the terminal failure state
+        (`failed` appears only on rows predating migration 0005);
+        `cancelled` steps were written off and may be revived by a
+        requeue.
+      enum:
+        - pending
+        - ready
+        - running
+        - succeeded
+        - failed
+        - skipped
+        - retrying
+        - dead_lettered
+        - cancelled
+    AttemptOutcome:
+      type: string
+      description: >
+        How an attempt ended: `succeeded`; a judged failure class
+        (`transient`, `permanent`, `timeout` — ADR-006); `cancelled` by
+        run-level control flow; or the administrative `lost` (lease-
+        expiry takeover — never counted against the retry budget).
+      enum: [succeeded, transient, permanent, timeout, cancelled, lost]
+    Scope:
+      type: string
+      description: >
+        API key scopes (ADR-007). `admin` implies all; `approve` is
+        reserved until M15 and accepted at key creation.
+      enum: [submit, read, approve, admin]
+
+    # --- Health. ---
+    HealthStatus:
+      type: object
+      description: The liveness probe's answer.
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+
+    # --- Run submission & inspection. ---
+    SubmitRunRequest:
+      type: object
+      description: >
+        Exactly one of `definition` (inline document) and `definition_id`
+        (stored definition ref) must be set.
+      additionalProperties: false
+      properties:
+        definition:
+          $ref: "#/components/schemas/WorkflowDefinition"
+        definition_id:
+          type: string
+          format: uuid
+          description: A stored definition's UUID (not a name).
+        params:
+          description: >
+            Run parameters, stored opaquely and exposed to step config
+            rendering. Any JSON value.
+    SubmitRunResponse:
+      type: object
+      description: The submitted (or replayed) run.
+      required: [run_id, status, entry_steps]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/RunStatus"
+        entry_steps:
+          type: array
+          description: The step ids made ready at instantiation.
+          items:
+            type: string
+        reused:
+          type: boolean
+          description: >
+            True when the Idempotency-Key matched an earlier submission
+            and this is the original run (status `200`). Absent on
+            creation.
+    RunView:
+      type: object
+      description: The run row's client-facing projection.
+      required:
+        - id
+        - status
+        - on_failure
+        - steps_total
+        - steps_succeeded
+        - steps_failed
+        - steps_skipped
+        - steps_cancelled
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        definition_id:
+          type: string
+          format: uuid
+          description: The stored definition this run was submitted from; absent for inline submissions.
+        status:
+          $ref: "#/components/schemas/RunStatus"
+        on_failure:
+          type: string
+          description: The run's materialized failure policy (ADR-006).
+          enum: [fail_fast, continue_independent_branches]
+        steps_total:
+          type: integer
+        steps_succeeded:
+          type: integer
+        steps_failed:
+          type: integer
+        steps_skipped:
+          type: integer
+        steps_cancelled:
+          type: integer
+        park_reason:
+          type: string
+          description: Why the run is parked; only on parked runs. `budget_exceeded` (M10) and `awaiting_human` (M15) are reserved.
+          enum: [manual, budget_exceeded, awaiting_human]
+        cancel_reason:
+          type: string
+          description: Why the run was cancelled; only on cancelling/cancelled runs.
+          enum: [manual, deadline_exceeded]
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        deadline_at:
+          type: string
+          format: date-time
+          description: The materialized max_wall_clock deadline; absent when the definition sets none.
+    StepView:
+      type: object
+      description: One run step with its attempt history.
+      required: [id, type, status, remaining_deps, fired_deps, attempt_count]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          description: The step type from the definition (llm, tool, branch, join, ...).
+        status:
+          $ref: "#/components/schemas/StepStatus"
+        remaining_deps:
+          type: integer
+          description: Dependencies still unresolved before the step can become ready.
+        fired_deps:
+          type: integer
+        attempt_count:
+          type: integer
+        output:
+          description: The successful attempt's output document. Any JSON value.
+        error:
+          description: The last failure document. Any JSON value.
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        attempts:
+          type: array
+          items:
+            $ref: "#/components/schemas/AttemptView"
+    AttemptView:
+      type: object
+      description: One execution try of a step.
+      required: [attempt, claim_id]
+      properties:
+        attempt:
+          type: integer
+          description: 1-based durable attempt number.
+        claim_id:
+          type: string
+          format: uuid
+          description: The fencing token the attempt held.
+        outcome:
+          $ref: "#/components/schemas/AttemptOutcome"
+        error:
+          description: The attempt's failure document. Any JSON value.
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+    EdgeView:
+      type: object
+      description: One run edge with its resolution — enough to render the graph and see which paths fired.
+      required: [from, to, type, resolution]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        type:
+          type: string
+          enum: [normal, loop]
+        resolution:
+          type: string
+          enum: [unresolved, fired, skipped]
+    DeadLetterView:
+      type: object
+      description: >
+        One DLQ record. `seq` counts the step's deaths;
+        `attempts_at_death` is the baseline a requeue re-arms the retry
+        budget from.
+      required: [step_id, seq, source, attempts_at_death, created_at]
+      properties:
+        step_id:
+          type: string
+        seq:
+          type: integer
+        source:
+          type: string
+          description: >
+            Why the step dead-lettered: a retryable class ran out of
+            budget, a never-retryable failure, or the queue's poison
+            threshold (delivery crash loop — `class` absent).
+          enum: [retries_exhausted, permanent, poison]
+        class:
+          type: string
+          description: The judged failure class; absent for poison.
+          enum: [transient, permanent, timeout]
+        error:
+          description: The failure document at death. Any JSON value.
+        attempts_at_death:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+    RunResponse:
+      type: object
+      description: The full run view — run row, steps with attempts, edges, DLQ records.
+      required: [run, steps, edges]
+      properties:
+        run:
+          $ref: "#/components/schemas/RunView"
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/StepView"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/EdgeView"
+        dead_letters:
+          type: array
+          description: The run's DLQ records — how a client discovers requeueable steps. Absent for healthy runs.
+          items:
+            $ref: "#/components/schemas/DeadLetterView"
+    ListRunsResponse:
+      type: object
+      description: One keyset page of runs, newest first.
+      required: [runs]
+      properties:
+        runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunView"
+        next_cursor:
+          type: string
+          description: Opaque cursor fetching the next page of runs; absent on the last page.
+
+    # --- Run lifecycle. ---
+    CancelRunResponse:
+      type: object
+      description: What the cancel request settled immediately.
+      required: [run, cancelled_steps, finalized]
+      properties:
+        run:
+          $ref: "#/components/schemas/RunView"
+        cancelled_steps:
+          type: array
+          description: Claimless steps the request's sweep cancelled immediately.
+          items:
+            type: string
+        finalized:
+          type: boolean
+          description: >
+            True when nothing was in flight and the run went straight to
+            `cancelled`; false means it rests at `cancelling` until
+            in-flight steps settle.
+    ParkRunResponse:
+      type: object
+      description: The parked run.
+      required: [run]
+      properties:
+        run:
+          $ref: "#/components/schemas/RunView"
+    UnparkRunResponse:
+      type: object
+      description: The resumed run and what was re-dispatched.
+      required: [run, dispatched]
+      properties:
+        run:
+          $ref: "#/components/schemas/RunView"
+        dispatched:
+          type: array
+          description: Ready steps re-dispatched because their deliveries were consumed while parked.
+          items:
+            type: string
+    RequeueStepResponse:
+      type: object
+      description: The requeued step, back in ready with its budget re-armed.
+      required: [run_id, step_id, status, run_resumed, dispatched]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        step_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/StepStatus"
+        run_resumed:
+          type: boolean
+          description: True when the requeue re-opened a failed run.
+        revived:
+          type: array
+          description: Written-off descendant steps brought back to pending.
+          items:
+            type: string
+        dispatched:
+          type: array
+          description: Steps re-dispatched by the requeue (the requeued step plus any stranded ready steps).
+          items:
+            type: string
+
+    # --- Definition registry. ---
+    CreateDefinitionRequest:
+      type: object
+      description: The body of definition create and new-version requests.
+      required: [definition]
+      additionalProperties: false
+      properties:
+        definition:
+          $ref: "#/components/schemas/WorkflowDefinition"
+    DefinitionView:
+      type: object
+      description: One registry row's summary — everything but the spec.
+      required: [id, name, version, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+    DefinitionResponse:
+      description: A registry row with its stored canonical spec.
+      allOf:
+        - $ref: "#/components/schemas/DefinitionView"
+        - type: object
+          required: [spec]
+          properties:
+            spec:
+              $ref: "#/components/schemas/WorkflowDefinition"
+    ListDefinitionsResponse:
+      type: object
+      description: One keyset page of definitions (latest per name), in name order.
+      required: [definitions]
+      properties:
+        definitions:
+          type: array
+          items:
+            $ref: "#/components/schemas/DefinitionView"
+        next_cursor:
+          type: string
+          description: Opaque cursor fetching the next page of definitions; absent on the last page.
+    DefinitionVersionsResponse:
+      type: object
+      description: Every stored version of one definition name.
+      required: [versions]
+      properties:
+        versions:
+          type: array
+          description: Every version of the name, oldest first.
+          items:
+            $ref: "#/components/schemas/DefinitionView"
+
+    # --- API keys. ---
+    CreateKeyRequest:
+      type: object
+      description: The key-mint request (ADR-007).
+      required: [name, scopes]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: Human label shown in listings.
+          minLength: 1
+          maxLength: 200
+        scopes:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/Scope"
+        ttl:
+          type: string
+          description: >
+            Optional positive Go duration (e.g. "720h") resolved to an
+            absolute expiry against the server's clock. Empty means the
+            key never expires.
+    KeyView:
+      type: object
+      description: >
+        One API key's client-facing projection: the 11-character lookup
+        prefix is the only key material it ever carries.
+      required: [id, prefix, name, scopes, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        prefix:
+          type: string
+          description: The first 11 characters of the plaintext key — for matching, not authentication.
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+    CreateKeyResponse:
+      description: >
+        The minted key. `key` is the plaintext credential, shown in this
+        response once and recoverable nowhere else.
+      allOf:
+        - $ref: "#/components/schemas/KeyView"
+        - type: object
+          required: [key]
+          properties:
+            key:
+              type: string
+              description: The plaintext bearer key (sk_ + 43 base64url chars).
+    ListKeysResponse:
+      type: object
+      description: Every API key, newest first, revoked and expired included.
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: "#/components/schemas/KeyView"

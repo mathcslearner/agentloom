@@ -1,0 +1,17 @@
+# vacuum ruleset for `make openapi-lint` (ticket 6.6). Everything in the
+# recommended set applies except rules that contradict deliberate contract
+# choices — each opt-out is justified here, so removing one is a decision,
+# not a cleanup.
+extends: [[spectral:oas, recommended]]
+rules:
+  # The wire contract is snake_case (Go struct tags in internal/api/types.go
+  # and the generated definition schema); camelCase would be the drift.
+  camel-case-properties: false
+  # `params`, `output`, and `error` documents are deliberately untyped —
+  # "any JSON value" is the contract (opaque params, executor-owned output
+  # shapes) — and a typeless schema is how JSON Schema spells that.
+  oas-missing-type: false
+  # Descriptions and enums carry the contract; per-property examples on
+  # every field would be noise. Full request/response examples live on the
+  # operations that matter (submit, key mint) and in docs/api.md.
+  oas3-missing-example: false

@@ -10,6 +10,8 @@ endif
 GOLANGCI_LINT_VERSION := v2.12.2
 # sqlc is run via `go run` so the pin lives here, not in a global install.
 SQLC_VERSION := v1.30.0
+# vacuum lints the OpenAPI contract (ticket 6.6); run via `go run` like sqlc.
+VACUUM_VERSION := v0.30.0
 BIN_DIR := $(CURDIR)/bin
 GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 
@@ -27,6 +29,12 @@ fmt: tools ## Format code (gofumpt + gci) and tidy go.mod
 .PHONY: lint
 lint: tools ## Run golangci-lint
 	$(GOLANGCI_LINT) run ./...
+
+.PHONY: openapi-lint
+openapi-lint: ## Validate & lint the OpenAPI contract (api/openapi.yaml); warnings fail
+	go run github.com/daveshanley/vacuum@$(VACUUM_VERSION) lint \
+		--no-banner --fail-severity warn \
+		-r api/vacuum.ruleset.yaml api/openapi.yaml
 
 .PHONY: generate
 generate: ## Regenerate derived artifacts (workflow definition JSON Schema, sqlc store code)

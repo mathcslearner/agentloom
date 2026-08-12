@@ -5,8 +5,10 @@ import (
 	"time"
 )
 
-// The wire contract (v1, dev mode). cmd/ctl imports these types; the
-// OpenAPI spec formalizing them is ticket 6.6.
+// The wire contract (v1). cmd/ctl imports these types; api/openapi.yaml
+// (ticket 6.6) is the formal contract mirroring them schema-for-schema.
+// Route drift is caught by TestOpenAPIRouteCoverage; field-level changes
+// here must update the spec's components in the same change.
 
 // Error codes. Part of the contract: renaming one is a breaking change.
 const (

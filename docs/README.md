@@ -1,6 +1,7 @@
 # agentloom documentation
 
 - [Architecture overview](architecture.md) — components, execution data flow, tech-stack rationale, glossary.
+- [API usage guide](api.md) — curl walkthroughs for the main flows: auth bootstrap, submission + idempotency, pagination, the definition registry, lifecycle steering, DLQ requeue, errors and rate limits. The formal contract is [`api/openapi.yaml`](../api/openapi.yaml) (drift-checked against the router in CI).
 - [Architecture decision records](adr/README.md) — the ADR index, template, and conventions.
 - [Edge condition expressions](expressions.md) — the CEL environment for `when`/`condition` predicates, typing rules, and the evaluation-error policy.
 - [`schema/`](schema/) — the generated workflow definition JSON Schema (do not edit by hand: regenerate with `make generate`; CI fails on drift).

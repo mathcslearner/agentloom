@@ -3229,3 +3229,86 @@ lint green.
 - Deferred: ctl commands for the definitions registry (the API is the
   contract surface; ctl can grow `defs` alongside 6.6's docs), and 429
   backoff in ctl (unchanged from 6.4's note).
+
+### 6.6 — OpenAPI contract & docs ✅
+
+**What shipped.** The API contract, pinned. `api/openapi.yaml` is the
+hand-maintained OpenAPI **3.1** spec covering all 16 `/v1` routes plus
+`/healthz`: every operation with its scope + rate-limit class in the
+description, request/response schemas mirroring `internal/api/types.go`
+component-for-component, the `bearerAuth` security scheme (global, with
+`security: []` on the health probe), the error envelope with the full
+`ErrorCode` enum (renaming one is a contract break), the
+`Idempotency-Key` header parameter (maxLength 200), reusable 4xx/5xx
+responses carrying the `WWW-Authenticate` / `Retry-After` /
+`X-RateLimit-*` headers, and examples on the operations that matter
+(inline + by-ref submission validated against the real definition
+schema, error envelope with path-qualified issues).
+
+3.1 over 3.0 was the load-bearing choice: OpenAPI 3.1's schema dialect
+*is* JSON Schema 2020-12, which is exactly what `internal/dag/gen`
+emits — so the workflow-definition schema is a single external
+`$ref: '../docs/schema/workflow-definition.v1.json'` (whose root
+already points at `#/$defs/Definition`) instead of a hand-converted
+inline copy that would drift. `make generate` keeps the referenced file
+current with no extra step, and openapi-typescript (M17's client
+generator) handles both 3.1 and local file refs.
+
+Closed vocabularies became enums (run/step statuses incl. the legacy
+`failed` resting state, attempt outcomes incl. `lost`, DLQ sources,
+edge types/resolutions, scopes, park/cancel reasons, `on_failure`).
+Request bodies are `additionalProperties: false` — matching the
+handlers' `DisallowUnknownFields` — while responses stay open so
+additive fields aren't a validator break. `params`/`output`/`error`
+documents are deliberately typeless ("any JSON value" is the contract).
+Spec path params are wire-style snake_case (`{run_id}`); chi's
+camelCase names stay internal.
+
+**Enforcement, two layers.** (1) `make openapi-lint` runs vacuum
+(Go-native, version-pinned via `go run` like sqlc — no Node in CI) with
+`--fail-severity warn`; `api/vacuum.ruleset.yaml` disables exactly
+three recommended rules, each justified in-file (snake_case *is* the
+contract; typeless = any-JSON is deliberate; per-property examples are
+noise) — with everything else on, the spec lints 100/100, and the CI
+lint job gained the step. (2) `TestOpenAPIRouteCoverage`
+(`internal/api/openapi_test.go`) parses the spec's `paths` as plain
+YAML (`go.yaml.in/yaml/v3`, promoted to a direct dep; a full OpenAPI
+resolver would be a second source of truth — validity is vacuum's job)
+and compares against `chi.Walk` **both directions** with param names
+normalized, so a mounted-but-undocumented route and a
+documented-but-unmounted path both fail; being a plain unit test it
+rides the existing CI test job. `TestOpenAPIOperationContracts` pins
+the conventions: operationId everywhere (M17's method names), a
+schema'd 2xx on every operation (204 exempt), and 401/403/429
+documented on every `/v1` operation.
+
+**Docs.** `docs/api.md` — curl walkthroughs runnable against
+`make up-app`: root-key auth bootstrap → mint scoped keys →
+submit-with-`Idempotency-Key` (replay + 409 semantics) → run
+inspection → keyset list walk with filters → definition registry
+(create / version / submit-by-ref) → cancel/park/unpark → DLQ discovery
++ requeue → error envelope + rate-limit-header reading. Indexed in
+`docs/README.md`; the stale "until the OpenAPI spec takes over"
+comments in `api.go`/`types.go` now point at the spec as the live
+contract.
+
+**Verified.** `go test -race ./...`, `make lint`, `make openapi-lint`
+all green; the drift test proven to fire in both directions by
+mutation; the CI `sk_` grep stays clean (doc examples elide key
+material).
+
+**Non-obvious decisions / deferred.**
+- Field-level schema drift (a `types.go` field vs its component schema)
+  is *not* machine-checked — only route-level drift is. The honest
+  fix is generating schemas from the Go types or contract tests
+  against recorded responses; deferred until it hurts, recorded in the
+  `types.go` comment ("change both together").
+- vacuum's external-ref resolution handled the relative `$ref` without
+  a base-path flag; if a future vacuum bump breaks it, `-b` is the
+  knob.
+- OpenAPI can't express custom scopes on an `http: bearer` scheme, so
+  the route→scope table lives in operation descriptions (ADR-007
+  remains the authority; the walk tests enforce it in code).
+- ctl `defs` subcommands (deferred at 6.5 "alongside 6.6's docs")
+  stay deferred — docs/api.md documents the raw routes; ctl growth is
+  cosmetic and can ride any later ticket.
