@@ -36,7 +36,7 @@ var testNow = time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 func newServer(t *testing.T) (*store.Store, *httptest.Server) {
 	t.Helper()
 	s := store.NewFromPool(storetest.NewDB(t))
-	h, err := api.New(s, func() time.Time { return testNow }, nil)
+	h, err := api.New(s, func() time.Time { return testNow }, nil, "")
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestSubmitFanoutRunsToCompletion(t *testing.T) {
 	s := store.NewFromPool(storetest.NewDB(t))
 	h := queuetest.New(t)
 	h.EnsureGroup(ctx)
-	handler, err := api.New(s, time.Now, nil)
+	handler, err := api.New(s, time.Now, nil, "")
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}

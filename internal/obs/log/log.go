@@ -22,6 +22,10 @@ const (
 	FieldAttempt  = "attempt"
 	FieldWorkerID = "worker_id"
 	FieldTraceID  = "trace_id"
+	// FieldKeyID identifies the API key behind an authenticated request
+	// (ticket 6.1, ADR-007) — always the key's row id or the "root"
+	// sentinel, never key material.
+	FieldKeyID = "key_id"
 )
 
 // RunID returns the canonical attr for a run identifier.
@@ -38,6 +42,9 @@ func WorkerID(id string) slog.Attr { return slog.String(FieldWorkerID, id) }
 
 // TraceID returns the canonical attr for a trace identifier.
 func TraceID(id string) slog.Attr { return slog.String(FieldTraceID, id) }
+
+// KeyID returns the canonical attr for an API key identifier.
+func KeyID(id string) slog.Attr { return slog.String(FieldKeyID, id) }
 
 // New builds a logger writing to w per cfg: JSON (one object per line) or
 // text encoding, records below cfg.Level dropped, source locations stamped

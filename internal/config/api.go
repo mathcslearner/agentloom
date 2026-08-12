@@ -9,6 +9,7 @@ const (
 	EnvAPIWriteTimeout    = "AGENTLOOM_API_WRITE_TIMEOUT"
 	EnvAPIIdleTimeout     = "AGENTLOOM_API_IDLE_TIMEOUT"
 	EnvAPIShutdownTimeout = "AGENTLOOM_API_SHUTDOWN_TIMEOUT"
+	EnvAPIRootKey         = "AGENTLOOM_API_ROOT_KEY"
 )
 
 // API server defaults (ticket 4.6, dev mode). The timeouts are generous
@@ -39,6 +40,13 @@ type APIConfig struct {
 	// ShutdownTimeout bounds the graceful drain on SIGINT/SIGTERM; after
 	// it, remaining connections are closed hard. Must be positive.
 	ShutdownTimeout time.Duration
+	// RootKey is the optional bootstrap admin credential (ticket 6.1,
+	// ADR-007): a plaintext sk_-shaped key that authenticates as an
+	// implicit admin for key management, meant to mint the first stored
+	// admin key and then be unset. Empty disables the root path. It is a
+	// secret: it must never be logged, and internal/api validates its
+	// shape without ever echoing the value.
+	RootKey string
 }
 
 func defaultAPIConfig() APIConfig {
@@ -63,5 +71,10 @@ func (c *APIConfig) applyEnv(fn LookupFunc) []error {
 	errs = applyPositiveDuration(errs, fn, EnvAPIWriteTimeout, &c.WriteTimeout)
 	errs = applyPositiveDuration(errs, fn, EnvAPIIdleTimeout, &c.IdleTimeout)
 	errs = applyPositiveDuration(errs, fn, EnvAPIShutdownTimeout, &c.ShutdownTimeout)
+	if raw, ok := lookup(fn, EnvAPIRootKey); ok {
+		// Passed through opaquely: shape validation happens in internal/api,
+		// which knows the key format and is careful never to echo the value.
+		c.RootKey = raw
+	}
 	return errs
 }

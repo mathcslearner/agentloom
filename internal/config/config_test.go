@@ -80,12 +80,16 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoadAPIOverrides(t *testing.T) {
 	t.Parallel()
 
+	// Constructed, not a literal: no sk_-shaped string may be committed
+	// verbatim (the CI secret grep would flag it, by design).
+	rootKey := "sk_" + strings.Repeat("a", 43)
 	cfg, err := config.Load(lookupFrom(map[string]string{
 		config.EnvAPIAddr:            "127.0.0.1:9090",
 		config.EnvAPIReadTimeout:     "5s",
 		config.EnvAPIWriteTimeout:    "10s",
 		config.EnvAPIIdleTimeout:     "1m",
 		config.EnvAPIShutdownTimeout: "3s",
+		config.EnvAPIRootKey:         rootKey,
 	}))
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
@@ -96,6 +100,7 @@ func TestLoadAPIOverrides(t *testing.T) {
 		WriteTimeout:    10 * time.Second,
 		IdleTimeout:     time.Minute,
 		ShutdownTimeout: 3 * time.Second,
+		RootKey:         rootKey,
 	}
 	if cfg.API != want {
 		t.Errorf("API config = %+v, want %+v", cfg.API, want)

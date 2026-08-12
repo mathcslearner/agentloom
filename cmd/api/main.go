@@ -1,6 +1,7 @@
 // Command api is agentloom's ingest/inspection deployable (ADR-001,
-// ticket 4.6, dev mode — no auth until M6). It serves internal/api's
-// routes: POST /v1/runs, GET /v1/runs/{id}, GET /healthz. It talks only to
+// ticket 4.6). It serves internal/api's routes: POST /v1/runs,
+// GET /v1/runs/{id}, the admin-gated /v1/keys key management (ticket 6.1
+// — full-route auth arrives in 6.2), and GET /healthz. It talks only to
 // Postgres — run submission writes the transactional outbox, and the
 // worker fleet dispatches from there (ADR-002).
 //
@@ -55,7 +56,7 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 	}
 	defer st.Close()
 
-	handler, err := api.New(st, time.Now, logger)
+	handler, err := api.New(st, time.Now, logger, cfg.API.RootKey)
 	if err != nil {
 		return err
 	}

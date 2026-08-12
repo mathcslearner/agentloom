@@ -11,20 +11,40 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/mathcslearner/agentloom/internal/api"
 )
 
 // client is a thin HTTP client over internal/api's wire contract.
 type client struct {
 	base string
-	hc   *http.Client
+	// key is the bearer credential presented on every request (empty =
+	// anonymous; only key-management routes require one until ticket 6.2).
+	key string
+	hc  *http.Client
 }
 
-func newClient(base string) *client {
+func newClient(base, key string) *client {
 	return &client{
 		base: strings.TrimRight(base, "/"),
+		key:  key,
 		hc:   &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+// clientFromCmd builds the client from the root command's persistent
+// --api and --key flags.
+func clientFromCmd(cmd *cobra.Command) (*client, error) {
+	base, err := cmd.Flags().GetString("api")
+	if err != nil {
+		return nil, err
+	}
+	key, err := cmd.Flags().GetString("key")
+	if err != nil {
+		return nil, err
+	}
+	return newClient(base, key), nil
 }
 
 // apiError is a non-2xx response decoded into the API's error envelope.
@@ -42,6 +62,29 @@ func (e *apiError) Error() string {
 		return fmt.Sprintf("api error (%s): %s", e.Detail.Code, msg)
 	}
 	return fmt.Sprintf("api error (HTTP %d): %s", e.Status, msg)
+}
+
+// createKey POSTs a key-creation request (admin).
+func (c *client) createKey(ctx context.Context, req api.CreateKeyRequest) (api.CreateKeyResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return api.CreateKeyResponse{}, fmt.Errorf("encoding request: %w", err)
+	}
+	var resp api.CreateKeyResponse
+	err = c.do(ctx, http.MethodPost, "/v1/keys", body, &resp)
+	return resp, err
+}
+
+// listKeys GETs every key's projection (admin; prefixes only).
+func (c *client) listKeys(ctx context.Context) (api.ListKeysResponse, error) {
+	var resp api.ListKeysResponse
+	err := c.do(ctx, http.MethodGet, "/v1/keys", nil, &resp)
+	return resp, err
+}
+
+// revokeKey DELETEs one key (admin; soft, idempotent — a 204 either way).
+func (c *client) revokeKey(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/keys/"+url.PathEscape(id), nil, nil)
 }
 
 // submitRun POSTs a run submission.
@@ -75,6 +118,9 @@ func (c *client) do(ctx context.Context, method, path string, body []byte, out a
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.key != "" {
+		req.Header.Set("Authorization", "Bearer "+c.key)
 	}
 	res, err := c.hc.Do(req)
 	if err != nil {

@@ -2739,3 +2739,96 @@ milestones. If CI runner contention ever flakes the *other* crash-suite
 tests while chaos runs in parallel, the recorded fallback is dropping
 `t.Parallel()` from `TestSustainedChaos` so it serializes within the
 package.
+
+## Milestone 6 — API server & auth
+
+### 6.1 — ADR-007 & API key model ✅
+
+**Delivered.** [ADR-007](adr/007-authn-authz-and-api-rate-limiting.md)
+(authentication, authorization & API rate limiting — the design contract
+for all of M6 plus the limiter M9 reuses), migration 0008 (`api_keys`),
+the `APIKeyRepo` store layer, key mechanics + the admin-gated `/v1/keys`
+management routes in `internal/api`, the `AGENTLOOM_API_ROOT_KEY`
+bootstrap path through `config.APIConfig`/`cmd/api`/compose, and
+`ctl keys create/list/revoke`.
+
+**The ADR's decisions**, in brief: opaque bearer keys over JWT for v1
+(service-to-service simplicity, instant revocation as a DB row; JWT/OIDC
+backlogged for human SSO). Key = `sk_` + base64url(32 random bytes) —
+46 chars; stored as hex SHA-256 of the full plaintext (UNIQUE) plus an
+11-char clear lookup prefix (UNIQUE, `sk_` + 8 random chars, regenerate
+on the ~impossible collision). **Fast hash, deliberately no KDF**: the
+secret is 256 random bits, so bcrypt/argon2 would add per-request CPU
+for zero threat-model gain; HMAC-with-pepper rejected as an unrotatable
+second secret. Verification = one indexed read by prefix + constant-time
+hash compare + revoked/expired predicates. Four scopes (`submit`,
+`read`, `approve` reserved for M15, `admin` implying all), with the
+route→scope table covering current routes, 6.5's planned lifecycle
+endpoints, and the exempt probes. Lifecycle: create (TTL resolved
+against the *server's* injected clock — clients never supply
+timestamps), soft first-wins revoke (row kept for audit, idempotent
+re-revoke), expiry judged at auth time, no sweeper, no un-revoke, no
+rotation primitive. 401 collapses every credential failure into one
+indistinguishable answer (never reveals whether a prefix exists);
+403 names the missing scope (the caller already proved possession).
+Bootstrap circularity broken by the env root key: `sk_`-shape-validated
+and hashed at boot (plaintext discarded), implicit admin, logged as
+`key_id="root"`, never a DB row — documented flow is set → mint a real
+admin key → unset.
+
+**Implementation shape.** `internal/api/auth.go` holds the key mechanics
+(`generateKey` on an injected reader, `hashKey`, shape check,
+constant-time compare) and a **scope-parameterized `requireScope`
+middleware** — 6.1 mounts it only on the `/v1/keys` subtree (the ticket's
+scope; anonymous ingest routes are unchanged), and 6.2's job becomes
+mounting it everywhere per the ADR table plus the two parked audit items
+(compose `0.0.0.0` bind, `counter` executor gating). Store layer is
+plain CRUD by design (keys are not run state machines): `Create` (UUID
+defaulting, conflict-typed unique violations), `GetByPrefix` (the auth
+read), `List` newest-first, and `Revoke` whose `revoked_at IS NULL`
+guard makes first-wins explicit — zero rows then disambiguated into
+"already revoked" (idempotent success) vs `ErrNotFound` by one read.
+The create endpoint bounds its regenerate-on-collision loop at 3 and
+returns the plaintext in that one 201 body; listings project rows
+through `KeyView`, which never carries hash or plaintext. `ctl` grew a
+persistent `--key`/`AGENTLOOM_API_KEY` bearer flag on the shared client
+(`clientFromCmd`) and the `keys` subtree; `keys create` prints the
+plaintext **alone on stdout** (mirrors `ctl submit`'s run-id-on-stdout
+composability: `KEY=$(ctl keys create …)`), all narration on stderr.
+
+**Secret hygiene, tested two ways.** The integration suite boots the API
+with a captured slog stream and a mutable clock, drives the whole
+lifecycle (401 matrix incl. WWW-Authenticate, 403 with named scope for
+a non-admin key, root→admin→scoped mint chain, TTL expiry via clock
+advance, revoke idempotency, revoked/expired keys collapsing to 401),
+then asserts every minted plaintext absent from all `api_keys` columns
+and the full log capture — with the created key's prefix *present* as
+the positive control proving the assertion isn't vacuous. Separately,
+CI's lint job greps the repo for committed `sk_`-shaped literals
+(`sk_[A-Za-z0-9_-]{30,}`) and fails on any hit — which forces the
+discipline that tests and docs construct key-shaped strings at runtime
+(`"sk_" + strings.Repeat(...)`, runtime entropy) rather than pasting
+examples.
+
+**Non-obvious decisions.** Key management went through the API rather
+than a ctl→Postgres path because 4.6 decreed ctl a pure HTTP client — so
+6.1 ships the root-key gate early (a keys API with no auth would be
+absurd; an authless bootstrap window doubly so). `admin` implies all
+scopes (route checks are "has X or admin"; least-privilege keys just
+don't request admin). Expiry uses not-before semantics (`now >=
+expires_at` is expired). The root key deliberately cannot be revoked by
+the DB it bootstraps — unsetting the env var is its revocation.
+`obs/log` gained the canonical `key_id` field; auth outcomes log key_id
++ prefix only.
+
+**Verified.** Lint + `go test -race ./...` + full compose-backed
+`-tags integration ./...` green; live round-trip against `make up-app`
+(root key in `.env` → `ctl keys create/list/revoke` → revoked key 401s).
+
+**Deferred / notes.** Per-request Postgres read for auth accepted at v1
+traffic (read-through cache is the recorded later optimization, rejected
+now because it reintroduces revocation lag). No `last_used_at` tracking
+(a hot-path write per request; revisit with M7 metrics). Rate limiting
+is design-only here — `internal/ratelimit` lands in 6.3, enforcement in
+6.4. Scope enforcement on `/v1/runs` is 6.2, not here: submitting runs
+stays anonymous for exactly one more ticket.

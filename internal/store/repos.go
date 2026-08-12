@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -407,4 +408,64 @@ func (r outboxRepo) ListForDrain(ctx context.Context, limit int32) ([]gen.TaskOu
 func (r outboxRepo) Delete(ctx context.Context, ids []int64) (int64, error) {
 	rows, err := r.q.DeleteOutboxTasks(ctx, ids)
 	return rows, wrapErr("delete outbox tasks", err)
+}
+
+// APIKeyRepo stores api_keys rows (ticket 6.1, ADR-007). Plain CRUD by
+// design — keys are not run state machines. The plaintext credential never
+// reaches this layer: callers pass the precomputed hash and lookup prefix.
+type APIKeyRepo interface {
+	// Create inserts the key row. A zero arg.ID gets a random UUID. A
+	// prefix or hash collision surfaces as a *ConflictError (the create
+	// endpoint regenerates and retries on prefix collisions).
+	Create(ctx context.Context, arg gen.CreateAPIKeyParams) (gen.ApiKey, error)
+	Get(ctx context.Context, id uuid.UUID) (gen.ApiKey, error)
+	// GetByPrefix is the verification path's single indexed read.
+	GetByPrefix(ctx context.Context, prefix string) (gen.ApiKey, error)
+	// List returns all keys, newest first, revoked and expired included.
+	List(ctx context.Context) ([]gen.ApiKey, error)
+	// Revoke soft-revokes the key at the given instant. First-wins: an
+	// already-revoked key keeps its original revoked_at and Revoke
+	// returns (false, nil); an unknown id returns ErrNotFound.
+	Revoke(ctx context.Context, id uuid.UUID, at time.Time) (revoked bool, err error)
+}
+
+type apiKeyRepo struct{ q *gen.Queries }
+
+func (r apiKeyRepo) Create(ctx context.Context, arg gen.CreateAPIKeyParams) (gen.ApiKey, error) {
+	if arg.ID == uuid.Nil {
+		arg.ID = uuid.New()
+	}
+	key, err := r.q.CreateAPIKey(ctx, arg)
+	return key, wrapErr("create api key", err)
+}
+
+func (r apiKeyRepo) Get(ctx context.Context, id uuid.UUID) (gen.ApiKey, error) {
+	key, err := r.q.GetAPIKey(ctx, id)
+	return key, wrapErr("get api key", err)
+}
+
+func (r apiKeyRepo) GetByPrefix(ctx context.Context, prefix string) (gen.ApiKey, error) {
+	key, err := r.q.GetAPIKeyByPrefix(ctx, prefix)
+	return key, wrapErr("get api key by prefix", err)
+}
+
+func (r apiKeyRepo) List(ctx context.Context) ([]gen.ApiKey, error) {
+	keys, err := r.q.ListAPIKeys(ctx)
+	return keys, wrapErr("list api keys", err)
+}
+
+func (r apiKeyRepo) Revoke(ctx context.Context, id uuid.UUID, at time.Time) (bool, error) {
+	rows, err := r.q.RevokeAPIKey(ctx, gen.RevokeAPIKeyParams{ID: id, RevokedAt: &at})
+	if err != nil {
+		return false, wrapErr("revoke api key", err)
+	}
+	if rows > 0 {
+		return true, nil
+	}
+	// Zero rows is either "already revoked" (fine, idempotent) or "no such
+	// key" (the caller's error) — one more read tells them apart.
+	if _, err := r.q.GetAPIKey(ctx, id); err != nil {
+		return false, wrapErr("revoke api key", err)
+	}
+	return false, nil
 }

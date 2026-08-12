@@ -11,6 +11,17 @@ import (
 	"github.com/google/uuid"
 )
 
+type ApiKey struct {
+	ID        uuid.UUID
+	Name      string
+	Prefix    string
+	KeyHash   string
+	Scopes    []string
+	CreatedAt time.Time
+	ExpiresAt *time.Time
+	RevokedAt *time.Time
+}
+
 type DeadLetter struct {
 	RunID           uuid.UUID
 	StepID          string

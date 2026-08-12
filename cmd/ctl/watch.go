@@ -25,7 +25,7 @@ func newWatchCmd() *cobra.Command {
 		Short: "Watch a run until it completes",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			base, err := cmd.Flags().GetString("api")
+			cl, err := clientFromCmd(cmd)
 			if err != nil {
 				return err
 			}
@@ -38,7 +38,7 @@ func newWatchCmd() *cobra.Command {
 				ctx, cancel = context.WithTimeout(ctx, timeout)
 				defer cancel()
 			}
-			return watch(ctx, newClient(base), args[0], interval, cmd)
+			return watch(ctx, cl, args[0], interval, cmd)
 		},
 	}
 	cmd.Flags().DurationVar(&interval, "interval", time.Second, "poll interval")

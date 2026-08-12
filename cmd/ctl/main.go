@@ -3,10 +3,12 @@
 //	ctl validate <file>    check a definition locally (M1 validation)
 //	ctl submit <file>      submit a definition to the API as a new run
 //	ctl watch <run-id>     poll a run and render its status tree
+//	ctl keys …             manage API keys (create/list/revoke; ticket 6.1)
 //
 // The API base URL comes from --api or AGENTLOOM_API_URL (default
-// http://localhost:8080). ctl is a pure HTTP client — it never touches
-// Postgres or Redis.
+// http://localhost:8080); the bearer credential from --key or
+// AGENTLOOM_API_KEY (only key-management routes require one until ticket
+// 6.2). ctl is a pure HTTP client — it never touches Postgres or Redis.
 package main
 
 import (
@@ -35,7 +37,12 @@ func newRootCmd(lookup func(string) (string, bool)) *cobra.Command {
 	if v, ok := lookup("AGENTLOOM_API_URL"); ok && v != "" {
 		defaultAPI = v
 	}
+	defaultKey := ""
+	if v, ok := lookup("AGENTLOOM_API_KEY"); ok {
+		defaultKey = v
+	}
 	root.PersistentFlags().String("api", defaultAPI, "base URL of the agentloom API")
-	root.AddCommand(newValidateCmd(), newSubmitCmd(), newWatchCmd())
+	root.PersistentFlags().String("key", defaultKey, "bearer API key (default AGENTLOOM_API_KEY)")
+	root.AddCommand(newValidateCmd(), newSubmitCmd(), newWatchCmd(), newKeysCmd())
 	return root
 }

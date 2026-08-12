@@ -32,6 +32,7 @@ type Querier interface {
 	SideEffects() SideEffectRepo
 	Events() EventRepo
 	Outbox() OutboxRepo
+	APIKeys() APIKeyRepo
 }
 
 // Store is the pool-backed entry point to the persistence layer.
@@ -91,3 +92,4 @@ func (r repos) DeadLetters() DeadLetterRepo { return deadLetterRepo(r) }
 func (r repos) SideEffects() SideEffectRepo { return sideEffectRepo(r) }
 func (r repos) Events() EventRepo           { return eventRepo(r) }
 func (r repos) Outbox() OutboxRepo          { return outboxRepo(r) }
+func (r repos) APIKeys() APIKeyRepo         { return apiKeyRepo(r) }

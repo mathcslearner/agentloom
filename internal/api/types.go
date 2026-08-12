@@ -21,6 +21,14 @@ const (
 	ErrCodeDefinitionNotFound = "definition_not_found"
 	// ErrCodeRunNotFound: no run with the requested id.
 	ErrCodeRunNotFound = "run_not_found"
+	// ErrCodeKeyNotFound: no API key with the requested id.
+	ErrCodeKeyNotFound = "key_not_found"
+	// ErrCodeUnauthorized: missing or invalid credential (401). Every
+	// credential failure — absent header, bad shape, unknown key, revoked,
+	// expired — collapses to this one code (ADR-007).
+	ErrCodeUnauthorized = "unauthorized"
+	// ErrCodeForbidden: valid credential, missing scope (403).
+	ErrCodeForbidden = "forbidden"
 	// ErrCodeNotFound / ErrCodeMethodNotAllowed: routing misses.
 	ErrCodeNotFound         = "not_found"
 	ErrCodeMethodNotAllowed = "method_not_allowed"
@@ -126,4 +134,40 @@ type EdgeView struct {
 	To         string `json:"to"`
 	Type       string `json:"type"`
 	Resolution string `json:"resolution"`
+}
+
+// CreateKeyRequest is the POST /v1/keys body (ticket 6.1, ADR-007).
+type CreateKeyRequest struct {
+	// Name is the human label shown in listings, at most 200 characters.
+	Name string `json:"name"`
+	// Scopes is the granted scope set: submit, read, approve, admin.
+	Scopes []string `json:"scopes"`
+	// TTL is an optional positive Go duration (e.g. "720h"); the server
+	// resolves it to an absolute expiry against its own clock. Empty
+	// means the key never expires.
+	TTL string `json:"ttl,omitempty"`
+}
+
+// KeyView is one API key's client-facing projection: the lookup prefix
+// is the only key material it ever carries.
+type KeyView struct {
+	ID        string     `json:"id"`
+	Prefix    string     `json:"prefix"`
+	Name      string     `json:"name"`
+	Scopes    []string   `json:"scopes"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+}
+
+// CreateKeyResponse answers POST /v1/keys. Key is the plaintext
+// credential, shown in this response once and recoverable nowhere else.
+type CreateKeyResponse struct {
+	KeyView
+	Key string `json:"key"`
+}
+
+// ListKeysResponse answers GET /v1/keys.
+type ListKeysResponse struct {
+	Keys []KeyView `json:"keys"`
 }

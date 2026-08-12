@@ -32,6 +32,16 @@ jobs:
         run: |
           make generate
           git diff --exit-code -- docs/schema internal/store/gen
+      - name: no committed API keys (ticket 6.1, ADR-007)
+        # Plaintext keys are sk_ + 43 base64url chars and may exist only in
+        # one live HTTP response — never in the repo. Tests and docs must
+        # construct key-shaped strings at runtime (or elide them), so any
+        # committed sk_-shaped literal is a leak by definition.
+        run: |
+          if git grep -nE 'sk_[A-Za-z0-9_-]{30,}' -- ':!.github/workflows/ci.yml'; then
+            echo '::error::found a committed sk_-shaped literal (see matches above)'
+            exit 1
+          fi
 
   test:
     runs-on: ubuntu-latest

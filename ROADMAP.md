@@ -491,13 +491,13 @@ Chaos test: continuous submitter (mixed fixtures incl. retries and effectful ste
 
 **Exit criteria:** all `/v1` routes require scoped keys; per-key limits return 429 with correct headers; lifecycle endpoints (submit/list/get/cancel/requeue-DLQ) covered by contract tests; OpenAPI spec published and drift-checked.
 
-#### 6.1 — ADR-007 & API key model
+#### 6.1 — ADR-007 & API key model ✅
 **Depends on:** 0.4, 2.4
-**ADR-007:** bearer API keys (`sk_`-prefixed, 32B random; store SHA-256 hash + short lookup prefix; plaintext shown once), scopes (`submit`, `read`, `approve`, `admin`), key lifecycle (create/revoke/expire), rate-limit design shared with M9, and why API keys over JWT for v1 (service-to-service simplicity; JWT/OIDC listed as backlog). Migration for `api_keys`; `ctl keys create/list/revoke` (admin bootstrap via env-provided root key).
+**ADR-007:** bearer API keys (`sk_`-prefixed, 32B random; store SHA-256 hash + short lookup prefix; plaintext shown once), scopes (`submit`, `read`, `approve`, `admin`), key lifecycle (create/revoke/expire), rate-limit design shared with M9, and why API keys over JWT for v1 (service-to-service simplicity; JWT/OIDC listed as backlog). Migration for `api_keys`; `ctl keys create/list/revoke` (admin bootstrap via env-provided root key). *(As built: key = `sk_` + base64url(32B), lookup prefix = first 11 chars UNIQUE with regenerate-on-collision, hash = fast SHA-256 by design (256-bit secret, no KDF); admin implies all scopes; TTL resolved server-side against the injected clock; revoke is soft and first-wins; the `AGENTLOOM_API_ROOT_KEY` bootstrap credential is hashed at boot, logged as `key_id="root"`, never stored; key management is API routes (`POST/GET /v1/keys`, `DELETE /v1/keys/{id}`) because ctl stays a pure HTTP client — the `/v1/keys` subtree is the only gated surface until 6.2, via a scope-parameterized `requireScope` middleware 6.2 generalizes; 401 collapses every credential failure indistinguishably, 403 names the missing scope; CI greps for committed `sk_`-shaped literals, so tests construct keys at runtime.)*
 **Done when:**
-- [ ] Keys stored hashed; plaintext never persisted or logged (grep-test in CI)
-- [ ] `ctl keys` round-trip works against compose
-- [ ] Scope model documented with a route→scope table
+- [x] Keys stored hashed; plaintext never persisted or logged (grep-test in CI)
+- [x] `ctl keys` round-trip works against compose
+- [x] Scope model documented with a route→scope table
 
 #### 6.2 — Auth middleware
 **Depends on:** 6.1

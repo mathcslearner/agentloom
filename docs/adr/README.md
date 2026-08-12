@@ -22,3 +22,4 @@ are reserved and appear here once the ADR is written.
 | [004](004-persistence-model.md) | Persistence model & state machines | Accepted | 2026-08-08 |
 | [005](005-dispatch-lease-protocol.md) | Dispatch & lease protocol (Redis Streams) | Accepted | 2026-08-08 |
 | [006](006-failure-taxonomy-and-retries.md) | Failure taxonomy & retry semantics | Accepted | 2026-08-11 |
+| [007](007-authn-authz-and-api-rate-limiting.md) | Authentication, authorization & API rate limiting | Accepted | 2026-08-12 |

@@ -7,9 +7,17 @@
 //
 // Routes:
 //
-//	POST /v1/runs        submit a run (inline definition or stored ref)
-//	GET  /v1/runs/{id}   run status + step tree + attempt history
-//	GET  /healthz        liveness (Postgres ping)
+//	POST   /v1/runs        submit a run (inline definition or stored ref)
+//	GET    /v1/runs/{id}   run status + step tree + attempt history
+//	POST   /v1/keys        mint an API key (admin; plaintext shown once)
+//	GET    /v1/keys        list API keys (admin; prefixes only)
+//	DELETE /v1/keys/{id}   revoke an API key (admin; soft, idempotent)
+//	GET    /healthz        liveness (Postgres ping)
+//
+// Auth (ticket 6.1, ADR-007): the /v1/keys subtree requires an admin
+// bearer credential — a stored admin-scoped key, or the env-provided
+// root key that bootstraps the first one. The other /v1 routes stay
+// anonymous until 6.2 generalizes enforcement.
 //
 // Every error response carries the JSON envelope {"error": {code, message,
 // issues?}}; definition problems surface M1's path-qualified issues
@@ -21,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -42,12 +51,20 @@ type Handler struct {
 	st     *store.Store
 	now    func() time.Time
 	logger *slog.Logger
+	// rootHash is the hex SHA-256 of the env-provided root key (ADR-007
+	// admin bootstrap); empty means no root credential exists.
+	rootHash string
+	// keyRand feeds key generation; production uses crypto/rand, tests
+	// may inject a deterministic reader.
+	keyRand io.Reader
 }
 
 // New builds the Handler. now is the injected clock (project invariant —
 // cmd/api passes time.Now); logger is the base request logger (nil means
-// slog.Default()).
-func New(st *store.Store, now func() time.Time, logger *slog.Logger) (*Handler, error) {
+// slog.Default()); rootKey is the optional bootstrap admin credential
+// (ADR-007) — empty disables the root path, and a set-but-malformed key
+// is a configuration error caught here rather than a silent 401 later.
+func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey string) (*Handler, error) {
 	if st == nil {
 		return nil, errors.New("api: nil store")
 	}
@@ -57,7 +74,14 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger) (*Handler, 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	h := &Handler{st: st, now: now, logger: logger}
+	h := &Handler{st: st, now: now, logger: logger, keyRand: cryptoRand}
+	if rootKey != "" {
+		if !keyShapeOK(rootKey) {
+			// Deliberately no detail: the message must never echo the value.
+			return nil, errors.New("api: root key does not have the sk_ key shape")
+		}
+		h.rootHash = hashKey(rootKey)
+	}
 
 	r := chi.NewRouter()
 	r.Use(h.requestLog)
@@ -72,6 +96,12 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger) (*Handler, 
 	r.Route("/v1", func(r chi.Router) {
 		r.Post("/runs", h.handleSubmitRun)
 		r.Get("/runs/{runID}", h.handleGetRun)
+		r.Route("/keys", func(r chi.Router) {
+			r.Use(h.requireScope(ScopeAdmin))
+			r.Post("/", h.handleCreateKey)
+			r.Get("/", h.handleListKeys)
+			r.Delete("/{keyID}", h.handleRevokeKey)
+		})
 	})
 	h.router = r
 	return h, nil

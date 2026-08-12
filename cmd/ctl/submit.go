@@ -37,11 +37,11 @@ func newSubmitCmd() *cobra.Command {
 				req.Params = json.RawMessage(params)
 			}
 
-			base, err := cmd.Flags().GetString("api")
+			cl, err := clientFromCmd(cmd)
 			if err != nil {
 				return err
 			}
-			resp, err := newClient(base).submitRun(cmd.Context(), req)
+			resp, err := cl.submitRun(cmd.Context(), req)
 			if err != nil {
 				var ae *apiError
 				if errors.As(err, &ae) && len(ae.Detail.Issues) > 0 {
