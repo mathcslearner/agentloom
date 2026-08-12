@@ -19,10 +19,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
+	obstrace "github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/queue"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
@@ -250,7 +253,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 			// Params were validated JSON at submission; failing to decode
 			// now is corrupt stored state — deterministic, so a permanent
 			// step failure (ADR-006 taxonomy row 7), not a redelivery loop.
-			return e.completeFailure(ctx, step, fmt.Errorf("decoding run params: %w", err), dag.ClassPermanent)
+			return e.completeFailure(ctx, step, fmt.Errorf("decoding run params: %w", err), dag.ClassPermanent, store.TraceFromRun(run))
 		}
 	}
 	verdicts, err := planEdges(step.StepType, outEdges, out.Data, params)
@@ -260,7 +263,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		// ADR-006 row 6: force-classified permanent).
 		logger.WarnContext(ctx, "edge predicate evaluation failed; recording step failure",
 			slog.Any("error", err))
-		return e.completeFailure(ctx, step, err, dag.ClassPermanent)
+		return e.completeFailure(ctx, step, err, dag.ClassPermanent, store.TraceFromRun(run))
 	}
 
 	now := e.now()
@@ -268,7 +271,8 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 	var fenced *store.TransitionError
 	var terminalRun *gen.Run
 	cancelling := false
-	txErr := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+	txCtx, txSpan := e.tracer.Start(ctx, "step.completion")
+	txErr := e.store.WithTx(txCtx, func(ctx context.Context, q store.Querier) error {
 		// The run-status check (ticket 5.6): serialized against CancelRun
 		// by the run lock every transition takes first. On a cancelling
 		// run the success is still honored — the work is done, and
@@ -303,8 +307,15 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 			if err := failpoint(stageAfterFanOut); err != nil {
 				return err
 			}
+			// The outbox rows carry this completion span's context (ticket
+			// 7.3): the dispatcher injects it into the envelope, so each
+			// successor's attempt span parents under the span that made it
+			// ready. Empty when tracing is off — NULL columns, run-row
+			// fallback at drain.
+			tp, ts := obstrace.Inject(ctx)
+			enqTrace := store.TraceContext{Parent: tp, State: ts}
 			for _, id := range fanned.readied {
-				if _, err := q.Outbox().Create(ctx, step.RunID, id, store.OutboxReasonStepReady); err != nil {
+				if _, err := q.Outbox().CreateTraced(ctx, step.RunID, id, store.OutboxReasonStepReady, enqTrace); err != nil {
 					return err
 				}
 			}
@@ -316,6 +327,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		terminalRun, rerr = attemptRunRollup(ctx, q, step.RunID, now)
 		return rerr
 	})
+	endTxSpan(txSpan, txErr)
 	if txErr != nil {
 		if fenced != nil {
 			return e.abandonFenced(ctx, step, fenced, txErr)
@@ -336,7 +348,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		if errors.As(txErr, &de) {
 			logger.WarnContext(ctx, "corrupt step config discovered during fan-out; recording step failure",
 				slog.Any("error", txErr))
-			return e.completeFailure(ctx, step, txErr, dag.ClassPermanent)
+			return e.completeFailure(ctx, step, txErr, dag.ClassPermanent, store.TraceFromRun(run))
 		}
 		logger.ErrorContext(ctx, "completion transaction failed; delivery will redeliver",
 			slog.Any("error", txErr))
@@ -404,7 +416,13 @@ func attemptRunRollup(ctx context.Context, q store.Querier, runID uuid.UUID, now
 // commit is healed by the reconciler's overdue-retrying scan — either way
 // the entry is consumed (nil return, ACK), because the durable row now
 // carries the retry.
-func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr error, class dag.ErrorClass) error {
+//
+// runTrace is the run's durable root trace context (ticket 7.3), observed
+// by the claim (or the success path's run read): the retry envelope's
+// parent, because the delayed re-dispatch descends from no live span —
+// the link back to this failed attempt is restored from
+// run_steps.trace_span at the next claim instead.
+func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr error, class dag.ErrorClass, runTrace store.TraceContext) error {
 	logger := log.From(ctx)
 	if declared, ok := misdeclaredClass(execErr); ok {
 		logger.ErrorContext(ctx, "executor declared a class it may not use; defaulting to transient",
@@ -435,7 +453,8 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 	var fireAt time.Time
 	scheduled := false
 	var fenced *store.TransitionError
-	txErr := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+	txCtx, txSpan := e.tracer.Start(ctx, "step.completion")
+	txErr := e.store.WithTx(txCtx, func(ctx context.Context, q store.Querier) error {
 		// The run-status check (ticket 5.6): on a cancelling run the
 		// failure is not judged at all — no retry, no DLQ (ADR-006 row 8);
 		// the step settles as cancelled with the executor's error preserved
@@ -527,6 +546,7 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 		cancelledSteps, runFailed, derr = deadLetterDisposition(ctx, q, run.OnFailure, step.RunID, now)
 		return derr
 	})
+	endTxSpan(txSpan, txErr)
 	if txErr != nil {
 		if fenced != nil {
 			return e.abandonFenced(ctx, step, fenced, txErr)
@@ -547,7 +567,7 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 	}
 	if scheduled {
 		e.metrics.RetryScheduled(string(class))
-		e.scheduleRetry(ctx, step, fireAt)
+		e.scheduleRetry(ctx, step, fireAt, runTrace)
 		logger.WarnContext(ctx, "step attempt failed; retry scheduled",
 			slog.Any("error", execErr),
 			slog.String("class", string(class)),
@@ -571,18 +591,38 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 // log — the committed row already carries next_attempt_at, so the
 // reconciler's overdue-retrying scan re-dispatches; nothing here may turn
 // into a handler error, which would un-ACK an already-consumed delivery.
-func (e *Engine) scheduleRetry(ctx context.Context, step gen.RunStep, fireAt time.Time) {
+//
+// The envelope's trace context is the run's durable root (ticket 7.3) —
+// constant per run, so identical retries still encode to byte-identical
+// delayed members and ZADD's move-the-fire-time dedup holds (ADR-005).
+// The failed attempt is linked, not parented: the next claim restores the
+// link from run_steps.trace_span.
+func (e *Engine) scheduleRetry(ctx context.Context, step gen.RunStep, fireAt time.Time, runTrace store.TraceContext) {
 	logger := log.From(ctx)
 	if e.scheduler == nil {
 		logger.WarnContext(ctx, "no retry scheduler configured; reconciler will re-dispatch the retry")
 		return
 	}
-	env := queue.Envelope{RunID: step.RunID, StepID: step.StepID, Reason: queue.ReasonRetry}
+	env := queue.Envelope{
+		RunID: step.RunID, StepID: step.StepID, Reason: queue.ReasonRetry,
+		TraceParent: runTrace.Parent, TraceState: runTrace.State,
+	}
 	if err := e.scheduler.Schedule(ctx, env, fireAt); err != nil {
 		logger.ErrorContext(ctx, "delayed retry schedule failed; reconciler will re-dispatch",
 			slog.Time("fire_at", fireAt),
 			slog.Any("error", err))
 	}
+}
+
+// endTxSpan closes a completion-transaction span with the transaction's
+// outcome. A rolled-back transaction is an errored span; the engine-level
+// routing of that error (redeliver, reroute, abandon) is the caller's.
+func endTxSpan(span oteltrace.Span, txErr error) {
+	if txErr != nil {
+		span.RecordError(txErr)
+		span.SetStatus(codes.Error, "transaction rolled back")
+	}
+	span.End()
 }
 
 // decodeRetryPolicy parses the effective policy materialized onto the

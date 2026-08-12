@@ -20,6 +20,7 @@ SET status          = 'running',
     claim_id        = @claim_id,
     attempt_count   = attempt_count + 1,
     next_attempt_at = NULL,
+    trace_span      = sqlc.narg('trace_span')::text,
     started_at      = COALESCE(started_at, @now::timestamptz),
     updated_at      = @now::timestamptz
 WHERE run_id = @run_id AND step_id = @step_id

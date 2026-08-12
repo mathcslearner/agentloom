@@ -64,6 +64,8 @@ type Run struct {
 	CancelReason           *string
 	DeadlineAt             *time.Time
 	IdempotencyFingerprint *string
+	TraceParent            *string
+	TraceState             *string
 }
 
 type RunEdge struct {
@@ -99,6 +101,7 @@ type RunStep struct {
 	RetryPolicy   json.RawMessage
 	NextAttemptAt *time.Time
 	Timeout       *string
+	TraceSpan     *string
 }
 
 type SchemaBaseline struct {
@@ -131,11 +134,13 @@ type StepAttempt struct {
 }
 
 type TaskOutbox struct {
-	ID        int64
-	RunID     uuid.UUID
-	StepID    string
-	Reason    string
-	CreatedAt time.Time
+	ID          int64
+	RunID       uuid.UUID
+	StepID      string
+	Reason      string
+	CreatedAt   time.Time
+	TraceParent *string
+	TraceState  *string
 }
 
 type WorkflowDefinition struct {

@@ -4,8 +4,9 @@
 -- name: CreateRun :one
 INSERT INTO runs (id, definition_id, definition, status, params,
                   idempotency_token, idempotency_fingerprint, on_failure,
-                  steps_total, started_at, deadline_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                  steps_total, started_at, deadline_at,
+                  trace_parent, trace_state)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 RETURNING *;
 
 -- name: GetRun :one
@@ -58,4 +59,6 @@ UPDATE runs SET next_seq = next_seq + 1 WHERE id = $1 RETURNING next_seq;
 -- ClaimStep can enforce the run-status guard (ticket 5.2, ADR-006: the
 -- claim path refuses steps of terminal runs; 5.6's park/cancel reuses it).
 -- name: LockRun :one
-SELECT id, status FROM runs WHERE id = $1 FOR UPDATE;
+-- trace_parent/trace_state ride along (ticket 7.3) so the claim path can
+-- surface the run's root trace context without a second read.
+SELECT id, status, trace_parent, trace_state FROM runs WHERE id = $1 FOR UPDATE;

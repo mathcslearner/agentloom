@@ -7,11 +7,15 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/exec/effects"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
+	obstrace "github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/queue"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
@@ -36,21 +40,30 @@ import (
 // transaction, then the step executes normally.
 func (e *Engine) Handle(ctx context.Context, d queue.Delivery) error {
 	// The consumer already stamped entry_id, delivery_count, run_id,
-	// step_id, and reason into the log context.
+	// step_id, and reason into the log context — and started the attempt
+	// span this delivery runs inside (ticket 7.3), which the claim below
+	// records its own span context under (run_steps.trace_span).
 	ctx = log.With(ctx, log.WorkerID(e.workerID))
 
 	now := e.now()
 	var step gen.RunStep
 	var origin store.ClaimOrigin
-	err := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+	// run_steps.trace_span records the *attempt* span (the consumer's,
+	// active on ctx here) — captured before the claim child span starts,
+	// so later links point at the attempt, not its claim child.
+	attemptSpan := obstrace.SpanContext(oteltrace.SpanContextFromContext(ctx))
+	claimCtx, claimSpan := e.tracer.Start(ctx, "step.claim")
+	err := e.store.WithTx(claimCtx, func(ctx context.Context, q store.Querier) error {
 		var err error
 		step, origin, err = store.ClaimStepWithOrigin(ctx, q, store.ClaimStepArgs{
-			RunID:  d.Envelope.RunID,
-			StepID: d.Envelope.StepID,
-			Now:    now,
+			RunID:     d.Envelope.RunID,
+			StepID:    d.Envelope.StepID,
+			Now:       now,
+			TraceSpan: attemptSpan,
 		})
 		return err
 	})
+	claimSpan.End()
 	if err != nil {
 		dec := classifyClaimFailure(err, d.DeliveryCount)
 		e.metrics.ClaimDecision(dec.action.String())
@@ -74,7 +87,7 @@ func (e *Engine) Handle(ctx context.Context, d queue.Delivery) error {
 		e.metrics.SchedulingLatency(now.Sub(origin.ChangedAt))
 	}
 
-	return e.execute(ctx, step)
+	return e.execute(ctx, step, origin)
 }
 
 // claimResultWon is the successful-claim value of the metrics `result`
@@ -92,7 +105,12 @@ const claimResultWon = "won"
 func (e *Engine) takeoverAndClaim(ctx context.Context, d queue.Delivery, holderClaim uuid.UUID) error {
 	now := e.now()
 	var step gen.RunStep
-	err := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+	var origin store.ClaimOrigin
+	// As in Handle: the recorded trace_span is the attempt span, not the
+	// claim child span.
+	attemptSpan := obstrace.SpanContext(oteltrace.SpanContextFromContext(ctx))
+	claimCtx, claimSpan := e.tracer.Start(ctx, "step.claim")
+	err := e.store.WithTx(claimCtx, func(ctx context.Context, q store.Querier) error {
 		_, terr := store.TakeoverStep(ctx, q, store.TakeoverStepArgs{
 			RunID: d.Envelope.RunID, StepID: d.Envelope.StepID,
 			ClaimID: holderClaim, Now: now,
@@ -107,12 +125,17 @@ func (e *Engine) takeoverAndClaim(ctx context.Context, d queue.Delivery, holderC
 			// Another takeover (the reconciler's) landed since this entry
 			// was reclaimed; claim the ready step directly.
 		}
+		// The origin pre-read sees the displaced holder's trace_span (the
+		// takeover does not clear it), so the new attempt span links to the
+		// lost attempt exactly like a retry links to the failed one.
 		var cerr error
-		step, cerr = store.ClaimStep(ctx, q, store.ClaimStepArgs{
+		step, origin, cerr = store.ClaimStepWithOrigin(ctx, q, store.ClaimStepArgs{
 			RunID: d.Envelope.RunID, StepID: d.Envelope.StepID, Now: now,
+			TraceSpan: attemptSpan,
 		})
 		return cerr
 	})
+	claimSpan.End()
 	if err != nil {
 		dec := classifyTakeoverFailure(err)
 		if dec.fenced {
@@ -134,19 +157,24 @@ func (e *Engine) takeoverAndClaim(ctx context.Context, d queue.Delivery, holderC
 	log.From(ctx).InfoContext(ctx, "lease-expiry takeover: step reclaimed from silent holder",
 		slog.String("displaced_claim_id", holderClaim.String()),
 		slog.String("claim_id", claimIDString(step)))
-	return e.execute(ctx, step)
+	return e.execute(ctx, step, origin)
 }
 
 // execute runs the claimed step's executor and settles the result through
 // the completion pipeline (complete.go). The returned error follows the
 // Handle/ACK contract: nil means a completion transaction committed (ACK);
 // non-nil means nothing was decided and the entry must redeliver.
-func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
+//
+// origin is the winning claim's pre-read observation: PrevTraceSpan links
+// this attempt span to the attempt it re-executes (retry, takeover), and
+// RunTrace rides to scheduleRetry as the re-dispatch envelope's parent.
+func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.ClaimOrigin) error {
 	ctx = log.With(ctx, log.Attempt(int(step.AttemptCount)))
 	logger := log.From(ctx)
 	logger.InfoContext(ctx, "step claimed",
 		slog.String("step_type", step.StepType),
 		slog.String("claim_id", claimIDString(step)))
+	e.annotateAttemptSpan(ctx, step, origin)
 
 	executor, err := e.registry.Get(step.StepType)
 	if err != nil {
@@ -157,7 +185,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 		logger.ErrorContext(ctx, "no executor registered for step type; recording step failure",
 			slog.String("step_type", step.StepType),
 			slog.Any("error", err))
-		return e.completeFailure(ctx, step, err, dag.ClassPermanent)
+		return e.completeFailure(ctx, step, err, dag.ClassPermanent, origin.RunTrace)
 	}
 
 	timeout, terr := stepTimeout(step.Timeout)
@@ -166,7 +194,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 		// (ADR-006 taxonomy row 7 in spirit), like a corrupt retry policy.
 		logger.ErrorContext(ctx, "corrupt materialized step timeout; recording step failure",
 			slog.Any("error", terr))
-		return e.completeFailure(ctx, step, terr, dag.ClassPermanent)
+		return e.completeFailure(ctx, step, terr, dag.ClassPermanent, origin.RunTrace)
 	}
 	// The claim always stamps a claim_id; the guard only keeps a corrupt
 	// row from panicking the journal binding (misuse detection catches the
@@ -181,7 +209,8 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 	// re-check the run status under the run lock either way.
 	watchCtx, stopWatch := e.watchRunCancel(ctx, step.RunID)
 	execStart := e.now()
-	out, expired, execErr := runExecutor(watchCtx, executor, exec.StepContext{
+	execCtx, execSpan := e.tracer.Start(watchCtx, "step.executor")
+	out, expired, execErr := runExecutor(execCtx, executor, exec.StepContext{
 		StepType: dag.StepType(step.StepType),
 		Config:   step.Config,
 		Input:    nil, // input rendering is M6; run_steps carries no input yet
@@ -192,6 +221,11 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 		Effects:        e.effects.ForStep(step.RunID, step.StepID, int(step.AttemptCount), claimID, logger),
 		Logger:         logger,
 	}, timeout)
+	if execErr != nil {
+		execSpan.RecordError(execErr)
+		execSpan.SetStatus(codes.Error, "executor failed")
+	}
+	execSpan.End()
 	execDur := e.now().Sub(execStart)
 	stopWatch()
 	if ctx.Err() != nil {
@@ -227,7 +261,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 			// (ADR-006 row 3) — the executor's own error, whatever it
 			// wrapped, is the recorded cause.
 			return e.completeFailure(ctx, step,
-				fmt.Errorf("step timed out after %s: %w", timeout, execErr), dag.ClassTimeout)
+				fmt.Errorf("step timed out after %s: %w", timeout, execErr), dag.ClassTimeout, origin.RunTrace)
 		}
 		// Success racing the deadline: the work is done, and discarding it
 		// to record a timeout would waste budget and re-run side effects.
@@ -238,9 +272,46 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 		// Worker-side classification at completion time (ADR-006): a
 		// declared class is honored, config-decode misses are permanent,
 		// and everything unclassified defaults to transient.
-		return e.completeFailure(ctx, step, execErr, classifyFailure(execErr))
+		return e.completeFailure(ctx, step, execErr, classifyFailure(execErr), origin.RunTrace)
 	}
 	return e.completeSuccess(ctx, step, out)
+}
+
+// annotateAttemptSpan enriches the consumer's attempt span (ticket 7.3)
+// once the claim has decided what this delivery is: the durable attempt
+// number and step type as attributes; a link to the previous attempt's
+// span when this claim re-executes work — a retry after a judged failure,
+// or a takeover after the holder's lease expired (ADR-008: links, never
+// parent-child); and, for fan-in joins, links to every firing parent's
+// attempt span. Skipped entirely when no valid span context is active
+// (tracing off), so the join-parent read never runs untraced.
+func (e *Engine) annotateAttemptSpan(ctx context.Context, step gen.RunStep, origin store.ClaimOrigin) {
+	span := oteltrace.SpanFromContext(ctx)
+	if !span.SpanContext().IsValid() {
+		return
+	}
+	span.SetAttributes(
+		attribute.Int("attempt", int(step.AttemptCount)),
+		attribute.String("step_type", step.StepType),
+	)
+	if link, ok := obstrace.LinkFromTraceparent(origin.PrevTraceSpan); ok {
+		span.AddLink(link)
+	}
+	if step.StepType != string(dag.StepJoin) {
+		return
+	}
+	parents, err := e.store.Steps().ListFiringParentTraceSpans(ctx, step.RunID, step.StepID)
+	if err != nil {
+		// Links are observability, never control flow: log and move on.
+		log.From(ctx).WarnContext(ctx, "listing firing-parent trace spans failed; join links skipped",
+			slog.Any("error", err))
+		return
+	}
+	for _, s := range parents {
+		if link, ok := obstrace.LinkFromTraceparent(s); ok {
+			span.AddLink(link)
+		}
+	}
 }
 
 // claimAction is what the handler does with a delivery whose claim (or

@@ -85,6 +85,13 @@ type ClaimStepArgs struct {
 	StepID string
 	// Now is the injected current time. Required.
 	Now time.Time
+	// TraceSpan is the claiming attempt's span context in traceparent
+	// format (ticket 7.3), stamped onto run_steps.trace_span by the claim
+	// CAS. The value it overwrites — the previous attempt's span — is
+	// surfaced on ClaimOrigin.PrevTraceSpan, which is how retries and
+	// takeovers link back to the attempt they re-execute. Empty means no
+	// context (tracing off).
+	TraceSpan string
 }
 
 // ClaimOrigin describes the row a winning claim CAS consumed: the step's
@@ -104,6 +111,16 @@ type ClaimOrigin struct {
 	// recording when false. Meaningful only when ClaimStepWithOrigin
 	// returns nil error.
 	Known bool
+	// PrevTraceSpan is the trace_span the claim overwrote (ticket 7.3):
+	// the previous attempt's span context, present when this claim
+	// re-executes work — a due retry, or a step taken over after its
+	// holder's lease expired. The engine links the new attempt span to it
+	// (ADR-008: links, never parent-child). Empty for first attempts.
+	PrevTraceSpan string
+	// RunTrace is the run's durable root trace context, read from the run
+	// row the claim already locks — the parent for re-dispatch envelopes
+	// that descend from no live span (the delayed retry envelope).
+	RunTrace TraceContext
 }
 
 // ClaimStep transitions a step ready → running — or retrying → running
@@ -151,10 +168,15 @@ func ClaimStepWithOrigin(ctx context.Context, q Querier, args ClaimStepArgs) (ge
 	}
 	if prev, perr := gq.GetRunStep(ctx, gen.GetRunStepParams{RunID: args.RunID, StepID: args.StepID}); perr == nil {
 		origin = ClaimOrigin{FromStatus: prev.Status, ChangedAt: prev.UpdatedAt, Known: true}
+		if prev.TraceSpan != nil {
+			origin.PrevTraceSpan = *prev.TraceSpan
+		}
 	}
+	origin.RunTrace = TraceContext{Parent: textOrEmpty(run.TraceParent), State: textOrEmpty(run.TraceState)}
 	claimID := uuid.New()
 	step, err := gq.ClaimRunStep(ctx, gen.ClaimRunStepParams{
 		RunID: args.RunID, StepID: args.StepID, ClaimID: &claimID, Now: args.Now,
+		TraceSpan: nullableText(args.TraceSpan),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return gen.RunStep{}, origin, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{

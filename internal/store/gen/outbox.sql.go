@@ -14,21 +14,32 @@ import (
 
 const createOutboxTask = `-- name: CreateOutboxTask :one
 
-INSERT INTO task_outbox (run_id, step_id, reason)
-VALUES ($1, $2, $3)
-RETURNING id, run_id, step_id, reason, created_at
+INSERT INTO task_outbox (run_id, step_id, reason, trace_parent, trace_state)
+VALUES ($1, $2, $3, $4::text, $5::text)
+RETURNING id, run_id, step_id, reason, created_at, trace_parent, trace_state
 `
 
 type CreateOutboxTaskParams struct {
-	RunID  uuid.UUID
-	StepID string
-	Reason string
+	RunID       uuid.UUID
+	StepID      string
+	Reason      string
+	TraceParent *string
+	TraceState  *string
 }
 
 // Transactional Postgres→Redis dispatch buffer (ADR-002/004). Drained rows
 // are deleted — row exists ⇔ dispatch pending.
+// trace_parent/trace_state (ticket 7.3) carry the enqueuing span's context
+// when the writer runs inside one; NULL rows fall back to the run's durable
+// root context at drain time.
 func (q *Queries) CreateOutboxTask(ctx context.Context, arg CreateOutboxTaskParams) (TaskOutbox, error) {
-	row := q.db.QueryRow(ctx, createOutboxTask, arg.RunID, arg.StepID, arg.Reason)
+	row := q.db.QueryRow(ctx, createOutboxTask,
+		arg.RunID,
+		arg.StepID,
+		arg.Reason,
+		arg.TraceParent,
+		arg.TraceState,
+	)
 	var i TaskOutbox
 	err := row.Scan(
 		&i.ID,
@@ -36,6 +47,8 @@ func (q *Queries) CreateOutboxTask(ctx context.Context, arg CreateOutboxTaskPara
 		&i.StepID,
 		&i.Reason,
 		&i.CreatedAt,
+		&i.TraceParent,
+		&i.TraceState,
 	)
 	return i, err
 }
@@ -53,7 +66,7 @@ func (q *Queries) DeleteOutboxTasks(ctx context.Context, ids []int64) (int64, er
 }
 
 const listOutboxTasks = `-- name: ListOutboxTasks :many
-SELECT id, run_id, step_id, reason, created_at FROM task_outbox ORDER BY id LIMIT $1
+SELECT id, run_id, step_id, reason, created_at, trace_parent, trace_state FROM task_outbox ORDER BY id LIMIT $1
 `
 
 func (q *Queries) ListOutboxTasks(ctx context.Context, limit int32) ([]TaskOutbox, error) {
@@ -71,6 +84,8 @@ func (q *Queries) ListOutboxTasks(ctx context.Context, limit int32) ([]TaskOutbo
 			&i.StepID,
 			&i.Reason,
 			&i.CreatedAt,
+			&i.TraceParent,
+			&i.TraceState,
 		); err != nil {
 			return nil, err
 		}
@@ -83,28 +98,55 @@ func (q *Queries) ListOutboxTasks(ctx context.Context, limit int32) ([]TaskOutbo
 }
 
 const listOutboxTasksForDrain = `-- name: ListOutboxTasksForDrain :many
-SELECT id, run_id, step_id, reason, created_at FROM task_outbox ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED
+SELECT t.id, t.run_id, t.step_id, t.reason, t.created_at, t.trace_parent, t.trace_state,
+       COALESCE(t.trace_parent, r.trace_parent) AS effective_trace_parent,
+       COALESCE(t.trace_state, r.trace_state)   AS effective_trace_state
+FROM task_outbox t
+JOIN runs r ON r.id = t.run_id
+ORDER BY t.id LIMIT $1
+FOR UPDATE OF t SKIP LOCKED
 `
+
+type ListOutboxTasksForDrainRow struct {
+	ID                   int64
+	RunID                uuid.UUID
+	StepID               string
+	Reason               string
+	CreatedAt            time.Time
+	TraceParent          *string
+	TraceState           *string
+	EffectiveTraceParent *string
+	EffectiveTraceState  *string
+}
 
 // Drain batch (ticket 4.4): SKIP LOCKED partitions concurrent drainers
 // onto disjoint row sets, so a row is dispatched by exactly one drainer
 // unless that drainer's transaction rolls back — in which case the retry
 // is a duplicate the claim CAS absorbs (ADR-005 P1).
-func (q *Queries) ListOutboxTasksForDrain(ctx context.Context, limit int32) ([]TaskOutbox, error) {
+// The runs join (ticket 7.3) supplies the envelope's trace context:
+// the row's own context when its writer stamped one, else the run's
+// durable root context — how healed re-dispatches stay in the run trace.
+// FOR UPDATE OF t: only outbox rows are locked; the run row is a plain
+// MVCC read, so drains never contend with the run-lock ordering.
+func (q *Queries) ListOutboxTasksForDrain(ctx context.Context, limit int32) ([]ListOutboxTasksForDrainRow, error) {
 	rows, err := q.db.Query(ctx, listOutboxTasksForDrain, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []TaskOutbox
+	var items []ListOutboxTasksForDrainRow
 	for rows.Next() {
-		var i TaskOutbox
+		var i ListOutboxTasksForDrainRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.RunID,
 			&i.StepID,
 			&i.Reason,
 			&i.CreatedAt,
+			&i.TraceParent,
+			&i.TraceState,
+			&i.EffectiveTraceParent,
+			&i.EffectiveTraceState,
 		); err != nil {
 			return nil, err
 		}

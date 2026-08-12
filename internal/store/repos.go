@@ -218,6 +218,12 @@ type StepRepo interface {
 	// (ticket 5.4): the requeued step itself plus fail_fast siblings whose
 	// deliveries were consumed while the run was failed.
 	ListReadyWithoutOutbox(ctx context.Context, runID uuid.UUID) ([]string, error)
+	// ListFiringParentTraceSpans returns the recorded attempt span
+	// contexts (traceparent format) of the step's firing parents — the
+	// source steps of its incoming fired edges, in ordinal order (ticket
+	// 7.3): a fan-in join's attempt span carries links to all of them.
+	// Parents with no recorded span are omitted.
+	ListFiringParentTraceSpans(ctx context.Context, runID uuid.UUID, toStep string) ([]string, error)
 }
 
 type stepRepo struct{ q *gen.Queries }
@@ -315,6 +321,20 @@ func (r stepRepo) ListReadyWithoutOutbox(ctx context.Context, runID uuid.UUID) (
 	return ids, wrapErr("list ready steps without outbox", err)
 }
 
+func (r stepRepo) ListFiringParentTraceSpans(ctx context.Context, runID uuid.UUID, toStep string) ([]string, error) {
+	rows, err := r.q.ListFiringParentTraceSpans(ctx, gen.ListFiringParentTraceSpansParams{RunID: runID, ToStep: toStep})
+	if err != nil {
+		return nil, wrapErr("list firing parent trace spans", err)
+	}
+	spans := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.TraceSpan != nil && *row.TraceSpan != "" {
+			spans = append(spans, *row.TraceSpan)
+		}
+	}
+	return spans, nil
+}
+
 // AttemptRepo stores step_attempts rows. Outcome/error/finished_at are
 // written by the completion transitions (2.6).
 type AttemptRepo interface {
@@ -407,10 +427,48 @@ func (r eventRepo) List(ctx context.Context, runID uuid.UUID, afterSeq int64, li
 	return evs, wrapErr("list events", err)
 }
 
+// TraceContext is a W3C trace context pair (traceparent/tracestate)
+// carried through durable state (ticket 7.3, ADR-008). The store treats
+// both as opaque strings; the zero value means "no context" and lands as
+// NULL columns.
+type TraceContext struct {
+	Parent string
+	State  string
+}
+
+// IsZero reports whether the context carries nothing.
+func (t TraceContext) IsZero() bool { return t.Parent == "" && t.State == "" }
+
+// TraceFromRun extracts a run row's durable root trace context.
+func TraceFromRun(run gen.Run) TraceContext {
+	return TraceContext{Parent: textOrEmpty(run.TraceParent), State: textOrEmpty(run.TraceState)}
+}
+
+// DrainTask is one outbox row as the dispatcher consumes it (tickets 4.4,
+// 7.3): the row's identity plus its effective trace context — the row's
+// own context when its writer stamped one, else the run's durable root
+// context, so healed re-dispatches stay in the run's trace.
+type DrainTask struct {
+	ID        int64
+	RunID     uuid.UUID
+	StepID    string
+	Reason    string
+	CreatedAt time.Time
+	Trace     TraceContext
+}
+
 // OutboxRepo stores the transactional dispatch buffer. Row exists ⇔
 // dispatch pending: drained rows are deleted.
 type OutboxRepo interface {
+	// Create inserts a row with no trace context of its own — the drain
+	// falls back to the run's durable root context. Writers that run
+	// inside a live span (completion fan-out, instantiation) use
+	// CreateTraced instead.
 	Create(ctx context.Context, runID uuid.UUID, stepID, reason string) (gen.TaskOutbox, error)
+	// CreateTraced is Create stamping the enqueuing span's context onto
+	// the row (ticket 7.3) — the context the dispatcher will inject into
+	// the envelope, parenting the successor's attempt span.
+	CreateTraced(ctx context.Context, runID uuid.UUID, stepID, reason string, trace TraceContext) (gen.TaskOutbox, error)
 	// List returns up to limit pending tasks in id (drain) order.
 	List(ctx context.Context, limit int32) ([]gen.TaskOutbox, error)
 	// ListForDrain is List with FOR UPDATE SKIP LOCKED — the dispatcher's
@@ -419,7 +477,7 @@ type OutboxRepo interface {
 	// after its XADD (ADR-005 P1 — the claim CAS absorbs the duplicate).
 	// Must run inside WithTx: row locks outside a transaction are
 	// meaningless, so any other Querier fails with ErrNoTx.
-	ListForDrain(ctx context.Context, limit int32) ([]gen.TaskOutbox, error)
+	ListForDrain(ctx context.Context, limit int32) ([]DrainTask, error)
 	// Delete removes the given tasks, returning how many existed.
 	Delete(ctx context.Context, ids []int64) (int64, error)
 	// Stats returns the pending-row count and the oldest row's created_at
@@ -442,8 +500,32 @@ type OutboxStats struct {
 type outboxRepo struct{ q *gen.Queries }
 
 func (r outboxRepo) Create(ctx context.Context, runID uuid.UUID, stepID, reason string) (gen.TaskOutbox, error) {
-	task, err := r.q.CreateOutboxTask(ctx, gen.CreateOutboxTaskParams{RunID: runID, StepID: stepID, Reason: reason})
+	return r.CreateTraced(ctx, runID, stepID, reason, TraceContext{})
+}
+
+func (r outboxRepo) CreateTraced(ctx context.Context, runID uuid.UUID, stepID, reason string, trace TraceContext) (gen.TaskOutbox, error) {
+	task, err := r.q.CreateOutboxTask(ctx, gen.CreateOutboxTaskParams{
+		RunID: runID, StepID: stepID, Reason: reason,
+		TraceParent: nullableText(trace.Parent), TraceState: nullableText(trace.State),
+	})
 	return task, wrapErr("create outbox task", err)
+}
+
+// nullableText maps the empty string to NULL — absent context is NULL, not
+// an empty-string sentinel.
+func nullableText(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// textOrEmpty is nullableText's read-side inverse.
+func textOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func (r outboxRepo) List(ctx context.Context, limit int32) ([]gen.TaskOutbox, error) {
@@ -451,12 +533,26 @@ func (r outboxRepo) List(ctx context.Context, limit int32) ([]gen.TaskOutbox, er
 	return tasks, wrapErr("list outbox tasks", err)
 }
 
-func (r outboxRepo) ListForDrain(ctx context.Context, limit int32) ([]gen.TaskOutbox, error) {
+func (r outboxRepo) ListForDrain(ctx context.Context, limit int32) ([]DrainTask, error) {
 	if ctx.Value(txMarker{}) == nil {
 		return nil, fmt.Errorf("store: list outbox tasks for drain: %w", ErrNoTx)
 	}
-	tasks, err := r.q.ListOutboxTasksForDrain(ctx, limit)
-	return tasks, wrapErr("list outbox tasks for drain", err)
+	rows, err := r.q.ListOutboxTasksForDrain(ctx, limit)
+	if err != nil {
+		return nil, wrapErr("list outbox tasks for drain", err)
+	}
+	tasks := make([]DrainTask, 0, len(rows))
+	for _, row := range rows {
+		tasks = append(tasks, DrainTask{
+			ID: row.ID, RunID: row.RunID, StepID: row.StepID, Reason: row.Reason,
+			CreatedAt: row.CreatedAt,
+			Trace: TraceContext{
+				Parent: textOrEmpty(row.EffectiveTraceParent),
+				State:  textOrEmpty(row.EffectiveTraceState),
+			},
+		})
+	}
+	return tasks, nil
 }
 
 func (r outboxRepo) Delete(ctx context.Context, ids []int64) (int64, error) {

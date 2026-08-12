@@ -83,6 +83,11 @@ type CreateRunArgs struct {
 	// time.Now in logic under test); it becomes the run's started_at.
 	// Required.
 	Now time.Time
+	// Trace is the submission's W3C trace context (ticket 7.3, ADR-008):
+	// the run's root, persisted on the run row so healed re-dispatches
+	// restore linkage, and stamped onto the entry-step outbox rows as the
+	// enqueuing span's context. Zero means no context (tracing off).
+	Trace TraceContext
 }
 
 // CreateRunResult is what CreateRun returns.
@@ -272,6 +277,8 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		StepsTotal:             int32(len(p.def.Steps)), //nolint:gosec // step count is validation-bounded
 		StartedAt:              &startedAt,
 		DeadlineAt:             deadlineAt,
+		TraceParent:            nullableText(args.Trace.Parent),
+		TraceState:             nullableText(args.Trace.State),
 	})
 	if err != nil {
 		return gen.Run{}, err
@@ -371,7 +378,7 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 	}
 
 	for _, id := range p.entry {
-		if _, err := q.Outbox().Create(ctx, run.ID, id, OutboxReasonStepReady); err != nil {
+		if _, err := q.Outbox().CreateTraced(ctx, run.ID, id, OutboxReasonStepReady, args.Trace); err != nil {
 			return gen.Run{}, err
 		}
 	}

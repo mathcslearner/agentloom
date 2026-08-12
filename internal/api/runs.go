@@ -15,6 +15,7 @@ import (
 
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
+	obstrace "github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
@@ -112,12 +113,17 @@ func (h *Handler) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The run's root trace context (ticket 7.3, ADR-008): the otelhttp
+	// server span wrapping this request. Persisted on the run row and the
+	// entry-step outbox rows; empty (NULL) when tracing is off.
+	traceParent, traceState := obstrace.Inject(r.Context())
 	res, err := h.st.CreateRun(r.Context(), store.CreateRunArgs{
 		Definition:       def,
 		DefinitionID:     defID,
 		Params:           req.Params,
 		IdempotencyToken: token,
 		Now:              h.now(),
+		Trace:            store.TraceContext{Parent: traceParent, State: traceState},
 	})
 	if err != nil {
 		var mismatch *store.IdempotencyMismatchError

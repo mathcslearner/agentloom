@@ -78,7 +78,7 @@ INSERT INTO run_steps (run_id, step_id, step_type, config, retry_policy,
                        timeout, status, remaining_deps, fired_deps,
                        graph_version, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
 `
 
 type CreateRunStepParams struct {
@@ -140,6 +140,7 @@ func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (R
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
 }
@@ -159,7 +160,7 @@ type CreateRunStepsParams struct {
 }
 
 const getRunStep = `-- name: GetRunStep :one
-SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout FROM run_steps WHERE run_id = $1 AND step_id = $2
+SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span FROM run_steps WHERE run_id = $1 AND step_id = $2
 `
 
 type GetRunStepParams struct {
@@ -190,8 +191,51 @@ func (q *Queries) GetRunStep(ctx context.Context, arg GetRunStepParams) (RunStep
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
+}
+
+const listFiringParentTraceSpans = `-- name: ListFiringParentTraceSpans :many
+SELECT e.from_step, s.trace_span
+FROM run_edges e
+JOIN run_steps s ON s.run_id = e.run_id AND s.step_id = e.from_step
+WHERE e.run_id = $1 AND e.to_step = $2 AND e.resolution = 'fired'
+ORDER BY e.ordinal
+`
+
+type ListFiringParentTraceSpansParams struct {
+	RunID  uuid.UUID
+	ToStep string
+}
+
+type ListFiringParentTraceSpansRow struct {
+	FromStep  string
+	TraceSpan *string
+}
+
+// Fan-in trace links (ticket 7.3, ADR-008): the attempt span of a join
+// step carries links from every firing parent, whose span contexts were
+// stamped onto their run_steps rows at claim time. Per-run edge sets are
+// small; no dedicated index needed.
+func (q *Queries) ListFiringParentTraceSpans(ctx context.Context, arg ListFiringParentTraceSpansParams) ([]ListFiringParentTraceSpansRow, error) {
+	rows, err := q.db.Query(ctx, listFiringParentTraceSpans, arg.RunID, arg.ToStep)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListFiringParentTraceSpansRow
+	for rows.Next() {
+		var i ListFiringParentTraceSpansRow
+		if err := rows.Scan(&i.FromStep, &i.TraceSpan); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listRunEdges = `-- name: ListRunEdges :many
@@ -274,7 +318,7 @@ func (q *Queries) ListRunEdgesFromStep(ctx context.Context, arg ListRunEdgesFrom
 }
 
 const listRunSteps = `-- name: ListRunSteps :many
-SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout FROM run_steps WHERE run_id = $1 ORDER BY step_id
+SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span FROM run_steps WHERE run_id = $1 ORDER BY step_id
 `
 
 func (q *Queries) ListRunSteps(ctx context.Context, runID uuid.UUID) ([]RunStep, error) {
@@ -306,6 +350,7 @@ func (q *Queries) ListRunSteps(ctx context.Context, runID uuid.UUID) ([]RunStep,
 			&i.RetryPolicy,
 			&i.NextAttemptAt,
 			&i.Timeout,
+			&i.TraceSpan,
 		); err != nil {
 			return nil, err
 		}

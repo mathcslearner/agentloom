@@ -21,6 +21,9 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/exec/effects"
 	"github.com/mathcslearner/agentloom/internal/queue"
@@ -84,6 +87,14 @@ type Engine struct {
 	// metrics receives execution-pipeline observations (ticket 7.2).
 	// Never nil after New — the default is the no-op recorder.
 	metrics Metrics
+	// tracerProvider supplies the tracer for the pipeline's child spans
+	// (ticket 7.3): claim CAS, executor invocation, completion transaction
+	// — all children of the consumer's attempt span via the delivery
+	// context. Nil until New resolves it to the global provider (the
+	// no-op provider unless obs/trace.Setup enabled export).
+	tracerProvider oteltrace.TracerProvider
+	// tracer is tracerProvider's resolved tracer. Never nil after New.
+	tracer oteltrace.Tracer
 }
 
 // Option customizes an Engine.
@@ -150,6 +161,14 @@ func WithMetrics(m Metrics) Option {
 	}
 }
 
+// WithTracerProvider sets the provider for the engine's pipeline spans
+// (ticket 7.3). Nil restores the default: the global provider, which is
+// the no-op provider unless obs/trace.Setup enabled export — so tests run
+// span-free unless they inject a recorder.
+func WithTracerProvider(tp oteltrace.TracerProvider) Option {
+	return func(e *Engine) { e.tracerProvider = tp }
+}
+
 // New builds an Engine over the given store and executor registry.
 // workerID may be empty (logs then carry an empty worker_id — the queue
 // consumer name is the conventional value).
@@ -164,6 +183,10 @@ func New(s *store.Store, r *exec.Registry, workerID string, opts ...Option) (*En
 	for _, opt := range opts {
 		opt(e)
 	}
+	if e.tracerProvider == nil {
+		e.tracerProvider = otel.GetTracerProvider()
+	}
+	e.tracer = e.tracerProvider.Tracer("agentloom/engine")
 	// Built after the options so the journal shares whatever clock the
 	// engine ended up with (tests inject fixed clocks through WithClock).
 	j, err := effects.New(s, effects.WithClock(func() time.Time { return e.now() }), effects.WithStrict(e.effectsStrict))

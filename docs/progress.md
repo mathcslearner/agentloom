@@ -3520,3 +3520,112 @@ against compose) — all 28 checks green, `engine_worker_active` = 2.
 - The queue seam records poison diversion after the handler consumed
   the message even if the XACK itself fails (the DLQ row is the
   durable consumption; the redelivered entry ack-drops).
+
+### 7.3 — Distributed tracing across the queue ✅
+
+**Delivered.** ADR-008's trace design realized end to end: W3C trace
+context injected into task envelopes at enqueue with the run rooted at
+the `POST /v1/runs` server span, workers starting a `step.attempt` span
+per delivery with `step.claim` / `step.executor` / `step.completion` /
+`queue.ack` children, retries and reclaim/takeovers linked (never
+parented) to the attempt they re-execute, fan-in joins linking every
+firing parent, `trace_id`/`span_id` stamped into the structured logs on
+both deployables, and the API's otelhttp span renamed to
+`<METHOD> <route pattern>` after routing (closing 7.1's placeholder).
+Verified live by the new `make smoke-trace`: one Jaeger trace for a
+retrying fan-out run, spans from both compose worker replicas, and the
+retry rendered as a FOLLOWS_FROM reference.
+
+**Shape.** Migration 0010 gives trace context three durable homes, all
+TEXT nullable (NULL = no context — tracing off and pre-0010 rows behave
+identically):
+
+- `runs.trace_parent`/`trace_state` — the durable root, captured by the
+  submit handler from the request span via `obstrace.Inject` and passed
+  through `CreateRunArgs.Trace`.
+- `task_outbox.trace_parent`/`trace_state` — the *enqueuing span's*
+  context. Only writers inside a live span stamp it: the completion
+  transaction's fan-out rows (`Outbox().CreateTraced` with the
+  `step.completion` span, so a successor's attempt parents under the
+  span that readied it) and instantiation's entry rows (the submission
+  span). Every other writer — reconciler heals, unpark, dlq_requeue —
+  still calls plain `Create` and was not touched: the drain read
+  (`ListOutboxTasksForDrain`, now a join to `runs` with
+  `FOR UPDATE OF t` so run rows are never locked) COALESCEs NULL to the
+  run root, which is exactly ADR-008's "healed dispatches restore
+  linkage from the run row".
+- `run_steps.trace_span` — the current attempt's span context, stamped
+  by the claim CAS (`ClaimStepArgs.TraceSpan`). The pre-claim read that
+  7.2 added for scheduling latency now also surfaces the value being
+  overwritten (`ClaimOrigin.PrevTraceSpan`), and that previous value is
+  the single uniform link source: a due retry sees the failed attempt's
+  span, a takeover (worker or reconciler-healed) sees the lost
+  holder's. No link fields in the envelope, nothing handed over by the
+  dead worker, and links survive crash-healed re-dispatch paths for
+  free.
+
+The attempt span lives in the queue consumer, not the engine — the ACK
+must be a child of it and the ACK is the consumer's (`process` extracts
+the envelope context, starts the span, and closes it after the ack
+decision; the detached-context ack keeps its child span because trace
+context is value-only and survives `WithoutCancel`). The engine
+enriches the same span via context: `attempt`/`step_type` attributes,
+the prev-attempt link, and — gated on `step_type = join` — links to all
+firing parents from the new `Steps().ListFiringParentTraceSpans`. The
+delayed retry envelope carries the *run root* (from `ClaimOrigin.RunTrace`,
+threaded through `completeFailure` → `scheduleRetry`): it must not
+parent to the failed attempt, and being constant per run it keeps
+identical retries encoding to byte-identical delayed members — ADR-005's
+ZADD move-the-fire-time dedup is undisturbed.
+
+Tracers are injected: `queue.ConsumerConfig.TracerProvider` and
+`engine.WithTracerProvider`, defaulting to the global provider (the
+no-op unless `obs/trace.Setup` enabled export) — every existing test
+layer runs span-free with zero changes. `internal/obs/trace` gained the
+string-typed bridge (`Inject`/`Extract`/`SpanContext`/
+`LinkFromTraceparent`/`WithLogContext`) on an *explicit* W3C propagator
+instance, because the global propagator is a silent no-op until Setup
+runs and the helpers must round-trip in tests that never install the
+pipeline.
+
+**Tests.** Unit: propagation-helper round-trips including malformed
+traceparent tolerance (a broken stored context skips the link, never
+fails execution). Hermetic integration (in-memory `tracetest` recorder
+through the seams, no collector): the headline
+`TestTraceSingleRunWithRetryLink` — every span of a submit→fail→retry→
+succeed→successor run shares the root's trace id, the entry attempt
+parents to the submission span, the retry attempt parents to the run
+root and *links* to the failed attempt, the successor parents to the
+completion span that readied it, all four child spans present, and the
+captured slog output carries the run's `trace_id`/`span_id`;
+`TestTraceJoinFanInLinks` (join attempt links both parents' attempts);
+`TestTraceTakeoverLink` (a dead holder's claim stamped with a fabricated
+span, reclaim + takeover, the new attempt links the lost span with
+history `[lost, succeeded]`). Live: `make smoke-trace` green —
+one trace, 2 worker processes, FOLLOWS_FROM retry link, plus a direct
+Jaeger trace URL in the output.
+
+**Non-obvious decisions / deferred.**
+- `run_steps.trace_span` records the *attempt* span, captured before
+  the `step.claim` child span starts — stamping from inside the claim
+  transaction's context would point every later link at the claim
+  child instead of the attempt (caught by the integration tests on
+  first run).
+- Envelope schema: zero decode changes — ADR-005 reserved
+  `traceparent`/`tracestate` in version 1, so populating them is the
+  additive evolution the acceptance criterion asks for; old envelopes
+  simply start root spans.
+- The join-parents query runs only for `step_type = join` and only
+  when a valid span context is active, so the untraced hot path gains
+  no reads.
+- Poison diversions and undecodable envelopes get no attempt span
+  (they never reach `process`'s post-decode section); the DLQ row and
+  logs remain their observability. Fine to revisit if M7.5 dashboards
+  want it.
+- The API-side Control ops (cancel/park/unpark/requeue) write outbox
+  rows with no live-span stamping (plain `Create`); their dispatches
+  parent to the run root via the drain fallback — semantically right
+  (they descend from no execution span) and free.
+- `slog` capture in the headline test swaps the process-global default
+  logger (the spawned consumer's context carries none), so that one
+  test is deliberately not `t.Parallel()`.

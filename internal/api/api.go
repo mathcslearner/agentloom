@@ -67,9 +67,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/mathcslearner/agentloom/internal/engine"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
+	obstrace "github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/store"
 )
 
@@ -239,21 +241,37 @@ func (h *Handler) handleHealthz(w http.ResponseWriter, r *http.Request) {
 // 6.2), reported back up from requireScope via the authStamp slot. It is
 // also the request-metrics recording point (ticket 7.2): after routing,
 // chi's RouteContext holds the matched pattern, which is the bounded
-// `route` label ADR-008 requires — never the raw path.
+// `route` label ADR-008 requires — never the raw path. And it is the
+// span-refinement point (ticket 7.3): the otelhttp server span wrapping
+// the router gets renamed from its method-only placeholder to
+// "<METHOD> <route pattern>" once routing has resolved the pattern, and
+// trace_id/span_id join the request log line and every handler line.
 func (h *Handler) requestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := h.now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		stamp := &authStamp{}
 		ctx := authStampInto(log.Into(r.Context(), h.logger), stamp)
+		// The otelhttp server span is already in the request context when
+		// tracing is on; a no-op when it is off.
+		ctx = obstrace.WithLogContext(ctx)
 		next.ServeHTTP(rec, r.WithContext(ctx))
 		duration := h.now().Sub(start)
-		h.metrics.Request(metricRoute(ctx), metricMethod(r.Method), rec.status, duration)
+		route := metricRoute(ctx)
+		h.metrics.Request(route, metricMethod(r.Method), rec.status, duration)
+		if route != "unmatched" {
+			if span := oteltrace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+				span.SetName(r.Method + " " + route)
+			}
+		}
 		attrs := []slog.Attr{
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.Int("status", rec.status),
 			slog.Duration("duration", duration),
+		}
+		if sc := oteltrace.SpanContextFromContext(ctx); sc.IsValid() {
+			attrs = append(attrs, log.TraceID(sc.TraceID().String()), log.SpanID(sc.SpanID().String()))
 		}
 		if stamp.keyID != "" {
 			attrs = append(attrs, log.KeyID(stamp.keyID))

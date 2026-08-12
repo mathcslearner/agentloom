@@ -200,11 +200,16 @@ func (d *Dispatcher) DrainOnce(ctx context.Context) (int, error) {
 		obs = obs[:0] // a retried closure starts its observations over
 		for _, task := range tasks {
 			now := d.now()
+			// The envelope's trace context (ticket 7.3): the row's own
+			// enqueuing-span context when its writer stamped one, else the
+			// run's durable root — already coalesced by the drain read.
 			if _, err := d.enq.Enqueue(ctx, queue.Envelope{
-				RunID:      task.RunID,
-				StepID:     task.StepID,
-				Reason:     task.Reason,
-				EnqueuedAt: now,
+				RunID:       task.RunID,
+				StepID:      task.StepID,
+				Reason:      task.Reason,
+				TraceParent: task.Trace.Parent,
+				TraceState:  task.Trace.State,
+				EnqueuedAt:  now,
 			}); err != nil {
 				enqErr = err
 				break

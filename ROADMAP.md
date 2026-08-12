@@ -567,13 +567,13 @@ Instrument: queue ready depth, PEL size, delayed count, outbox backlog + drain l
 - [x] Cardinality audit: label sets bounded and enumerated in ADR-008
 - [x] Scheduling-latency histogram proven accurate against a scripted delay
 
-#### 7.3 — Distributed tracing across the queue
+#### 7.3 — Distributed tracing across the queue ✅
 **Depends on:** 7.1
-Inject W3C trace context into task envelopes at enqueue (root span at submission); workers extract and start attempt spans linked to the run trace; child spans for claim CAS, executor, completion tx, ACK; retries/reclaims linked via span links; fan-in joins use links from all parents. The demo artifact: one trace showing a run crossing two worker processes.
+Inject W3C trace context into task envelopes at enqueue (root span at submission); workers extract and start attempt spans linked to the run trace; child spans for claim CAS, executor, completion tx, ACK; retries/reclaims linked via span links; fan-in joins use links from all parents. The demo artifact: one trace showing a run crossing two worker processes. *(As built: migration 0010 gives trace context three durable homes — `runs.trace_parent/trace_state` (the root, captured from the POST /v1/runs otelhttp span, which requestLog now renames to `<METHOD> <route pattern>` post-routing), `task_outbox.trace_parent/trace_state` (the enqueuing span, stamped only by live-span writers: completion fan-out and instantiation; the drain read COALESCEs NULL rows to the run root, so reconciler/unpark/dlq_requeue needed zero changes), and `run_steps.trace_span` (the attempt span, stamped by the claim CAS — its overwritten previous value, surfaced by the existing pre-claim read, is the uniform link source for retries AND takeovers, with no envelope link fields and nothing handed over by dead workers). The queue consumer starts `step.attempt` around each delivery (it owns the ACK child span) with `step.claim`/`step.executor`/`step.completion`/`queue.ack` children; joins add links to all firing parents via the new `ListFiringParentTraceSpans`; the delayed retry envelope carries the run root (constant per run — ZADD dedup preserved). Tracer seams `ConsumerConfig.TracerProvider` + `engine.WithTracerProvider` default to the global no-op; hermetic span-topology tests run on an in-memory recorder. `trace_id`/`span_id` stamped into log context per delivery and per request. Verified live: `make smoke-trace` — one Jaeger trace, both worker replicas, FOLLOWS_FROM retry link.)*
 **Done when:**
-- [ ] Jaeger shows a single run trace spanning ≥2 worker processes, including a retry link
-- [ ] `trace_id` present in structured logs for correlation
-- [ ] Envelope schema change is versioned and backward-tolerant
+- [x] Jaeger shows a single run trace spanning ≥2 worker processes, including a retry link
+- [x] `trace_id` present in structured logs for correlation
+- [x] Envelope schema change is versioned and backward-tolerant
 
 #### 7.4 — Per-step log capture & API
 **Depends on:** 7.1, 6.5

@@ -9,8 +9,13 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/mathcslearner/agentloom/internal/obs/log"
+	obstrace "github.com/mathcslearner/agentloom/internal/obs/trace"
 )
 
 // Consumer tuning defaults per ADR-005's tuning table. config.QueueConfig
@@ -185,6 +190,11 @@ type ConsumerConfig struct {
 	// diversions, delayed promotions. Nil means the no-op recorder —
 	// cmd/worker wires the Prometheus implementation.
 	Metrics ConsumerMetrics
+	// TracerProvider supplies the tracer for per-delivery attempt spans
+	// (ticket 7.3, ADR-008). Nil falls back to the global provider — the
+	// no-op provider unless obs/trace.Setup enabled export, so every test
+	// layer keeps running span-free. Tests inject a recorder here.
+	TracerProvider oteltrace.TracerProvider
 }
 
 func (c ConsumerConfig) withDefaults() ConsumerConfig {
@@ -249,6 +259,9 @@ type Consumer struct {
 	// drain accumulates the per-entry shutdown dispositions finishShutdown
 	// reports. Only touched from Run's goroutine.
 	drain drainStats
+	// tracer emits the per-delivery attempt spans (ticket 7.3). Never nil
+	// after NewConsumer; the no-op tracer unless tracing is wired.
+	tracer oteltrace.Tracer
 }
 
 // drainStats counts what became of the entries a shutting-down consumer
@@ -275,6 +288,10 @@ func (q *Queue) NewConsumer(name string, handler Handler, cfg ConsumerConfig) *C
 		name = NewConsumerName()
 	}
 	cfg = cfg.withDefaults()
+	tp := cfg.TracerProvider
+	if tp == nil {
+		tp = otel.GetTracerProvider()
+	}
 	return &Consumer{
 		queue:         q,
 		name:          name,
@@ -282,6 +299,7 @@ func (q *Queue) NewConsumer(name string, handler Handler, cfg ConsumerConfig) *C
 		cfg:           cfg,
 		delayed:       q.NewDelayed(cfg.DelayedKey),
 		reclaimCursor: "0-0",
+		tracer:        tp.Tracer("agentloom/queue"),
 	}
 }
 
@@ -565,6 +583,13 @@ func (c *Consumer) finishShutdown(ctx context.Context) {
 // entries with their real delivery counts. False means the entry stays in
 // the PEL, to redeliver via reclaim or walk into the poison path as its
 // delivery count rises.
+//
+// Each delivery runs inside an attempt span (ticket 7.3, ADR-008) whose
+// remote parent is the enqueuing span carried in the envelope — how one
+// run's trace crosses worker processes. It starts here rather than in the
+// engine because the ACK must be a child of it, and the ACK is this
+// package's. The engine adds the claim/executor/completion child spans and
+// the retry/takeover/fan-in links on the same span via the context.
 func (c *Consumer) process(ctx context.Context, msg redis.XMessage, deliveryCount int64) bool {
 	ctx = log.With(ctx,
 		slog.String("entry_id", msg.ID),
@@ -578,6 +603,20 @@ func (c *Consumer) process(ctx context.Context, msg redis.XMessage, deliveryCoun
 			slog.Any("error", err))
 		return false
 	}
+	ctx = obstrace.Extract(ctx, env.TraceParent, env.TraceState)
+	ctx, span := c.tracer.Start(ctx, "step.attempt",
+		oteltrace.WithSpanKind(oteltrace.SpanKindConsumer),
+		oteltrace.WithAttributes(
+			attribute.String("run_id", env.RunID.String()),
+			attribute.String("step_id", env.StepID),
+			attribute.String("reason", env.Reason),
+			attribute.Int64("delivery_count", deliveryCount),
+			attribute.String("worker_id", c.name),
+		))
+	defer span.End()
+	// trace_id/span_id on every log line under this delivery — the
+	// log↔Jaeger join (ADR-008 log field dictionary).
+	ctx = obstrace.WithLogContext(ctx)
 	ctx = log.With(ctx,
 		log.RunID(env.RunID.String()),
 		log.StepID(env.StepID),
@@ -594,6 +633,8 @@ func (c *Consumer) process(ctx context.Context, msg redis.XMessage, deliveryCoun
 	err = safeHandle(ctx, c.handler, d)
 	stopHeartbeat()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "handler failed; entry stays pending")
 		log.From(ctx).WarnContext(ctx, "handler failed; entry stays pending for redelivery",
 			slog.Any("error", err))
 		return false
@@ -603,7 +644,13 @@ func (c *Consumer) process(ctx context.Context, msg redis.XMessage, deliveryCoun
 			slog.Any("error", err))
 		return false
 	}
-	return c.ack(ctx, msg.ID)
+	acked := c.ack(ctx, msg.ID)
+	if acked {
+		span.SetStatus(codes.Ok, "")
+	} else {
+		span.SetStatus(codes.Error, "XACK failed; entry will redeliver")
+	}
+	return acked
 }
 
 // phaseHook runs the configured PhaseHook, if any.
@@ -616,11 +663,17 @@ func (c *Consumer) phaseHook(phase Phase, d Delivery) error {
 
 // ack removes one entry from the PEL. It runs on a detached context: a
 // handler that succeeds while shutdown is in progress must still ack, or
-// its completed work would redeliver for nothing.
+// its completed work would redeliver for nothing. (The trace context is
+// value-only and survives WithoutCancel, so the ack child span still
+// parents under the attempt span.)
 func (c *Consumer) ack(ctx context.Context, entryID string) bool {
 	ackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedOpTimeout)
 	defer cancel()
+	ackCtx, span := c.tracer.Start(ackCtx, "queue.ack")
+	defer span.End()
 	if err := c.queue.client.XAck(ackCtx, c.queue.stream, c.queue.group, entryID).Err(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "XACK failed")
 		log.From(ctx).ErrorContext(ctx, "XACK failed; entry will redeliver as a duplicate",
 			slog.Any("error", err))
 		return false

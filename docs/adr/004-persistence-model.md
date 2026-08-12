@@ -279,6 +279,12 @@ once written; a new version is a new row.
 - `on_failure` (TEXT, NOT NULL, default `fail_fast`; since 5.4) — the
   workflow failure policy, materialized at instantiation like the steps'
   `retry_policy` and for the same reasons (ADR-006 "Run disposition").
+- `trace_parent`, `trace_state` (TEXT, nullable; since 7.3, migration
+  0010) — the run's durable root trace context (W3C), captured from the
+  `POST /v1/runs` server span at instantiation. Re-dispatches that
+  descend from no live span (reconciler heals, delayed retries,
+  `dlq_requeue`, `unpark`) restore trace linkage from here (ADR-008).
+  NULL means no context — tracing off, or a pre-0010 row.
 - `created_at` (DB default), `started_at`, `finished_at` (application-
   written; see Timestamps).
 
@@ -296,7 +302,11 @@ reconciler heals a lost delayed re-dispatch from), `output` (JSONB, set on
 success), `error` (JSONB, last failure summary; full per-attempt detail
 lives on `step_attempts`), `graph_version` (the version that introduced
 this row — 1 for instantiation-time rows, >1 for expansion-injected ones:
-M13/M18 provenance), and timestamps.
+M13/M18 provenance), `trace_span` (TEXT, nullable; since 7.3, migration
+0010 — the current attempt's span context in traceparent format, stamped
+by the claim CAS; the value a claim overwrites is the previous attempt's
+span, which is how retries and takeovers link the new attempt span back
+to the attempt it re-executes, ADR-008), and timestamps.
 
 **`run_edges`** — the per-run graph copy, edge side. `from_step`,
 `to_step`, `edge_type` (`normal | loop`), the raw predicate texts
@@ -349,8 +359,12 @@ state transitions, and the table itself is the audit record.
 **`task_outbox`** — the transactional Postgres→Redis dispatch buffer
 (ADR-002). `id` (identity, drain order), `run_id`, `step_id`, `reason`
 (`TEXT`: the enqueue reason carried into the task envelope — ADR-005 owns
-the envelope, but v1 seeds `step_ready`), `created_at`. **Drained rows are
-deleted**, in the drain transaction
+the envelope, but v1 seeds `step_ready`), `trace_parent`/`trace_state`
+(TEXT, nullable; since 7.3 — the enqueuing span's context, stamped by
+writers that run inside a live span: completion fan-out and
+instantiation; NULL rows fall back to the run row's root context at
+drain, so healed re-dispatches stay in the run trace), `created_at`.
+**Drained rows are deleted**, in the drain transaction
 (`DELETE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)` — M4), not
 flagged: the table stays small (its scan is the hot path), and a row's
 existence *is* the pending-dispatch state, which keeps the reconciler's

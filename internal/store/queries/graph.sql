@@ -52,3 +52,14 @@ SELECT * FROM run_edges WHERE run_id = $1 ORDER BY ordinal;
 -- edges, in the ordinal order the branch first-match rule requires.
 -- name: ListRunEdgesFromStep :many
 SELECT * FROM run_edges WHERE run_id = $1 AND from_step = $2 ORDER BY ordinal;
+
+-- Fan-in trace links (ticket 7.3, ADR-008): the attempt span of a join
+-- step carries links from every firing parent, whose span contexts were
+-- stamped onto their run_steps rows at claim time. Per-run edge sets are
+-- small; no dedicated index needed.
+-- name: ListFiringParentTraceSpans :many
+SELECT e.from_step, s.trace_span
+FROM run_edges e
+JOIN run_steps s ON s.run_id = e.run_id AND s.step_id = e.from_step
+WHERE e.run_id = $1 AND e.to_step = $2 AND e.resolution = 'fired'
+ORDER BY e.ordinal;

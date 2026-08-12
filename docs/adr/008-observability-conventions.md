@@ -202,6 +202,52 @@ both worlds.
   absent trace fields mean "no context"), so mixed fleets during rollout
   are safe by construction.
 
+**As built (ticket 7.3).** The design above, realized with three durable
+homes for trace context (migration 0010, all TEXT nullable, NULL = "no
+context" — every test layer keeps running span-free on the no-op
+provider):
+
+- `runs.trace_parent`/`trace_state` — the root context, captured from
+  the `POST /v1/runs` otelhttp server span (which the `requestLog`
+  middleware renames to `<METHOD> <chi route pattern>` after routing,
+  closing 7.1's naming placeholder).
+- `task_outbox.trace_parent`/`trace_state` — the enqueuing span's
+  context, stamped only by writers inside a live span (the completion
+  transaction's fan-out rows carry the `step.completion` span;
+  instantiation's entry rows carry the submission span). All other
+  writers (reconciler, unpark, dlq_requeue) leave NULL, and the drain
+  read coalesces to the run row's root — one rule, so healed dispatch
+  paths needed no changes at all.
+- `run_steps.trace_span` — the current attempt's span context, stamped
+  by the claim CAS. The pre-claim read that already serves the 7.2
+  scheduling-latency metric surfaces the value being overwritten, and
+  that previous value is the **link source for every re-execution**:
+  a due retry links to the failed attempt, a worker or reconciler
+  takeover links to the lost attempt — uniformly, with no link fields in
+  the envelope and no dependence on the dying worker handing anything
+  over. The delayed retry envelope carries the run root as parent
+  (constant per run, preserving ADR-005's byte-identical delayed-member
+  dedup).
+
+Span inventory: the queue consumer starts `step.attempt`
+(SpanKind=consumer; attrs `run_id`, `step_id`, `reason`,
+`delivery_count`, `worker_id`, plus `attempt`/`step_type` once claimed)
+around the whole delivery — it owns the span because the ACK must be a
+child — with `step.claim`, `step.executor`, `step.completion` (engine)
+and `queue.ack` (consumer) as children. Fan-in joins add links to every
+firing parent's attempt span, read from the parents' `trace_span`
+columns (`step_type = join` gates the extra query). Tracers come from
+injectable providers (`queue.ConsumerConfig.TracerProvider`,
+`engine.WithTracerProvider`) defaulting to the global (no-op unless
+`obs/trace.Setup` enabled export); the propagation helpers in
+`internal/obs/trace` use an explicit W3C propagator so they round-trip
+without global setup. `trace_id`/`span_id` are stamped into the log
+context per delivery and per API request. Acceptance: `make smoke-trace`
+asserts one Jaeger trace per run spanning both compose worker replicas
+with a FOLLOWS_FROM retry link; the hermetic span-topology tests run
+against an in-memory recorder in `internal/engine`
+(`trace_integration_test.go`).
+
 ### Wiring: admin ports, providers, and the off switch
 
 - **Admin listener, both deployables.** `/metrics` (and a plain

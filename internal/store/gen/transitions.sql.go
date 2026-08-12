@@ -19,7 +19,7 @@ SET remaining_deps = remaining_deps - 1,
     fired_deps     = fired_deps + $1::int,
     updated_at     = $2::timestamptz
 WHERE run_id = $3 AND step_id = $4 AND remaining_deps > 0
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
 `
 
 type ApplyEdgeResolutionParams struct {
@@ -62,6 +62,7 @@ func (q *Queries) ApplyEdgeResolution(ctx context.Context, arg ApplyEdgeResoluti
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
 }
@@ -105,7 +106,7 @@ SET status        = 'cancelling',
     cancel_reason = $1,
     park_reason   = NULL
 WHERE id = $2 AND status IN ('running', 'parked')
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
 `
 
 type CancelRunParams struct {
@@ -142,6 +143,8 @@ func (q *Queries) CancelRun(ctx context.Context, arg CancelRunParams) (Run, erro
 		&i.CancelReason,
 		&i.DeadlineAt,
 		&i.IdempotencyFingerprint,
+		&i.TraceParent,
+		&i.TraceState,
 	)
 	return i, err
 }
@@ -152,7 +155,7 @@ SET status      = 'cancelled',
     finished_at = $1::timestamptz
 WHERE id = $2 AND status = 'cancelling'
   AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled = steps_total
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
 `
 
 type CancelRunRollupParams struct {
@@ -189,6 +192,8 @@ func (q *Queries) CancelRunRollup(ctx context.Context, arg CancelRunRollupParams
 		&i.CancelReason,
 		&i.DeadlineAt,
 		&i.IdempotencyFingerprint,
+		&i.TraceParent,
+		&i.TraceState,
 	)
 	return i, err
 }
@@ -200,7 +205,7 @@ SET status          = 'cancelled',
     updated_at      = $1::timestamptz
 WHERE run_id = $2 AND step_id = $3
   AND status IN ('pending', 'ready', 'retrying')
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
 `
 
 type CancelRunStepParams struct {
@@ -240,6 +245,7 @@ func (q *Queries) CancelRunStep(ctx context.Context, arg CancelRunStepParams) (R
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
 }
@@ -252,7 +258,7 @@ SET status      = 'cancelled',
     updated_at  = $2::timestamptz
 WHERE run_id = $3 AND step_id = $4
   AND status = 'running' AND claim_id = $5
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
 `
 
 type CancelRunningRunStepParams struct {
@@ -298,6 +304,7 @@ func (q *Queries) CancelRunningRunStep(ctx context.Context, arg CancelRunningRun
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
 }
@@ -309,19 +316,21 @@ SET status          = 'running',
     claim_id        = $1,
     attempt_count   = attempt_count + 1,
     next_attempt_at = NULL,
-    started_at      = COALESCE(started_at, $2::timestamptz),
-    updated_at      = $2::timestamptz
-WHERE run_id = $3 AND step_id = $4
+    trace_span      = $2::text,
+    started_at      = COALESCE(started_at, $3::timestamptz),
+    updated_at      = $3::timestamptz
+WHERE run_id = $4 AND step_id = $5
   AND (status = 'ready'
-       OR (status = 'retrying' AND next_attempt_at <= $2::timestamptz))
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+       OR (status = 'retrying' AND next_attempt_at <= $3::timestamptz))
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
 `
 
 type ClaimRunStepParams struct {
-	ClaimID *uuid.UUID
-	Now     time.Time
-	RunID   uuid.UUID
-	StepID  string
+	ClaimID   *uuid.UUID
+	TraceSpan *string
+	Now       time.Time
+	RunID     uuid.UUID
+	StepID    string
 }
 
 // Guarded state transitions (ticket 2.6): every status change is a
@@ -342,6 +351,7 @@ type ClaimRunStepParams struct {
 func (q *Queries) ClaimRunStep(ctx context.Context, arg ClaimRunStepParams) (RunStep, error) {
 	row := q.db.QueryRow(ctx, claimRunStep,
 		arg.ClaimID,
+		arg.TraceSpan,
 		arg.Now,
 		arg.RunID,
 		arg.StepID,
@@ -367,6 +377,7 @@ func (q *Queries) ClaimRunStep(ctx context.Context, arg ClaimRunStepParams) (Run
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
 }
@@ -379,7 +390,7 @@ SET status      = 'dead_lettered',
     updated_at  = $2::timestamptz
 WHERE run_id = $3 AND step_id = $4
   AND status = 'running' AND claim_id = $5
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
 `
 
 type DeadLetterRunStepParams struct {
@@ -424,6 +435,7 @@ func (q *Queries) DeadLetterRunStep(ctx context.Context, arg DeadLetterRunStepPa
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
 }
@@ -434,7 +446,7 @@ SET status      = 'failed',
     park_reason = NULL,
     finished_at = $1::timestamptz
 WHERE id = $2 AND status IN ('running', 'parked') AND steps_failed >= 1
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
 `
 
 type FailRunParams struct {
@@ -470,6 +482,8 @@ func (q *Queries) FailRun(ctx context.Context, arg FailRunParams) (Run, error) {
 		&i.CancelReason,
 		&i.DeadlineAt,
 		&i.IdempotencyFingerprint,
+		&i.TraceParent,
+		&i.TraceState,
 	)
 	return i, err
 }
@@ -481,7 +495,7 @@ SET status      = 'failed',
     finished_at = $1::timestamptz
 WHERE id = $2 AND status IN ('running', 'parked') AND steps_failed >= 1
   AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled = steps_total
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
 `
 
 type FailRunRollupParams struct {
@@ -520,6 +534,8 @@ func (q *Queries) FailRunRollup(ctx context.Context, arg FailRunRollupParams) (R
 		&i.CancelReason,
 		&i.DeadlineAt,
 		&i.IdempotencyFingerprint,
+		&i.TraceParent,
+		&i.TraceState,
 	)
 	return i, err
 }
@@ -556,7 +572,7 @@ UPDATE runs
 SET status      = 'parked',
     park_reason = $1
 WHERE id = $2 AND status = 'running'
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
 `
 
 type ParkRunParams struct {
@@ -592,6 +608,8 @@ func (q *Queries) ParkRun(ctx context.Context, arg ParkRunParams) (Run, error) {
 		&i.CancelReason,
 		&i.DeadlineAt,
 		&i.IdempotencyFingerprint,
+		&i.TraceParent,
+		&i.TraceState,
 	)
 	return i, err
 }
@@ -606,7 +624,7 @@ SET status          = 'dead_lettered',
     updated_at      = $2::timestamptz
 WHERE run_id = $3 AND step_id = $4
   AND status IN ('pending', 'ready', 'running', 'retrying')
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
 `
 
 type PoisonDeadLetterRunStepParams struct {
@@ -649,6 +667,7 @@ func (q *Queries) PoisonDeadLetterRunStep(ctx context.Context, arg PoisonDeadLet
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
 }
@@ -659,7 +678,7 @@ SET status     = 'ready',
     updated_at = $1::timestamptz
 WHERE run_id = $2 AND step_id = $3 AND status = 'pending'
   AND fired_deps >= 1 AND (remaining_deps = 0 OR $4::boolean)
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
 `
 
 type ReadyRunStepParams struct {
@@ -701,6 +720,7 @@ func (q *Queries) ReadyRunStep(ctx context.Context, arg ReadyRunStepParams) (Run
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
 }
@@ -713,7 +733,7 @@ SET status          = 'ready',
     finished_at     = NULL,
     updated_at      = $1::timestamptz
 WHERE run_id = $2 AND step_id = $3 AND status = 'dead_lettered'
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
 `
 
 type RequeueRunStepParams struct {
@@ -749,6 +769,7 @@ func (q *Queries) RequeueRunStep(ctx context.Context, arg RequeueRunStepParams) 
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
 }
@@ -794,7 +815,7 @@ UPDATE runs
 SET status      = 'running',
     finished_at = NULL
 WHERE id = $1 AND status = 'failed'
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
 `
 
 // Requeue revival: failed → running (ticket 5.4). An operator requeueing
@@ -825,6 +846,8 @@ func (q *Queries) ResumeRun(ctx context.Context, runID uuid.UUID) (Run, error) {
 		&i.CancelReason,
 		&i.DeadlineAt,
 		&i.IdempotencyFingerprint,
+		&i.TraceParent,
+		&i.TraceState,
 	)
 	return i, err
 }
@@ -838,7 +861,7 @@ SET status          = 'retrying',
     updated_at      = $3::timestamptz
 WHERE run_id = $4 AND step_id = $5
   AND status = 'running' AND claim_id = $6
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
 `
 
 type RetryRunStepParams struct {
@@ -886,6 +909,7 @@ func (q *Queries) RetryRunStep(ctx context.Context, arg RetryRunStepParams) (Run
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
 }
@@ -895,7 +919,7 @@ UPDATE run_steps
 SET status     = 'pending',
     updated_at = $1::timestamptz
 WHERE run_id = $2 AND step_id = $3 AND status = 'cancelled'
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
 `
 
 type ReviveRunStepParams struct {
@@ -931,6 +955,7 @@ func (q *Queries) ReviveRunStep(ctx context.Context, arg ReviveRunStepParams) (R
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
 }
@@ -941,7 +966,7 @@ SET status     = 'skipped',
     updated_at = $1::timestamptz
 WHERE run_id = $2 AND step_id = $3 AND status = 'pending'
   AND remaining_deps = 0 AND fired_deps = 0
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
 `
 
 type SkipRunStepParams struct {
@@ -975,6 +1000,7 @@ func (q *Queries) SkipRunStep(ctx context.Context, arg SkipRunStepParams) (RunSt
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
 }
@@ -986,7 +1012,7 @@ SET status      = 'succeeded',
     finished_at = $1::timestamptz
 WHERE id = $2 AND status IN ('running', 'parked')
   AND steps_failed = 0 AND steps_succeeded + steps_skipped = steps_total
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
 `
 
 type SucceedRunParams struct {
@@ -1027,6 +1053,8 @@ func (q *Queries) SucceedRun(ctx context.Context, arg SucceedRunParams) (Run, er
 		&i.CancelReason,
 		&i.DeadlineAt,
 		&i.IdempotencyFingerprint,
+		&i.TraceParent,
+		&i.TraceState,
 	)
 	return i, err
 }
@@ -1039,7 +1067,7 @@ SET status      = 'succeeded',
     updated_at  = $2::timestamptz
 WHERE run_id = $3 AND step_id = $4
   AND status = 'running' AND claim_id = $5
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
 `
 
 type SucceedRunStepParams struct {
@@ -1081,6 +1109,7 @@ func (q *Queries) SucceedRunStep(ctx context.Context, arg SucceedRunStepParams) 
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
 }
@@ -1092,7 +1121,7 @@ SET status     = 'ready',
     updated_at = $1::timestamptz
 WHERE run_id = $2 AND step_id = $3
   AND status = 'running' AND claim_id = $4
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
 `
 
 type TakeoverRunStepParams struct {
@@ -1136,6 +1165,7 @@ func (q *Queries) TakeoverRunStep(ctx context.Context, arg TakeoverRunStepParams
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+		&i.TraceSpan,
 	)
 	return i, err
 }
@@ -1145,7 +1175,7 @@ UPDATE runs
 SET status      = 'running',
     park_reason = NULL
 WHERE id = $1 AND status = 'parked'
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
 `
 
 // Unpark: parked → running (ticket 5.6). Re-outboxing the run's ready
@@ -1175,6 +1205,8 @@ func (q *Queries) UnparkRun(ctx context.Context, runID uuid.UUID) (Run, error) {
 		&i.CancelReason,
 		&i.DeadlineAt,
 		&i.IdempotencyFingerprint,
+		&i.TraceParent,
+		&i.TraceState,
 	)
 	return i, err
 }

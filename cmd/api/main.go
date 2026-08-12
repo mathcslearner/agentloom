@@ -145,10 +145,13 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 	}
 	var handler http.Handler = apiHandler
 	if cfg.Obs.OTelEnabled {
-		// HTTP server spans (ticket 7.1): one span per request, named by
-		// method — the chi route pattern isn't known this far out, and raw
-		// paths are unbounded. 7.3 refines naming and adds the submission
-		// root span; this proves the export pipeline end to end.
+		// HTTP server spans (ticket 7.1): one span per request. The
+		// formatter's method-only name is a placeholder — the chi route
+		// pattern isn't known this far out, and raw paths are unbounded —
+		// which the api requestLog middleware renames to
+		// "<METHOD> <route pattern>" once routing has resolved (ticket
+		// 7.3). The POST /v1/runs span doubles as the run's root: the
+		// submit handler persists its context on the run row.
 		handler = otelhttp.NewHandler(handler, "http.server",
 			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 				return "HTTP " + r.Method
