@@ -3025,3 +3025,95 @@ want server-computed truth; decide there. Multi-bucket acquire (global
 acquires measurably matter, the honest fix is a second Lua script taking
 two keys, not client-side pipelining of a check-then-take. M7 metrics
 hooks (grant/deny counters, acquire latency) stubbed per roadmap.
+
+### 6.4 — Per-client API rate limiting middleware ✅
+
+**Delivered.** Ticket 6.4's enforcement layer over 6.3's limiter: a
+`rateLimit(class)` middleware in `internal/api/ratelimit.go`, mounted
+after `requireScope` on every `/v1` route. Each request acquires cost 1
+from the caller's per-`key_id` bucket for the route's class
+(`<prefix>:<key_id>:<class>`; the root credential rides under `"root"`),
+then from the API-wide global safety bucket (`<prefix>:global`). Either
+denial is a **429** carrying `Retry-After` plus the envelope's new
+contract code `rate_limited`; `X-RateLimit-Limit`/`-Remaining`/`-Reset`
+go on every limited response, allowed or denied. Route→class mirrors
+6.2's route→scope discipline exactly — the table lives beside a
+chi.Walk coverage test (`ratelimit_routes_test.go`), so a new `/v1`
+route cannot ship unclassified; `/healthz` and the 404/405 fallbacks
+stay exempt for the same reasons they are exempt from auth. Because the
+middleware sits after auth, credential failures consume no tokens — a
+bad-key storm cannot starve anyone's bucket (pinned by test).
+
+**Decisions (ADR-007 gained the 6.4 as-built section).**
+
+- **Fail-open on Redis errors.** An `Acquire` failure logs at Error,
+  fires the metrics hook, and lets the request through. Rate limits are
+  protective, not correctness: Postgres stays the API's only hard
+  dependency. Consequently `cmd/api`'s new Redis client — the first
+  ever in the API deployable — is scoped to rate-limit buckets alone
+  (ADR-002's no-dispatch rule untouched), opens without a boot-time
+  dependency (go-redis dials lazily; the boot ping is advisory and only
+  warns), and `/healthz` never touches Redis.
+- **Per-key before global, sequentially.** An exhausted caller is
+  rejected *without* touching the global bucket, so one abusive
+  client's 429 storm cannot drain the fleet's shared budget — the
+  stronger property. Accepted cost, documented rather than compensated:
+  a global denial does not refund the per-key token already spent.
+  6.3's deferred two-key atomic script stays deferred.
+- **Headers always describe the caller's own class bucket** (stable
+  meaning for clients), while `Retry-After` comes from whichever bucket
+  denied, whole seconds rounded up so an honoring client never retries
+  early. `X-RateLimit-Reset` takes the cheap branch of 6.3's deferred
+  decision: derived as ceil((capacity − remaining)/refill) seconds to
+  full — ≤ 1 token of imprecision, library reply untouched.
+- **Refill must be strictly positive** in API config: a rate-zero API
+  bucket would permanently brick a key (`RetryAfterNever`), which is
+  never a sane API limit — fixed quotas remain an M9 shape. Validated
+  at config parse *and* in `api.New`, so a bad limit fails boot instead
+  of failing open per request.
+- **Metrics stubbed for M7** as the `RateLimitMetrics` seam (per-bucket
+  decisions + fail-open events, no-op default) — the "429 counters
+  (hooks from 6.4)" the M7 roadmap names.
+
+**Config & wiring.** `config.APIRateLimitConfig` on `APIConfig`:
+`AGENTLOOM_API_RATELIMIT_ENABLED` (default true; false skips the Redis
+client entirely), `_KEY_PREFIX` (default `ratelimit:api`; the per-test
+isolation knob, same discipline as the queue key knobs), and
+`_{SUBMIT,READ,ADMIN,GLOBAL}_{CAPACITY,REFILL_PER_SEC}` with dev-sane
+defaults (submit 20/10, read 100/50, admin 10/2, global 500/250 —
+submits stricter than reads, admin strictest, per ADR-007). Two new
+config helpers (`applyPositiveInt64`, `applyPositiveFloat`). `api.New`
+grew a `RateLimitOptions` parameter (zero value = disabled — the
+existing tests' mode) with an `Acquirer` seam over `*ratelimit.Limiter`
+so unit tests script grant/deny/error without Redis. Compose's api
+service now gets `AGENTLOOM_REDIS_ADDR: redis:6379` and depends on
+redis healthy.
+
+**Tests.** Unit (fake acquirer): route→class coverage, threshold
+exactness with the full header sequence, global-deny semantics,
+fail-open, disabled mode, no-consumption on 401, bucket-key naming +
+class isolation, metrics hook ordering, options validation, and the
+header math (`resetSeconds`/`retryAfterSeconds`) pinned pointwise.
+Integration (real limiter + store, per-test unique bucket prefixes
+scan-deleted on cleanup): the headline AC — a read-scoped key driven
+through a capacity-4 burst with exact `Remaining` countdown, 429
+exactly at the threshold, recovery inside a bounded poll (real-time
+refills are deliberate: the limiter's clock is Redis's, and its
+fake-time seam is sealed inside the ratelimit package by design);
+global-bucket protection with two keys each far under their own limits
+(after a full-capacity refill wait, since setup traffic shares the
+global bucket); per-key isolation; root-key limiting on the admin
+class; credential-failure storms consuming nothing; and the submit
+class throttling real run submissions end to end with reads unaffected.
+Deny-log discipline asserted (429 line present, plaintext key absent).
+
+**Verified.** Lint, `go test -race ./...`, and compose-backed
+`-race -tags integration` for api/ratelimit/cmd-api all green.
+
+**Deferred / notes.** The two sequential acquires (per-key, global) are
+two Redis round trips per request (~90µs at parallelism) — fine at v1
+traffic; if it ever matters the honest fix stays 6.3's two-key Lua
+script. `X-RateLimit-Reset` server-computed truth (growing the script
+reply) also waits for a real need. ctl gained no 429 backoff handling —
+its poll cadence sits far under the read defaults; revisit with 6.5's
+list endpoints if watch traffic grows.

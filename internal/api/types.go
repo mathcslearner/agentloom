@@ -29,6 +29,9 @@ const (
 	ErrCodeUnauthorized = "unauthorized"
 	// ErrCodeForbidden: valid credential, missing scope (403).
 	ErrCodeForbidden = "forbidden"
+	// ErrCodeRateLimited: over a rate limit (429); the Retry-After header
+	// says when to try again (ticket 6.4, ADR-007).
+	ErrCodeRateLimited = "rate_limited"
 	// ErrCodeNotFound / ErrCodeMethodNotAllowed: routing misses.
 	ErrCodeNotFound         = "not_found"
 	ErrCodeMethodNotAllowed = "method_not_allowed"

@@ -39,7 +39,7 @@ func TestV1RouteScopeCoverage(t *testing.T) {
 
 	// Router construction never touches the database, so a store over a
 	// nil pool is enough to walk the route table.
-	h, err := New(store.NewFromPool(nil), time.Now, nil, "")
+	h, err := New(store.NewFromPool(nil), time.Now, nil, "", RateLimitOptions{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

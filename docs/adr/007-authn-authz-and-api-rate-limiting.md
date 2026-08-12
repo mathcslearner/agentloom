@@ -256,7 +256,55 @@ Allowed, Remaining, RetryAfter}`. Decisions made here:
   a local dockerized Redis, ≈7× under the 1ms target); deny/429 logging
   belongs to the callers who know the tenant semantics (6.4/M9).
 
-## Consequences
+### As built (ticket 6.4: the API middleware)
+
+Enforcement landed as a `rateLimit(class)` middleware mounted after
+`requireScope` on every `/v1` route — the bucket key is the
+authenticated `key_id` (the root credential rides under `"root"`), so
+401/403 requests consume no tokens. Route→class mirrors the scope
+table (`POST /v1/runs` → submit, `GET /v1/runs/{id}` → read,
+`/v1/keys/*` → admin) with the same walk-based coverage test: a new
+`/v1` route cannot ship unclassified. `/healthz` and the 404/405
+fallbacks stay exempt, exactly as they are for auth. Class limits and
+the global bucket are env-configured
+(`AGENTLOOM_API_RATELIMIT_<CLASS>_CAPACITY`/`_REFILL_PER_SEC`, plus
+`_ENABLED` and the test-isolation `_KEY_PREFIX`); config validation
+requires a strictly positive refill — a rate-zero API bucket would
+permanently brick a key, which is never a sane API limit (fixed quotas
+remain an M9 shape). Decisions made here:
+
+- **Fail-open on Redis errors.** An `Acquire` failure logs at Error and
+  lets the request through. Rate limits are protective, not
+  correctness; Postgres stays the API's only hard dependency, `cmd/api`
+  opens its Redis client without a boot-time dependency (the boot ping
+  is advisory), and `/healthz` never touches Redis. The Redis client in
+  the API serves rate-limit buckets *only* — dispatch remains the
+  worker fleet's (ADR-002 unchanged).
+- **Per-key before global, sequentially.** A caller that has exhausted
+  its own bucket is rejected *without* touching the global bucket, so
+  one abusive client's 429 storm cannot drain the fleet's shared
+  budget. The accepted cost, deliberately not compensated: when the
+  global bucket denies, the per-key token already spent is not
+  refunded (a refund would be a second write racing other acquirers).
+  6.3's deferred two-key atomic script stays deferred until the two
+  round trips measurably matter.
+- **Headers describe the caller's own class bucket, always.**
+  `X-RateLimit-Limit`/`-Remaining` go on every limited response,
+  allowed or denied — including global denials, where the per-key
+  numbers are still the caller's real quota state. `Retry-After`
+  (whole seconds, rounded up so an honoring client never retries
+  early) comes from whichever bucket denied. `X-RateLimit-Reset` is
+  *derived* client-side — ceil((capacity − remaining)/refill) seconds
+  until full — taking the 6.3 deferred decision's cheap branch: ≤ 1
+  token of imprecision is immaterial for a pacing hint and keeps the
+  library reply untouched.
+- **429 body** is the standard envelope with new code `rate_limited`
+  (contract, like every other code); denials log with `key_id`, class,
+  and the global/per-key distinction — the caller-side deny logging
+  6.3 deferred here.
+- **Metrics are a stubbed seam** (`RateLimitMetrics`: per-bucket
+  decisions + fail-open events, no-op until M7 wires the 429 counters
+  the roadmap names).
 
 Easier:
 

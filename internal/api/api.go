@@ -1,18 +1,23 @@
 // Package api implements agentloom's HTTP ingest surface (tickets 4.6,
-// 6.1, 6.2): run submission, run inspection, key management, and the
-// health probe. The API talks only to Postgres: submission writes the run
-// and its entry-step outbox rows in CreateRun's single transaction, and
-// the worker fleet's dispatchers drain the outbox to Redis (ADR-002 — no
-// central scheduler, so no Redis client here).
+// 6.1, 6.2, 6.4): run submission, run inspection, key management, and the
+// health probe. Durable state lives only in Postgres: submission writes
+// the run and its entry-step outbox rows in CreateRun's single
+// transaction, and the worker fleet's dispatchers drain the outbox to
+// Redis (ADR-002 — no central scheduler, so the API never dispatches).
+// Since ticket 6.4 the API does hold a Redis client, but solely for
+// rate-limit token buckets (internal/ratelimit) — never for dispatch —
+// and it fails open when Redis is unreachable, so Postgres remains the
+// only hard dependency.
 //
-// Routes (scope per ADR-007's route→scope table):
+// Routes (scope per ADR-007's route→scope table, rate-limit route class
+// per its route→class table):
 //
-//	POST   /v1/runs        submit  submit a run (inline definition or stored ref)
-//	GET    /v1/runs/{id}   read    run status + step tree + attempt history
-//	POST   /v1/keys        admin   mint an API key (plaintext shown once)
-//	GET    /v1/keys        admin   list API keys (prefixes only)
-//	DELETE /v1/keys/{id}   admin   revoke an API key (soft, idempotent)
-//	GET    /healthz        exempt  liveness (Postgres ping)
+//	POST   /v1/runs        submit  submit  submit a run (inline definition or stored ref)
+//	GET    /v1/runs/{id}   read    read    run status + step tree + attempt history
+//	POST   /v1/keys        admin   admin   mint an API key (plaintext shown once)
+//	GET    /v1/keys        admin   admin   list API keys (prefixes only)
+//	DELETE /v1/keys/{id}   admin   admin   revoke an API key (soft, idempotent)
+//	GET    /healthz        exempt  exempt  liveness (Postgres ping)
 //
 // Auth (tickets 6.1/6.2, ADR-007): every /v1 route requires a bearer API
 // key carrying the route's scope — a stored key, or the env-provided
@@ -23,6 +28,13 @@
 // anonymously — chi's fallback handlers run outside the /v1 middleware
 // tree, and route existence is public knowledge (the spec), so this
 // leaks nothing.
+//
+// Rate limiting (ticket 6.4, ADR-007): after auth, every /v1 route
+// acquires from the caller's per-key_id token bucket for the route's
+// class and from the global safety bucket. A denial is 429 with
+// Retry-After and X-RateLimit-Limit/-Remaining/-Reset headers; see
+// ratelimit.go for the decisions (fail-open, per-key-before-global,
+// derived Reset).
 //
 // Every error response carries the JSON envelope {"error": {code, message,
 // issues?}}; definition problems surface M1's path-qualified issues
@@ -63,14 +75,19 @@ type Handler struct {
 	// keyRand feeds key generation; production uses crypto/rand, tests
 	// may inject a deterministic reader.
 	keyRand io.Reader
+	// rl configures per-client rate limiting (ticket 6.4); a nil
+	// rl.Acquirer disables it. rl.Metrics is never nil after New.
+	rl RateLimitOptions
 }
 
 // New builds the Handler. now is the injected clock (project invariant —
 // cmd/api passes time.Now); logger is the base request logger (nil means
 // slog.Default()); rootKey is the optional bootstrap admin credential
 // (ADR-007) — empty disables the root path, and a set-but-malformed key
-// is a configuration error caught here rather than a silent 401 later.
-func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey string) (*Handler, error) {
+// is a configuration error caught here rather than a silent 401 later;
+// rl configures per-client rate limiting (ticket 6.4) — the zero value
+// disables it.
+func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey string, rl RateLimitOptions) (*Handler, error) {
 	if st == nil {
 		return nil, errors.New("api: nil store")
 	}
@@ -80,7 +97,13 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 	if logger == nil {
 		logger = slog.Default()
 	}
-	h := &Handler{st: st, now: now, logger: logger, keyRand: cryptoRand}
+	if err := rl.validate(); err != nil {
+		return nil, err
+	}
+	if rl.Metrics == nil {
+		rl.Metrics = nopRateLimitMetrics{}
+	}
+	h := &Handler{st: st, now: now, logger: logger, keyRand: cryptoRand, rl: rl}
 	if rootKey != "" {
 		if !keyShapeOK(rootKey) {
 			// Deliberately no detail: the message must never echo the value.
@@ -100,13 +123,17 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 	})
 	r.Get("/healthz", h.handleHealthz)
 	r.Route("/v1", func(r chi.Router) {
-		// Ticket 6.2: every route below carries its ADR-007 scope. A new
+		// Ticket 6.2: every route below carries its ADR-007 scope — a new
 		// /v1 route without a requireScope wrapper fails the route-coverage
-		// test in auth_routes_test.go.
-		r.With(h.requireScope(ScopeSubmit)).Post("/runs", h.handleSubmitRun)
-		r.With(h.requireScope(ScopeRead)).Get("/runs/{runID}", h.handleGetRun)
+		// test in auth_routes_test.go. Ticket 6.4: each also carries its
+		// rate-limit route class, mounted after auth (the bucket key is the
+		// authenticated key_id; 401/403 requests consume no tokens), with
+		// the same coverage discipline in ratelimit_routes_test.go.
+		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/runs", h.handleSubmitRun)
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/runs/{runID}", h.handleGetRun)
 		r.Route("/keys", func(r chi.Router) {
 			r.Use(h.requireScope(ScopeAdmin))
+			r.Use(h.rateLimit(classAdmin))
 			r.Post("/", h.handleCreateKey)
 			r.Get("/", h.handleListKeys)
 			r.Delete("/{keyID}", h.handleRevokeKey)

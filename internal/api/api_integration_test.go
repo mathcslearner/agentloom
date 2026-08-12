@@ -39,7 +39,7 @@ func newServer(t *testing.T) (*store.Store, *httptest.Server, string) {
 	t.Helper()
 	s := store.NewFromPool(storetest.NewDB(t))
 	rootKey := mintTestKey(t)
-	h, err := api.New(s, func() time.Time { return testNow }, nil, rootKey)
+	h, err := api.New(s, func() time.Time { return testNow }, nil, rootKey, api.RateLimitOptions{})
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestSubmitFanoutRunsToCompletion(t *testing.T) {
 	// The root credential doubles as the bearer here (implicit admin
 	// covers submit + read) — the end-to-end test needs no stored key.
 	rootKey := mintTestKey(t)
-	handler, err := api.New(s, time.Now, nil, rootKey)
+	handler, err := api.New(s, time.Now, nil, rootKey, api.RateLimitOptions{})
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}

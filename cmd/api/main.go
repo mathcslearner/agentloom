@@ -2,9 +2,11 @@
 // ticket 4.6). It serves internal/api's routes: POST /v1/runs,
 // GET /v1/runs/{id}, the /v1/keys key management, and GET /healthz.
 // Every /v1 route requires a scoped bearer key (tickets 6.1/6.2,
-// ADR-007); only the health probe is anonymous. It talks only to
-// Postgres — run submission writes the transactional outbox, and the
-// worker fleet dispatches from there (ADR-002).
+// ADR-007); only the health probe is anonymous. Durable state lives only
+// in Postgres — run submission writes the transactional outbox, and the
+// worker fleet dispatches from there (ADR-002). The Redis client here
+// serves rate-limit token buckets alone (ticket 6.4) and fails open:
+// an unreachable Redis degrades rate limiting, never the API.
 //
 // Configuration comes entirely from AGENTLOOM_* environment variables
 // (internal/config); there are no flags. SIGINT/SIGTERM trigger a graceful
@@ -24,9 +26,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/mathcslearner/agentloom/internal/api"
 	"github.com/mathcslearner/agentloom/internal/config"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
+	"github.com/mathcslearner/agentloom/internal/ratelimit"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/version"
 )
@@ -57,7 +62,32 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 	}
 	defer st.Close()
 
-	handler, err := api.New(st, time.Now, logger, cfg.API.RootKey)
+	// Rate limiting (ticket 6.4): a Redis client for the token buckets,
+	// opened without a hard boot-time dependency — go-redis dials lazily
+	// and the middleware fails open (ADR-007), so a down Redis degrades
+	// rate limiting instead of preventing the API from serving. The ping
+	// is advisory: it surfaces a misconfigured address in the boot logs.
+	var rl api.RateLimitOptions
+	if cfg.API.RateLimit.Enabled {
+		rdb := redis.NewClient(&redis.Options{Addr: cfg.Redis.Addr})
+		defer rdb.Close() //nolint:errcheck // best-effort close on shutdown
+		pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		if err := rdb.Ping(pingCtx).Err(); err != nil {
+			logger.WarnContext(ctx, "api: redis unreachable at boot — rate limiting fails open until it recovers",
+				slog.String("addr", cfg.Redis.Addr), slog.Any("error", err))
+		}
+		cancel()
+		rl = api.RateLimitOptions{
+			Acquirer:  ratelimit.New(rdb),
+			KeyPrefix: cfg.API.RateLimit.KeyPrefix,
+			Submit:    api.ClassLimit(cfg.API.RateLimit.Submit),
+			Read:      api.ClassLimit(cfg.API.RateLimit.Read),
+			Admin:     api.ClassLimit(cfg.API.RateLimit.Admin),
+			Global:    api.ClassLimit(cfg.API.RateLimit.Global),
+		}
+	}
+
+	handler, err := api.New(st, time.Now, logger, cfg.API.RootKey, rl)
 	if err != nil {
 		return err
 	}

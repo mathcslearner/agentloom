@@ -93,6 +93,9 @@ services:
       target: api
     environment:
       AGENTLOOM_POSTGRES_DSN: *app-postgres-dsn
+      # Redis for rate-limit token buckets only (ticket 6.4, ADR-007) —
+      # never for dispatch; the middleware fails open if Redis is down.
+      AGENTLOOM_REDIS_ADDR: redis:6379
       # Bootstrap admin credential for /v1/keys (ticket 6.1, ADR-007).
       # Set it in .env (see .env.example for a generator one-liner);
       # unset, the root auth path simply doesn't exist.
@@ -106,6 +109,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 2s

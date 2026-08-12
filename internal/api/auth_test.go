@@ -102,7 +102,7 @@ func TestValidateScopes(t *testing.T) {
 
 func TestNewRejectsMalformedRootKey(t *testing.T) {
 	t.Parallel()
-	_, err := New(nil, nil, nil, "not-a-key")
+	_, err := New(nil, nil, nil, "not-a-key", RateLimitOptions{})
 	if err == nil {
 		t.Fatal("malformed root key accepted")
 	}

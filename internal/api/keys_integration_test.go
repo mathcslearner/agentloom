@@ -65,7 +65,7 @@ func keysServer(t *testing.T, rootKey string) (*store.Store, *httptest.Server, *
 	now := testNow
 	logs := &syncBuffer{}
 	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, logs)
-	h, err := api.New(s, func() time.Time { return now }, logger, rootKey)
+	h, err := api.New(s, func() time.Time { return now }, logger, rootKey, api.RateLimitOptions{})
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}

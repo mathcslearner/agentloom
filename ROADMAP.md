@@ -515,13 +515,13 @@ Bearer parsing, prefix lookup + constant-time hash compare, revocation/expiry ch
 - [x] Refill math property-tested with fake time (Lua uses Redis TIME — injectable in tests via wrapper)
 - [x] Benchmark documents acquire latency (<1ms local target)
 
-#### 6.4 — Per-client API rate limiting middleware
+#### 6.4 — Per-client API rate limiting middleware ✅
 **Depends on:** 6.3, 6.2
-Per-`key_id` buckets (configurable per scope/route class: submits stricter than reads) plus a global safety bucket. 429 responses with `Retry-After` and `X-RateLimit-*` headers. Metrics hooks stubbed for M7.
+Per-`key_id` buckets (configurable per scope/route class: submits stricter than reads) plus a global safety bucket. 429 responses with `Retry-After` and `X-RateLimit-*` headers. Metrics hooks stubbed for M7. *(As built: `rateLimit(class)` middleware mounted after `requireScope` on every `/v1` route — buckets keyed `<prefix>:<key_id>:<class>` off the authenticated identity (root rides under `"root"`), so 401/403s consume no tokens; route→class mirrors the scope table with the same chi.Walk coverage test, so a new route cannot ship unclassified. Per-key acquired before global — an abusive client's 429 storm cannot drain the shared budget; the accepted cost (a global denial does not refund the per-key token) is documented in ADR-007. Fail-open on Redis errors: cmd/api's new Redis client serves rate-limit buckets only (ADR-002 untouched), opens without a boot dependency, and an acquire failure logs + allows — Postgres stays the API's only hard dependency. Headers always describe the caller's class bucket; `X-RateLimit-Reset` derived as ceil((capacity−remaining)/refill) per the 6.3 deferred decision; `Retry-After` whole-seconds rounded up from the denying bucket; 429 body carries new envelope code `rate_limited`. Config: `AGENTLOOM_API_RATELIMIT_{ENABLED,KEY_PREFIX,{SUBMIT,READ,ADMIN,GLOBAL}_{CAPACITY,REFILL_PER_SEC}}`, refill required strictly positive (a rate-zero API bucket would brick a key). `RateLimitMetrics` seam (decisions + fail-open) no-op until M7. Integration suite drives threshold exactness with header sequence, refill recovery by bounded polling (the limiter's clock is Redis's — the deliberate 6.3 divergence), global-bucket protection with every key under its own limit, per-key/per-class isolation, root-key limiting, and no-consumption on credential failures.)*
 **Done when:**
-- [ ] Integration test drives a key to its limit; 429 exactly at threshold; recovery after refill
-- [ ] Route classes configurable via config file/env (tested)
-- [ ] Global bucket protects the API even when individual keys are under their limits
+- [x] Integration test drives a key to its limit; 429 exactly at threshold; recovery after refill
+- [x] Route classes configurable via config file/env (tested)
+- [x] Global bucket protects the API even when individual keys are under their limits
 
 #### 6.5 — Run & definition lifecycle endpoints
 **Depends on:** 6.2, 5.4, 5.6

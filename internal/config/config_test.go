@@ -71,9 +71,23 @@ func TestLoadDefaults(t *testing.T) {
 		WriteTimeout:    config.DefaultAPIWriteTimeout,
 		IdleTimeout:     config.DefaultAPIIdleTimeout,
 		ShutdownTimeout: config.DefaultAPIShutdownTimeout,
+		RateLimit:       defaultRateLimit(),
 	}
 	if cfg.API != wantAPI {
 		t.Errorf("default API config = %+v, want %+v", cfg.API, wantAPI)
+	}
+}
+
+// defaultRateLimit is the expected default rate-limit config (ticket 6.4),
+// spelled out so a default drift fails a test.
+func defaultRateLimit() config.APIRateLimitConfig {
+	return config.APIRateLimitConfig{
+		Enabled:   true,
+		KeyPrefix: config.DefaultAPIRateLimitKeyPrefix,
+		Submit:    config.APIRateLimitClass{Capacity: config.DefaultAPIRateLimitSubmitCapacity, RefillPerSec: config.DefaultAPIRateLimitSubmitRefill},
+		Read:      config.APIRateLimitClass{Capacity: config.DefaultAPIRateLimitReadCapacity, RefillPerSec: config.DefaultAPIRateLimitReadRefill},
+		Admin:     config.APIRateLimitClass{Capacity: config.DefaultAPIRateLimitAdminCapacity, RefillPerSec: config.DefaultAPIRateLimitAdminRefill},
+		Global:    config.APIRateLimitClass{Capacity: config.DefaultAPIRateLimitGlobalCapacity, RefillPerSec: config.DefaultAPIRateLimitGlobalRefill},
 	}
 }
 
@@ -101,9 +115,66 @@ func TestLoadAPIOverrides(t *testing.T) {
 		IdleTimeout:     time.Minute,
 		ShutdownTimeout: 3 * time.Second,
 		RootKey:         rootKey,
+		RateLimit:       defaultRateLimit(),
 	}
 	if cfg.API != want {
 		t.Errorf("API config = %+v, want %+v", cfg.API, want)
+	}
+}
+
+func TestLoadAPIRateLimitOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(lookupFrom(map[string]string{
+		config.EnvAPIRateLimitEnabled:        "false",
+		config.EnvAPIRateLimitKeyPrefix:      "test:rl",
+		config.EnvAPIRateLimitSubmitCapacity: "5",
+		config.EnvAPIRateLimitSubmitRefill:   "2.5",
+		config.EnvAPIRateLimitReadCapacity:   "7",
+		config.EnvAPIRateLimitReadRefill:     "3",
+		config.EnvAPIRateLimitAdminCapacity:  "2",
+		config.EnvAPIRateLimitAdminRefill:    "0.5",
+		config.EnvAPIRateLimitGlobalCapacity: "50",
+		config.EnvAPIRateLimitGlobalRefill:   "25",
+	}))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	want := config.APIRateLimitConfig{
+		Enabled:   false,
+		KeyPrefix: "test:rl",
+		Submit:    config.APIRateLimitClass{Capacity: 5, RefillPerSec: 2.5},
+		Read:      config.APIRateLimitClass{Capacity: 7, RefillPerSec: 3},
+		Admin:     config.APIRateLimitClass{Capacity: 2, RefillPerSec: 0.5},
+		Global:    config.APIRateLimitClass{Capacity: 50, RefillPerSec: 25},
+	}
+	if cfg.API.RateLimit != want {
+		t.Errorf("RateLimit config = %+v, want %+v", cfg.API.RateLimit, want)
+	}
+}
+
+func TestLoadAPIRateLimitInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	bad := map[string]string{
+		config.EnvAPIRateLimitEnabled:        "definitely",
+		config.EnvAPIRateLimitSubmitCapacity: "0",
+		config.EnvAPIRateLimitSubmitRefill:   "-1",
+		config.EnvAPIRateLimitReadCapacity:   "many",
+		config.EnvAPIRateLimitReadRefill:     "NaN",
+		config.EnvAPIRateLimitAdminCapacity:  "-3",
+		config.EnvAPIRateLimitAdminRefill:    "+Inf",
+		config.EnvAPIRateLimitGlobalCapacity: "1.5",
+		config.EnvAPIRateLimitGlobalRefill:   "0",
+	}
+	_, err := config.Load(lookupFrom(bad))
+	if err == nil {
+		t.Fatal("Load with invalid rate-limit values: want error, got nil")
+	}
+	for env := range bad {
+		if !strings.Contains(err.Error(), env) {
+			t.Errorf("error %q does not mention %s", err, env)
+		}
 	}
 }
 
