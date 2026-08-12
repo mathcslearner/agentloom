@@ -175,4 +175,31 @@ func TestRequestAndRateLimitMetrics(t *testing.T) {
 		map[string]string{"class": "admin", "bucket": "global", "decision": "allowed"}); got != 1 {
 		t.Errorf("decisions{admin,global,allowed} = %v, want 1", got)
 	}
+
+	// In-flight gauge (ticket 7.5): every request above has returned, so
+	// the started/finished bracket must balance back to zero.
+	if got := gaugeSample(t, reg, "engine_api_requests_in_flight"); got != 0 {
+		t.Errorf("requests_in_flight after quiescence = %v, want 0", got)
+	}
+}
+
+// gaugeSample returns the unlabeled gauge's value, failing the test when
+// the family is absent (a gauge that never registered is broken wiring,
+// not a zero).
+func gaugeSample(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, fam := range families {
+		if fam.GetName() != name {
+			continue
+		}
+		for _, m := range fam.GetMetric() {
+			return m.GetGauge().GetValue()
+		}
+	}
+	t.Fatalf("gauge %s not gathered", name)
+	return 0
 }

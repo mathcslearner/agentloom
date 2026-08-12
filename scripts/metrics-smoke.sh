@@ -163,6 +163,14 @@ must_exist  'engine_step_fencing_rejections_total'
 must_exist  'engine_queue_promote_lag_seconds_count'
 must_exist  'engine_dispatch_lag_seconds_count'
 must_exist  'engine_step_scheduling_latency_seconds_count'
+# Step-log capture counters (ticket 7.4; folded in by 7.5): plain
+# counters, presence-checked — movement needs an executor that logs.
+must_exist  'engine_steplog_captured_total'
+must_exist  'engine_steplog_dropped_total'
+must_exist  'engine_steplog_flush_failures_total'
+# In-flight request gauge (ticket 7.5): registered at 0, sampled between
+# requests, so presence is the assertion.
+must_exist  'engine_api_requests_in_flight'
 
 say "checking workload-driven values"
 must_be_positive 'engine_step_claims_total{result="won"}'

@@ -139,6 +139,7 @@ without `_seconds`, or any label key missing from the allowlist above.
 | `engine_worker_active` | gauge | — | worker sampler: consumers with idle ≤ 3× read block (each worker reports the fleet-wide count; dashboards take `max`) |
 | `engine_api_requests_total` | counter | `route`, `method`, `code` | API request middleware, post-routing |
 | `engine_api_request_duration_seconds` | histogram | `route`, `method` | same; `code` deliberately excluded to keep route×method×code×buckets under the series budget |
+| `engine_api_requests_in_flight` | gauge | — | request middleware (7.5): started/finished bracket around every request; unlabeled — route is only known after routing |
 | `engine_api_ratelimit_decisions_total` | counter | `class`, `bucket`, `decision` | the 6.4 `RateLimitMetrics` seam's Prometheus implementation |
 | `engine_api_ratelimit_failopen_total` | counter | `class` | same (errored acquire allowed through) |
 | `engine_steplog_captured_total` | counter | — | step-log capture (7.4): lines accepted into the sink's queue |
@@ -294,6 +295,33 @@ decisions worth remembering:
 
 Logs remain poll-based in v1 (the recorded non-goal); follow mode is
 polling the endpoint's cursor.
+
+### Dashboards & alert rules (as built by ticket 7.5)
+
+- **Dashboards are code.** Two Grafana dashboards — **Engine**
+  (`agentloom-engine`) and **API** (`agentloom-api`) — live as JSON in
+  `deploy/observability/grafana/dashboards/`, provisioned by a file
+  provider (`provisioning/dashboards/dashboards.yml`) with UI edits
+  disabled; the provisioned Prometheus datasource carries the stable
+  `uid: prometheus` the panels reference. Fleet-wide gauges (queue
+  depths, outbox, active workers) are reported identically by every
+  worker replica, so panels and rules aggregate them with `max()`.
+- **Example alert rules** ship in
+  `deploy/observability/prometheus-rules.yml` (queue depth growing, DLQ
+  rate spike, reclaim spike, outbox dispatch lag), loaded via
+  `rule_files` in the compose Prometheus. Thresholds are dev-scale by
+  design so `make smoke-dashboards` can test-fire them. promtool unit
+  tests (`prometheus-rules.test.yml`) run in CI via `make obs-lint`,
+  pinned to the same Prometheus image tag compose runs.
+- **Anti-drift audit.** `TestDashboardsAndRulesReferenceRegisteredMetrics`
+  (internal/obs/metrics) extracts every `engine_*` name referenced in
+  the dashboards and rules files and fails unless it is a registered
+  instrument — renaming a metric breaks the build, not a panel.
+- **In-flight gauge.** `engine_api_requests_in_flight` (7.5) is the one
+  instrument added for the dashboards: an unlabeled gauge bracketing
+  every API request via the extended `api.RequestMetrics` seam.
+- See `docs/observability.md` for the operator-facing tour of the
+  dashboards, key signals, and the documented alert test-fire.
 
 ### Wiring: admin ports, providers, and the off switch
 

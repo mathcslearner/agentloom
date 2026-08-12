@@ -115,12 +115,20 @@ type RequestMetrics interface {
 	// (or "unmatched"), never the raw path; method is clamped to the
 	// routed vocabulary.
 	Request(route, method string, status int, d time.Duration)
+	// RequestStarted and RequestFinished bracket every request (ticket
+	// 7.5): the gauge behind them is the API dashboard's in-flight panel.
+	// They carry no labels — route is only known after routing, and an
+	// in-flight gauge keyed on anything request-derived would leak.
+	RequestStarted()
+	RequestFinished()
 }
 
 // nopRequestMetrics is the default RequestMetrics.
 type nopRequestMetrics struct{}
 
 func (nopRequestMetrics) Request(string, string, int, time.Duration) {}
+func (nopRequestMetrics) RequestStarted()                            {}
+func (nopRequestMetrics) RequestFinished()                           {}
 
 // Option customizes a Handler beyond New's required arguments.
 type Option func(*Handler)
@@ -252,6 +260,8 @@ func (h *Handler) handleHealthz(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) requestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := h.now()
+		h.metrics.RequestStarted()
+		defer h.metrics.RequestFinished()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		stamp := &authStamp{}
 		ctx := authStampInto(log.Into(r.Context(), h.logger), stamp)

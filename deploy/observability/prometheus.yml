@@ -6,6 +6,11 @@ global:
   scrape_interval: 5s
   evaluation_interval: 5s
 
+# Example alert rules (ticket 7.5) — mounted next to this config by the
+# compose prometheus service; unit-tested via `make obs-lint`.
+rule_files:
+  - /etc/prometheus/prometheus-rules.yml
+
 scrape_configs:
   - job_name: api
     static_configs:

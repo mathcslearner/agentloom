@@ -1,0 +1,16 @@
+# Grafana dashboard provisioning for the compose obs profile (ticket
+# 7.5, ADR-008): a file provider watching the dashboard JSON mounted from
+# deploy/observability/grafana/dashboards. Dashboards are code — edits in
+# the Grafana UI do not survive (allowUiUpdates false); change the JSON
+# and let the provider re-read it (updateIntervalSeconds).
+apiVersion: 1
+
+providers:
+  - name: agentloom
+    folder: agentloom
+    type: file
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

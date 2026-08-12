@@ -65,6 +65,8 @@ func exercise(w *metrics.WorkerMetrics, a *metrics.APIMetrics) {
 	w.StepLogDropped(1)
 	w.StepLogFlushFailure()
 	a.Request("/v1/runs", "POST", 200, 20*time.Millisecond)
+	a.RequestStarted()
+	a.RequestFinished()
 	a.Decision("submit", false, true)
 	a.Decision("submit", true, false)
 	a.FailOpen("read")

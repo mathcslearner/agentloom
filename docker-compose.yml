@@ -168,6 +168,8 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
     volumes:
       - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Example alert rules (ticket 7.5), referenced by rule_files above.
+      - ./deploy/observability/prometheus-rules.yml:/etc/prometheus/prometheus-rules.yml:ro
       - prometheus-data:/prometheus
     ports:
       - "${AGENTLOOM_PROMETHEUS_BIND:-127.0.0.1}:${AGENTLOOM_PROMETHEUS_PORT:-9090}:9090"
@@ -188,6 +190,10 @@ services:
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
     volumes:
       - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      # Dashboards-as-code (ticket 7.5): the provisioning/dashboards file
+      # provider reads JSON from this mount (outside /var/lib/grafana so
+      # it never nests inside the grafana-data volume).
+      - ./deploy/observability/grafana/dashboards:/etc/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
       - "${AGENTLOOM_GRAFANA_BIND:-127.0.0.1}:${AGENTLOOM_GRAFANA_PORT:-3000}:3000"

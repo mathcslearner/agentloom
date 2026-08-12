@@ -1,0 +1,146 @@
+{
+  "__comment": "agentloom API dashboard (ticket 7.5, ADR-008). Provisioned as code — edit this file, not the Grafana UI. Metric names are audited against the registered instruments by TestDashboardsAndRulesReferenceRegisteredMetrics.",
+  "uid": "agentloom-api",
+  "title": "agentloom / API",
+  "tags": ["agentloom"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Traffic",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests/s by route",
+      "description": "RPS per chi route pattern. 404/405 fallbacks collapse to route=\"unmatched\" (ADR-008: raw paths are never labels).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (route) (rate(engine_api_requests_total[1m]))", "legendFormat": "{{route}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Responses/s by status code",
+      "description": "Response mix. A 5xx band appearing here is the first-order alarm; a 429 band means clients are hitting rate limits (see the rate-limit row).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (code) (rate(engine_api_requests_total[1m]))", "legendFormat": "{{code}}" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "In-flight requests",
+      "description": "Requests currently being served (engine_api_requests_in_flight). Sustained growth against flat RPS means handlers are blocking — usually on Postgres.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [
+        { "refId": "A", "expr": "sum(engine_api_requests_in_flight)", "legendFormat": "in flight" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "5xx rate",
+      "description": "Server errors per second across all routes. The panic-containment middleware maps recovered panics to 500s, so this catches those too.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 18, "x": 6, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(engine_api_requests_total{code=~\"5..\"}[1m]))", "legendFormat": "5xx/s" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Latency",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Request latency (all routes)",
+      "description": "Request duration quantiles across all routes and methods. Requests are Postgres round-trips; tens of milliseconds is the healthy scale.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(engine_api_request_duration_seconds_bucket[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(engine_api_request_duration_seconds_bucket[5m])))", "legendFormat": "p95" },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(engine_api_request_duration_seconds_bucket[5m])))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request latency p95 by route",
+      "description": "Per-route p95 — which endpoint is slow. Status code is deliberately not a histogram label (ADR-008 series budget), so this mixes success and error latencies.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (route, le) (rate(engine_api_request_duration_seconds_bucket[5m])))", "legendFormat": "{{route}}" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Rate limiting",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "429 responses/s",
+      "description": "Rate-limited responses. No series until the first 429 is served (label-vec counter) — empty means nobody has hit a limit yet.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (route) (rate(engine_api_requests_total{code=\"429\"}[1m]))", "legendFormat": "{{route}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Rate-limit decisions/s",
+      "description": "Token-bucket decisions by route class and decision, across per-key and global buckets. denied/allowed ratio per class shows who is being throttled; per-key denials with a quiet global bucket mean one abusive client, not fleet overload.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (class, decision) (rate(engine_api_ratelimit_decisions_total[1m]))", "legendFormat": "{{class}} {{decision}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Rate-limit fail-open/s",
+      "description": "Acquires that errored (Redis unreachable) and were allowed through (ADR-007 fail-open). No series until the first fail-open — any data here means the rate-limit Redis is unhealthy.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (class) (rate(engine_api_ratelimit_failopen_total[5m]))", "legendFormat": "{{class}}" }
+      ]
+    }
+  ]
+}

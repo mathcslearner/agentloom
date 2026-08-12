@@ -32,6 +32,10 @@ jobs:
         run: |
           make generate
           git diff --exit-code -- docs/schema internal/store/gen
+      - name: Prometheus alert rules — check + unit tests (ticket 7.5)
+        # promtool runs from the same image tag the compose obs profile
+        # pins, so what CI validates is exactly what the stack loads.
+        run: make obs-lint
       - name: OpenAPI contract lints (ticket 6.6)
         # Route-coverage drift (spec vs chi route table) is enforced by
         # TestOpenAPIRouteCoverage in the unit-test job; this step owns

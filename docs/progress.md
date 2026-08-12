@@ -3711,3 +3711,130 @@ served with fields via curl.
 - The compose `up-app` stack runs with OTel off, so live-served lines
   carry no `trace_id` there; `make up-obs` stacks get it. The engine
   integration test pins the traced path with an in-memory recorder.
+
+### 7.5 — Grafana dashboards & alert rules ✅
+
+**Delivered.** M7's closing ticket: dashboards, alerts, and their
+enforcement machinery, all provisioned as code.
+
+- **Dashboards** — `deploy/observability/grafana/dashboards/engine.json`
+  (`agentloom-engine`: throughput row — step completions/claims/
+  dispatches/run completions per second by their label vocabularies;
+  queue & outbox row — the four depths, backlog + oldest age,
+  dispatch/promote lag p95; latency row — scheduling latency and step
+  duration p50/p95/p99, step p95 by type, run p95 by status, the 7.4
+  steplog pipeline; failures & healing row — DLQ by source, retries by
+  class, the crash-path counters, reconciler heals; fleet row — active
+  workers, scrape health, build info) and `api.json` (`agentloom-api`:
+  RPS by route, responses by code, in-flight, 5xx, latency quantiles
+  overall + p95 by route, 429s, rate-limit decisions, fail-open).
+  Provisioned by a file provider (`provisioning/dashboards/
+  dashboards.yml` → `/etc/grafana/dashboards`, mounted outside the
+  grafana-data volume) with `allowUiUpdates: false`; the 7.1 datasource
+  gained the stable `uid: prometheus` the panels reference. Fleet-wide
+  gauges are aggregated `max()` — every worker replica samples the same
+  values.
+- **One production change** — `engine_api_requests_in_flight`, the
+  ticket's API-dashboard "in-flight" panel had no backing metric:
+  `api.RequestMetrics` grew `RequestStarted`/`RequestFinished`
+  (unlabeled by design — route is only known after routing),
+  bracketed in `requestLog` with a deferred finish, implemented as a
+  gauge on `metrics.APIMetrics`, and integration-asserted to balance
+  back to zero after the request matrix.
+- **Alert rules** — `deploy/observability/prometheus-rules.yml`, loaded
+  via `rule_files` + a compose mount: `QueueDepthGrowing` (ready depth
+  elevated AND above its value 10m ago, 5m hold — growth, not absolute
+  depth), `DeadLetterRateSpike` (> 0.01/s over 5m, 2m hold),
+  `ReclaimRateSpike` (same shape), `OutboxDispatchLag` (oldest pending
+  row > 30s, 2m hold, severity critical). Thresholds are dev-scale on
+  purpose so the smoke can test-fire them; the rules file documents the
+  max()-gauge staleness caveat (a dead fleet silences the sampler-fed
+  alerts instead of firing them — pair with absent()/up in production).
+- **`make obs-lint`** — promtool `check rules` + `test rules` running
+  from the exact Prometheus image tag compose pins (docker, not a
+  go-run pin: same binary as production, no module build). The unit
+  tests (`prometheus-rules.test.yml`) fire each alert on a synthetic
+  series shaped like its failure mode plus a negative case (a deep but
+  *draining* queue must stay quiet). Wired into the CI lint job.
+  promtool compares annotations strictly, so the test file carries the
+  full expected annotation text.
+- **Anti-drift audit** — `TestDashboardsAndRulesReferenceRegisteredMetrics`
+  (`internal/obs/metrics/dashboards_test.go`): regex-extracts every
+  `engine_*` name from both dashboards and both rules files (PromQL,
+  synthetic series, and prose alike), normalizes `_bucket`/`_count`/
+  `_sum` to family names, and fails unless each is registered on the
+  real instrument sets. Renaming a metric now breaks the unit-test job,
+  not a panel.
+- **`make smoke-dashboards`** (`scripts/dashboard-smoke.sh`) — the
+  acceptance script: boots app+obs (5s lease TTL), SIGKILLs the worker
+  holding a lease mid-`sleep` (reclaim + takeover on the survivor),
+  restores it, then drives a 12-run retries-exhausted burst (paced one
+  submission per 2s — see below), three
+  fan-outs, a transient retry, and a 429 storm against the admin class;
+  asserts every panel query in both dashboards returns a non-empty
+  instant vector (three deliberately-quiet-when-healthy queries
+  allowlisted: reconciler heals, rate-limit fail-open, 5xx rate), all
+  four rules loaded via `/api/v1/rules`, and `DeadLetterRateSpike`
+  observed in state `firing` — the documented test-fire, with the alert
+  JSON printed from `/api/v1/alerts`.
+- **Docs** — `docs/observability.md` (dashboard tour, key signals and
+  what each failure smells like, alert table with rationale, the
+  test-fire, metrics→traces→logs correlation loop) with screenshots in
+  `docs/img/`; ADR-008 gained the as-built "Dashboards & alert rules"
+  section and the in-flight gauge inventory row; `metrics-smoke.sh`
+  picked up the deferred `engine_steplog_*` EXIST checks plus the new
+  in-flight gauge.
+
+**Non-obvious decisions.**
+
+- **Kill before the burst, not after.** The first smoke ordering (burst
+  first, SIGKILL later) failed nondeterministically: label-vec counters
+  have no series until first increment, and when the SIGKILL victim
+  happened to be the only worker that had recorded the 10 dead letters,
+  its restart wiped the in-process registry — the series went stale
+  fleet-wide, `rate()` went empty, and the alert lost its hold mid-way.
+  Running the kill first (also satisfying the holder lookup's
+  idle-stack assumption) means the burst lands on a fleet that stays
+  alive through the checks.
+- **The burst is paced, not fired at once.** Second lesson from the
+  same alert: `rate()` measures increases between samples of a visible
+  series, and a vec counter has no series until its first increment —
+  when one worker (with batch 16, whoever reads first takes all)
+  absorbed the whole burst between two scrapes, its counter was *born*
+  at the final value and rated as zero forever. One submission per 2s
+  spreads ~24s of increments across the 5s scrape interval, so
+  Prometheus provably observes rises; 12 rows keep the margin even if
+  the first increments predate the series' first sample.
+- **Holder→container mapping by hostname prefix, not log grep.**
+  demo-crash's `docker logs | grep -q` pattern is pipefail-fragile
+  under load: `grep -q`'s early exit SIGPIPEs a still-streaming
+  `docker logs` into exit 141, which reads as a miss. Consumer names
+  start with the container hostname (= 12-char short container ID in
+  compose), so a prefix match needs no pipe at all. demo-crash itself
+  is unaffected in practice (idle stack, short logs) and was left
+  untouched.
+- **"Under the chaos suite" is honored in spirit, not literally**: the
+  sustained chaos suite spawns host subprocesses on isolated queue keys
+  with no metrics listeners — compose Prometheus structurally cannot
+  scrape them. The smoke recreates the suite's signal shape (crash /
+  reclaim / takeover, retries, dead letters) against the scrapable
+  fleet; the script header records the reasoning.
+- **promtool via docker, not `go run`**: the prometheus module is a
+  heavy build and the docker route pins the *identical* image tag the
+  compose stack runs (Makefile comment keeps them in sync), so CI
+  validates exactly what production loads.
+- Panels that are empty-when-healthy (reconciler heals, fail-open, 5xx)
+  say so in their descriptions and live on the smoke's allowlist —
+  "empty is the good state" is a property worth rendering, not padding
+  away with `or vector(0)`.
+
+**Deferred / quirks.**
+
+- Grafana's `grafana-data` volume can hold a pre-7.5 datasource without
+  the uid; provisioning updates it on boot, but a stack that misbehaves
+  wants `make down` + volume removal (noted in docs).
+- The alert thresholds are examples, not tuned defaults — re-tuning
+  them is part of any real deployment (M20's Helm values are the likely
+  home).
+- API-side cancel finalizations still don't record `engine_run_duration_
+  seconds` (the known 7.2 gap); the run-completions panel inherits it.

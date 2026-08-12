@@ -304,10 +304,11 @@ func (m *WorkerMetrics) StepLogFlushFailure() { m.stepLogFlushFailures.Inc() }
 // and the rate-limit decision counters (the 6.4 RateLimitMetrics seam,
 // wired here per ADR-008). All methods are safe for concurrent use.
 type APIMetrics struct {
-	requests        *prometheus.CounterVec
-	requestDuration *prometheus.HistogramVec
-	rlDecisions     *prometheus.CounterVec
-	rlFailOpen      *prometheus.CounterVec
+	requests         *prometheus.CounterVec
+	requestDuration  *prometheus.HistogramVec
+	requestsInFlight prometheus.Gauge
+	rlDecisions      *prometheus.CounterVec
+	rlFailOpen       *prometheus.CounterVec
 }
 
 // NewAPIMetrics registers the API instrument set on reg and returns the
@@ -324,6 +325,10 @@ func NewAPIMetrics(reg *prometheus.Registry) *APIMetrics {
 			// Requests are Postgres round-trips; the default web buckets fit.
 			Buckets: prometheus.DefBuckets,
 		}, []string{"route", "method"}),
+		requestsInFlight: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: Namespace, Subsystem: "api", Name: "requests_in_flight",
+			Help: "HTTP requests currently being served (ticket 7.5). Unlabeled — route is only known after routing.",
+		}),
 		rlDecisions: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: Namespace, Subsystem: "api", Name: "ratelimit_decisions_total",
 			Help: "Rate-limit bucket decisions, by route class, bucket kind (per_key or global), and decision (allowed or denied). 429 responses also appear in engine_api_requests_total{code=\"429\"}.",
@@ -333,7 +338,7 @@ func NewAPIMetrics(reg *prometheus.Registry) *APIMetrics {
 			Help: "Rate-limit acquires that errored (Redis unavailable) and were allowed through, by route class.",
 		}, []string{"class"}),
 	}
-	reg.MustRegister(m.requests, m.requestDuration, m.rlDecisions, m.rlFailOpen)
+	reg.MustRegister(m.requests, m.requestDuration, m.requestsInFlight, m.rlDecisions, m.rlFailOpen)
 	return m
 }
 
@@ -345,6 +350,12 @@ func (m *APIMetrics) Request(route, method string, status int, d time.Duration) 
 	m.requests.WithLabelValues(route, method, code).Inc()
 	m.requestDuration.WithLabelValues(route, method).Observe(d.Seconds())
 }
+
+// RequestStarted satisfies api.RequestMetrics: one request began serving.
+func (m *APIMetrics) RequestStarted() { m.requestsInFlight.Inc() }
+
+// RequestFinished satisfies api.RequestMetrics: one request finished.
+func (m *APIMetrics) RequestFinished() { m.requestsInFlight.Dec() }
 
 // Decision satisfies api.RateLimitMetrics: one bucket decision.
 func (m *APIMetrics) Decision(class string, global, allowed bool) {

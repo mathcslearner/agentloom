@@ -1,9 +1,12 @@
 # Grafana datasource provisioning for the compose obs profile (ticket
-# 7.1). Dashboards land in 7.5 under a provisioning/dashboards sibling.
+# 7.1). The provisioned dashboards (ticket 7.5, provisioning/dashboards)
+# reference this datasource by its stable uid — renaming it breaks every
+# panel, so treat the uid as part of the dashboard contract.
 apiVersion: 1
 
 datasources:
   - name: Prometheus
+    uid: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090

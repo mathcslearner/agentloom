@@ -3,6 +3,7 @@
 - [Architecture overview](architecture.md) — components, execution data flow, tech-stack rationale, glossary.
 - [API usage guide](api.md) — curl walkthroughs for the main flows: auth bootstrap, submission + idempotency, pagination, the definition registry, lifecycle steering, DLQ requeue, errors and rate limits. The formal contract is [`api/openapi.yaml`](../api/openapi.yaml) (drift-checked against the router in CI).
 - [Architecture decision records](adr/README.md) — the ADR index, template, and conventions.
+- [Observability guide](observability.md) — the provisioned Grafana dashboards (Engine, API), the example Prometheus alert rules and their test-fire, key signals, and how to correlate metrics → traces → logs.
 - [Edge condition expressions](expressions.md) — the CEL environment for `when`/`condition` predicates, typing rules, and the evaluation-error policy.
 - [`schema/`](schema/) — the generated workflow definition JSON Schema (do not edit by hand: regenerate with `make generate`; CI fails on drift).
 - [Canonical example definitions](../examples/definitions/README.md) (repo root, `examples/definitions/`) — the golden workflow fixture corpus: linear pipeline, fan-out/fan-in, conditional branch, critic loop, and a kitchen-sink exercising every construct.

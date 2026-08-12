@@ -12,6 +12,9 @@ GOLANGCI_LINT_VERSION := v2.12.2
 SQLC_VERSION := v1.30.0
 # vacuum lints the OpenAPI contract (ticket 6.6); run via `go run` like sqlc.
 VACUUM_VERSION := v0.30.0
+# promtool validates & unit-tests the alert rules (ticket 7.5); run via the
+# compose stack's exact Prometheus image. Keep in sync with docker-compose.yml.
+PROMETHEUS_IMAGE := prom/prometheus:v3.5.0
 BIN_DIR := $(CURDIR)/bin
 GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 
@@ -35,6 +38,15 @@ openapi-lint: ## Validate & lint the OpenAPI contract (api/openapi.yaml); warnin
 	go run github.com/daveshanley/vacuum@$(VACUUM_VERSION) lint \
 		--no-banner --fail-severity warn \
 		-r api/vacuum.ruleset.yaml api/openapi.yaml
+
+.PHONY: obs-lint
+obs-lint: ## Validate the Prometheus alert rules and run their promtool unit tests (ticket 7.5)
+	docker run --rm --entrypoint promtool \
+		-v $(CURDIR)/deploy/observability:/obs:ro \
+		$(PROMETHEUS_IMAGE) check rules /obs/prometheus-rules.yml
+	docker run --rm --entrypoint promtool \
+		-v $(CURDIR)/deploy/observability:/obs:ro \
+		$(PROMETHEUS_IMAGE) test rules /obs/prometheus-rules.test.yml
 
 .PHONY: generate
 generate: ## Regenerate derived artifacts (workflow definition JSON Schema, sqlc store code)
@@ -92,6 +104,10 @@ demo-crash: ## SIGKILL a worker mid-run against compose and watch the run recove
 .PHONY: smoke-metrics
 smoke-metrics: ## Boot app+obs, drive a workload, and assert every 7.2 metric is visible in Prometheus
 	bash scripts/metrics-smoke.sh
+
+.PHONY: smoke-dashboards
+smoke-dashboards: ## Boot app+obs, drive a chaos-grade workload (incl. a worker SIGKILL), assert every dashboard panel is non-empty and test-fire an alert (ticket 7.5)
+	bash scripts/dashboard-smoke.sh
 
 .PHONY: smoke-trace
 smoke-trace: ## Boot app+obs, run a retrying fan-out, and assert one Jaeger trace spans 2 workers with a retry link (ticket 7.3)

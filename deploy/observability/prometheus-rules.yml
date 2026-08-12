@@ -1,0 +1,85 @@
+# Example Prometheus alert rules for the agentloom engine (ticket 7.5,
+# ADR-008). Thresholds are sized for the dev compose stack — deliberately
+# low so `make smoke-dashboards` can test-fire them with a small workload;
+# a real deployment tunes them to its own traffic. Unit tests live in
+# prometheus-rules.test.yml (run via `make obs-lint`); the referenced
+# metric names are audited against the registered instruments by
+# TestDashboardsAndRulesReferenceRegisteredMetrics.
+#
+# The queue/outbox gauges are sampled by every worker replica reporting
+# the same fleet-wide value, so rules aggregate them with max() — which
+# also means they go silent (stale), not to zero, when the whole fleet is
+# down. Pair them with absent()/up-based fleet alerts in a real
+# deployment; the dev stack's "Scrape targets up" panel covers that read.
+groups:
+  - name: agentloom-engine
+    rules:
+      - alert: QueueDepthGrowing
+        # Ready depth both elevated and higher than 10 minutes ago,
+        # sustained for 5 minutes: consumption is not keeping up with
+        # dispatch (workers down, wedged, or undersized fleet).
+        expr: |
+          (max(engine_queue_ready_depth) - max(engine_queue_ready_depth offset 10m) > 0)
+          and (max(engine_queue_ready_depth) > 10)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ready-queue depth is growing"
+          description: >-
+            engine_queue_ready_depth has been above 10 and growing versus
+            10 minutes ago, sustained for 5 minutes. Workers are not
+            keeping up with dispatch: check engine_worker_active (fleet
+            size), engine_step_duration_seconds (slow executors), and the
+            worker logs.
+
+      - alert: DeadLetterRateSpike
+        # Any sustained dead-letter flow. Dead letters are terminal step
+        # failures (retries exhausted, permanent, or poison) — a healthy
+        # steady state is ~0/s, so 0.01/s (~3 per 5 minutes) is already a
+        # spike at dev scale.
+        expr: sum(rate(engine_step_dead_letters_total[5m])) > 0.01
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Steps are dead-lettering"
+          description: >-
+            engine_step_dead_letters_total is rising faster than 0.01/s
+            over 5 minutes. Split by source on the Engine dashboard:
+            retries_exhausted points at a failing dependency, permanent at
+            bad definitions or config, poison at crash-looping handlers.
+            Inspect dead_letters rows and requeue after fixing the cause.
+
+      - alert: ReclaimRateSpike
+        # Reclaims mean leases expired without an ACK — workers dying or
+        # stalling past the lease TTL. Effectively 0 in a healthy fleet.
+        expr: sum(rate(engine_queue_reclaimed_total[5m])) > 0.01
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Lease reclaims are spiking"
+          description: >-
+            engine_queue_reclaimed_total is rising: workers are dying or
+            stalling past the lease TTL and their deliveries are being
+            reclaimed. Expect matching engine_step_takeovers_total
+            movement. Check worker crash logs, GC/CPU stalls, and whether
+            the lease TTL is sized below the slowest legitimate step.
+
+      - alert: OutboxDispatchLag
+        # The oldest undispatched outbox row is aging: the Postgres→Redis
+        # handoff is stalled (drain loop down or Redis unreachable) and
+        # ready steps are not reaching workers.
+        expr: max(engine_outbox_oldest_age_seconds) > 30
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Outbox dispatch is lagging"
+          description: >-
+            The oldest pending task_outbox row is over 30 seconds old,
+            sustained for 2 minutes. The transactional-outbox drain is
+            stalled: check Redis reachability from workers, dispatcher
+            errors in worker logs, and engine_dispatch_dispatched_total
+            (flat = nothing draining). Runs are frozen until it recovers.

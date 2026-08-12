@@ -1,0 +1,315 @@
+{
+  "__comment": "agentloom Engine dashboard (ticket 7.5, ADR-008). Provisioned as code — edit this file, not the Grafana UI. Fleet-wide gauges (queue depths, outbox, active workers) are sampled by every worker replica, so panels aggregate them with max(). Metric names are audited against the registered instruments by TestDashboardsAndRulesReferenceRegisteredMetrics.",
+  "uid": "agentloom-engine",
+  "title": "agentloom / Engine",
+  "tags": ["agentloom"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Throughput",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Step completions/s by outcome",
+      "description": "Executor invocations finishing per second, split by outcome (succeeded, transient, timeout, permanent, cancelled). The engine's core throughput signal.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (outcome) (rate(engine_step_duration_seconds_count[1m]))", "legendFormat": "{{outcome}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Claim decisions/s by result",
+      "description": "Per-delivery claim decisions: won = fresh executions, ack_drop = deduped duplicates, redeliver = transport retries, takeover = lease-expiry reclaims.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (result) (rate(engine_step_claims_total[1m]))", "legendFormat": "{{result}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbox dispatches/s by reason",
+      "description": "Outbox rows XADDed to the ready stream per second. step_ready dominates in a healthy system; reconcile_* reasons mean the reconciler is healing crash gaps.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (reason) (rate(engine_dispatch_dispatched_total[1m]))", "legendFormat": "{{reason}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Run completions/s by status",
+      "description": "Runs reaching a terminal status per second (succeeded, failed, cancelled).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (status) (rate(engine_run_duration_seconds_count[1m]))", "legendFormat": "{{status}}" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Queue & outbox",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Queue depths",
+      "description": "Ready = undelivered entries (growth means dispatch is outrunning consumption). PEL = in-flight leases (growth means stuck or slow handlers). Delayed = scheduled retries. Stream = total including acked-but-untrimmed. Each worker samples the same fleet-wide values, so max() dedups replicas.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "max(engine_queue_ready_depth)", "legendFormat": "ready" },
+        { "refId": "B", "expr": "max(engine_queue_pel_size)", "legendFormat": "PEL (in-flight)" },
+        { "refId": "C", "expr": "max(engine_queue_delayed_depth)", "legendFormat": "delayed (retries)" },
+        { "refId": "D", "expr": "max(engine_queue_stream_length)", "legendFormat": "stream length" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbox backlog",
+      "description": "Pending task_outbox rows awaiting dispatch. Sustained growth means the drain loop is stalled or Redis is unreachable.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "max(engine_outbox_backlog)", "legendFormat": "backlog rows" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbox oldest row age",
+      "description": "Age of the oldest pending outbox row — the OutboxDispatchLag alert watches this. 0 when the outbox is empty. Reported by the worker sampler, so it goes silent (stale) if every worker is down.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "max(engine_outbox_oldest_age_seconds)", "legendFormat": "oldest age" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Dispatch & promote lag p95",
+      "description": "Dispatch lag = outbox row age at XADD (Postgres commit to Redis enqueue). Promote lag = how late delayed members fire (worst per promotion pass). Both should sit at the tick interval scale.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(engine_dispatch_lag_seconds_bucket[5m])))", "legendFormat": "dispatch lag p95" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(engine_queue_promote_lag_seconds_bucket[5m])))", "legendFormat": "promote lag p95" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Delayed promotions/s",
+      "description": "Delayed members (scheduled retries) promoted onto the ready stream per second.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(engine_queue_promoted_total[1m]))", "legendFormat": "promoted/s" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Latency",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Scheduling latency (ready → running)",
+      "description": "Time from a step turning ready to a worker's claim CAS winning — the queue's end-to-end backpressure signal (outbox drain + Redis delivery + claim). Retry backoff waits are excluded by construction.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 35 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(engine_step_scheduling_latency_seconds_bucket[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(engine_step_scheduling_latency_seconds_bucket[5m])))", "legendFormat": "p95" },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(engine_step_scheduling_latency_seconds_bucket[5m])))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Step duration (all types)",
+      "description": "Executor invocation duration quantiles across all step types and outcomes.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 35 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(engine_step_duration_seconds_bucket[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(engine_step_duration_seconds_bucket[5m])))", "legendFormat": "p95" },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(engine_step_duration_seconds_bucket[5m])))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Step duration p95 by step type",
+      "description": "Per-step-type p95 — the panel that shows which executor is slow once LLM/tool steps land (M8+).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 35 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (step_type, le) (rate(engine_step_duration_seconds_bucket[5m])))", "legendFormat": "{{step_type}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Run duration p95 by status",
+      "description": "Whole-run completion latency (terminal transition minus started_at), split by terminal status.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 43 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (status, le) (rate(engine_run_duration_seconds_bucket[5m])))", "legendFormat": "{{status}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Step-log pipeline",
+      "description": "Per-step log capture (ticket 7.4): lines captured/s, lines dropped/s (buffer overflow or failed flush), and flush failures/s. Sustained drops mean the flusher cannot keep up — raise the buffer or lower the capture level.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 43 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(engine_steplog_captured_total[1m]))", "legendFormat": "captured/s" },
+        { "refId": "B", "expr": "sum(rate(engine_steplog_dropped_total[1m]))", "legendFormat": "dropped/s" },
+        { "refId": "C", "expr": "sum(rate(engine_steplog_flush_failures_total[1m]))", "legendFormat": "flush failures/s" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Failures & healing",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 51 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Dead letters/s by source",
+      "description": "Steps landing in the DLQ: retries_exhausted (budget spent on a retryable class), permanent (non-retryable failure), poison (delivery-count threshold). The DeadLetterRateSpike alert watches the sum.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 52 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (source) (rate(engine_step_dead_letters_total[5m]))", "legendFormat": "{{source}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Retries/s by failure class",
+      "description": "Retry routings (running → retrying) by judged class (transient, timeout). A step-up usually means a flaky downstream dependency.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 52 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (class) (rate(engine_step_retries_total[5m]))", "legendFormat": "{{class}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Reclaims, takeovers, fencing, poison",
+      "description": "Crash-path counters — all ~0 in a healthy fleet. Reclaims = expired leases re-delivered (XAUTOCLAIM); takeovers = a dead holder's running step handed over; fencing rejections = zombie writes refused; poison = deliveries diverted after too many attempts. The ReclaimRateSpike alert watches reclaims.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 52 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(engine_queue_reclaimed_total[5m]))", "legendFormat": "reclaims/s" },
+        { "refId": "B", "expr": "sum(rate(engine_step_takeovers_total[5m]))", "legendFormat": "takeovers/s" },
+        { "refId": "C", "expr": "sum(rate(engine_step_fencing_rejections_total[5m]))", "legendFormat": "fencing rejections/s" },
+        { "refId": "D", "expr": "sum(rate(engine_queue_poison_total[5m]))", "legendFormat": "poison/s" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Reconciler heals/s by reason",
+      "description": "Crash gaps healed by reconciler sweeps. No series at all until the first heal (label-vec counter) — an empty panel here is a good sign.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 60 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (reason) (rate(engine_reconcile_healed_total[5m]))", "legendFormat": "{{reason}}" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Fleet",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 68 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Active workers",
+      "description": "Consumer-group members recently active (idle below the activity threshold). Every worker reports the fleet-wide count; max() dedups.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 69 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [
+        { "refId": "A", "expr": "max(engine_worker_active)", "legendFormat": "active workers" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Scrape targets up",
+      "description": "Prometheus scrape health for the api and worker jobs — the first thing to check when every other panel goes stale.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 69 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (job) (up{job=~\"api|worker\"})", "legendFormat": "{{job}}" }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Build info",
+      "description": "engine_build_info proof-of-life gauge: service and version per scraped instance.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 69 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {},
+      "targets": [
+        { "refId": "A", "expr": "engine_build_info", "format": "table", "instant": true }
+      ]
+    }
+  ]
+}
