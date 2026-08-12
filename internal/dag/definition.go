@@ -34,6 +34,13 @@ type Definition struct {
 	// value, so the canonical spelling of the default is no key.
 	OnFailure FailurePolicy `json:"on_failure,omitempty"`
 
+	// MaxWallClock is the run's optional wall-clock deadline (ticket 5.6),
+	// a Go duration string; empty means the key was absent (no deadline).
+	// The clock starts at run creation — instantiation materializes
+	// created_at + max_wall_clock onto the run — and a run still unfinished
+	// past it is cancelled with reason `deadline_exceeded` (ADR-006).
+	MaxWallClock string `json:"max_wall_clock,omitempty"`
+
 	Params map[string]ParamSpec `json:"params,omitempty"`
 	Steps  []Step               `json:"steps"`
 	Edges  []Edge               `json:"edges"`

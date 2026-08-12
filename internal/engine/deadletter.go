@@ -225,7 +225,19 @@ func (e *Engine) HandlePoison(ctx context.Context, p queue.PoisonMessage) error 
 		}
 		var derr error
 		cancelled, runFailed, derr = deadLetterDisposition(ctx, q, run.OnFailure, p.Envelope.RunID, now)
-		return derr
+		if derr != nil {
+			return derr
+		}
+		if !runFailed {
+			// A poison step of a *cancelling* run (its handlers kept dying
+			// while the run quiesced): both dispositions conflict-drop on
+			// the run status, and the DLQ row may have settled the last
+			// in-flight step — attempt the cancel finalization (ticket 5.6).
+			if _, cerr := attemptCancelRollup(ctx, q, p.Envelope.RunID, now); cerr != nil {
+				return cerr
+			}
+		}
+		return nil
 	})
 	if txErr != nil {
 		var te *store.TransitionError
@@ -296,6 +308,12 @@ func (e *Engine) Requeue(ctx context.Context, runID uuid.UUID, stepID string) (R
 		run, err := q.Runs().Get(ctx, runID)
 		if err != nil {
 			return err
+		}
+		if run.Status == store.RunStatusCancelling || run.Status == store.RunStatusCancelled {
+			// A cancelled run is terminal by operator intent (ticket 5.6):
+			// requeueing a dead-lettered step of one would strand it —
+			// the claim path refuses the run — or silently undo the cancel.
+			return fmt.Errorf("engine: Requeue: run %s is %s — cancelled runs are not requeueable", runID, run.Status)
 		}
 		if run.Status == store.RunStatusFailed {
 			if _, err := store.ResumeRun(ctx, q, store.ResumeRunArgs{RunID: runID, Now: now}); err != nil {

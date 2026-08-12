@@ -99,8 +99,10 @@ func TestSchemaV1StatusChecks(t *testing.T) {
 	pool := storetest.NewDB(t)
 	runID := insertRun(ctx, t, pool)
 
+	// 'parked' joined the vocabulary in 0007 (ticket 5.6); the probe value
+	// must stay outside every migration's CHECK.
 	_, err := pool.Exec(ctx,
-		`INSERT INTO runs (definition, status) VALUES ('{}'::jsonb, 'parked')`)
+		`INSERT INTO runs (definition, status) VALUES ('{}'::jsonb, 'meditating')`)
 	wantPgError(t, err, pgCheckViolation, "run status outside v1 vocabulary")
 
 	_, err = pool.Exec(ctx,

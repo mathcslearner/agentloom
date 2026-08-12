@@ -60,6 +60,7 @@ const (
 	CodeRetryFieldRequired      ValidationCode = "retry_field_required"
 	CodeRetryFieldInvalid       ValidationCode = "retry_field_invalid"
 	CodeTimeoutFieldInvalid     ValidationCode = "timeout_field_invalid"
+	CodeMaxWallClockInvalid     ValidationCode = "max_wall_clock_field_invalid"
 	CodeLimitExceeded           ValidationCode = "limit_exceeded"
 	CodeCycle                   ValidationCode = "cycle_detected"
 	CodeLoopEdgeNotAncestor     ValidationCode = "loop_edge_not_ancestor"
@@ -110,6 +111,7 @@ func Validate(def *Definition) (issues []*ValidationIssue, err error) {
 	v := &validator{}
 
 	v.checkLimits(def)
+	v.checkMaxWallClock(def.MaxWallClock)
 	stepIndex := v.checkSteps(def)
 	v.checkEdges(def, stepIndex)
 	v.checkGraph(def, stepIndex)
@@ -224,6 +226,25 @@ func (v *validator) checkTimeout(path, val string) {
 		v.add(CodeTimeoutFieldInvalid, path, "must be positive, got %q", val)
 	case d > MaxStepTimeout:
 		v.add(CodeTimeoutFieldInvalid, path, "must be at most %s, got %q", MaxStepTimeout, val)
+	}
+}
+
+// checkMaxWallClock enforces the run wall-clock deadline bounds (ticket
+// 5.6): parseable, positive, at most MaxRunWallClock. An empty string
+// means the key was absent — no deadline, nothing to check.
+func (v *validator) checkMaxWallClock(val string) {
+	if val == "" {
+		return
+	}
+	const path = "max_wall_clock"
+	d, err := time.ParseDuration(val)
+	switch {
+	case err != nil:
+		v.add(CodeMaxWallClockInvalid, path, "not a Go duration string: %v", err)
+	case d <= 0:
+		v.add(CodeMaxWallClockInvalid, path, "must be positive, got %q", val)
+	case d > MaxRunWallClock:
+		v.add(CodeMaxWallClockInvalid, path, "must be at most %s, got %q", MaxRunWallClock, val)
 	}
 }
 

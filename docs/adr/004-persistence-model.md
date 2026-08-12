@@ -94,7 +94,14 @@ constraint and re-adds it with the extended list.
 
 - **Runs:** `running`, `succeeded`, `failed`. A run is created directly as
   `running` — instantiation (2.5) marks entry steps ready in the creating
-  transaction, so there is no pending-run state.
+  transaction, so there is no pending-run state. Since 5.6 also `parked`
+  (dispatch paused: the claim path refuses the run's steps; in-flight
+  steps settle normally — not terminal), `cancelling` (a cancel was
+  requested: the quiescing state while in-flight steps settle — not
+  terminal), and `cancelled` (terminal). Migration 0007 also added the
+  typed `park_reason` / `cancel_reason` columns and the nullable
+  `deadline_at` — the materialized `created_at + max_wall_clock` run
+  deadline, with a partial index serving the reconciler's deadline scan.
 - **Steps:** `pending`, `ready`, `running`, `succeeded`, `failed`,
   `skipped`; since 5.2 also `retrying` (a failed attempt recorded, the
   next one due at `next_attempt_at` — not terminal); since 5.4 also
@@ -106,8 +113,7 @@ constraint and re-adds it with the extended list.
 
 Reserved for later milestones (listed so the matrix below is complete;
 each lands via the CHECK-constraint recipe in its owning milestone):
-runs — `cancelling`, `cancelled`, `parked` (M5.6); steps —
-`awaiting_human` (M15).
+steps — `awaiting_human` (M15).
 
 ### Allowed-transition matrix
 
@@ -121,13 +127,13 @@ from that milestone on; v1 rows are enforced from 2.6.
 | From | To | Guard | Owner |
 |---|---|---|---|
 | — | `running` | run instantiation transaction (2.5) | 2.5 |
-| `running` | `succeeded` | every step terminal, none `failed`/`dead_lettered` | 2.6 |
-| `running` | `failed` | as built in 5.4, two guards per the workflow failure policy (ADR-006): **fail_fast** — `steps_failed ≥ 1`, fired by the dead-lettering transaction immediately; **all-terminal rollup** (`continue_independent_branches`) — `steps_failed ≥ 1 AND succeeded + failed + skipped + cancelled = total`, attempted (conflict dropped) by every completion transaction alongside the succeed rollup | 2.6/5.4 |
-| `failed` | `running` | **DLQ requeue resume** (5.4): the requeue op re-opens a failed run so the claim path admits its steps again; `finished_at` clears | 5.4 |
-| `running` | `parked` | typed reason: `manual`, `budget_exceeded` (M10), `awaiting_human` (M15) | M5.6 |
-| `parked` | `running` | unpark; re-outboxes all `ready` steps | M5.6 |
-| `running`, `parked` | `cancelling` | cancel requested | M5.6 |
-| `cancelling` | `cancelled` | all in-flight steps resolved | M5.6 |
+| `running`, `parked` | `succeeded` | every step terminal, none `failed`/`dead_lettered`; since 5.6 fires from `parked` too — park pauses the dispatch of new work, not the settling of work already in flight (ADR-006 "Park semantics"); `park_reason` clears with the exit | 2.6/5.6 |
+| `running`, `parked` | `failed` | as built in 5.4, two guards per the workflow failure policy (ADR-006): **fail_fast** — `steps_failed ≥ 1`, fired by the dead-lettering transaction immediately; **all-terminal rollup** (`continue_independent_branches`) — `steps_failed ≥ 1 AND succeeded + failed + skipped + cancelled = total`, attempted (conflict dropped) by every completion transaction alongside the succeed rollup; both fire from `parked` since 5.6, like SucceedRun | 2.6/5.4/5.6 |
+| `failed` | `running` | **DLQ requeue resume** (5.4): the requeue op re-opens a failed run so the claim path admits its steps again; `finished_at` clears (5.6: refused for cancelled/cancelling runs — a cancel is terminal by operator intent) | 5.4 |
+| `running` | `parked` | **park** (as built in 5.6): typed `park_reason` — `manual` now, `budget_exceeded` (M10) and `awaiting_human` (M15) reserved in the CHECK | 5.6 |
+| `parked` | `running` | **unpark** (as built in 5.6): `park_reason` clears; the op re-outboxes every `ready` step with no pending dispatch row (their deliveries were consumed by the run-status guard while parked, reason `unpark`); overdue `retrying` steps are left to the reconciler's ordinary overdue-retrying scan, which admits them again once the run is running | 5.6 |
+| `running`, `parked` | `cancelling` | **cancel request** (as built in 5.6): typed `cancel_reason` — `manual`, or `deadline_exceeded` from the reconciler's `deadline_at` sweep; the same transaction sweeps every claimless non-terminal step (pending/ready/retrying) to `cancelled` and attempts the finalization below | 5.6 |
+| `cancelling` | `cancelled` | **cancel finalization** (as built in 5.6): all-terminal counter guard (`succeeded + failed + skipped + cancelled = total`), attempted (conflict dropped) by the cancel request itself and by every transaction settling a step of a possibly-cancelling run | 5.6 |
 
 **Steps**
 
@@ -149,7 +155,8 @@ from that milestone on; v1 rows are enforced from 2.6.
 | `pending` | `cancelled` | **write-off** (5.4, `continue_independent_branches`): a dead-lettered upstream step made readiness impossible (the fixed-point walk of ADR-006); `steps_cancelled` bumps; dependency counters and edges untouched | 5.4 |
 | `dead_lettered` | `ready` | **DLQ requeue** (5.4 internal op; API M6.5): error and schedule state clear, `steps_failed` un-bumps, `dlq_requeue` outbox row; the budget re-arms via the `dead_letters` baseline, attempt history immutable | 5.4 |
 | `cancelled` | `pending` | **revival** (5.4): a requeue made a written-off step's readiness possible again (recomputed write-off set); `steps_cancelled` un-bumps — a pure status flip, since the write-off never touched counters | 5.4 |
-| any non-terminal | `cancelled` | run cancellation sweep | M5.6 |
+| `pending`, `ready`, `retrying` | `cancelled` | **run-cancel sweep** (as built in 5.6): the cancel request writes off every claimless non-terminal step in its own transaction (a `retrying` step's `next_attempt_at` clears); `steps_cancelled` bumps; no attempt closes — none is open. Same CAS as the 5.4 write-off, broadened from-set, event reason `run_cancelled` | 5.4/5.6 |
+| `running` | `cancelled` | **run-cancel settlement** (as built in 5.6): matching `claim_id`; the in-flight worker noticed its run is cancelling (the cancellation watch, or the completion transaction's run-status check under the run lock) and settles the step instead of routing its outcome — the attempt closes with the administrative outcome `cancelled` (never counted against the retry budget), the executor's error (if any) is recorded, `steps_cancelled` bumps. A worker that *died* instead is healed by the reconciler's cancelling-run scan: takeover (attempt `lost`) + the sweep CAS above | 5.6 |
 
 Terminal step states: `succeeded`, `skipped`, `dead_lettered`,
 `cancelled` (and the retired `failed` on pre-5.4 rows). `retrying` is not
@@ -520,9 +527,14 @@ Negative:
   revalidation carry the burden instead.
 - **Step transitions carry no run-status guard.** A step that was already
   claimed when its run turned `failed` can still complete, bumping
-  aggregates and appending events on a terminal run. Accepted for v1: the
-  quiescing sweep is M5.6's cancellation machinery; until then the state
-  is observable but harmless (the run's terminal status never regresses).
+  aggregates and appending events on a terminal run. Accepted, and still
+  true at the store layer after 5.6: the *engine's* completion
+  transactions now read the run status under the run lock and settle
+  cancelling runs' steps as `cancelled` (skipping fan-out), but the
+  transitions themselves stay unguarded — completions on a failed run
+  remain observable-but-harmless (the run's terminal status never
+  regresses), and parked runs deliberately accept them (park pauses
+  dispatch, not settling).
 
 ## Alternatives considered
 

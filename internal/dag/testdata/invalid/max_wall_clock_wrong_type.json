@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "name": "max-wall-clock-wrong-type",
+  "max_wall_clock": 3600,
+  "steps": [{"id": "a", "type": "noop"}],
+  "edges": []
+}

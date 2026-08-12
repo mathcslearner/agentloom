@@ -82,6 +82,9 @@ func Decode(data []byte) (*Definition, error) {
 			}
 		}
 	}
+	if raw, ok := fields["max_wall_clock"]; ok {
+		def.MaxWallClock, _ = decodeString(raw, "max_wall_clock", &errs)
+	}
 	if raw, ok := fields["params"]; ok {
 		def.Params = decodeParams(raw, &errs)
 	}
@@ -105,8 +108,8 @@ func Decode(data []byte) (*Definition, error) {
 
 	topLevel := map[string]bool{
 		"schema_version": true, "name": true, "description": true,
-		"on_failure": true, "params": true, "steps": true, "edges": true,
-		"ui": true,
+		"on_failure": true, "max_wall_clock": true, "params": true,
+		"steps": true, "edges": true, "ui": true,
 	}
 	for _, k := range sortedKeys(fields) {
 		if !topLevel[k] {

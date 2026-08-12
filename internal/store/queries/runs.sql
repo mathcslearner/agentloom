@@ -3,12 +3,20 @@
 
 -- name: CreateRun :one
 INSERT INTO runs (id, definition_id, definition, status, params,
-                  idempotency_token, on_failure, steps_total, started_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                  idempotency_token, on_failure, steps_total, started_at,
+                  deadline_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 RETURNING *;
 
 -- name: GetRun :one
 SELECT * FROM runs WHERE id = $1;
+
+-- GetRunStatus is the lightweight unlocked status read behind the
+-- engine's in-flight cancellation poller (ticket 5.6): one indexed point
+-- read per poll, no row lock — the poller only wants a hint, the
+-- completion transaction re-checks under the run lock.
+-- name: GetRunStatus :one
+SELECT status FROM runs WHERE id = $1;
 
 -- name: GetRunByIdempotencyToken :one
 SELECT * FROM runs WHERE idempotency_token = @token::text;

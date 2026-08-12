@@ -236,4 +236,9 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	if !hasTimeout {
 		t.Error("no step with an execution timeout in kitchen_sink.json")
 	}
+
+	// Ticket 5.6 construct: a run wall-clock deadline.
+	if def.MaxWallClock == "" {
+		t.Error("no max_wall_clock deadline in kitchen_sink.json")
+	}
 }

@@ -100,6 +100,12 @@ const (
 	// Same ceiling as the backoff cap: an execution bound past a day is an
 	// authoring mistake, not a workload.
 	MaxStepTimeout = 24 * time.Hour
+
+	// MaxRunWallClock caps the definition-level `max_wall_clock` field
+	// (ticket 5.6). Comfortably above MaxStepTimeout — a run outlives its
+	// longest step by retries and queue wait — while still rejecting
+	// deadlines so distant they could never be an intentional bound.
+	MaxRunWallClock = 30 * 24 * time.Hour
 )
 
 // RetryPolicy is a step's authored retry policy (ADR-006). Every field

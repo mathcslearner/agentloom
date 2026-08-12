@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "name": "max-wall-clock-bad-bounds",
+  "max_wall_clock": "800h",
+  "steps": [{"id": "a", "type": "noop"}],
+  "edges": []
+}

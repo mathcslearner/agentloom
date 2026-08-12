@@ -173,11 +173,74 @@ func ListOverdueRetryingSteps(ctx context.Context, q Querier, staleBefore time.T
 	return steps, nil
 }
 
-// ListStalledRuns returns up to limit runs still running with no live
-// (pending/ready/running/retrying) step — an impossible state, since the
-// run rollup is atomic with the transition terminalizing the last step.
-// Observing one means corrupt state or an engine bug; the reconciler
-// flags it loudly and touches nothing.
+// ListStaleRunningStepsInCancellingRuns returns up to limit steps still
+// running in a *cancelling* run since before staleBefore — ticket 5.6's
+// crash cell: the in-flight worker died before settling its step, and
+// ListStaleRunningSteps deliberately skips non-running runs. The heal is
+// TakeoverStep (attempt closed `lost`) + CancelStep + the cancel rollup —
+// never a re-outbox: cancelled work is not re-dispatched.
+func ListStaleRunningStepsInCancellingRuns(ctx context.Context, q Querier, staleBefore time.Time, limit int32) ([]StaleRunningStep, error) {
+	const op = "list stale running steps in cancelling runs"
+	gq, err := reconcileQueries(ctx, q, op)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := gq.ListStaleRunningStepsInCancellingRuns(ctx, gen.ListStaleRunningStepsInCancellingRunsParams{
+		StaleBefore: staleBefore, RowLimit: limit,
+	})
+	if err != nil {
+		return nil, wrapErr(op, err)
+	}
+	steps := make([]StaleRunningStep, len(rows))
+	for i, r := range rows {
+		steps[i] = StaleRunningStep{
+			StepRef:          StepRef{RunID: r.RunID, StepID: r.StepID, UpdatedAt: r.UpdatedAt},
+			ClaimID:          r.ClaimID,
+			HasPendingOutbox: r.HasPendingOutbox,
+		}
+	}
+	return steps, nil
+}
+
+// DeadlineExceededRun is a run past its materialized wall-clock deadline
+// (ticket 5.6) — still running or parked with deadline_at behind now. The
+// heal is the run-cancel sweep with reason deadline_exceeded.
+type DeadlineExceededRun struct {
+	RunID uuid.UUID
+	// DeadlineAt is the materialized deadline — how overdue the run is.
+	DeadlineAt time.Time
+}
+
+// ListDeadlineExceededRuns returns up to limit unfinished runs whose
+// deadline_at is before now (served by the partial deadline index).
+func ListDeadlineExceededRuns(ctx context.Context, q Querier, now time.Time, limit int32) ([]DeadlineExceededRun, error) {
+	const op = "list deadline-exceeded runs"
+	gq, err := reconcileQueries(ctx, q, op)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := gq.ListDeadlineExceededRuns(ctx, gen.ListDeadlineExceededRunsParams{
+		Now: now, RowLimit: limit,
+	})
+	if err != nil {
+		return nil, wrapErr(op, err)
+	}
+	runs := make([]DeadlineExceededRun, len(rows))
+	for i, r := range rows {
+		runs[i] = DeadlineExceededRun{RunID: r.ID}
+		if r.DeadlineAt != nil {
+			runs[i].DeadlineAt = *r.DeadlineAt
+		}
+	}
+	return runs, nil
+}
+
+// ListStalledRuns returns up to limit runs stuck in an impossible state:
+// still running with no live (pending/ready/running/retrying) step, or —
+// since 5.6 — cancelling with no running step. Both rollups are atomic
+// with the transition terminalizing the last step, so observing either
+// means corrupt state or an engine bug; the reconciler flags it loudly
+// and touches nothing.
 func ListStalledRuns(ctx context.Context, q Querier, limit int32) ([]uuid.UUID, error) {
 	const op = "list stalled runs"
 	gq, err := reconcileQueries(ctx, q, op)

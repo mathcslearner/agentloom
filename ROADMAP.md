@@ -455,13 +455,13 @@ Terminal failures (exhausted retries, permanent class, poison messages from 3.4'
 - [x] Journaled effect executes once despite retry + reclaim + zombie scenarios
 - [x] Journal misuse (execute without intent) fails loudly in dev/test mode
 
-#### 5.6 — Cancel, park/resume, run deadlines
+#### 5.6 — Cancel, park/resume, run deadlines ✅
 **Depends on:** 5.2
-Run-level controls as engine ops (API exposure in M6.5): **cancel** (cooperative: run → `cancelling`; claim path refuses parked/cancelled runs; in-flight executors get context cancellation at next heartbeat; steps → `cancelled`; run terminal), **park/unpark** (pause dispatch with a typed reason — `manual`, later `budget_exceeded`/`awaiting_human`; unpark re-outboxes all `ready` steps), and optional run `max_wall_clock` deadline → cancel with reason.
+Run-level controls as engine ops (API exposure in M6.5): **cancel** (cooperative: run → `cancelling`; claim path refuses parked/cancelled runs; in-flight executors get context cancellation at next heartbeat; steps → `cancelled`; run terminal), **park/unpark** (pause dispatch with a typed reason — `manual`, later `budget_exceeded`/`awaiting_human`; unpark re-outboxes all `ready` steps), and optional run `max_wall_clock` deadline → cancel with reason. *(As built: cancel converges through three mechanisms — the request transaction sweeps every claimless non-terminal step and finalizes when nothing is in flight; completion transactions re-check the run status under the run lock (success honored without fan-out, failure settled as `cancelled` with no retry/DLQ judgment — ADR-006 row 8); a cancellation-watch goroutine polls run status every `AGENTLOOM_WORKER_CANCEL_POLL_INTERVAL` (default 10s ≈ heartbeat cadence) and cancels the executor context, pure latency over the in-tx check; the reconciler heals dead-worker cancelling runs with takeover + cancel + rollup. Park is a pure dispatch pause — completions and their fan-out proceed, rollups fire from parked, unpark re-outboxes ready-without-outbox steps under new reason `unpark`. The deadline is `max_wall_clock` on the definition envelope, materialized as `runs.deadline_at`, enforced by a fourth reconciler scan feeding the same cancel sweep.)*
 **Done when:**
-- [ ] Mid-run cancel: no new claims, in-flight steps cancel, terminal state consistent (no orphan leases/PEL entries)
-- [ ] Park → fleet stops claiming that run; unpark resumes to completion
-- [ ] Deadline exceeded → run cancelled with `deadline_exceeded` reason and event
+- [x] Mid-run cancel: no new claims, in-flight steps cancel, terminal state consistent (no orphan leases/PEL entries)
+- [x] Park → fleet stops claiming that run; unpark resumes to completion
+- [x] Deadline exceeded → run cancelled with `deadline_exceeded` reason and event
 
 #### 5.7 — Graceful shutdown & drain
 **Depends on:** 5.6

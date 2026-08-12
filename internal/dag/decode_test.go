@@ -53,6 +53,7 @@ var decodeInvalidCases = map[string][]string{
 	"retry_bad_class.json":             {`steps[0].retry.retry_on[1]: unknown error class "flaky"`},
 	"retry_wrong_type.json":            {"steps[0].retry.max_attempts: expected integer, got string"},
 	"timeout_wrong_type.json":          {"steps[0].timeout: expected string, got number"},
+	"max_wall_clock_wrong_type.json":   {"max_wall_clock: expected string, got number"},
 	"edge_missing_from.json":           {"edges[0].from: required field is missing"},
 	"unknown_edge_field.json":          {"edges[0].whenever: unknown field"},
 	"unknown_edge_type.json":           {`edges[0].type: unknown edge type "loopy"`},

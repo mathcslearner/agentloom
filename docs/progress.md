@@ -2434,3 +2434,125 @@ suites green; lint clean.
   often the engine really executed (4.7's probe); `effectful_echo`
   measures that journaled effects fire once. The 5.8 chaos suite needs
   both.
+
+### 5.6 — Cancel, park/resume, run deadlines ✅
+
+**Delivered.** Run-level controls as engine ops (API exposure lands in
+M6.5): cooperative **cancel** (`Engine.Cancel`), **park/unpark**
+(`Engine.Park`/`Engine.Unpark`), and the optional **run wall-clock
+deadline** (`max_wall_clock` on the definition envelope, enforced by the
+reconciler). ADR-004's reserved run statuses `parked` / `cancelling` /
+`cancelled` are realized by migration 0007, which also adds the typed
+`park_reason` / `cancel_reason` columns and the nullable
+`runs.deadline_at` with a partial scan index.
+
+**Cancel converges through three mechanisms**, all serialized by the
+run lock every transition takes first:
+1. *The request*: one transaction CASes the run `running|parked →
+   cancelling` (typed reason `manual` / `deadline_exceeded`, event
+   `run_cancelling`), sweeps every claimless non-terminal step —
+   pending, ready, retrying — to `cancelled` (the 5.4 write-off CAS with
+   a broadened from-set; a retrying step's `next_attempt_at` clears;
+   event reason `run_cancelled`), and attempts the finalization rollup
+   `cancelling → cancelled` (all-terminal counter guard, event
+   `run_cancelled`), which passes immediately when nothing was in
+   flight.
+2. *In-flight workers*: both completion transactions now read the run
+   status under the run lock (`store.LockRunStatus`). On a cancelling
+   run, a success is honored — output recorded — but fan-out is skipped
+   (successors are already cancelled; the run must quiesce, not
+   advance); a failure is not judged at all — no retry, no DLQ (ADR-006
+   row 8) — the step settles through the new claim-fenced
+   `store.CancelRunningStep` (`running → cancelled`, attempt outcome
+   the administrative `cancelled`, never counted against the retry
+   budget, executor error preserved). The latency bound is the
+   *cancellation watch*: a joined poller goroutine per executor
+   invocation (`WithCancelPollInterval`, config
+   `AGENTLOOM_WORKER_CANCEL_POLL_INTERVAL`, default 10s ≈ heartbeat
+   cadence) that reads run status unlocked (`RunRepo.GetStatus`) and
+   cancels the executor context with a typed cause (`errRunCancelled`).
+   The watch is pure latency — the in-transaction check is the
+   authority, so a disabled watch (interval 0) is slower, never wrong.
+3. *The reconciler*: a new scan for stale `running` steps of
+   **cancelling** runs (the 5.4 run-status filter deliberately excludes
+   them from the ordinary heal) settles dead workers' steps with
+   takeover (attempt `lost`) + the sweep CAS + rollup — never a
+   re-outbox: cancelled work is not re-dispatched.
+Deliveries of a cancelling/cancelled run's steps are consumed by 5.2's
+run-status claim guard (ack-drop) — that is what leaves no orphan PEL
+entries. `Engine.Requeue` refuses cancelling/cancelled runs: a cancel is
+terminal by operator intent.
+
+**Park is a pure dispatch pause.** `running → parked` with a typed
+reason (`manual` now; `budget_exceeded`/`awaiting_human` reserved in the
+CHECK for M10/M15). The claim guard refuses parked runs; in-flight steps
+settle normally and fan-out proceeds — newly-ready successors get
+dispatched, their deliveries bounce and are consumed, and unpark
+(`parked → running`, reason cleared) re-outboxes every ready step with
+no pending dispatch row (5.4's `ListReadyWithoutOutbox`) under new
+outbox reason `unpark`, then nudges the dispatcher. Overdue retrying
+steps are deliberately left to the ordinary overdue-retrying scan, which
+admits them again once the run is running. **Rollups fire from parked**:
+`SucceedRun`/`FailRun`/`FailRunRollup` accept `running|parked`
+(clearing `park_reason` on exit), so a parked run whose last in-flight
+step lands terminalizes honestly instead of resting parked-but-done —
+the rejected alternative (deferred disposition re-derived at unpark) was
+more machinery for a less honest status. ADR-004's matrix carries the
+new rows.
+
+**The deadline** is contract + materialization + reconciler duty:
+`Definition.MaxWallClock` (Go-duration string, positive, ≤ 30 days —
+`dag.MaxRunWallClock` — new code `max_wall_clock_field_invalid`, JSON
+Schema regenerated, kitchen-sink fixtures + construct pins extended);
+instantiation stamps `deadline_at = created_at + max_wall_clock`; a
+fourth reconciler scan (`ListDeadlineExceededRuns`, running|parked with
+`deadline_at` past the injected now, served by the partial index) feeds
+the same `cancelRunTx` sweep with reason `deadline_exceeded`. Parked
+runs are eligible — the wall clock does not pause with dispatch.
+`ListStalledRuns` also now flags cancelling runs with no running step
+(impossible-state loudness), and `HandlePoison` attempts the cancel
+rollup so a poison dead-letter can finalize a cancelling run.
+
+**Tests.** Store suite (`runctl_integration_test.go`): every new
+transition's guards/conflicts/events/counters, the broadened CancelStep
+(pending/ready/retrying, matrix test extended with `alsoLegalFrom`),
+CancelRunningStep fencing, rollups-from-parked, deadline
+materialization, and both new scans. Engine suite
+(`runctl_integration_test.go`): the headline mid-run cancel (in-flight
+30s sleep interrupted by the watch within its poll interval, sweep
+cancels the successor, attempt history exactly `[cancelled]`, zero
+retry events, full queue quiescence — PEL/outbox/delayed all empty),
+idle-run cancel finalizing in the request transaction,
+success-racing-cancel honored (output recorded, fan-out skipped, run
+cancelled), park → fleet-stops-claiming (successor readied by a parked
+completion, its delivery consumed with zero attempts) → unpark →
+completion, deadline-exceeded on the injected clock (idempotent second
+sweep), and the cancelling-run crash heal (stalled holder; heal lands
+`[lost]` + cancelled + run cancelled; the released zombie's completion
+is fenced and its entry drains through reclaim into ack-drop). `ctl
+watch` now treats `cancelled` as terminal (exit 1) and keeps polling
+through `parked`/`cancelling`. Full unit + integration + crash suites
+green; lint clean.
+
+**Non-obvious decisions / deferred.**
+- "Context cancellation at next heartbeat" is implemented as an
+  engine-side status poller, not a queue-heartbeat hook: the queue is
+  transport-only by design (it must not know the store), and the poll
+  interval defaults to the heartbeat cadence, honoring the ticket's
+  latency intent. Correctness never rests on the poller.
+- Cancel/park reasons are validated in the store wrappers *and* CHECKed
+  in the schema; the step-cancel event reason vocabulary gains
+  `run_cancelled` alongside 5.4's `upstream_dead_lettered`.
+- A success racing the cancel is honored (5.3's success-racing-deadline
+  precedent): discarding done work would waste budget and re-run side
+  effects. The nuance is per-step statuses on a cancelled run — some
+  succeeded, the rest cancelled.
+- The down-migration collapses `parked`/`cancelling` to `running` and
+  `cancelled` to `failed` (nearest pre-5.6 readings; reasons and
+  deadline dropped — lossy, like 0003's outcome collapse).
+- `TestSchemaV1StatusChecks`'s out-of-vocabulary probe moved off
+  `'parked'` (now legal) to a value no migration will ever admit.
+- Step transitions still carry no run-status guard at the store layer
+  (ADR-004's accepted trade, note updated): the *engine's* completion
+  transactions branch on the locked status instead, and parked runs
+  deliberately accept normal completions.

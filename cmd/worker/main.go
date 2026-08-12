@@ -92,7 +92,8 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	eng, err := engine.New(st, exec.Builtins(), workerID,
 		engine.WithDispatchNudge(dispatcher.Nudge),
 		engine.WithRetryScheduler(q.NewDelayed(cfg.Queue.DelayedKey)),
-		engine.WithStrictEffects(cfg.Worker.EffectsStrict))
+		engine.WithStrictEffects(cfg.Worker.EffectsStrict),
+		engine.WithCancelPollInterval(cfg.Worker.CancelPollInterval))
 	if err != nil {
 		return err
 	}

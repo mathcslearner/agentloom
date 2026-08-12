@@ -71,15 +71,37 @@ WHERE run_id = @run_id AND step_id = @step_id
   AND status IN ('pending', 'ready', 'running', 'retrying')
 RETURNING *;
 
--- Write-off: pending → cancelled, when a dead-lettered upstream step made
--- readiness impossible (ADR-006 continue_independent_branches; 5.6's
--- run-cancel writes the same status with a different event reason).
--- finished_at stays NULL — the step never ran, like skipped.
+-- Write-off / run-cancel sweep: pending|ready|retrying → cancelled. The
+-- 5.4 write-off cancels only pending steps (a dead-lettered upstream step
+-- made readiness impossible); 5.6's run-cancel sweep additionally cancels
+-- ready and retrying steps — none of which holds a claim or an open
+-- attempt, so the status flip (plus clearing a retrying step's schedule)
+-- is the whole transition. finished_at stays NULL — the step never ran,
+-- like skipped. Running steps take the claim-fenced
+-- CancelRunningRunStep below instead.
 -- name: CancelRunStep :one
 UPDATE run_steps
-SET status     = 'cancelled',
-    updated_at = @now::timestamptz
-WHERE run_id = @run_id AND step_id = @step_id AND status = 'pending'
+SET status          = 'cancelled',
+    next_attempt_at = NULL,
+    updated_at      = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id
+  AND status IN ('pending', 'ready', 'retrying')
+RETURNING *;
+
+-- Run-cancel completion: running → cancelled, fenced by claim_id (ticket
+-- 5.6, ADR-006 taxonomy row 8): the in-flight worker noticed its run is
+-- cancelling — via the executor-context cancellation or the in-transaction
+-- run-status check — and settles the step as cancelled instead of routing
+-- the outcome through retry/DLQ. error records what the executor returned
+-- when the cancel interrupted it (NULL when it was still running clean).
+-- name: CancelRunningRunStep :one
+UPDATE run_steps
+SET status      = 'cancelled',
+    error       = @error,
+    finished_at = @now::timestamptz,
+    updated_at  = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id
+  AND status = 'running' AND claim_id = @claim_id
 RETURNING *;
 
 -- Requeue: dead_lettered → ready (ticket 5.4, ADR-006 "Requeue"). The
@@ -198,28 +220,35 @@ SET steps_succeeded = steps_succeeded + @d_succeeded::int,
     steps_cancelled = steps_cancelled + @d_cancelled::int
 WHERE id = @run_id;
 
--- Rollup: running → succeeded when every step is terminal and none failed
--- (aggregate-counter form: succeeded + skipped = total, failed = 0; the
--- counters are maintained by the transitions above in the same
--- transactions, so they are trustworthy).
+-- Rollup: running|parked → succeeded when every step is terminal and none
+-- failed (aggregate-counter form: succeeded + skipped = total, failed = 0;
+-- the counters are maintained by the transitions above in the same
+-- transactions, so they are trustworthy). Since ticket 5.6 the rollups
+-- fire from parked too: park pauses the dispatch of new work, not the
+-- settling of work already in flight — a parked run whose last in-flight
+-- step lands terminalizes honestly instead of resting parked-but-done
+-- (ADR-006 "Park semantics"). park_reason clears with the exit.
 -- name: SucceedRun :one
 UPDATE runs
 SET status      = 'succeeded',
+    park_reason = NULL,
     finished_at = @now::timestamptz
-WHERE id = @run_id AND status = 'running'
+WHERE id = @run_id AND status IN ('running', 'parked')
   AND steps_failed = 0 AND steps_succeeded + steps_skipped = steps_total
 RETURNING *;
 
--- Rollup: running → failed, immediately — the fail_fast disposition
--- (ADR-006): the guard requires only that some step failed terminally.
+-- Rollup: running|parked → failed, immediately — the fail_fast
+-- disposition (ADR-006): the guard requires only that some step failed
+-- terminally. Fires from parked for the same reason as SucceedRun.
 -- name: FailRun :one
 UPDATE runs
 SET status      = 'failed',
+    park_reason = NULL,
     finished_at = @now::timestamptz
-WHERE id = @run_id AND status = 'running' AND steps_failed >= 1
+WHERE id = @run_id AND status IN ('running', 'parked') AND steps_failed >= 1
 RETURNING *;
 
--- Rollup: running → failed, once every step is terminal — the
+-- Rollup: running|parked → failed, once every step is terminal — the
 -- continue_independent_branches terminalizer (ticket 5.4, ADR-006): the
 -- run keeps running while independent branches finish and lands failed
 -- when the counters account for every step with at least one terminal
@@ -228,8 +257,52 @@ RETURNING *;
 -- name: FailRunRollup :one
 UPDATE runs
 SET status      = 'failed',
+    park_reason = NULL,
     finished_at = @now::timestamptz
-WHERE id = @run_id AND status = 'running' AND steps_failed >= 1
+WHERE id = @run_id AND status IN ('running', 'parked') AND steps_failed >= 1
+  AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled = steps_total
+RETURNING *;
+
+-- Park: running → parked with a typed reason (ticket 5.6). Dispatch
+-- pauses via the claim path's run-status guard; in-flight steps keep
+-- executing and settle normally.
+-- name: ParkRun :one
+UPDATE runs
+SET status      = 'parked',
+    park_reason = @reason
+WHERE id = @run_id AND status = 'running'
+RETURNING *;
+
+-- Unpark: parked → running (ticket 5.6). Re-outboxing the run's ready
+-- steps is the caller's move, in the same transaction.
+-- name: UnparkRun :one
+UPDATE runs
+SET status      = 'running',
+    park_reason = NULL
+WHERE id = @run_id AND status = 'parked'
+RETURNING *;
+
+-- Cancel request: running|parked → cancelling with a typed reason (ticket
+-- 5.6). The quiescing state: the claim path refuses its steps, the sweep
+-- (same transaction, caller's move) cancels every claimless non-terminal
+-- step, and in-flight completions settle their steps as cancelled.
+-- name: CancelRun :one
+UPDATE runs
+SET status        = 'cancelling',
+    cancel_reason = @reason,
+    park_reason   = NULL
+WHERE id = @run_id AND status IN ('running', 'parked')
+RETURNING *;
+
+-- Cancel finalization: cancelling → cancelled once every step is terminal
+-- (same counter form as FailRunRollup, without the failed-step
+-- requirement). Attempted (and its conflict dropped) wherever a step of a
+-- possibly-cancelling run terminalizes.
+-- name: CancelRunRollup :one
+UPDATE runs
+SET status      = 'cancelled',
+    finished_at = @now::timestamptz
+WHERE id = @run_id AND status = 'cancelling'
   AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled = steps_total
 RETURNING *;
 

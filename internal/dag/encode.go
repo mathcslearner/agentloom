@@ -36,6 +36,12 @@ func Encode(def *Definition) ([]byte, error) {
 			return nil, err
 		}
 	}
+	if def.MaxWallClock != "" {
+		buf.WriteString(`,"max_wall_clock":`)
+		if err := writeJSON(&buf, def.MaxWallClock); err != nil {
+			return nil, err
+		}
+	}
 	if len(def.Params) > 0 {
 		buf.WriteString(`,"params":`)
 		if err := writeJSON(&buf, def.Params); err != nil {

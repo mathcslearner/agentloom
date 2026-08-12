@@ -150,6 +150,9 @@ var structuralCases = map[string][]issueRef{
 		{dag.CodeTimeoutFieldInvalid, "steps[1].timeout"},
 		{dag.CodeTimeoutFieldInvalid, "steps[2].timeout"},
 	},
+	"max_wall_clock_bad_bounds.json": {
+		{dag.CodeMaxWallClockInvalid, "max_wall_clock"},
+	},
 	"name_too_long.json": {{dag.CodeLimitExceeded, "name"}},
 	"expr_too_long.json": {{dag.CodeLimitExceeded, "edges[0].when"}},
 	"when_syntax_error.json": {
@@ -529,6 +532,38 @@ func TestValidateTableDriven(t *testing.T) {
 			wantWarns: []issueRef{
 				{dag.CodeIsolatedStep, "steps[0]"},
 				{dag.CodeIsolatedStep, "steps[1]"},
+			},
+		},
+		{
+			name: "max_wall_clock unparseable",
+			def: &dag.Definition{
+				SchemaVersion: dag.CurrentSchemaVersion,
+				Name:          "t",
+				MaxWallClock:  "fast",
+				Steps:         []dag.Step{noop("a")},
+				Edges:         []dag.Edge{},
+			},
+			wantErrs: []issueRef{{dag.CodeMaxWallClockInvalid, "max_wall_clock"}},
+		},
+		{
+			name: "max_wall_clock not positive",
+			def: &dag.Definition{
+				SchemaVersion: dag.CurrentSchemaVersion,
+				Name:          "t",
+				MaxWallClock:  "-1h",
+				Steps:         []dag.Step{noop("a")},
+				Edges:         []dag.Edge{},
+			},
+			wantErrs: []issueRef{{dag.CodeMaxWallClockInvalid, "max_wall_clock"}},
+		},
+		{
+			name: "max_wall_clock at the bound",
+			def: &dag.Definition{
+				SchemaVersion: dag.CurrentSchemaVersion,
+				Name:          "t",
+				MaxWallClock:  "720h",
+				Steps:         []dag.Step{noop("a")},
+				Edges:         []dag.Edge{},
 			},
 		},
 		{

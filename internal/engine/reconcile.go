@@ -136,6 +136,14 @@ type ReconcileResult struct {
 	// RetriesHealed lists the overdue retrying steps this sweep
 	// re-outboxed — their delayed re-dispatch was lost (ticket 5.2).
 	RetriesHealed []store.OverdueRetryingStep
+	// DeadlineCancelled lists the runs this sweep cancelled for exceeding
+	// their materialized wall-clock deadline (ticket 5.6, reason
+	// deadline_exceeded).
+	DeadlineCancelled []uuid.UUID
+	// CancelHealed lists the stale running steps of cancelling runs this
+	// sweep settled with takeover + cancel (ticket 5.6): their in-flight
+	// workers died before noticing the cancel.
+	CancelHealed []store.StaleRunningStep
 	// StalledRuns lists runs in an impossible state (flagged, untouched).
 	StalledRuns []uuid.UUID
 	// LimitHit: some scan returned exactly Limit rows — there may be more;
@@ -247,12 +255,58 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 			}
 		}
 		res.RetriesHealed = overdue
+		// Deadline enforcement (ticket 5.6): runs past their materialized
+		// max_wall_clock get the same cancel sweep an operator's cancel op
+		// runs, reason deadline_exceeded. A typed conflict means the run
+		// moved on (terminal, or already cancelling) between the scan
+		// snapshot and the row lock — drop the heal, never the sweep.
+		deadline, err := store.ListDeadlineExceededRuns(ctx, q, now, limit)
+		if err != nil {
+			return err
+		}
+		for _, run := range deadline {
+			if _, err := cancelRunTx(ctx, q, run.RunID, store.RunCancelReasonDeadlineExceeded, now); err != nil {
+				var te *store.TransitionError
+				if errors.As(err, &te) {
+					continue
+				}
+				return err
+			}
+			res.DeadlineCancelled = append(res.DeadlineCancelled, run.RunID)
+		}
+		// Cancelling-run heal (ticket 5.6): a stale running step of a
+		// cancelling run means its in-flight worker died before settling —
+		// the ordinary stale-running scan skips non-running runs, so this
+		// is the only healer. Takeover closes the dangling attempt `lost`,
+		// the cancel writes the step off (never a re-outbox: cancelled work
+		// is not re-dispatched), and the rollup finalizes the run when that
+		// was the last one. Typed conflicts drop per-step, as above.
+		staleCancelling, err := store.ListStaleRunningStepsInCancellingRuns(ctx, q, now.Add(-r.cfg.RunningStale), limit)
+		if err != nil {
+			return err
+		}
+		for _, st := range staleCancelling {
+			if st.ClaimID == nil {
+				corrupt = append(corrupt, st)
+				continue
+			}
+			if err := healCancellingStep(ctx, q, st, now); err != nil {
+				var te *store.TransitionError
+				if errors.As(err, &te) {
+					lostRace = append(lostRace, st)
+					continue
+				}
+				return err
+			}
+			res.CancelHealed = append(res.CancelHealed, st)
+		}
 		res.StalledRuns, err = store.ListStalledRuns(ctx, q, limit)
 		if err != nil {
 			return err
 		}
 		res.LimitHit = len(res.Requeued) == int(limit) ||
 			len(staleRunning) == int(limit) || len(overdue) == int(limit) ||
+			len(deadline) == int(limit) || len(staleCancelling) == int(limit) ||
 			len(res.StalledRuns) == int(limit)
 		return nil
 	})
@@ -280,6 +334,17 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 			log.RunID(st.RunID.String()), log.StepID(st.StepID),
 			slog.Time("was_due_at", st.NextAttemptAt))
 	}
+	for _, runID := range res.DeadlineCancelled {
+		logger.WarnContext(ctx, "reconciler cancelled a run past its wall-clock deadline",
+			log.RunID(runID.String()),
+			slog.String("reason", store.RunCancelReasonDeadlineExceeded))
+	}
+	for _, st := range res.CancelHealed {
+		logger.WarnContext(ctx, "reconciler settled a stale running step of a cancelling run — holder presumed dead",
+			log.RunID(st.RunID.String()), log.StepID(st.StepID),
+			slog.Time("running_since", st.UpdatedAt),
+			slog.String("displaced_claim_id", claimIDRefString(st.ClaimID)))
+	}
 	for _, st := range lostRace {
 		logger.InfoContext(ctx, "stale running step moved on before takeover — heal dropped",
 			log.RunID(st.RunID.String()), log.StepID(st.StepID))
@@ -297,11 +362,14 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 		logger.WarnContext(ctx, "reconciler sweep hit its row limit; more may remain for the next sweep",
 			slog.Int("limit", r.cfg.Limit))
 	}
-	if len(res.Requeued) > 0 || len(res.TakenOver) > 0 || len(res.RetriesHealed) > 0 || len(res.StalledRuns) > 0 {
+	if len(res.Requeued) > 0 || len(res.TakenOver) > 0 || len(res.RetriesHealed) > 0 ||
+		len(res.DeadlineCancelled) > 0 || len(res.CancelHealed) > 0 || len(res.StalledRuns) > 0 {
 		logger.InfoContext(ctx, "reconciler sweep complete",
 			slog.Int("requeued", len(res.Requeued)),
 			slog.Int("taken_over", len(res.TakenOver)),
 			slog.Int("retries_healed", len(res.RetriesHealed)),
+			slog.Int("deadline_cancelled", len(res.DeadlineCancelled)),
+			slog.Int("cancel_healed", len(res.CancelHealed)),
 			slog.Int("stalled_runs", len(res.StalledRuns)))
 	}
 	if (len(res.Requeued) > 0 || len(res.TakenOver) > 0 || len(res.RetriesHealed) > 0) && r.nudge != nil {

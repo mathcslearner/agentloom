@@ -12,6 +12,50 @@ import (
 	"github.com/google/uuid"
 )
 
+const listDeadlineExceededRuns = `-- name: ListDeadlineExceededRuns :many
+SELECT r.id, r.deadline_at
+FROM runs r
+WHERE r.deadline_at IS NOT NULL
+  AND r.deadline_at < $1::timestamptz
+  AND r.status IN ('running', 'parked')
+ORDER BY r.deadline_at
+LIMIT $2
+`
+
+type ListDeadlineExceededRunsParams struct {
+	Now      time.Time
+	RowLimit int32
+}
+
+type ListDeadlineExceededRunsRow struct {
+	ID         uuid.UUID
+	DeadlineAt *time.Time
+}
+
+// Runs past their materialized wall-clock deadline (ticket 5.6): still
+// unfinished — running or parked — with deadline_at behind the injected
+// now. Served by the partial runs_deadline_scan_idx. The heal is the
+// run-cancel sweep with reason deadline_exceeded.
+func (q *Queries) ListDeadlineExceededRuns(ctx context.Context, arg ListDeadlineExceededRunsParams) ([]ListDeadlineExceededRunsRow, error) {
+	rows, err := q.db.Query(ctx, listDeadlineExceededRuns, arg.Now, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDeadlineExceededRunsRow
+	for rows.Next() {
+		var i ListDeadlineExceededRunsRow
+		if err := rows.Scan(&i.ID, &i.DeadlineAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOverdueRetryingSteps = `-- name: ListOverdueRetryingSteps :many
 SELECT rs.run_id, rs.step_id, rs.next_attempt_at
 FROM run_steps rs
@@ -190,22 +234,87 @@ func (q *Queries) ListStaleRunningSteps(ctx context.Context, arg ListStaleRunnin
 	return items, nil
 }
 
+const listStaleRunningStepsInCancellingRuns = `-- name: ListStaleRunningStepsInCancellingRuns :many
+SELECT rs.run_id, rs.step_id, rs.updated_at, rs.claim_id,
+  EXISTS (
+      SELECT 1 FROM task_outbox o
+      WHERE o.run_id = rs.run_id AND o.step_id = rs.step_id) AS has_pending_outbox
+FROM run_steps rs
+WHERE rs.status = 'running'
+  AND rs.updated_at < $1::timestamptz
+  AND EXISTS (
+      SELECT 1 FROM runs r
+      WHERE r.id = rs.run_id AND r.status = 'cancelling')
+ORDER BY rs.updated_at
+LIMIT $2
+`
+
+type ListStaleRunningStepsInCancellingRunsParams struct {
+	StaleBefore time.Time
+	RowLimit    int32
+}
+
+type ListStaleRunningStepsInCancellingRunsRow struct {
+	RunID            uuid.UUID
+	StepID           string
+	UpdatedAt        time.Time
+	ClaimID          *uuid.UUID
+	HasPendingOutbox bool
+}
+
+// Steps still running in a *cancelling* run past the staleness threshold —
+// ticket 5.6's crash cell: the in-flight worker died before settling its
+// step, and the ordinary stale-running heal above deliberately skips
+// non-running runs, so without this scan the run would rest in cancelling
+// forever. The heal is takeover (attempt closed `lost`) + cancel + the
+// cancel rollup — never a re-outbox: cancelled work is not re-dispatched.
+func (q *Queries) ListStaleRunningStepsInCancellingRuns(ctx context.Context, arg ListStaleRunningStepsInCancellingRunsParams) ([]ListStaleRunningStepsInCancellingRunsRow, error) {
+	rows, err := q.db.Query(ctx, listStaleRunningStepsInCancellingRuns, arg.StaleBefore, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStaleRunningStepsInCancellingRunsRow
+	for rows.Next() {
+		var i ListStaleRunningStepsInCancellingRunsRow
+		if err := rows.Scan(
+			&i.RunID,
+			&i.StepID,
+			&i.UpdatedAt,
+			&i.ClaimID,
+			&i.HasPendingOutbox,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStalledRuns = `-- name: ListStalledRuns :many
 SELECT r.id
 FROM runs r
-WHERE r.status = 'running'
-  AND NOT EXISTS (
-      SELECT 1 FROM run_steps rs
-      WHERE rs.run_id = r.id
-        AND rs.status IN ('pending', 'ready', 'running', 'retrying'))
+WHERE (r.status = 'running'
+       AND NOT EXISTS (
+           SELECT 1 FROM run_steps rs
+           WHERE rs.run_id = r.id
+             AND rs.status IN ('pending', 'ready', 'running', 'retrying')))
+   OR (r.status = 'cancelling'
+       AND NOT EXISTS (
+           SELECT 1 FROM run_steps rs
+           WHERE rs.run_id = r.id AND rs.status = 'running'))
 ORDER BY r.created_at
 LIMIT $1
 `
 
-// Runs still running with no live (pending/ready/running/retrying) step —
-// an impossible state: the run rollup is atomic with the transition that
-// terminalizes the last step, so observing this means corrupt state or an
-// engine bug. Flag-only, loudly.
+// Runs stuck in an impossible state, flag-only, loudly: a running run
+// with no live (pending/ready/running/retrying) step, or — since 5.6 — a
+// cancelling run with no running step (the cancel rollup is atomic with
+// the transition that terminalizes the last step, so observing either
+// means corrupt state or an engine bug).
 func (q *Queries) ListStalledRuns(ctx context.Context, rowLimit int32) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, listStalledRuns, rowLimit)
 	if err != nil {

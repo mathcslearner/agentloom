@@ -434,20 +434,24 @@ type CancelStepArgs struct {
 	RunID  uuid.UUID
 	StepID string
 	// Reason records why the step was written off — the step_cancelled
-	// event payload (CancelReasonUpstreamDeadLettered in 5.4; M5.6 adds
-	// run-cancel reasons). Required.
+	// event payload (CancelReasonUpstreamDeadLettered for the 5.4
+	// write-off, CancelReasonRunCancelled for 5.6's run-cancel sweep).
+	// Required.
 	Reason string
 	// Now is the injected current time. Required.
 	Now time.Time
 }
 
-// CancelStep transitions a step pending → cancelled (ticket 5.4): the
-// write-off of a step whose readiness a dead-lettered upstream step made
-// impossible (ADR-006 continue_independent_branches — the eager
-// alternative to permanent pending limbo). Bumps the run's
-// steps_cancelled aggregate and appends the step_cancelled event.
-// Dependency counters and the step's own out-edges stay untouched — that
-// is what makes ReviveStep a pure status flip.
+// CancelStep transitions a step pending|ready|retrying → cancelled: the
+// 5.4 write-off of a step whose readiness a dead-lettered upstream step
+// made impossible (always from pending — ADR-006
+// continue_independent_branches), and 5.6's run-cancel sweep, which also
+// cancels ready and retrying steps — every claimless non-terminal status,
+// none of which has an open attempt to close (a retrying step's schedule
+// clears with the CAS). Bumps the run's steps_cancelled aggregate and
+// appends the step_cancelled event. Dependency counters and the step's
+// own out-edges stay untouched — that is what makes ReviveStep a pure
+// status flip. Running steps take CancelRunningStep instead.
 func CancelStep(ctx context.Context, q Querier, args CancelStepArgs) (gen.RunStep, error) {
 	const op = "cancel step"
 	gq, err := transitionQueries(ctx, q, op, args.Now)
@@ -464,8 +468,19 @@ func CancelStep(ctx context.Context, q Querier, args CancelStepArgs) (gen.RunSte
 		RunID: args.RunID, StepID: args.StepID, Now: args.Now,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return gen.RunStep{}, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
-			want: StepStatusPending, to: StepStatusCancelled,
+		// The CAS guards only on the from-status set, so zero rows always
+		// diagnoses wrong_status (the multi-from analogue of stepConflict).
+		row, gerr := gq.GetRunStep(ctx, gen.GetRunStepParams{RunID: args.RunID, StepID: args.StepID})
+		if errors.Is(gerr, pgx.ErrNoRows) {
+			return gen.RunStep{}, fmt.Errorf("store: %s: step %q of run %s: %w", op, args.StepID, args.RunID, ErrNotFound)
+		}
+		if gerr != nil {
+			return gen.RunStep{}, wrapErr(op, gerr)
+		}
+		return gen.RunStep{}, fmt.Errorf("store: %s: %w", op, &TransitionError{
+			Entity: "step", RunID: args.RunID, StepID: args.StepID,
+			From: row.Status, To: StepStatusCancelled,
+			Reason: ConflictWrongStatus, CurrentClaimID: row.ClaimID,
 		})
 	}
 	if err != nil {
@@ -481,6 +496,73 @@ func CancelStep(ctx context.Context, q Querier, args CancelStepArgs) (gen.RunSte
 	}
 	log.From(ctx).DebugContext(ctx, "step cancelled",
 		log.RunID(args.RunID.String()), log.StepID(args.StepID))
+	return step, nil
+}
+
+// CancelRunningStepArgs are the inputs to CancelRunningStep.
+type CancelRunningStepArgs struct {
+	RunID  uuid.UUID
+	StepID string
+	// ClaimID is the fencing token ClaimStep issued to this caller.
+	ClaimID uuid.UUID
+	// Reason records why the step was cancelled — the step_cancelled event
+	// payload (CancelReasonRunCancelled). Required.
+	Reason string
+	// Error records what the executor returned when the cancellation
+	// interrupted it, stored on the step and its attempt; nil stores NULL
+	// (the executor was cancelled clean, or its result was discarded).
+	Error json.RawMessage
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// CancelRunningStep transitions a step running → cancelled, fenced by
+// ClaimID (ticket 5.6, ADR-006 taxonomy row 8): the in-flight worker
+// noticed its run is cancelling and settles the step as cancelled instead
+// of routing the outcome through retry/DLQ — the attempt closes with the
+// administrative outcome `cancelled` (never counted against the retry
+// budget: nothing was judged about the step's content), the run's
+// steps_cancelled aggregate bumps, and the step_cancelled event appends.
+// The reconciler's cancelling-run heal composes TakeoverStep + CancelStep
+// instead when the worker crashed (attempt then closes `lost`).
+func CancelRunningStep(ctx context.Context, q Querier, args CancelRunningStepArgs) (gen.RunStep, error) {
+	const op = "cancel running step"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.RunStep{}, err
+	}
+	if args.Reason == "" {
+		return gen.RunStep{}, fmt.Errorf("store: %s: empty Reason — pass the cancel reason", op)
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.RunStep{}, err
+	}
+	step, err := gq.CancelRunningRunStep(ctx, gen.CancelRunningRunStepParams{
+		RunID: args.RunID, StepID: args.StepID, ClaimID: &args.ClaimID,
+		Error: args.Error, Now: args.Now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.RunStep{}, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
+			want: StepStatusRunning, to: StepStatusCancelled, claim: &args.ClaimID,
+		})
+	}
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op, err)
+	}
+	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeCancelled, args.Error, args.Now); err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DCancelled: 1}); err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepCancelled, stepCancelledPayload{
+		StepID: args.StepID, Reason: args.Reason,
+	}); err != nil {
+		return gen.RunStep{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "running step cancelled",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID),
+		log.Attempt(int(step.AttemptCount)))
 	return step, nil
 }
 
@@ -989,6 +1071,186 @@ func ResumeRun(ctx context.Context, q Querier, args ResumeRunArgs) (gen.Run, err
 	}
 	log.From(ctx).DebugContext(ctx, "run resumed", log.RunID(args.RunID.String()))
 	return run, nil
+}
+
+// runReasonPayload is the event body of the reasoned run transitions
+// (ticket 5.6): run_parked and run_cancelling.
+type runReasonPayload struct {
+	Reason string `json:"reason"`
+}
+
+// ParkRunArgs are the inputs to ParkRun.
+type ParkRunArgs struct {
+	RunID uuid.UUID
+	// Reason is the typed park reason: ParkReasonManual (5.6); the
+	// budget_exceeded and awaiting_human values are reserved for M10/M15.
+	// Required.
+	Reason string
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// ParkRun transitions a run running → parked (ticket 5.6): dispatch
+// pauses — the claim path refuses the run's steps — while in-flight steps
+// keep executing and settle normally (their deliveries were claimed
+// before the park; completions carry no run-status guard). Appends the
+// run_parked event with the typed reason.
+func ParkRun(ctx context.Context, q Querier, args ParkRunArgs) (gen.Run, error) {
+	const op = "park run"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.Run{}, err
+	}
+	switch args.Reason {
+	case ParkReasonManual, ParkReasonBudgetExceeded, ParkReasonAwaitingHuman:
+	default:
+		return gen.Run{}, fmt.Errorf("store: %s: unknown park reason %q", op, args.Reason)
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.Run{}, err
+	}
+	run, err := gq.ParkRun(ctx, gen.ParkRunParams{RunID: args.RunID, Reason: &args.Reason})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.Run{}, runConflict(ctx, gq, op, args.RunID, RunStatusRunning, RunStatusParked)
+	}
+	if err != nil {
+		return gen.Run{}, wrapErr(op, err)
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventRunParked, runReasonPayload{Reason: args.Reason}); err != nil {
+		return gen.Run{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "run parked", log.RunID(args.RunID.String()))
+	return run, nil
+}
+
+// UnparkRunArgs are the inputs to UnparkRun.
+type UnparkRunArgs struct {
+	RunID uuid.UUID
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// UnparkRun transitions a run parked → running (ticket 5.6), clearing the
+// park reason and appending the run_unparked event. Re-outboxing the
+// run's ready steps — their deliveries were consumed by the run-status
+// guard while parked — is the caller's move, in the same transaction (the
+// engine's Unpark op composes it).
+func UnparkRun(ctx context.Context, q Querier, args UnparkRunArgs) (gen.Run, error) {
+	const op = "unpark run"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.Run{}, err
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.Run{}, err
+	}
+	run, err := gq.UnparkRun(ctx, args.RunID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.Run{}, runConflict(ctx, gq, op, args.RunID, RunStatusParked, RunStatusRunning)
+	}
+	if err != nil {
+		return gen.Run{}, wrapErr(op, err)
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventRunUnparked, struct{}{}); err != nil {
+		return gen.Run{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "run unparked", log.RunID(args.RunID.String()))
+	return run, nil
+}
+
+// CancelRunArgs are the inputs to CancelRun.
+type CancelRunArgs struct {
+	RunID uuid.UUID
+	// Reason is the typed cancel reason: RunCancelReasonManual or
+	// RunCancelReasonDeadlineExceeded. Required.
+	Reason string
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// CancelRun transitions a run running|parked → cancelling (ticket 5.6):
+// the cooperative cancel request. The claim path refuses the run's steps
+// from here on; sweeping the claimless non-terminal steps to cancelled
+// and attempting the finalization rollup are the caller's next moves,
+// inside the same transaction (the engine's cancel op composes them).
+// Appends the run_cancelling event with the typed reason.
+func CancelRun(ctx context.Context, q Querier, args CancelRunArgs) (gen.Run, error) {
+	const op = "cancel run"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.Run{}, err
+	}
+	switch args.Reason {
+	case RunCancelReasonManual, RunCancelReasonDeadlineExceeded:
+	default:
+		return gen.Run{}, fmt.Errorf("store: %s: unknown cancel reason %q", op, args.Reason)
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.Run{}, err
+	}
+	run, err := gq.CancelRun(ctx, gen.CancelRunParams{RunID: args.RunID, Reason: &args.Reason})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The CAS guards only on the from-status set {running, parked}, so
+		// zero rows always diagnoses wrong_status; From carries the actual
+		// status (terminal, or already cancelling).
+		return gen.Run{}, runConflict(ctx, gq, op, args.RunID, RunStatusRunning, RunStatusCancelling)
+	}
+	if err != nil {
+		return gen.Run{}, wrapErr(op, err)
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventRunCancelling, runReasonPayload{Reason: args.Reason}); err != nil {
+		return gen.Run{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "run cancelling", log.RunID(args.RunID.String()))
+	return run, nil
+}
+
+// CancelRunRollup transitions a run cancelling → cancelled once every
+// step is terminal (ticket 5.6) — the cancel finalizer, same shape as
+// FailRunRollup: attempted (and its conflict dropped) by the cancel
+// request itself and by every transaction that terminalizes a step of a
+// possibly-cancelling run; the guard passes exactly once. Appends the
+// run_cancelled event.
+func CancelRunRollup(ctx context.Context, q Querier, args FailRunArgs) (gen.Run, error) {
+	const op = "cancel run rollup"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.Run{}, err
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.Run{}, err
+	}
+	run, err := gq.CancelRunRollup(ctx, gen.CancelRunRollupParams{RunID: args.RunID, Now: args.Now})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.Run{}, runConflict(ctx, gq, op, args.RunID, RunStatusCancelling, RunStatusCancelled)
+	}
+	if err != nil {
+		return gen.Run{}, wrapErr(op, err)
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventRunCancelled, struct{}{}); err != nil {
+		return gen.Run{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "run cancelled (rollup)", log.RunID(args.RunID.String()))
+	return run, nil
+}
+
+// LockRunStatus acquires the run-row lock and returns the run's current
+// status — the engine's in-transaction run-status check (ticket 5.6): a
+// completion transaction reads it first to decide between the normal
+// completion and the cancel settlement, serialized against CancelRun/
+// ParkRun by the same lock every transition takes first. Must run inside
+// WithTx, like every transition.
+func LockRunStatus(ctx context.Context, q Querier, runID uuid.UUID, now time.Time) (string, error) {
+	const op = "lock run status"
+	gq, err := transitionQueries(ctx, q, op, now)
+	if err != nil {
+		return "", err
+	}
+	row, err := lockRun(ctx, gq, op, runID)
+	if err != nil {
+		return "", err
+	}
+	return row.Status, nil
 }
 
 // transitionQueries validates a transition call and unwraps the generated

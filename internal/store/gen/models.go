@@ -49,6 +49,9 @@ type Run struct {
 	FinishedAt       *time.Time
 	OnFailure        string
 	StepsCancelled   int32
+	ParkReason       *string
+	CancelReason     *string
+	DeadlineAt       *time.Time
 }
 
 type RunEdge struct {

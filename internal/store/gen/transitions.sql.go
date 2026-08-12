@@ -99,11 +99,105 @@ func (q *Queries) BumpRunStepCounters(ctx context.Context, arg BumpRunStepCounte
 	return result.RowsAffected(), nil
 }
 
+const cancelRun = `-- name: CancelRun :one
+UPDATE runs
+SET status        = 'cancelling',
+    cancel_reason = $1,
+    park_reason   = NULL
+WHERE id = $2 AND status IN ('running', 'parked')
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at
+`
+
+type CancelRunParams struct {
+	Reason *string
+	RunID  uuid.UUID
+}
+
+// Cancel request: running|parked → cancelling with a typed reason (ticket
+// 5.6). The quiescing state: the claim path refuses its steps, the sweep
+// (same transaction, caller's move) cancels every claimless non-terminal
+// step, and in-flight completions settle their steps as cancelled.
+func (q *Queries) CancelRun(ctx context.Context, arg CancelRunParams) (Run, error) {
+	row := q.db.QueryRow(ctx, cancelRun, arg.Reason, arg.RunID)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.DefinitionID,
+		&i.Definition,
+		&i.Status,
+		&i.Params,
+		&i.IdempotencyToken,
+		&i.GraphVersion,
+		&i.NextSeq,
+		&i.StepsTotal,
+		&i.StepsSucceeded,
+		&i.StepsFailed,
+		&i.StepsSkipped,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.OnFailure,
+		&i.StepsCancelled,
+		&i.ParkReason,
+		&i.CancelReason,
+		&i.DeadlineAt,
+	)
+	return i, err
+}
+
+const cancelRunRollup = `-- name: CancelRunRollup :one
+UPDATE runs
+SET status      = 'cancelled',
+    finished_at = $1::timestamptz
+WHERE id = $2 AND status = 'cancelling'
+  AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled = steps_total
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at
+`
+
+type CancelRunRollupParams struct {
+	Now   time.Time
+	RunID uuid.UUID
+}
+
+// Cancel finalization: cancelling → cancelled once every step is terminal
+// (same counter form as FailRunRollup, without the failed-step
+// requirement). Attempted (and its conflict dropped) wherever a step of a
+// possibly-cancelling run terminalizes.
+func (q *Queries) CancelRunRollup(ctx context.Context, arg CancelRunRollupParams) (Run, error) {
+	row := q.db.QueryRow(ctx, cancelRunRollup, arg.Now, arg.RunID)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.DefinitionID,
+		&i.Definition,
+		&i.Status,
+		&i.Params,
+		&i.IdempotencyToken,
+		&i.GraphVersion,
+		&i.NextSeq,
+		&i.StepsTotal,
+		&i.StepsSucceeded,
+		&i.StepsFailed,
+		&i.StepsSkipped,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.OnFailure,
+		&i.StepsCancelled,
+		&i.ParkReason,
+		&i.CancelReason,
+		&i.DeadlineAt,
+	)
+	return i, err
+}
+
 const cancelRunStep = `-- name: CancelRunStep :one
 UPDATE run_steps
-SET status     = 'cancelled',
-    updated_at = $1::timestamptz
-WHERE run_id = $2 AND step_id = $3 AND status = 'pending'
+SET status          = 'cancelled',
+    next_attempt_at = NULL,
+    updated_at      = $1::timestamptz
+WHERE run_id = $2 AND step_id = $3
+  AND status IN ('pending', 'ready', 'retrying')
 RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
 `
 
@@ -113,12 +207,74 @@ type CancelRunStepParams struct {
 	StepID string
 }
 
-// Write-off: pending → cancelled, when a dead-lettered upstream step made
-// readiness impossible (ADR-006 continue_independent_branches; 5.6's
-// run-cancel writes the same status with a different event reason).
-// finished_at stays NULL — the step never ran, like skipped.
+// Write-off / run-cancel sweep: pending|ready|retrying → cancelled. The
+// 5.4 write-off cancels only pending steps (a dead-lettered upstream step
+// made readiness impossible); 5.6's run-cancel sweep additionally cancels
+// ready and retrying steps — none of which holds a claim or an open
+// attempt, so the status flip (plus clearing a retrying step's schedule)
+// is the whole transition. finished_at stays NULL — the step never ran,
+// like skipped. Running steps take the claim-fenced
+// CancelRunningRunStep below instead.
 func (q *Queries) CancelRunStep(ctx context.Context, arg CancelRunStepParams) (RunStep, error) {
 	row := q.db.QueryRow(ctx, cancelRunStep, arg.Now, arg.RunID, arg.StepID)
+	var i RunStep
+	err := row.Scan(
+		&i.RunID,
+		&i.StepID,
+		&i.StepType,
+		&i.Config,
+		&i.Status,
+		&i.RemainingDeps,
+		&i.FiredDeps,
+		&i.ClaimID,
+		&i.AttemptCount,
+		&i.Output,
+		&i.Error,
+		&i.GraphVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
+		&i.Timeout,
+	)
+	return i, err
+}
+
+const cancelRunningRunStep = `-- name: CancelRunningRunStep :one
+UPDATE run_steps
+SET status      = 'cancelled',
+    error       = $1,
+    finished_at = $2::timestamptz,
+    updated_at  = $2::timestamptz
+WHERE run_id = $3 AND step_id = $4
+  AND status = 'running' AND claim_id = $5
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout
+`
+
+type CancelRunningRunStepParams struct {
+	Error   json.RawMessage
+	Now     time.Time
+	RunID   uuid.UUID
+	StepID  string
+	ClaimID *uuid.UUID
+}
+
+// Run-cancel completion: running → cancelled, fenced by claim_id (ticket
+// 5.6, ADR-006 taxonomy row 8): the in-flight worker noticed its run is
+// cancelling — via the executor-context cancellation or the in-transaction
+// run-status check — and settles the step as cancelled instead of routing
+// the outcome through retry/DLQ. error records what the executor returned
+// when the cancel interrupted it (NULL when it was still running clean).
+func (q *Queries) CancelRunningRunStep(ctx context.Context, arg CancelRunningRunStepParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, cancelRunningRunStep,
+		arg.Error,
+		arg.Now,
+		arg.RunID,
+		arg.StepID,
+		arg.ClaimID,
+	)
 	var i RunStep
 	err := row.Scan(
 		&i.RunID,
@@ -273,9 +429,10 @@ func (q *Queries) DeadLetterRunStep(ctx context.Context, arg DeadLetterRunStepPa
 const failRun = `-- name: FailRun :one
 UPDATE runs
 SET status      = 'failed',
+    park_reason = NULL,
     finished_at = $1::timestamptz
-WHERE id = $2 AND status = 'running' AND steps_failed >= 1
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled
+WHERE id = $2 AND status IN ('running', 'parked') AND steps_failed >= 1
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at
 `
 
 type FailRunParams struct {
@@ -283,8 +440,9 @@ type FailRunParams struct {
 	RunID uuid.UUID
 }
 
-// Rollup: running → failed, immediately — the fail_fast disposition
-// (ADR-006): the guard requires only that some step failed terminally.
+// Rollup: running|parked → failed, immediately — the fail_fast
+// disposition (ADR-006): the guard requires only that some step failed
+// terminally. Fires from parked for the same reason as SucceedRun.
 func (q *Queries) FailRun(ctx context.Context, arg FailRunParams) (Run, error) {
 	row := q.db.QueryRow(ctx, failRun, arg.Now, arg.RunID)
 	var i Run
@@ -306,6 +464,9 @@ func (q *Queries) FailRun(ctx context.Context, arg FailRunParams) (Run, error) {
 		&i.FinishedAt,
 		&i.OnFailure,
 		&i.StepsCancelled,
+		&i.ParkReason,
+		&i.CancelReason,
+		&i.DeadlineAt,
 	)
 	return i, err
 }
@@ -313,10 +474,11 @@ func (q *Queries) FailRun(ctx context.Context, arg FailRunParams) (Run, error) {
 const failRunRollup = `-- name: FailRunRollup :one
 UPDATE runs
 SET status      = 'failed',
+    park_reason = NULL,
     finished_at = $1::timestamptz
-WHERE id = $2 AND status = 'running' AND steps_failed >= 1
+WHERE id = $2 AND status IN ('running', 'parked') AND steps_failed >= 1
   AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled = steps_total
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at
 `
 
 type FailRunRollupParams struct {
@@ -324,7 +486,7 @@ type FailRunRollupParams struct {
 	RunID uuid.UUID
 }
 
-// Rollup: running → failed, once every step is terminal — the
+// Rollup: running|parked → failed, once every step is terminal — the
 // continue_independent_branches terminalizer (ticket 5.4, ADR-006): the
 // run keeps running while independent branches finish and lands failed
 // when the counters account for every step with at least one terminal
@@ -351,6 +513,9 @@ func (q *Queries) FailRunRollup(ctx context.Context, arg FailRunRollupParams) (R
 		&i.FinishedAt,
 		&i.OnFailure,
 		&i.StepsCancelled,
+		&i.ParkReason,
+		&i.CancelReason,
+		&i.DeadlineAt,
 	)
 	return i, err
 }
@@ -378,6 +543,50 @@ func (q *Queries) GetRunEdge(ctx context.Context, arg GetRunEdgeParams) (RunEdge
 		&i.MaxIterations,
 		&i.Resolution,
 		&i.GraphVersion,
+	)
+	return i, err
+}
+
+const parkRun = `-- name: ParkRun :one
+UPDATE runs
+SET status      = 'parked',
+    park_reason = $1
+WHERE id = $2 AND status = 'running'
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at
+`
+
+type ParkRunParams struct {
+	Reason *string
+	RunID  uuid.UUID
+}
+
+// Park: running → parked with a typed reason (ticket 5.6). Dispatch
+// pauses via the claim path's run-status guard; in-flight steps keep
+// executing and settle normally.
+func (q *Queries) ParkRun(ctx context.Context, arg ParkRunParams) (Run, error) {
+	row := q.db.QueryRow(ctx, parkRun, arg.Reason, arg.RunID)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.DefinitionID,
+		&i.Definition,
+		&i.Status,
+		&i.Params,
+		&i.IdempotencyToken,
+		&i.GraphVersion,
+		&i.NextSeq,
+		&i.StepsTotal,
+		&i.StepsSucceeded,
+		&i.StepsFailed,
+		&i.StepsSkipped,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.OnFailure,
+		&i.StepsCancelled,
+		&i.ParkReason,
+		&i.CancelReason,
+		&i.DeadlineAt,
 	)
 	return i, err
 }
@@ -580,7 +789,7 @@ UPDATE runs
 SET status      = 'running',
     finished_at = NULL
 WHERE id = $1 AND status = 'failed'
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at
 `
 
 // Requeue revival: failed → running (ticket 5.4). An operator requeueing
@@ -607,6 +816,9 @@ func (q *Queries) ResumeRun(ctx context.Context, runID uuid.UUID) (Run, error) {
 		&i.FinishedAt,
 		&i.OnFailure,
 		&i.StepsCancelled,
+		&i.ParkReason,
+		&i.CancelReason,
+		&i.DeadlineAt,
 	)
 	return i, err
 }
@@ -764,10 +976,11 @@ func (q *Queries) SkipRunStep(ctx context.Context, arg SkipRunStepParams) (RunSt
 const succeedRun = `-- name: SucceedRun :one
 UPDATE runs
 SET status      = 'succeeded',
+    park_reason = NULL,
     finished_at = $1::timestamptz
-WHERE id = $2 AND status = 'running'
+WHERE id = $2 AND status IN ('running', 'parked')
   AND steps_failed = 0 AND steps_succeeded + steps_skipped = steps_total
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at
 `
 
 type SucceedRunParams struct {
@@ -775,10 +988,14 @@ type SucceedRunParams struct {
 	RunID uuid.UUID
 }
 
-// Rollup: running → succeeded when every step is terminal and none failed
-// (aggregate-counter form: succeeded + skipped = total, failed = 0; the
-// counters are maintained by the transitions above in the same
-// transactions, so they are trustworthy).
+// Rollup: running|parked → succeeded when every step is terminal and none
+// failed (aggregate-counter form: succeeded + skipped = total, failed = 0;
+// the counters are maintained by the transitions above in the same
+// transactions, so they are trustworthy). Since ticket 5.6 the rollups
+// fire from parked too: park pauses the dispatch of new work, not the
+// settling of work already in flight — a parked run whose last in-flight
+// step lands terminalizes honestly instead of resting parked-but-done
+// (ADR-006 "Park semantics"). park_reason clears with the exit.
 func (q *Queries) SucceedRun(ctx context.Context, arg SucceedRunParams) (Run, error) {
 	row := q.db.QueryRow(ctx, succeedRun, arg.Now, arg.RunID)
 	var i Run
@@ -800,6 +1017,9 @@ func (q *Queries) SucceedRun(ctx context.Context, arg SucceedRunParams) (Run, er
 		&i.FinishedAt,
 		&i.OnFailure,
 		&i.StepsCancelled,
+		&i.ParkReason,
+		&i.CancelReason,
+		&i.DeadlineAt,
 	)
 	return i, err
 }
@@ -909,6 +1129,44 @@ func (q *Queries) TakeoverRunStep(ctx context.Context, arg TakeoverRunStepParams
 		&i.RetryPolicy,
 		&i.NextAttemptAt,
 		&i.Timeout,
+	)
+	return i, err
+}
+
+const unparkRun = `-- name: UnparkRun :one
+UPDATE runs
+SET status      = 'running',
+    park_reason = NULL
+WHERE id = $1 AND status = 'parked'
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at
+`
+
+// Unpark: parked → running (ticket 5.6). Re-outboxing the run's ready
+// steps is the caller's move, in the same transaction.
+func (q *Queries) UnparkRun(ctx context.Context, runID uuid.UUID) (Run, error) {
+	row := q.db.QueryRow(ctx, unparkRun, runID)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.DefinitionID,
+		&i.Definition,
+		&i.Status,
+		&i.Params,
+		&i.IdempotencyToken,
+		&i.GraphVersion,
+		&i.NextSeq,
+		&i.StepsTotal,
+		&i.StepsSucceeded,
+		&i.StepsFailed,
+		&i.StepsSkipped,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.OnFailure,
+		&i.StepsCancelled,
+		&i.ParkReason,
+		&i.CancelReason,
+		&i.DeadlineAt,
 	)
 	return i, err
 }

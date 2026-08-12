@@ -321,6 +321,9 @@ func TestStepTransitionMatrix(t *testing.T) {
 	transitions := []struct {
 		name      string
 		legalFrom string
+		// alsoLegalFrom extends legalFrom for the multi-from transitions
+		// (CancelStep since 5.6 accepts pending, ready, and retrying).
+		alsoLegalFrom []string
 		// counters seeded for pending steps: chosen so the pending cell
 		// exercises the transition's guard-satisfied path.
 		pendingRemaining, pendingFired int32
@@ -355,6 +358,9 @@ func TestStepTransitionMatrix(t *testing.T) {
 		},
 		{
 			name: "CancelStep", legalFrom: store.StepStatusPending,
+			// Broadened by 5.6's run-cancel sweep (retrying is not in this
+			// matrix's status set; runctl_integration_test.go covers it).
+			alsoLegalFrom:    []string{store.StepStatusReady},
 			pendingRemaining: 1, pendingFired: 0,
 			call: func(ctx context.Context, q store.Querier, runID uuid.UUID, stepID string, _ uuid.UUID) error {
 				_, err := store.CancelStep(ctx, q, store.CancelStepArgs{
@@ -471,7 +477,11 @@ func TestStepTransitionMatrix(t *testing.T) {
 					return tr.call(ctx, q, run.ID, stepID, claim)
 				})
 
-				if from == tr.legalFrom {
+				legal := from == tr.legalFrom
+				for _, f := range tr.alsoLegalFrom {
+					legal = legal || from == f
+				}
+				if legal {
 					if err != nil {
 						t.Errorf("%s from %q: unexpected rejection: %v", tr.name, from, err)
 					}

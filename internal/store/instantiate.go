@@ -225,6 +225,19 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 	if onFailure == "" {
 		onFailure = dag.FailFast
 	}
+	// The optional wall-clock deadline is materialized as an absolute time
+	// (ticket 5.6): the reconciler's deadline scan never reparses the
+	// snapshot. Validation guaranteed parseability; a hand-built definition
+	// that skipped Validate cannot reach here (CreateRun validates).
+	var deadlineAt *time.Time
+	if p.def.MaxWallClock != "" {
+		d, err := time.ParseDuration(p.def.MaxWallClock)
+		if err != nil {
+			return gen.Run{}, fmt.Errorf("store: CreateRun: parsing max_wall_clock: %w", err)
+		}
+		t := args.Now.Add(d)
+		deadlineAt = &t
+	}
 	run, err := q.Runs().Create(ctx, gen.CreateRunParams{
 		ID:               args.RunID,
 		DefinitionID:     args.DefinitionID,
@@ -235,6 +248,7 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		OnFailure:        string(onFailure),
 		StepsTotal:       int32(len(p.def.Steps)), //nolint:gosec // step count is validation-bounded
 		StartedAt:        &startedAt,
+		DeadlineAt:       deadlineAt,
 	})
 	if err != nil {
 		return gen.Run{}, err

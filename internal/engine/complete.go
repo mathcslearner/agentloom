@@ -267,7 +267,19 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 	var fanned fanOutResult
 	var fenced *store.TransitionError
 	runDone := false
+	cancelling := false
 	txErr := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+		// The run-status check (ticket 5.6): serialized against CancelRun
+		// by the run lock every transition takes first. On a cancelling
+		// run the success is still honored — the work is done, and
+		// discarding it would waste budget and re-run side effects — but
+		// fan-out is skipped: the successors were already cancelled by the
+		// request's sweep, and the run must quiesce, not advance.
+		status, err := store.LockRunStatus(ctx, q, step.RunID, now)
+		if err != nil {
+			return err
+		}
+		cancelling = status == store.RunStatusCancelling
 		if _, err := store.SucceedStep(ctx, q, store.SucceedStepArgs{
 			RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
 			Output: out.Data, Now: now,
@@ -282,21 +294,23 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		if err := failpoint(stageAfterStepTransition); err != nil {
 			return err
 		}
-		var ferr error
-		fanned, ferr = fanOut(ctx, q, step.RunID, now, terminalSource{stepID: step.StepID, verdicts: verdicts})
-		if ferr != nil {
-			return ferr
-		}
-		if err := failpoint(stageAfterFanOut); err != nil {
-			return err
-		}
-		for _, id := range fanned.readied {
-			if _, err := q.Outbox().Create(ctx, step.RunID, id, store.OutboxReasonStepReady); err != nil {
+		if !cancelling {
+			var ferr error
+			fanned, ferr = fanOut(ctx, q, step.RunID, now, terminalSource{stepID: step.StepID, verdicts: verdicts})
+			if ferr != nil {
+				return ferr
+			}
+			if err := failpoint(stageAfterFanOut); err != nil {
 				return err
 			}
-		}
-		if err := failpoint(stageAfterOutbox); err != nil {
-			return err
+			for _, id := range fanned.readied {
+				if _, err := q.Outbox().Create(ctx, step.RunID, id, store.OutboxReasonStepReady); err != nil {
+					return err
+				}
+			}
+			if err := failpoint(stageAfterOutbox); err != nil {
+				return err
+			}
 		}
 		var rerr error
 		runDone, rerr = attemptRunRollup(ctx, q, step.RunID, now)
@@ -333,7 +347,8 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		slog.Int("edges_resolved", len(verdicts)),
 		slog.Int("steps_readied", len(fanned.readied)),
 		slog.Int("steps_skipped", len(fanned.skipped)),
-		slog.Bool("run_succeeded", runDone))
+		slog.Bool("run_cancelling", cancelling),
+		slog.Bool("run_terminal", runDone))
 	if len(fanned.readied) > 0 && e.nudge != nil {
 		e.nudge()
 	}
@@ -341,13 +356,15 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 }
 
 // attemptRunRollup tries the terminal rollups and drops the conflicts
-// when neither guard (yet) holds — the completion transaction simply
-// attempts them after its step lands. SucceedRun passes exactly once, on
-// the transaction that terminalizes the last step of a fully-successful
-// run; FailRunRollup (ticket 5.4) passes exactly once on the transaction
-// that terminalizes the last step of a continue_independent_branches run
-// carrying a dead-lettered step — partial success is still a failed run,
-// with the per-step statuses carrying the nuance (ADR-006).
+// when no guard (yet) holds — the completion transaction simply attempts
+// them after its step lands. The three guards are disjoint by run status
+// and pass at most once each: SucceedRun on the transaction that
+// terminalizes the last step of a fully-successful run; FailRunRollup
+// (ticket 5.4) on the one that terminalizes the last step of a
+// continue_independent_branches run carrying a dead-lettered step —
+// partial success is still a failed run, with the per-step statuses
+// carrying the nuance (ADR-006); CancelRunRollup (ticket 5.6) on the one
+// that settles the last in-flight step of a cancelling run.
 func attemptRunRollup(ctx context.Context, q store.Querier, runID uuid.UUID, now time.Time) (bool, error) {
 	_, err := store.SucceedRun(ctx, q, store.SucceedRunArgs{RunID: runID, Now: now})
 	if err == nil {
@@ -361,10 +378,10 @@ func attemptRunRollup(ctx context.Context, q store.Querier, runID uuid.UUID, now
 	if err == nil {
 		return true, nil
 	}
-	if errors.As(err, &te) {
-		return false, nil
+	if !errors.As(err, &te) {
+		return false, err
 	}
-	return false, err
+	return attemptCancelRollup(ctx, q, runID, now)
 }
 
 // completeFailure is the failure router (tickets 5.2 + 5.4, ADR-006): one
@@ -404,11 +421,35 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 
 	now := e.now()
 	runFailed := false
+	cancelSettled := false
+	cancelFinalized := false
 	var cancelledSteps []string
 	var fireAt time.Time
 	scheduled := false
 	var fenced *store.TransitionError
 	txErr := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+		// The run-status check (ticket 5.6): on a cancelling run the
+		// failure is not judged at all — no retry, no DLQ (ADR-006 row 8);
+		// the step settles as cancelled with the executor's error preserved
+		// on the attempt, and the transaction attempts the finalization.
+		status, serr := store.LockRunStatus(ctx, q, step.RunID, now)
+		if serr != nil {
+			return serr
+		}
+		if status == store.RunStatusCancelling {
+			if _, cerr := store.CancelRunningStep(ctx, q, store.CancelRunningStepArgs{
+				RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
+				Reason: store.CancelReasonRunCancelled, Error: payload, Now: now,
+			}); cerr != nil {
+				// The fence firing on the cancel path — see completeSuccess.
+				errors.As(cerr, &fenced)
+				return cerr
+			}
+			cancelSettled = true
+			var rerr error
+			cancelFinalized, rerr = attemptCancelRollup(ctx, q, step.RunID, now)
+			return rerr
+		}
 		retry := perr == nil && policy.Retries(class)
 		exhausted := false
 		if retry {
@@ -486,6 +527,12 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 		return txErr
 	}
 
+	if cancelSettled {
+		logger.InfoContext(ctx, "step cancelled: run is cancelling — failure not judged",
+			slog.Any("error", execErr),
+			slog.Bool("run_cancelled", cancelFinalized))
+		return nil
+	}
 	if scheduled {
 		e.scheduleRetry(ctx, step, fireAt)
 		logger.WarnContext(ctx, "step attempt failed; retry scheduled",

@@ -1,8 +1,9 @@
 {
   "schema_version": 1,
   "name": "kitchen-sink",
-  "description": "Exercises every step type, edge feature, retry policies, execution timeouts, the failure policy, journaled side effects, and the ui block.",
+  "description": "Exercises every step type, edge feature, retry policies, execution timeouts, the failure policy, the run wall-clock deadline, journaled side effects, and the ui block.",
   "on_failure": "continue_independent_branches",
+  "max_wall_clock": "2h",
   "params": {
     "goal": {"type": "string", "required": true},
     "budget": {"type": "number", "required": false},

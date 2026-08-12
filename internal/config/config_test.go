@@ -58,6 +58,7 @@ func TestLoadDefaults(t *testing.T) {
 		ReconcileRunningStale: config.DefaultWorkerReconcileRunningStale,
 		ReconcileRetryStale:   config.DefaultWorkerReconcileRetryStale,
 		ReconcileLimit:        config.DefaultWorkerReconcileLimit,
+		CancelPollInterval:    config.DefaultWorkerCancelPollInterval,
 		EffectsStrict:         true,
 	}
 	if cfg.Worker != wantWorker {
@@ -129,6 +130,7 @@ func TestLoadWorkerOverrides(t *testing.T) {
 		config.EnvWorkerReconcileRunningStale: "2m",
 		config.EnvWorkerReconcileRetryStale:   "30s",
 		config.EnvWorkerReconcileLimit:        "50",
+		config.EnvWorkerCancelPollInterval:    "3s",
 		config.EnvWorkerEffectsStrict:         "false",
 	}))
 	if err != nil {
@@ -143,6 +145,7 @@ func TestLoadWorkerOverrides(t *testing.T) {
 		ReconcileRunningStale: 2 * time.Minute,
 		ReconcileRetryStale:   30 * time.Second,
 		ReconcileLimit:        50,
+		CancelPollInterval:    3 * time.Second,
 		EffectsStrict:         false,
 	}
 	if cfg.Worker != want {

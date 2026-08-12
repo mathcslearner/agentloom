@@ -156,7 +156,12 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 	if step.ClaimID != nil {
 		claimID = *step.ClaimID
 	}
-	out, expired, execErr := runExecutor(ctx, executor, exec.StepContext{
+	// The in-flight cancellation watch (ticket 5.6): polls the run's
+	// status while the executor runs and cancels its context when the run
+	// turns cancelling. Pure latency — the completion transactions below
+	// re-check the run status under the run lock either way.
+	watchCtx, stopWatch := e.watchRunCancel(ctx, step.RunID)
+	out, expired, execErr := runExecutor(watchCtx, executor, exec.StepContext{
 		StepType: dag.StepType(step.StepType),
 		Config:   step.Config,
 		Input:    nil, // input rendering is M6; run_steps carries no input yet
@@ -167,6 +172,15 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 		Effects:        e.effects.ForStep(step.RunID, step.StepID, int(step.AttemptCount), claimID, logger),
 		Logger:         logger,
 	}, timeout)
+	stopWatch()
+	if errors.Is(context.Cause(watchCtx), errRunCancelled) {
+		// The routing below stays uniform: a success is honored (the
+		// completion transaction skips fan-out on a cancelling run) and a
+		// failure settles the step as cancelled — both via the run-status
+		// check inside the completion transaction, which is the authority.
+		logger.InfoContext(ctx, "executor interrupted by run cancellation",
+			slog.Bool("executor_errored", execErr != nil))
+	}
 	if expired {
 		if execErr != nil {
 			// The engine assigns the timeout class from context state

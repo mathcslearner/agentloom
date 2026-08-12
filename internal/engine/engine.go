@@ -69,6 +69,13 @@ type Engine struct {
 	// effectsStrict makes journal misuse panic (dev/test loudness) instead
 	// of dead-lettering the step; see config.WorkerConfig.EffectsStrict.
 	effectsStrict bool
+	// cancelPollInterval is how often the in-flight cancellation watch
+	// polls the run's status while an executor runs (ticket 5.6): the
+	// latency bound on "in-flight executors get context cancellation".
+	// Zero disables the watch — correctness is unaffected (the completion
+	// transaction re-checks under the run lock); only the executor then
+	// runs to its own end before the cancel settles.
+	cancelPollInterval time.Duration
 }
 
 // Option customizes an Engine.
@@ -112,6 +119,15 @@ func WithJitterRand(r func() float64) Option {
 // config.WorkerConfig.EffectsStrict here.
 func WithStrictEffects(strict bool) Option {
 	return func(e *Engine) { e.effectsStrict = strict }
+}
+
+// WithCancelPollInterval sets how often the in-flight cancellation watch
+// polls the run's status during executor invocations (ticket 5.6) —
+// cmd/worker wires config.WorkerConfig.CancelPollInterval here. Zero
+// disables the watch (executors then run to their own end; the completion
+// transaction still settles the cancel).
+func WithCancelPollInterval(d time.Duration) Option {
+	return func(e *Engine) { e.cancelPollInterval = d }
 }
 
 // New builds an Engine over the given store and executor registry.

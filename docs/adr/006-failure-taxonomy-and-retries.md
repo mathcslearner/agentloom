@@ -121,7 +121,7 @@ means the dead-letter path (5.4).
 | 5 | `exec.ErrInvalidConfig` — executor-side config decode failure | `permanent` | no retry; DLQ |
 | 6 | CEL edge-predicate failure at completion — compile error on stored expression, evaluation error, non-bool result (`planEdges`; ADR-003 "evaluation errors are failures") | `permanent` | no retry; DLQ. The class attaches to the *completing* step's failure |
 | 7 | Corrupt stored content discovered mid-completion — run params that no longer decode, a join target's config failing `dag.DecodeStepConfig` (`completeSuccess`, post-M4 audit routing) | `permanent` | no retry; DLQ |
-| 8 | Executor context cancelled by run cancel / park / drain (M5.6/5.7) | `cancelled` | no retry, no DLQ; step follows the run-control transition (→ `cancelled`, or back to `ready` on drain) |
+| 8 | Executor context cancelled by run cancel (as built in 5.6: the settlement is decided by the completion transaction's run-status check, so it also covers failures that merely *raced* the cancel; park never cancels executors) / worker drain (M5.7) | `cancelled` | no retry, no DLQ; step follows the run-control transition (→ `cancelled`, or back to `ready` on drain) |
 | 9 | Handler panic (`recover` in the consumer loop) | *none recorded* | no ACK; redelivery → takeover re-executes; the delivery count walks a deterministic panic to the poison threshold → DLQ (source `poison`) |
 | 10 | Worker crash / SIGKILL mid-execution | `lost` (administrative, on takeover) | fresh attempt via lease-expiry takeover (ADR-005); **does not consume retry budget** (below) |
 | 11 | Claim/completion transaction transport failure (`WithTx` error, Postgres down) | *none recorded* | no ACK; redeliver (nothing was decided) — ADR-005's discipline unchanged |
@@ -257,7 +257,9 @@ Classification section: after the executor returns, the engine judges
 (`context.DeadlineExceeded`) and the executor returned an error —
 whatever error it wrapped. A parent cancellation (shutdown) surfaces as
 `context.Canceled`, is *not* a timeout, and keeps its 4.x redeliver
-route until 5.6 assigns `cancelled`. A success racing the deadline is
+route; since 5.6 a *run-cancel* interruption settles as `cancelled` via
+the completion transaction's run-status check (the as-built section
+below). A success racing the deadline is
 honored (with a warning log): the work is done, and discarding it to
 record a timeout would waste budget and re-run side effects; the fenced
 CAS already guards correctness. The timeout failure routes through the
@@ -505,6 +507,71 @@ appends one `key=… attempt=…` line to a file through `Do`, then — when
 retrying step demonstrably takes N+1 attempts while the file gains one
 line. The 5.8 chaos suite counts those lines at quiescence.
 
+### Run-level controls: cancel, park, deadlines (as built, 5.6)
+
+Runs gained `parked`, `cancelling`, and `cancelled` (migration 0007;
+ADR-004's reserved rows realized), three engine ops (`Cancel`, `Park`,
+`Unpark` — internal until M6.5's API), and an optional definition-level
+`max_wall_clock` (a Go-duration string, ≤ 30 days, code
+`max_wall_clock_field_invalid`) materialized at instantiation as the
+absolute `runs.deadline_at`.
+
+**Cancel is cooperative**, converging through three mechanisms, all
+resting on the run lock every transition takes first:
+
+1. **The request** (`running|parked → cancelling`, typed reason `manual`
+   or `deadline_exceeded`) sweeps every claimless non-terminal step —
+   pending, ready, retrying — to `cancelled` in its own transaction (the
+   5.4 write-off CAS with a broadened from-set, event reason
+   `run_cancelled`; a retrying step's schedule clears) and attempts the
+   finalization rollup `cancelling → cancelled` (all-terminal counter
+   guard), which passes immediately when nothing was in flight.
+2. **In-flight workers.** The completion transaction reads the run
+   status under the run lock: on a cancelling run a *success* is honored
+   (the work is done; discarding it would waste budget and re-run side
+   effects — the 5.3 precedent) but fan-out is skipped and the rollup
+   attempted; a *failure* is not judged at all — no retry, no DLQ
+   (taxonomy row 8) — the step settles `running → cancelled`
+   (claim-fenced, attempt outcome the administrative `cancelled`, never
+   counted against the retry budget, executor error preserved). The
+   latency bound is the **cancellation watch**: a joined poller goroutine
+   (interval `AGENTLOOM_WORKER_CANCEL_POLL_INTERVAL`, default 10s ≈ the
+   heartbeat cadence) that reads the run status — an unlocked hint —
+   and cancels the executor's context with a typed cause. The watch is
+   pure latency; the in-transaction check is the authority, so a
+   disabled watch is merely slower, never wrong.
+3. **The reconciler** heals the crash cell: a stale running step of a
+   *cancelling* run (the ordinary stale-running scan skips non-running
+   runs) gets takeover (attempt `lost`) + the sweep CAS + the rollup —
+   never a re-outbox, since cancelled work is not re-dispatched.
+
+Deliveries for a cancelling/cancelled run's steps bounce off 5.2's
+run-status claim guard and are consumed (ack-drop), which is what leaves
+no orphan PEL entries; a cancelled run's dead-lettered steps are not
+requeueable (the requeue op refuses — a cancel is terminal by operator
+intent).
+
+**Park pauses dispatch and nothing else.** `running → parked` with a
+typed reason (`manual` now; `budget_exceeded`/`awaiting_human` reserved
+for M10/M15). The claim guard refuses parked runs; in-flight steps settle
+normally and their fan-out proceeds — newly-ready successors are
+dispatched, their deliveries consumed by the guard, and **unpark**
+re-outboxes every ready step without a pending dispatch row (5.4's
+requeue machinery, reason `unpark`). Overdue retrying steps whose delayed
+entries were consumed while parked are deliberately left to the ordinary
+overdue-retrying scan, which admits them again once the run is running.
+**Rollups fire from parked**: park means "no new work starts," not "a
+run whose last in-flight step just landed rests parked-but-done" — so
+`SucceedRun`, `FailRun`, and `FailRunRollup` accept `running|parked` and
+a parked run settles honestly (the alternative, deferred disposition
+re-derived at unpark, was rejected as more machinery for a less honest
+status).
+
+**Deadlines** are a reconciler duty: a fourth scan (partial index on
+`deadline_at` where status in running/parked) feeds the same cancel
+sweep with reason `deadline_exceeded`. Parked runs are eligible — the
+wall clock does not pause with dispatch.
+
 ### Enforcement points
 
 **5.1** (this ticket) — the schema: `retry` on steps, `on_failure`
@@ -520,7 +587,10 @@ with reason `dlq_requeue`, the failure-policy run disposition and
 downstream write-off. **5.5** — the derived idempotency key, the
 `side_effects` journal + protocol, `StepContext.Effects`, strict-mode
 misuse, `effectful_echo`. **5.6** — the `cancelled` class for run-control
-cancellation. **M11** — unlocks `validation_failed` in `retry_on` and
+cancellation: run statuses `parked`/`cancelling`/`cancelled`, the cancel
+sweep + in-flight settlement + reconciler heal, park/unpark with reason
+`unpark`, and the `max_wall_clock` deadline (as-built section above).
+**M11** — unlocks `validation_failed` in `retry_on` and
 as an outcome. ADR-004's transition matrix and ADR-005's reason
 vocabulary are extended by those tickets exactly as both ADRs
 anticipated; no prior decision changes.

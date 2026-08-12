@@ -72,6 +72,10 @@ type RunRepo interface {
 	// arg.Params becomes the empty JSON object.
 	Create(ctx context.Context, arg gen.CreateRunParams) (gen.Run, error)
 	Get(ctx context.Context, id uuid.UUID) (gen.Run, error)
+	// GetStatus is the lightweight unlocked status read behind the
+	// engine's in-flight cancellation poller (ticket 5.6): a hint only —
+	// authoritative checks run under the run lock inside transactions.
+	GetStatus(ctx context.Context, id uuid.UUID) (string, error)
 	GetByIdempotencyToken(ctx context.Context, token string) (gen.Run, error)
 	// List returns runs newest-first.
 	List(ctx context.Context, limit int32) ([]gen.Run, error)
@@ -105,6 +109,11 @@ func (r runRepo) Create(ctx context.Context, arg gen.CreateRunParams) (gen.Run, 
 func (r runRepo) Get(ctx context.Context, id uuid.UUID) (gen.Run, error) {
 	run, err := r.q.GetRun(ctx, id)
 	return run, wrapErr("get run", err)
+}
+
+func (r runRepo) GetStatus(ctx context.Context, id uuid.UUID) (string, error) {
+	status, err := r.q.GetRunStatus(ctx, id)
+	return status, wrapErr("get run status", err)
 }
 
 func (r runRepo) GetByIdempotencyToken(ctx context.Context, token string) (gen.Run, error) {

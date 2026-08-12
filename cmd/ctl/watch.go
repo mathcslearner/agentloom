@@ -13,7 +13,8 @@ import (
 
 // newWatchCmd builds `ctl watch <run-id>`: poll the run and reprint its
 // status tree whenever it changes, until the run reaches a terminal
-// status. Exit 0 on succeeded, 1 on failed (or on timeout).
+// status. Exit 0 on succeeded, 1 on failed or cancelled (or on timeout).
+// A parked run is not terminal — the watch keeps polling through it.
 func newWatchCmd() *cobra.Command {
 	var (
 		interval time.Duration
@@ -67,6 +68,8 @@ func watch(ctx context.Context, c *client, runID string, interval time.Duration,
 			return nil
 		case store.RunStatusFailed:
 			return fmt.Errorf("run %s failed", runID)
+		case store.RunStatusCancelled:
+			return fmt.Errorf("run %s cancelled", runID)
 		}
 		select {
 		case <-ctx.Done():

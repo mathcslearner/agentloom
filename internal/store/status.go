@@ -10,6 +10,35 @@ const (
 	RunStatusRunning   = "running"
 	RunStatusSucceeded = "succeeded"
 	RunStatusFailed    = "failed"
+	// RunStatusParked: dispatch is paused (ticket 5.6) — the claim path
+	// refuses the run's steps — while in-flight steps keep executing and
+	// settle normally. Not terminal; unpark (or a rollup of already
+	// in-flight work, or a cancel) is the way out.
+	RunStatusParked = "parked"
+	// RunStatusCancelling: a cancel was requested (ticket 5.6) — the
+	// quiescing state. No new claims; claimless non-terminal steps were
+	// cancelled by the request's sweep; in-flight steps settle to
+	// cancelled as their workers notice. Not terminal.
+	RunStatusCancelling = "cancelling"
+	// RunStatusCancelled: the terminal cancel state (ticket 5.6) — every
+	// step accounted for, none left in flight.
+	RunStatusCancelled = "cancelled"
+)
+
+// Park reasons (ticket 5.6, ADR-004's typed-reason matrix row). Only
+// manual is produced today; budget_exceeded (M10) and awaiting_human
+// (M15) are reserved in the schema CHECK.
+const (
+	ParkReasonManual         = "manual"
+	ParkReasonBudgetExceeded = "budget_exceeded"
+	ParkReasonAwaitingHuman  = "awaiting_human"
+)
+
+// Run cancel reasons (ticket 5.6): why the run was cancelled — an
+// operator (manual) or the reconciler's max_wall_clock deadline sweep.
+const (
+	RunCancelReasonManual           = "manual"
+	RunCancelReasonDeadlineExceeded = "deadline_exceeded"
 )
 
 // Step statuses.
@@ -82,6 +111,10 @@ const (
 	// any other ready step of the run whose dispatch was consumed while
 	// the run was failed.
 	OutboxReasonDLQRequeue = "dlq_requeue"
+	// OutboxReasonUnpark: the unpark op re-dispatched a ready step whose
+	// delivery was consumed by the run-status guard while the run was
+	// parked (ticket 5.6).
+	OutboxReasonUnpark = "unpark"
 )
 
 // Dead-letter sources (ticket 5.4, ADR-006 "Dead-letter model"): why a
@@ -102,10 +135,17 @@ const (
 	DeadLetterSourcePoison = "poison"
 )
 
-// CancelReasonUpstreamDeadLettered is the step_cancelled event reason the
-// write-off records (ticket 5.4): a dead-lettered upstream step made this
-// step's readiness impossible. M5.6's run-cancel adds its own reasons.
-const CancelReasonUpstreamDeadLettered = "upstream_dead_lettered"
+// Step-cancel reasons — the step_cancelled event payload.
+const (
+	// CancelReasonUpstreamDeadLettered: the 5.4 write-off — a dead-lettered
+	// upstream step made this step's readiness impossible.
+	CancelReasonUpstreamDeadLettered = "upstream_dead_lettered"
+	// CancelReasonRunCancelled: run-level cancellation (ticket 5.6) — the
+	// request's sweep (pending/ready/retrying steps), an in-flight worker
+	// settling its step after noticing the cancel (running steps), or the
+	// reconciler's cancelling-run heal after that worker crashed.
+	CancelReasonRunCancelled = "run_cancelled"
+)
 
 // Attempt outcomes (ADR-006's error classes, plus `succeeded` and the
 // administrative `lost`). The bare `failed` written by 2.6–4.x is retired:
@@ -172,4 +212,15 @@ const (
 	// EventRunResumed: a requeue re-opened a failed run (ticket 5.4) — the
 	// claim path admits its steps again.
 	EventRunResumed = "run_resumed"
+	// EventRunParked: dispatch paused with a typed reason (ticket 5.6).
+	EventRunParked = "run_parked"
+	// EventRunUnparked: dispatch resumed; the unpark op re-outboxes the
+	// run's ready steps (ticket 5.6).
+	EventRunUnparked = "run_unparked"
+	// EventRunCancelling: a cancel was requested with a typed reason
+	// (ticket 5.6) — the run entered the quiescing state.
+	EventRunCancelling = "run_cancelling"
+	// EventRunCancelled: the cancel finalized — every step terminal
+	// (ticket 5.6).
+	EventRunCancelled = "run_cancelled"
 )

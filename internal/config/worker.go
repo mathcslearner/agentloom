@@ -12,6 +12,7 @@ const (
 	EnvWorkerReconcileRunningStale = "AGENTLOOM_WORKER_RECONCILE_RUNNING_STALE"
 	EnvWorkerReconcileRetryStale   = "AGENTLOOM_WORKER_RECONCILE_RETRY_STALE"
 	EnvWorkerReconcileLimit        = "AGENTLOOM_WORKER_RECONCILE_LIMIT"
+	EnvWorkerCancelPollInterval    = "AGENTLOOM_WORKER_CANCEL_POLL_INTERVAL"
 	EnvWorkerEffectsStrict         = "AGENTLOOM_EFFECTS_STRICT"
 )
 
@@ -45,6 +46,12 @@ const (
 	DefaultWorkerReconcileRetryStale = time.Minute
 	// DefaultWorkerReconcileLimit caps rows per scan per sweep.
 	DefaultWorkerReconcileLimit = 256
+	// DefaultWorkerCancelPollInterval is how often the engine's in-flight
+	// cancellation watch polls the run's status while an executor runs
+	// (ticket 5.6) — the latency bound on "in-flight executors get context
+	// cancellation". The default lease TTL / 3, i.e. heartbeat cadence: a
+	// cancel reaches a live executor about as fast as a lease beat.
+	DefaultWorkerCancelPollInterval = 10 * time.Second
 )
 
 // WorkerConfig configures the worker deployable (cmd/worker) beyond what
@@ -88,6 +95,10 @@ type WorkerConfig struct {
 	// ReconcileLimit caps each reconciler scan's rows per sweep. Must be
 	// positive.
 	ReconcileLimit int
+	// CancelPollInterval is how often the in-flight cancellation watch
+	// polls the run's status during executor invocations (ticket 5.6).
+	// Must be positive.
+	CancelPollInterval time.Duration
 	// EffectsStrict makes side-effect journal misuse panic instead of
 	// dead-lettering the step (ticket 5.5) — the loud dev/test behavior.
 	// Default true while every deployment is dev; production deployments
@@ -105,6 +116,7 @@ func defaultWorkerConfig() WorkerConfig {
 		ReconcileRunningStale: DefaultWorkerReconcileRunningStale,
 		ReconcileRetryStale:   DefaultWorkerReconcileRetryStale,
 		ReconcileLimit:        DefaultWorkerReconcileLimit,
+		CancelPollInterval:    DefaultWorkerCancelPollInterval,
 		EffectsStrict:         true,
 	}
 }
@@ -121,6 +133,7 @@ func (c *WorkerConfig) applyEnv(fn LookupFunc) []error {
 	errs = applyPositiveDuration(errs, fn, EnvWorkerReconcileRunningStale, &c.ReconcileRunningStale)
 	errs = applyPositiveDuration(errs, fn, EnvWorkerReconcileRetryStale, &c.ReconcileRetryStale)
 	errs = applyPositiveInt(errs, fn, EnvWorkerReconcileLimit, &c.ReconcileLimit)
+	errs = applyPositiveDuration(errs, fn, EnvWorkerCancelPollInterval, &c.CancelPollInterval)
 	errs = applyBool(errs, fn, EnvWorkerEffectsStrict, &c.EffectsStrict)
 	return errs
 }
