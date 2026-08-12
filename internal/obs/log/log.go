@@ -22,10 +22,17 @@ const (
 	FieldAttempt  = "attempt"
 	FieldWorkerID = "worker_id"
 	FieldTraceID  = "trace_id"
+	// FieldSpanID is the active span, hex (ticket 7.1, ADR-008) — stamped
+	// alongside trace_id from span context once 7.3 wires tracing through
+	// the queue.
+	FieldSpanID = "span_id"
 	// FieldKeyID identifies the API key behind an authenticated request
 	// (ticket 6.1, ADR-007) — always the key's row id or the "root"
 	// sentinel, never key material.
 	FieldKeyID = "key_id"
+	// FieldService names the emitting deployable (ticket 7.1, ADR-008):
+	// one of internal/obs/metrics' Service* constants.
+	FieldService = "service"
 )
 
 // RunID returns the canonical attr for a run identifier.
@@ -42,6 +49,12 @@ func WorkerID(id string) slog.Attr { return slog.String(FieldWorkerID, id) }
 
 // TraceID returns the canonical attr for a trace identifier.
 func TraceID(id string) slog.Attr { return slog.String(FieldTraceID, id) }
+
+// SpanID returns the canonical attr for a span identifier.
+func SpanID(id string) slog.Attr { return slog.String(FieldSpanID, id) }
+
+// Service returns the canonical attr for the emitting deployable.
+func Service(name string) slog.Attr { return slog.String(FieldService, name) }
 
 // KeyID returns the canonical attr for an API key identifier.
 func KeyID(id string) slog.Attr { return slog.String(FieldKeyID, id) }

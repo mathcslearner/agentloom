@@ -11,6 +11,11 @@
 // Configuration comes entirely from AGENTLOOM_* environment variables
 // (internal/config); there are no flags. SIGINT/SIGTERM trigger a graceful
 // drain bounded by AGENTLOOM_API_SHUTDOWN_TIMEOUT.
+//
+// Telemetry (ticket 7.1, ADR-008): AGENTLOOM_OBS_METRICS_ADDR starts the
+// admin listener serving /metrics; AGENTLOOM_OBS_OTEL_ENABLED turns on
+// OTLP trace export, and the public handler is then wrapped in HTTP
+// server spans. Both default off — no listener, no-op provider.
 package main
 
 import (
@@ -27,10 +32,13 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/mathcslearner/agentloom/internal/api"
 	"github.com/mathcslearner/agentloom/internal/config"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
+	"github.com/mathcslearner/agentloom/internal/obs/metrics"
+	"github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/ratelimit"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/version"
@@ -55,6 +63,42 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 		return err
 	}
 	logger := log.New(cfg.Log, logSink)
+
+	// Telemetry (ticket 7.1, ADR-008). The OTel pipeline installs a no-op
+	// provider when disabled; the admin listener only exists when an addr
+	// is configured. Both are off by default so tests bind no extra ports
+	// and dial no collector.
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
+	traceShutdown, err := trace.Setup(ctx, cfg.Obs, metrics.ServiceAPI, hostname, logger)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := traceShutdown(flushCtx); err != nil {
+			logger.Warn("api: otel shutdown incomplete", slog.Any("error", err))
+		}
+	}()
+	registry := metrics.NewRegistry(metrics.ServiceAPI)
+	if cfg.Obs.MetricsAddr != "" {
+		admin, err := metrics.Listen(cfg.Obs.MetricsAddr, registry)
+		if err != nil {
+			return fmt.Errorf("obs: binding admin listener on %s: %w", cfg.Obs.MetricsAddr, err)
+		}
+		// The admin server outlives the signal context so /metrics stays
+		// scrapeable through the public server's drain; it stops via the
+		// deferred cancel when run returns (LIFO: cancel before the wait).
+		adminCtx, cancelAdmin := context.WithCancel(context.WithoutCancel(ctx))
+		adminDone := make(chan struct{})
+		defer func() { <-adminDone }()
+		defer cancelAdmin()
+		go func() { defer close(adminDone); admin.Serve(adminCtx, logger) }()
+		logger.InfoContext(ctx, "api admin listener started", slog.String("addr", admin.Addr()))
+	}
 
 	st, err := store.Open(ctx, cfg.Postgres.DSN)
 	if err != nil {
@@ -87,9 +131,20 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 		}
 	}
 
-	handler, err := api.New(st, time.Now, logger, cfg.API.RootKey, rl)
+	apiHandler, err := api.New(st, time.Now, logger, cfg.API.RootKey, rl)
 	if err != nil {
 		return err
+	}
+	var handler http.Handler = apiHandler
+	if cfg.Obs.OTelEnabled {
+		// HTTP server spans (ticket 7.1): one span per request, named by
+		// method — the chi route pattern isn't known this far out, and raw
+		// paths are unbounded. 7.3 refines naming and adds the submission
+		// root span; this proves the export pipeline end to end.
+		handler = otelhttp.NewHandler(handler, "http.server",
+			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+				return "HTTP " + r.Method
+			}))
 	}
 
 	ln, err := net.Listen("tcp", cfg.API.Addr)
@@ -106,7 +161,9 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 
 	logger.InfoContext(ctx, "api started",
 		slog.String("version", version.Version),
-		slog.String("addr", ln.Addr().String()))
+		slog.String("addr", ln.Addr().String()),
+		slog.String("metrics_addr", cfg.Obs.MetricsAddr),
+		slog.Bool("otel_enabled", cfg.Obs.OTelEnabled))
 	defer logger.InfoContext(ctx, "api stopped")
 	if ready != nil {
 		ready <- ln.Addr().String()

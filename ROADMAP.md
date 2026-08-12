@@ -551,13 +551,13 @@ Hand-maintained `api/openapi.yaml` as the contract: all routes, schemas (reusing
 
 **Exit criteria:** compose `--profile obs` boots Prometheus/Grafana/Jaeger; a fan-out run shows as one trace spanning two worker processes; dashboards render live engine metrics; per-step logs retrievable via API.
 
-#### 7.1 — ADR-008 & telemetry wiring
+#### 7.1 — ADR-008 & telemetry wiring ✅
 **Depends on:** 0.5, 4.6
-**ADR-008:** metric naming scheme (`engine_*`), label cardinality budget (**never** `run_id`/`step_id` as metric labels; step *type* and outcome are fine), log field dictionary, trace propagation design. Wire Prometheus registries + `/metrics` on API and worker admin ports; OTel SDK (OTLP exporter, `service.name`/`service.version` resources). Compose profile `obs`: Prometheus, Grafana, Jaeger (or OTel collector → Jaeger), scrape configs.
+**ADR-008:** metric naming scheme (`engine_*`), label cardinality budget (**never** `run_id`/`step_id` as metric labels; step *type* and outcome are fine), log field dictionary, trace propagation design. Wire Prometheus registries + `/metrics` on API and worker admin ports; OTel SDK (OTLP exporter, `service.name`/`service.version` resources). Compose profile `obs`: Prometheus, Grafana, Jaeger (or OTel collector → Jaeger), scrape configs. *(As built: ADR-008 pins `engine_<subsystem>_<name>[_<unit>]` on instance-scoped registries with an enumerated label-allowlist table, the log field dictionary + `span_id`/`service`, and the 7.3 trace design — trace context persisted on the run row so reconciler/requeue/unpark dispatches restore linkage, attempt spans linked not parented across retries. `config.ObsConfig` (`AGENTLOOM_OBS_*`) defaults everything off; `internal/obs/metrics` serves `/metrics` + `/healthz` on a dedicated admin listener (never the bearer-authed public port) with `engine_build_info` as the proof-of-life gauge; `internal/obs/trace` installs no-op or OTLP/gRPC SDK providers. Compose `obs` profile = Prometheus (worker replicas discovered via `dns_sd_configs` type A), Grafana with a provisioned datasource, Jaeger all-in-one accepting OTLP directly; `make up-obs` boots app+obs with export on. API requests get otelhttp server spans named `HTTP <method>` until 7.3 refines naming.)*
 **Done when:**
-- [ ] `--profile obs` stack scrapes both services; Jaeger receives spans
-- [ ] ADR reviewed; conventions referenced by later tickets' ACs
-- [ ] Telemetry cleanly disabled via config (no-op providers) for tests
+- [x] `--profile obs` stack scrapes both services; Jaeger receives spans
+- [x] ADR reviewed; conventions referenced by later tickets' ACs
+- [x] Telemetry cleanly disabled via config (no-op providers) for tests
 
 #### 7.2 — Core engine metrics
 **Depends on:** 7.1, 3.2

@@ -5,7 +5,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +37,28 @@ func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// adminAddrFromLogs polls the log sink for the admin-listener boot line
+// (msg contains marker) and extracts its addr field — how a test binding
+// the admin port to ":0" learns the real port.
+func adminAddrFromLogs(t *testing.T, logs *syncBuffer, marker string) string {
+	t.Helper()
+	re := regexp.MustCompile(`"addr":"([^"]+)"`)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, line := range strings.Split(logs.String(), "\n") {
+			if !strings.Contains(line, marker) {
+				continue
+			}
+			if m := re.FindStringSubmatch(line); m != nil {
+				return m[1]
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("log never contained %q with an addr field; logs so far:\n%s", marker, logs.String())
+	return ""
 }
 
 // waitContains polls the log sink until want appears, failing on timeout.
@@ -103,6 +129,9 @@ func TestWorkerStartStop(t *testing.T) {
 		// promptly (shutdown latency is bounded by the consumer block).
 		config.EnvWorkerHealthInterval: "100ms",
 		config.EnvQueueConsumerBlock:   "200ms",
+		// Telemetry wiring (ticket 7.1): the admin listener binds an
+		// ephemeral port; its real address is read back from the boot log.
+		config.EnvObsMetricsAddr: "127.0.0.1:0",
 	}
 	// Honor the harness overrides so CI's worker talks to the same stack
 	// the other integration tests use.
@@ -124,6 +153,26 @@ func TestWorkerStartStop(t *testing.T) {
 	waitContains(t, &logs, "worker started")
 	waitContains(t, &logs, "queue consumer started")
 	waitContains(t, &logs, "worker health")
+
+	// The admin listener serves the ADR-008 proof-of-life gauge (ticket
+	// 7.1). Its ephemeral address comes from the boot log line.
+	waitContains(t, &logs, "worker admin listener started")
+	adminAddr := adminAddrFromLogs(t, &logs, "worker admin listener started")
+	scrape, err := http.Get(fmt.Sprintf("http://%s/metrics", adminAddr))
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	body, err := io.ReadAll(scrape.Body)
+	scrape.Body.Close() //nolint:errcheck // body already read
+	if err != nil {
+		t.Fatalf("reading /metrics body: %v", err)
+	}
+	if scrape.StatusCode != http.StatusOK {
+		t.Errorf("GET /metrics status = %d, want 200", scrape.StatusCode)
+	}
+	if want := `engine_build_info{service="agentloom-worker"`; !strings.Contains(string(body), want) {
+		t.Errorf("scrape missing %q; body:\n%s", want, body)
+	}
 
 	cancel()
 	select {

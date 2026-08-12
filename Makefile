@@ -77,9 +77,13 @@ up: ## Boot the dev stack (Postgres + Redis) and wait until healthy
 up-app: ## Boot the full stack (stores + migrate + api + 2 workers) and wait until healthy
 	$(COMPOSE) --profile app up -d --build --wait
 
+.PHONY: up-obs
+up-obs: ## Boot the full stack plus Prometheus/Grafana/Jaeger, with OTel export on (ticket 7.1)
+	AGENTLOOM_OBS_OTEL_ENABLED=true $(COMPOSE) --profile app --profile obs up -d --build --wait
+
 .PHONY: down
 down: ## Stop the dev stack, app services included (data volumes are kept)
-	$(COMPOSE) --profile app down
+	$(COMPOSE) --profile app --profile obs down
 
 .PHONY: demo-crash
 demo-crash: ## SIGKILL a worker mid-run against compose and watch the run recover (docs/demos/crash-recovery.md)
@@ -97,7 +101,7 @@ redis-cli: ## Open a redis-cli shell inside the running redis container
 nuke: ## DESTRUCTIVE: tear down the dev stack AND delete all data volumes (asks first)
 	@printf 'This will DESTROY the dev stack and ALL of its data (volumes included).\nType "yes" to continue: '; \
 	read -r answer && [ "$$answer" = "yes" ] || { echo "aborted."; exit 1; }
-	$(COMPOSE) --profile app down -v --remove-orphans
+	$(COMPOSE) --profile app --profile obs down -v --remove-orphans
 
 .PHONY: tools
 tools: ## Install pinned golangci-lint into ./bin if missing or outdated

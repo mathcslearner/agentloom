@@ -29,6 +29,7 @@ type Config struct {
 	Queue    QueueConfig
 	Worker   WorkerConfig
 	API      APIConfig
+	Obs      ObsConfig
 }
 
 // Load builds a Config by applying environment overrides from lookup on top
@@ -42,6 +43,7 @@ func Load(lookup LookupFunc) (Config, error) {
 		Queue:    defaultQueueConfig(),
 		Worker:   defaultWorkerConfig(),
 		API:      defaultAPIConfig(),
+		Obs:      defaultObsConfig(),
 	}
 	var errs []error
 	errs = append(errs, cfg.Log.applyEnv(lookup)...)
@@ -50,6 +52,7 @@ func Load(lookup LookupFunc) (Config, error) {
 	errs = append(errs, cfg.Queue.applyEnv(lookup)...)
 	errs = append(errs, cfg.Worker.applyEnv(lookup)...)
 	errs = append(errs, cfg.API.applyEnv(lookup)...)
+	errs = append(errs, cfg.Obs.applyEnv(lookup)...)
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration:\n%w", err)
 	}

@@ -76,6 +76,16 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.API != wantAPI {
 		t.Errorf("default API config = %+v, want %+v", cfg.API, wantAPI)
 	}
+	wantObs := config.ObsConfig{
+		MetricsAddr:     "", // no listener — telemetry off by default (ADR-008)
+		OTelEnabled:     false,
+		OTelEndpoint:    config.DefaultObsOTelEndpoint,
+		OTelInsecure:    true,
+		OTelSampleRatio: config.DefaultObsOTelSampleRatio,
+	}
+	if cfg.Obs != wantObs {
+		t.Errorf("default Obs config = %+v, want %+v", cfg.Obs, wantObs)
+	}
 }
 
 // defaultRateLimit is the expected default rate-limit config (ticket 6.4),
@@ -258,6 +268,52 @@ func TestLoadWorkerInvalidValues(t *testing.T) {
 	} {
 		if !strings.Contains(err.Error(), env) {
 			t.Errorf("error %q does not mention %s", err, env)
+		}
+	}
+}
+
+func TestLoadObsOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(lookupFrom(map[string]string{
+		config.EnvObsMetricsAddr:     "127.0.0.1:9090",
+		config.EnvObsOTelEnabled:     "true",
+		config.EnvObsOTelEndpoint:    "jaeger:4317",
+		config.EnvObsOTelInsecure:    "false",
+		config.EnvObsOTelSampleRatio: "0.25",
+	}))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	want := config.ObsConfig{
+		MetricsAddr:     "127.0.0.1:9090",
+		OTelEnabled:     true,
+		OTelEndpoint:    "jaeger:4317",
+		OTelInsecure:    false,
+		OTelSampleRatio: 0.25,
+	}
+	if cfg.Obs != want {
+		t.Errorf("Obs config = %+v, want %+v", cfg.Obs, want)
+	}
+}
+
+func TestLoadObsInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	for _, ratio := range []string{"0", "-0.5", "1.5", "NaN", "lots"} {
+		bad := map[string]string{
+			config.EnvObsOTelEnabled:     "definitely",
+			config.EnvObsOTelInsecure:    "maybe",
+			config.EnvObsOTelSampleRatio: ratio,
+		}
+		_, err := config.Load(lookupFrom(bad))
+		if err == nil {
+			t.Fatalf("Load with invalid obs values (ratio %q): want error, got nil", ratio)
+		}
+		for env := range bad {
+			if !strings.Contains(err.Error(), env) {
+				t.Errorf("error %q does not mention %s", err, env)
+			}
 		}
 	}
 }

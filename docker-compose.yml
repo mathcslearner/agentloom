@@ -5,7 +5,9 @@
 #
 # `make up` boots only the stores (what local development and the
 # integration-test suite need); `make up-app` boots the full stack
-# (`docker compose --profile app up`). The profile split keeps `make
+# (`docker compose --profile app up`); `make up-obs` adds the `obs`
+# profile — Prometheus, Grafana, Jaeger (ticket 7.1, ADR-008) — with
+# OTel trace export switched on. The profile split keeps `make
 # test-integration` and CI from building Go images they don't use.
 #
 # Defaults are dev-only and inline so `make up` works on a clean checkout;
@@ -100,6 +102,13 @@ services:
       # Set it in .env (see .env.example for a generator one-liner);
       # unset, the root auth path simply doesn't exist.
       AGENTLOOM_API_ROOT_KEY: ${AGENTLOOM_API_ROOT_KEY:-}
+      # Telemetry (ticket 7.1, ADR-008). The admin port serving /metrics
+      # is in-network only — Prometheus (obs profile) scrapes it; it is
+      # never published to the host. OTel export defaults off because the
+      # app profile can boot without Jaeger; `make up-obs` turns it on.
+      AGENTLOOM_OBS_METRICS_ADDR: :9090
+      AGENTLOOM_OBS_OTEL_ENABLED: ${AGENTLOOM_OBS_OTEL_ENABLED:-false}
+      AGENTLOOM_OBS_OTEL_ENDPOINT: jaeger:4317
     ports:
       # Loopback by default (ticket 6.2, ADR-007): every /v1 route now
       # requires a scoped key, but a dev stack carrying a bootstrap
@@ -135,6 +144,12 @@ services:
       # filesystem-writing test executors (counter, effectful_echo) stay
       # registered here — the binary's default is off (ticket 6.2).
       AGENTLOOM_WORKER_TEST_EXECUTORS: ${AGENTLOOM_WORKER_TEST_EXECUTORS:-true}
+      # Telemetry (ticket 7.1, ADR-008) — see the api service's note. The
+      # two replicas each bind :9090 inside their own container; Prometheus
+      # finds both via DNS service discovery on the service name.
+      AGENTLOOM_OBS_METRICS_ADDR: :9090
+      AGENTLOOM_OBS_OTEL_ENABLED: ${AGENTLOOM_OBS_OTEL_ENABLED:-false}
+      AGENTLOOM_OBS_OTEL_ENDPOINT: jaeger:4317
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -143,7 +158,62 @@ services:
     deploy:
       replicas: 2
 
+  # ---- Observability stack (ticket 7.1, ADR-008): `--profile obs`. ----
+  # `make up-obs` boots app + obs together with OTel export enabled.
+
+  prometheus:
+    profiles: [obs]
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${AGENTLOOM_PROMETHEUS_BIND:-127.0.0.1}:${AGENTLOOM_PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  grafana:
+    profiles: [obs]
+    image: grafana/grafana:11.6.6
+    environment:
+      # Dev-only anonymous admin: the stack binds loopback and carries no
+      # real credentials worth protecting behind a Grafana login.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${AGENTLOOM_GRAFANA_BIND:-127.0.0.1}:${AGENTLOOM_GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+  # Jaeger all-in-one accepts OTLP directly (COLLECTOR_OTLP_ENABLED), so
+  # no separate collector hop is needed in dev (ADR-008). The OTLP gRPC
+  # port (4317) stays in-network; only the UI is published.
+  jaeger:
+    profiles: [obs]
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${AGENTLOOM_JAEGER_BIND:-127.0.0.1}:${AGENTLOOM_JAEGER_PORT:-16686}:16686"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:14269/"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
 volumes:
   postgres-data:
   redis-data:
   redis-chaos-data:
+  prometheus-data:
+  grafana-data:

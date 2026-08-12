@@ -3312,3 +3312,95 @@ material).
 - ctl `defs` subcommands (deferred at 6.5 "alongside 6.6's docs")
   stay deferred — docs/api.md documents the raw routes; ctl growth is
   cosmetic and can ride any later ticket.
+
+## Milestone 7 — Observability
+
+### 7.1 — ADR-008 & telemetry wiring ✅
+
+**Delivered.** [ADR-008](adr/008-observability-conventions.md)
+(observability conventions — the contract 7.2–7.5 implement against),
+`config.ObsConfig` (`AGENTLOOM_OBS_*`, everything off by default),
+`internal/obs/metrics` (instance-scoped Prometheus registries + the
+admin HTTP listener), `internal/obs/trace` (OTel SDK setup, OTLP/gRPC
+export, no-op provider when disabled), telemetry wiring in both
+deployables, and the compose `obs` profile (Prometheus, Grafana,
+Jaeger) behind `make up-obs`.
+
+**The ADR's decisions**, in brief: one metric namespace
+`engine_<subsystem>_<name>[_<unit>]` on instance-scoped registries
+(never the global default registry); an enumerated label-allowlist
+table making "never `run_id`/`step_id` as labels" a diffable checklist
+(`step_type`, `outcome`, `status`, `reason`, `class`, `source`,
+`route`-as-chi-pattern, `method`, `code`, `duty`, `service`,
+`version` — each with its bound); the log field dictionary extended
+with `span_id` and `service` (constants + typed helpers in
+`internal/obs/log`); and the trace propagation design 7.3 implements —
+W3C tracecontext + baggage, root span at submission, **trace context
+persisted on the run row** (7.3's migration) so reconciler heals /
+requeue / unpark restore linkage instead of starting orphan traces,
+attempt spans linked (not parented) across retries/reclaims, envelope
+`traceparent`/`tracestate` population additive within version 1.
+
+**Wiring.** `metrics.NewRegistry(service)` preloads the Go runtime +
+process collectors and `engine_build_info{service, version} = 1` (the
+proof-of-life gauge — every scrape proves the pipeline before 7.2
+lands). `metrics.Listen`/`Serve` is the admin listener serving
+`GET /metrics` + `GET /healthz`: bind failure is a boot error (fail
+fast on misconfiguration), serve-time failures only log — telemetry
+never takes the deployable down. It is deliberately not on the API's
+public port (bearer-authed, route-coverage/OpenAPI-drift tested;
+Prometheus doesn't present bearer keys) and is the worker's first
+listener at all; in the worker it rides `loopCtx` so `/metrics` stays
+scrapeable through the consumer's drain, in the API it outlives the
+signal context the same way. `trace.Setup` installs the global
+propagators either way; disabled it installs the no-op provider and
+returns a free shutdown, enabled it builds OTLP/gRPC exporter → batch
+processor → `ParentBased(TraceIDRatioBased)` sampler with
+`service.name`/`service.version`/`service.instance.id` resources
+(worker: consumer name; api: hostname), SDK errors routed to slog at
+warn. The API handler is wrapped in `otelhttp` server spans when
+enabled — named `HTTP <method>` only (the chi route pattern isn't
+known that far out; 7.3 refines) — which is what makes "Jaeger
+receives spans" true in this ticket.
+
+**Compose.** Profile `obs`: Prometheus (5s scrape; static target
+`api:9090`, `dns_sd_configs` type-A on `worker` — compose DNS returns
+every replica IP, the one discovery mechanism that survives
+`deploy.replicas: 2` without a docker-socket mount), Grafana
+(datasource provisioned as code; dashboards are 7.5), Jaeger
+all-in-one with `COLLECTOR_OTLP_ENABLED` (no collector hop; inserting
+one later is a compose change). App services set
+`AGENTLOOM_OBS_METRICS_ADDR=:9090` unconditionally (in-network only,
+never published — also sidesteps the replica host-port collision);
+OTel export stays `false` under plain `make up-app` (Jaeger absent)
+and `make up-obs` boots both profiles with
+`AGENTLOOM_OBS_OTEL_ENABLED=true`. `make down`/`nuke` cover the new
+profile; `.env.example` documents the knobs.
+
+**Verified.** `make lint` / `make test` / `make test-integration`
+green. Unit: config parse matrix, registry-through-handler scrape,
+admin bind/serve/shutdown lifecycle, noop-vs-recording provider both
+ways, enabled Setup proven non-blocking against a dead endpoint with
+bounded shutdown. Integration: both deployables' lifecycle tests boot
+with the admin listener on `:0`, recover the real port from the boot
+log line, and scrape `engine_build_info` with the right `service`
+label. Live acceptance on `make up-obs`: Prometheus `/targets` shows
+1 api + 2 worker targets up; fanout.json submitted through the API
+lands `HTTP POST`/`HTTP GET` spans in Jaeger under `agentloom-api`.
+
+**Non-obvious decisions / deferred.**
+- Telemetry defaults *off* (empty metrics addr, OTel disabled) so bare
+  `go test`, the harnesses, and the crash suite's subprocess workers
+  bind no ports and dial nothing — the "cleanly disabled" AC is the
+  default, not a mode.
+- The semconv package version must match `resource.Default()`'s schema
+  URL for the pinned otel SDK release or `resource.Merge` errors at
+  Setup — noted in code; revisit on every otel bump.
+- API span names are method-only in 7.1: otelhttp names spans before
+  chi routes, so route patterns aren't available; 7.3 owns proper span
+  naming (and the submission root span + queue propagation).
+- The `RateLimitMetrics` seam (6.4) stays no-op; it is 7.2's "API
+  request histograms + 429 counters" work, on this registry.
+- Worker replica scrape relies on compose DNS A-record behavior; if it
+  ever proves flaky the fallback is two named worker services (noted
+  in the plan, not needed so far).

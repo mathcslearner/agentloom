@@ -1,0 +1,24 @@
+# Prometheus scrape config for the compose obs profile (ticket 7.1,
+# ADR-008). Both deployables expose /metrics on their in-network admin
+# port (AGENTLOOM_OBS_METRICS_ADDR=:9090 set in docker-compose.yml);
+# admin ports are never published to the host.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: api
+    static_configs:
+      - targets: ["api:9090"]
+
+  # The worker service runs replicated (deploy.replicas), so a static
+  # target would scrape only one container. Compose's DNS returns every
+  # replica IP for an A query on the service name; dns_sd_configs
+  # re-resolves each interval, so scaled/replaced replicas are picked up
+  # without config changes.
+  - job_name: worker
+    dns_sd_configs:
+      - names: ["worker"]
+        type: A
+        port: 9090
+        refresh_interval: 5s

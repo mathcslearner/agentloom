@@ -1,0 +1,228 @@
+# ADR-008: Observability conventions
+
+- **Status:** Accepted
+- **Date:** 2026-08-12
+- **Ticket:** ROADMAP.md ticket 7.1
+
+## Context
+
+M7 makes observability first-class: engine metrics (7.2), distributed
+tracing across the queue (7.3), per-step log capture (7.4), and
+dashboards + alerts (7.5). Everything after M7 is built with these
+instruments on — queue-depth metrics become KEDA autoscaling signals in
+M20, and the histograms are the measurement substrate for M19's load
+tests. Four decisions must be fixed before the first metric is
+registered, because they are near-impossible to change once dashboards,
+alerts, and autoscalers depend on names and shapes:
+
+- **Metric naming.** Renaming a metric later silently breaks every
+  dashboard panel, alert rule, and KEDA trigger that references it.
+- **Label cardinality.** Prometheus stores one time series per unique
+  label-value combination. A single label carrying `run_id` would create
+  unbounded series — a memory leak in the monitoring system that shows
+  up only under production load, long after the code shipped. The
+  project invariant ("no metric labels with unbounded cardinality") needs
+  an enforceable, enumerated form.
+- **Log fields.** `internal/obs/log` (ticket 0.5) already pins canonical
+  field names; M7 adds trace correlation, and 7.4 stores step logs
+  durably — the dictionary must be complete before rows are written.
+- **Trace propagation.** A run's execution hops processes at every step:
+  API → outbox → Redis Streams → worker A → outbox → worker B. The
+  envelope fields (`traceparent`/`tracestate`) were reserved in ADR-005;
+  how context flows through *durable* state (outbox rows survive their
+  enqueuer; the reconciler re-outboxes steps whose original dispatcher is
+  long dead) is the part that needs design, not just wire format.
+
+Constraints from the existing system: the API's public port is
+bearer-authed (ADR-007) and covered by route-coverage and OpenAPI drift
+tests — an unauthenticated `/metrics` cannot live there. The worker has
+no HTTP listener at all. Every test layer (unit, storetest/queuetest
+harnesses, the crash suite's real subprocess workers) must keep running
+with zero new ports bound and zero collector dial attempts. Time is
+injectable everywhere; telemetry must not smuggle wall-clock dependencies
+into logic under test.
+
+## Decision
+
+### Metric naming scheme
+
+We will name every metric `engine_<subsystem>_<name>[_<unit>]` on
+**instance-scoped `prometheus.Registry` instances** — never the package
+global `prometheus.DefaultRegisterer` — created by
+`internal/obs/metrics.NewRegistry` and threaded explicitly to the
+components that record on them (the same injection discipline as clocks
+and loggers). Tests get isolated registries for free; nothing can
+register twice or leak between tests.
+
+Rules, following Prometheus upstream conventions:
+
+- One namespace: `engine_`. Both deployables share it — where the
+  emitting service matters, it is the scrape target (Prometheus `job`/
+  `instance` labels), not the metric name. API-surface metrics use the
+  `api` subsystem (`engine_api_requests_total`), not a second namespace.
+- Subsystem vocabulary (extended only by ADR amendment): `build`,
+  `queue`, `outbox`, `dispatch`, `reconcile`, `step`, `run`, `api`,
+  `worker`.
+- Base units and suffixes: durations in seconds (`_seconds`), sizes in
+  bytes (`_bytes`), counters end `_total`, gauges carry no suffix
+  (`engine_queue_ready_depth`). Histograms are the default for
+  latency/duration (M19 needs percentiles); summaries are banned
+  (not aggregatable across the fleet).
+- `engine_build_info{service, version} 1` is the conventional info gauge,
+  registered by `NewRegistry` itself alongside the standard Go runtime
+  and process collectors — every scrape proves the pipeline end-to-end
+  even before 7.2's instrumentation lands.
+
+### Label cardinality budget
+
+**`run_id`, `step_id`, `attempt`, `claim_id`, `worker_id`, `key_id`, raw
+URL paths, and error message strings are never metric labels.** They are
+log and trace fields. This is the project invariant made enforceable:
+the allowlist below enumerates every permitted label key with its
+bounded vocabulary, and 7.2's cardinality audit (and every later
+ticket's review) checks new metrics against this table. A new label key
+requires amending this table first, and must be a closed vocabulary.
+
+| Label key | Values | Bound |
+|---|---|---|
+| `service` | `agentloom-api`, `agentloom-worker` | 2 |
+| `version` | build version (one per deployed build) | ~1 per rollout |
+| `step_type` | the dag catalog: `noop`, `echo`, `sleep`, `fail_n_times`, `join`, `branch`, `counter`, `effectful_echo`, `llm`, `tool`, `retrieve`, … | ~12, grows by catalog ticket |
+| `outcome` | attempt outcomes: `succeeded`, `lost`, `transient`, `permanent`, `timeout`, `cancelled` | 6 |
+| `status` | run/step status vocabularies (ADR-004) | ≤ 8 each |
+| `reason` | outbox reasons: `step_ready`, `retry`, `reconcile_ready`, `reconcile_running`, `reconcile_retry`, `dlq_requeue`, `unpark` | 7 |
+| `class` | error classes (ADR-006) or rate-limit classes (`submit`, `read`, `admin`, `global`) | ≤ 5 |
+| `source` | dead-letter sources: `retries_exhausted`, `permanent`, `poison` | 3 |
+| `route` | chi route *pattern* (`/v1/runs/{id}`), never the raw path | ~17, grows by endpoint ticket |
+| `method` | HTTP methods actually routed | ≤ 5 |
+| `code` | HTTP status code | ~10 in practice |
+| `duty` | consumer duties: `consume`, `heartbeat`, `reclaim`, `janitor`, `trim`, `promote` | 6 |
+
+Worst-case series count per metric is the product of its label bounds;
+any metric whose product exceeds ~1,000 needs an explicit justification
+in its registering ticket.
+
+### Log field dictionary
+
+`internal/obs/log` remains the single home of canonical field names; ad
+hoc key strings stay banned. The dictionary, extended for M7:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `run_id` | string (UUID) | the run (0.5) |
+| `step_id` | string | the step within its run (0.5) |
+| `attempt` | int | 1-based attempt number (0.5) |
+| `worker_id` | string | queue consumer name (0.5) |
+| `trace_id` | string | active trace, hex (0.5; stamped from span context in 7.3) |
+| `span_id` | string | active span, hex (new; stamped alongside `trace_id` in 7.3) |
+| `key_id` | string | API key row id or `"root"` (6.1) |
+| `service` | string | `agentloom-api` / `agentloom-worker` (new) |
+| `error` | any | error value (existing `slog.Any("error", err)` convention, now canonical) |
+
+`trace_id`/`span_id` are how logs join to Jaeger; `run_id`/`step_id` are
+how they join to Postgres state. A log line on a hot path should carry
+both worlds.
+
+### Trace propagation design
+
+*(Designed here; implemented by ticket 7.3.)*
+
+- **Format:** W3C Trace Context (`traceparent`/`tracestate`), propagated
+  with the composite `tracecontext` + `baggage` propagator registered
+  globally at boot.
+- **Root span at submission:** `POST /v1/runs` creates the run inside an
+  API server span; that span's context is the run's root.
+- **Durable context, not just wire context:** the run's trace context is
+  **persisted on the run row** at instantiation (column added by 7.3's
+  migration). Envelopes carry `traceparent`/`tracestate` for the common
+  path, but re-enqueues that do not descend from any live span — the
+  reconciler's `reconcile_*` heals, retry promotion after a crash,
+  `dlq_requeue`, `unpark` — restore linkage from the run row. Without the
+  durable copy, every healed dispatch would start an orphan trace.
+- **Span topology:** each delivery handled by a worker starts an attempt
+  span whose parent is the enqueuing span (from the envelope). Retries
+  and reclaim/takeover re-executions are **span links**, not
+  parent-child — the retry is caused by the failed attempt but is not
+  inside it. Fan-in joins carry links from all firing parents. Within an
+  attempt span, child spans cover the claim CAS, the executor
+  invocation, the completion transaction, and the ACK.
+- **Envelope compatibility:** populating the reserved fields is additive
+  within envelope version 1 (ADR-005: decoders ignore unknown fields,
+  absent trace fields mean "no context"), so mixed fleets during rollout
+  are safe by construction.
+
+### Wiring: admin ports, providers, and the off switch
+
+- **Admin listener, both deployables.** `/metrics` (and a plain
+  `/healthz`) is served by a small dedicated HTTP server on
+  `AGENTLOOM_OBS_METRICS_ADDR`, **empty by default = no listener**. It is
+  never part of the API's public route tree: the public port is
+  bearer-authed and contract-tested (ADR-007, 6.6), and Prometheus does
+  not present bearer keys. In compose, admin ports stay in-network
+  (never published to the host), which also sidesteps the host-port
+  collision between the two worker replicas.
+- **Traces via OTLP.** The OTel SDK exports OTLP/gRPC to
+  `AGENTLOOM_OBS_OTEL_ENDPOINT` (Jaeger all-in-one with OTLP enabled in
+  dev; a collector is a config change, not a code change). Resources
+  carry `service.name` (`agentloom-api`/`agentloom-worker`),
+  `service.version` (`internal/version`, ldflags-injected), and
+  `service.instance.id` (the worker's consumer name; the API's
+  hostname). Sampling is `ParentBased(TraceIDRatioBased(ratio))`,
+  default ratio 1.0 — dev traffic is small; production tuning is an env
+  knob, not a redeploy.
+- **Cleanly disabled by default.** `AGENTLOOM_OBS_OTEL_ENABLED=false`
+  installs the no-op `TracerProvider`; an empty metrics addr starts no
+  listener. Every existing test layer and the crash suite's subprocess
+  workers run with telemetry fully off, no ports, no dials. Compose and
+  the integration tests that exercise telemetry opt in explicitly.
+- **Telemetry must never take the service down.** OTel SDK internal
+  errors are routed to slog at warn (an unreachable collector is a log
+  line); a failed admin-port *listen* is a boot error (fail fast on
+  misconfiguration), but serve errors after boot are logged and the
+  deployable carries on — the same philosophy as the 4.2 health loop.
+
+## Consequences
+
+Easier: 7.2–7.5 implement against fixed names, label budgets, and an
+already-wired pipeline; dashboards and KEDA triggers (M20) can reference
+metric names with confidence; the cardinality table turns "no unbounded
+labels" from a review vibe into a diffable checklist; instance-scoped
+registries keep tests hermetic; the durable trace context makes healed
+dispatches traceable, which is exactly when an operator needs the trace.
+
+Harder: every new metric/label goes through this ADR's tables — friction
+by design; two more ports and three more compose services to know about;
+the OTel dependency tree is large (accepted: it is the industry-standard
+wire format and the only serious multi-process tracing option); span
+links render less intuitively than parent-child in Jaeger's default view
+(accepted: links are the semantically honest shape for retries).
+
+## Alternatives considered
+
+- **`/metrics` on the existing service ports.** Rejected: the API port
+  is bearer-authed and contract-covered by the 6.2 route-coverage and
+  6.6 OpenAPI drift tests — an anonymous scrape route there would
+  either punch a hole in auth or force Prometheus auth config; the
+  worker has no port at all, so a listener is new either way.
+- **Global default Prometheus registry.** Rejected: double-registration
+  panics across tests, and it invites `promauto` sprinkled anywhere —
+  instance registries keep registration explicit and injectable, per
+  project discipline.
+- **A second metric namespace per deployable (`api_*`, `worker_*`).**
+  Rejected: the ticket and roadmap standardize `engine_*`; the emitting
+  service is already a scrape label, and one namespace keeps dashboard
+  queries uniform.
+- **Trace context only in envelopes (no durable copy).** Rejected: the
+  reconciler and requeue/unpark paths enqueue without any live parent
+  span, so their dispatches would start orphan traces exactly when
+  tracing matters most (crash heals). The run-row column costs one write
+  at instantiation.
+- **StatsD/OpenTelemetry metrics instead of Prometheus client.**
+  Rejected: pull-model Prometheus is the compose/K8s-native choice, is
+  what KEDA consumes (M20), and client_golang is the boring,
+  battle-tested library. OTel *metrics* remain immature relative to
+  client_golang; OTel is adopted for traces only.
+- **Pushing spans through an OTel Collector from day one.** Deferred:
+  Jaeger all-in-one accepts OTLP directly; a collector adds a hop and a
+  config file with no dev benefit. The exporter endpoint is env config,
+  so inserting a collector later is a compose change only.

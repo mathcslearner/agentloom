@@ -33,6 +33,8 @@ import (
 	"github.com/mathcslearner/agentloom/internal/engine"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
+	"github.com/mathcslearner/agentloom/internal/obs/metrics"
+	"github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/queue"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/version"
@@ -74,6 +76,33 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	// worker processes against per-test keys).
 	q := queue.New(client, cfg.Queue.Stream, cfg.Queue.Group)
 	workerID := queue.NewConsumerName()
+
+	// Telemetry (ticket 7.1, ADR-008). The OTel pipeline installs a no-op
+	// provider when disabled (no spans until 7.3 either way — installing
+	// the provider here proves the on/off seam); the admin listener serving
+	// /metrics and /healthz only exists when an addr is configured. Both
+	// default off so tests and the crash suite's subprocess workers bind
+	// no ports and dial no collector.
+	traceShutdown, err := trace.Setup(ctx, cfg.Obs, metrics.ServiceWorker, workerID, logger)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := traceShutdown(flushCtx); err != nil {
+			logger.Warn("worker: otel shutdown incomplete", slog.Any("error", err))
+		}
+	}()
+	promRegistry := metrics.NewRegistry(metrics.ServiceWorker)
+	var admin *metrics.Server
+	if cfg.Obs.MetricsAddr != "" {
+		admin, err = metrics.Listen(cfg.Obs.MetricsAddr, promRegistry)
+		if err != nil {
+			return fmt.Errorf("obs: binding admin listener on %s: %w", cfg.Obs.MetricsAddr, err)
+		}
+	}
+
 	dispatcher, err := engine.NewDispatcher(st, q, engine.DispatcherConfig{
 		Interval: cfg.Worker.DispatchInterval,
 		Batch:    cfg.Worker.DispatchBatch,
@@ -122,7 +151,9 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		slog.Duration("dispatch_interval", cfg.Worker.DispatchInterval),
 		slog.Duration("reconcile_interval", cfg.Worker.ReconcileInterval),
 		slog.Duration("drain_timeout", cfg.Worker.DrainTimeout),
-		slog.Bool("test_executors", cfg.Worker.TestExecutors))
+		slog.Bool("test_executors", cfg.Worker.TestExecutors),
+		slog.String("metrics_addr", cfg.Obs.MetricsAddr),
+		slog.Bool("otel_enabled", cfg.Obs.OTelEnabled))
 	defer logger.InfoContext(ctx, "worker stopped")
 
 	// The dispatch duties run on loopCtx, which deliberately OUTLIVES the
@@ -143,6 +174,14 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	go func() { defer wg.Done(); dispatcher.Run(loopCtx) }()
 	go func() { defer wg.Done(); reconciler.Run(loopCtx) }()
 	go func() { defer wg.Done(); healthLoop(loopCtx, q, cfg.Worker.HealthInterval) }()
+	if admin != nil {
+		// The admin server rides loopCtx like the dispatch duties: /metrics
+		// stays scrapeable through the consumer's drain and stops when run
+		// returns.
+		wg.Add(1)
+		go func() { defer wg.Done(); admin.Serve(loopCtx, logger) }()
+		logger.InfoContext(ctx, "worker admin listener started", slog.String("addr", admin.Addr()))
+	}
 	go func() { // narrate the shutdown sequence for the ops log
 		defer wg.Done()
 		select {

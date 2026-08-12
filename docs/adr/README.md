@@ -23,3 +23,4 @@ are reserved and appear here once the ADR is written.
 | [005](005-dispatch-lease-protocol.md) | Dispatch & lease protocol (Redis Streams) | Accepted | 2026-08-08 |
 | [006](006-failure-taxonomy-and-retries.md) | Failure taxonomy & retry semantics | Accepted | 2026-08-11 |
 | [007](007-authn-authz-and-api-rate-limiting.md) | Authentication, authorization & API rate limiting | Accepted | 2026-08-12 |
+| [008](008-observability-conventions.md) | Observability conventions | Accepted | 2026-08-12 |
