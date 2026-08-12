@@ -377,6 +377,31 @@ func TestValidateTableDriven(t *testing.T) {
 			wantErrs: []issueRef{{dag.CodeConfigFieldRequired, "steps[0].config.path"}},
 		},
 		{
+			name: "effectful_echo with valid config",
+			def: single(dag.Step{
+				ID: "z", Type: dag.StepEffectfulEcho,
+				Config: &dag.EffectfulEchoConfig{Path: "out/notify.log", FailTimes: 2},
+			}),
+		},
+		{
+			name:     "effectful_echo without config",
+			def:      single(dag.Step{ID: "z", Type: dag.StepEffectfulEcho}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldRequired, "steps[0].config.path"}},
+		},
+		{
+			name:     "effectful_echo with empty path",
+			def:      single(dag.Step{ID: "z", Type: dag.StepEffectfulEcho, Config: &dag.EffectfulEchoConfig{}}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldRequired, "steps[0].config.path"}},
+		},
+		{
+			name: "effectful_echo with negative fail_times",
+			def: single(dag.Step{
+				ID: "z", Type: dag.StepEffectfulEcho,
+				Config: &dag.EffectfulEchoConfig{Path: "out/notify.log", FailTimes: -1},
+			}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.fail_times"}},
+		},
+		{
 			name: "name at 128-byte limit",
 			def: &dag.Definition{
 				SchemaVersion: dag.CurrentSchemaVersion,

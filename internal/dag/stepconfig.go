@@ -29,6 +29,7 @@ var stepConfigTypes = map[StepType]func() StepConfig{
 	StepSleep:         func() StepConfig { return &SleepConfig{} },
 	StepFailNTimes:    func() StepConfig { return &FailNTimesConfig{} },
 	StepCounter:       func() StepConfig { return &CounterConfig{} },
+	StepEffectfulEcho: func() StepConfig { return &EffectfulEchoConfig{} },
 }
 
 // LLMMessage is one entry of an llm step's messages array.
@@ -142,6 +143,19 @@ type CounterConfig struct {
 	Path string `json:"path,omitempty"`
 }
 
+// EffectfulEchoConfig configures an effectful_echo test step (executor:
+// ticket 5.5), which increments an external counter — one line appended to
+// the file at Path — through the side-effect journal, then echoes Input as
+// output. Unlike counter, the append is journaled: retries and reclaims
+// short-circuit to the journaled result and never re-fire it. FailTimes
+// (optional, default 0) makes attempts 1..N fail *after* journaling, so a
+// retrying step proves the counter stays at exactly one line.
+type EffectfulEchoConfig struct {
+	Path      string          `json:"path,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	FailTimes int             `json:"fail_times,omitempty"`
+}
+
 func (*LLMConfig) stepConfig()           {}
 func (*ToolConfig) stepConfig()          {}
 func (*RetrieveConfig) stepConfig()      {}
@@ -156,3 +170,4 @@ func (*EchoConfig) stepConfig()          {}
 func (*SleepConfig) stepConfig()         {}
 func (*FailNTimesConfig) stepConfig()    {}
 func (*CounterConfig) stepConfig()       {}
+func (*EffectfulEchoConfig) stepConfig() {}

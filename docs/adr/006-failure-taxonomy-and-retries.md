@@ -452,6 +452,59 @@ forever and re-poison), and the reconciler's three step scans require the
 run to be `running` (a failed run's stranded ready/running/retrying steps
 would otherwise churn re-outbox → deliver → ack-drop every sweep).
 
+### Idempotency keys & side-effect journal (as built, 5.5)
+
+The two halves of "re-execution is safe" (the premise the
+default-transient rule and every accepted reclaim race lean on) landed as
+one ticket. **The idempotency key** is derived, not stored: a UUIDv5 over
+a fixed project namespace and `run_id/step_id`
+(`effects.Key`), so it is identical across attempts, retries, reclaims,
+and zombie takeovers *by construction*, distinct across steps and runs,
+and opaque to external services. The engine stamps it into
+`StepContext.IdempotencyKey` on every execution; M8's `http_request`
+sends it as the `Idempotency-Key` header on non-GET calls.
+
+**The journal protocol** (`internal/exec/effects`, table `side_effects` —
+ADR-004) is record-intent → execute → record-result, each journal phase
+in its own short transaction, never holding one across the external call.
+`StepContext.Effects` carries a per-step handle whose `Do(effectID, fn)`
+composes the phases; `Begin`/`Complete` primitives exist for effects that
+do not fit the single-callback shape. The rules:
+
+- **A journaled result short-circuits.** `Begin` finding a `done` row
+  returns the stored result and `fn` never runs — this is the
+  exactly-once half, and it is what absorbs retries (a post-journal
+  failure re-attempts the step, not the effect), reclaims, and takeover
+  re-executions.
+- **A dangling intent re-executes.** An `intent` row without a result
+  means its recorder died mid-effect; the next attempt takes the intent
+  over (attempt/claim/intent_at re-stamped, status guard `intent` only)
+  and runs `fn` again. This is the residual at-least-once window: it
+  cannot close without external cooperation, and the idempotency key is
+  that cooperation. Documented, deliberate, bounded to the
+  effect-fired/result-uncommitted gap.
+- **The result write is first-wins, not claim-fenced.** `Complete` is an
+  UPDATE guarded on `status = 'intent'`; a racing completer (a zombie's
+  late write after a takeover re-executed) matches nothing and reads back
+  the stored result. The journal stays single-valued; the step-level
+  fenced completion CAS already rejects the zombie's *outcome*, so
+  fencing the journal too would buy nothing.
+- **Misuse fails loudly.** Recording a result with no intent (nil token,
+  consumed token, done token, or a vanished row) is a bug in the calling
+  executor, not a runtime condition. Strict mode
+  (`AGENTLOOM_EFFECTS_STRICT`, default true while every deployment is
+  dev/test) panics — the consumer contains the panic without an ACK, so
+  the entry crash-loops to the poison threshold and lands in the DLQ,
+  loud and bounded. Non-strict returns a `*MisuseError` wrapped
+  permanent, dead-lettering the step cleanly instead of retrying an
+  unwinnable protocol violation.
+
+The proof executor is `effectful_echo` (dag catalog + `Builtins()`): it
+appends one `key=… attempt=…` line to a file through `Do`, then — when
+`fail_times` says so — fails transiently *after* the journal, so a
+retrying step demonstrably takes N+1 attempts while the file gains one
+line. The 5.8 chaos suite counts those lines at quiescence.
+
 ### Enforcement points
 
 **5.1** (this ticket) — the schema: `retry` on steps, `on_failure`
@@ -464,7 +517,9 @@ reconciler coverage for the failure-commit/schedule gap. **5.3** — the
 `timeout` class assignment and watchdog. **5.4** — `dead_lettered` +
 `cancelled` statuses, `dead_letters` table, poison wiring, requeue op
 with reason `dlq_requeue`, the failure-policy run disposition and
-downstream write-off. **5.6** — the `cancelled` class for run-control
+downstream write-off. **5.5** — the derived idempotency key, the
+`side_effects` journal + protocol, `StepContext.Effects`, strict-mode
+misuse, `effectful_echo`. **5.6** — the `cancelled` class for run-control
 cancellation. **M11** — unlocks `validation_failed` in `retry_on` and
 as an outcome. ADR-004's transition matrix and ADR-005's reason
 vocabulary are extended by those tickets exactly as both ADRs

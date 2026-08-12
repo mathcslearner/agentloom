@@ -380,6 +380,13 @@ func (v *validator) checkStepConfig(path string, s Step) {
 		if cfg[CounterConfig](s).Path == "" {
 			v.add(CodeConfigFieldRequired, path+".config.path", "required field is missing")
 		}
+	case StepEffectfulEcho:
+		switch c := cfg[EffectfulEchoConfig](s); {
+		case c.Path == "":
+			v.add(CodeConfigFieldRequired, path+".config.path", "required field is missing")
+		case c.FailTimes < 0:
+			v.add(CodeConfigFieldInvalid, path+".config.fail_times", "must not be negative, got %d", c.FailTimes)
+		}
 	case StepBranch, StepNoop, StepEcho:
 		// No required config fields.
 	}

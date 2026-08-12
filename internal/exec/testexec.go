@@ -11,17 +11,17 @@ import (
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 )
 
-// Builtins returns a registry holding the M4 executors: the five test
-// executors (noop, echo, sleep, fail_n_times, counter), the two
-// control-flow types (join, branch), whose real semantics live in the
-// engine — readiness counters and the edge-firing rule — so their
-// executors are trivial by design, and the three dev stubs (llm, tool,
-// retrieve; devstub.go) that make the canonical example definitions
-// runnable until the real executors arrive through the M8 plugin SPI and
-// the M9 provider layer.
+// Builtins returns a registry holding the M4/M5 executors: the six test
+// executors (noop, echo, sleep, fail_n_times, counter, and — since 5.5 —
+// effectful_echo), the two control-flow types (join, branch), whose real
+// semantics live in the engine — readiness counters and the edge-firing
+// rule — so their executors are trivial by design, and the three dev
+// stubs (llm, tool, retrieve; devstub.go) that make the canonical example
+// definitions runnable until the real executors arrive through the M8
+// plugin SPI and the M9 provider layer.
 func Builtins() *Registry {
 	r, err := NewRegistry(NoopExecutor{}, EchoExecutor{}, NewSleep(), FailNTimesExecutor{},
-		CounterExecutor{}, JoinExecutor{}, BranchExecutor{},
+		CounterExecutor{}, EffectfulEchoExecutor{}, JoinExecutor{}, BranchExecutor{},
 		StubLLMExecutor{}, StubToolExecutor{}, StubRetrieveExecutor{})
 	if err != nil {
 		panic(err) // unreachable: a fixed set of distinct, non-empty types
@@ -183,6 +183,68 @@ func (CounterExecutor) Execute(_ context.Context, sc StepContext) (Output, error
 		return Output{}, fmt.Errorf("counter: appending to %s: %w", c.Path, werr)
 	}
 	return Output{Data: json.RawMessage(fmt.Sprintf(`{"counted":true,"attempt":%d}`, sc.Attempt))}, nil
+}
+
+// EffectfulEchoExecutor runs effectful_echo steps (ticket 5.5): increment
+// an external counter — one line appended to the configured file — through
+// the side-effect journal, then echo the configured input as output. It is
+// counter's journaled sibling: where counter appends on every execution
+// (proving how often the engine really ran it), effectful_echo must append
+// exactly once no matter how many attempts, reclaims, or zombie takeovers
+// the step suffers — the journal short-circuits every re-execution to the
+// journaled result. The appended line carries the idempotency key and the
+// attempt number, so tests assert both the single fire and the key's
+// stability from the file alone.
+//
+// FailTimes makes attempts 1..N fail with a transient error *after* the
+// journaled effect, which is how a retrying step proves the short-circuit:
+// the step takes N+1 attempts but the file gains one line.
+type EffectfulEchoExecutor struct{}
+
+// Type implements Executor.
+func (EffectfulEchoExecutor) Type() string { return string(dag.StepEffectfulEcho) }
+
+// Execute implements Executor.
+func (EffectfulEchoExecutor) Execute(ctx context.Context, sc StepContext) (Output, error) {
+	c, err := configAs[*dag.EffectfulEchoConfig](sc)
+	if err != nil {
+		return Output{}, err
+	}
+	if c == nil || c.Path == "" {
+		return Output{}, &InvalidConfigError{StepType: string(sc.StepType), cause: fmt.Errorf("missing required field %q", "path")}
+	}
+	if sc.Effects == nil {
+		// Firing the effect unjournaled would silently break the
+		// exactly-once contract this executor exists to prove — a wiring
+		// bug, so permanent, never a retry.
+		return Output{}, Permanentf("effectful_echo: no side-effect journal wired into StepContext")
+	}
+	out, err := sc.Effects.Do(ctx, "echo", func(context.Context) (json.RawMessage, error) {
+		f, err := os.OpenFile(c.Path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("effectful_echo: opening %s: %w", c.Path, err)
+		}
+		_, werr := fmt.Fprintf(f, "key=%s attempt=%d\n", sc.IdempotencyKey, sc.Attempt)
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			return nil, fmt.Errorf("effectful_echo: appending to %s: %w", c.Path, werr)
+		}
+		if len(c.Input) > 0 {
+			return c.Input, nil
+		}
+		return sc.Input, nil
+	})
+	if err != nil {
+		return Output{}, err
+	}
+	if sc.Attempt <= c.FailTimes {
+		sc.logger().Info("effectful_echo: deliberate post-journal failure",
+			log.Attempt(sc.Attempt), "fail_times", c.FailTimes)
+		return Output{}, Transientf("effectful_echo: deliberate failure on attempt %d of %d (effect already journaled)", sc.Attempt, c.FailTimes)
+	}
+	return Output{Data: out}, nil
 }
 
 // FailNTimesExecutor runs fail_n_times steps: fail attempts 1..n, succeed

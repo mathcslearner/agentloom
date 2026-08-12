@@ -12,6 +12,7 @@ const (
 	EnvWorkerReconcileRunningStale = "AGENTLOOM_WORKER_RECONCILE_RUNNING_STALE"
 	EnvWorkerReconcileRetryStale   = "AGENTLOOM_WORKER_RECONCILE_RETRY_STALE"
 	EnvWorkerReconcileLimit        = "AGENTLOOM_WORKER_RECONCILE_LIMIT"
+	EnvWorkerEffectsStrict         = "AGENTLOOM_EFFECTS_STRICT"
 )
 
 // DefaultWorkerHealthInterval spaces the worker's periodic health log —
@@ -87,6 +88,11 @@ type WorkerConfig struct {
 	// ReconcileLimit caps each reconciler scan's rows per sweep. Must be
 	// positive.
 	ReconcileLimit int
+	// EffectsStrict makes side-effect journal misuse panic instead of
+	// dead-lettering the step (ticket 5.5) — the loud dev/test behavior.
+	// Default true while every deployment is dev; production deployments
+	// set AGENTLOOM_EFFECTS_STRICT=false for the clean dead-letter path.
+	EffectsStrict bool
 }
 
 func defaultWorkerConfig() WorkerConfig {
@@ -99,6 +105,7 @@ func defaultWorkerConfig() WorkerConfig {
 		ReconcileRunningStale: DefaultWorkerReconcileRunningStale,
 		ReconcileRetryStale:   DefaultWorkerReconcileRetryStale,
 		ReconcileLimit:        DefaultWorkerReconcileLimit,
+		EffectsStrict:         true,
 	}
 }
 
@@ -114,5 +121,6 @@ func (c *WorkerConfig) applyEnv(fn LookupFunc) []error {
 	errs = applyPositiveDuration(errs, fn, EnvWorkerReconcileRunningStale, &c.ReconcileRunningStale)
 	errs = applyPositiveDuration(errs, fn, EnvWorkerReconcileRetryStale, &c.ReconcileRetryStale)
 	errs = applyPositiveInt(errs, fn, EnvWorkerReconcileLimit, &c.ReconcileLimit)
+	errs = applyBool(errs, fn, EnvWorkerEffectsStrict, &c.EffectsStrict)
 	return errs
 }

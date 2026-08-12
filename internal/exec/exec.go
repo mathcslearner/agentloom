@@ -56,9 +56,46 @@ type StepContext struct {
 	// not survive a crash or reclaim.
 	Attempt int
 
+	// IdempotencyKey is a stable opaque token for this step's external
+	// calls (ticket 5.5): derived deterministically from (run, step), so it
+	// is identical across attempts, retries, reclaims, and zombie
+	// takeovers, and distinct across steps and runs. Executors pass it to
+	// external services that support idempotency keys (M8's http_request
+	// sends it as an Idempotency-Key header on non-GET calls); combined
+	// with an effect ID it also names entries in the side-effect journal.
+	// Empty when the invoker predates 5.5 wiring (unit tests constructing
+	// bare StepContexts).
+	IdempotencyKey string
+
+	// Effects is the side-effect journal handle bound to this step (ticket
+	// 5.5), through which executors make external side effects
+	// effectively-once. Nil when no journal is wired (bare unit-test
+	// contexts); executors that require it must fail with a permanent
+	// error rather than firing unjournaled effects.
+	Effects EffectJournal
+
 	// Logger carries the run/step/attempt log fields stamped by the
 	// worker. May be nil (executors fall back to slog.Default()).
 	Logger *slog.Logger
+}
+
+// EffectJournal is the executor-facing surface of the side-effect journal
+// (ticket 5.5, implemented by internal/exec/effects and bound per step by
+// the engine). Do wraps one external side effect in the journal protocol:
+// record-intent → execute fn → record-result, each journal phase in its
+// own short transaction, never holding one across fn. If the effect
+// already has a journaled result — this step ran before, through a retry,
+// reclaim, or zombie takeover — fn is skipped entirely and the stored
+// result is returned: journaled results short-circuit re-execution.
+//
+// effectID names the effect within the step (one step may journal several
+// distinct effects); the same effectID must mean the same effect on every
+// attempt. fn runs under the executor's context, so step timeouts and
+// cancellation apply. A dangling intent left by a crashed attempt is taken
+// over and fn re-executes — the residual at-least-once window the
+// idempotency key exists to absorb externally.
+type EffectJournal interface {
+	Do(ctx context.Context, effectID string, fn func(context.Context) (json.RawMessage, error)) (json.RawMessage, error)
 }
 
 // logger returns the context's logger, falling back to slog.Default() so

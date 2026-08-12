@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "kitchen-sink",
-  "description": "A research-and-publish pipeline that exercises every construct of the definition format: all 14 step types (noop, planner, retrieve, tool, map, join, llm, agent, branch, echo, sleep, fail_n_times, counter, human_approval), unconditioned parallel fan-out, `when`-conditioned edges with has() guards, a branch with conditioned arms plus a trailing default, both join modes (any and all), a marked loop edge, all five param types, explicit retry policies (a full block and a partial one inheriting engine defaults, ADR-006), a per-step execution timeout (ticket 5.3), the continue_independent_branches failure policy, and an engine-opaque ui block that round-trips byte-for-byte.",
+  "description": "A research-and-publish pipeline that exercises every construct of the definition format: all 15 step types (noop, planner, retrieve, tool, map, join, llm, agent, branch, echo, sleep, fail_n_times, counter, effectful_echo, human_approval), unconditioned parallel fan-out, `when`-conditioned edges with has() guards, a branch with conditioned arms plus a trailing default, both join modes (any and all), a marked loop edge, all five param types, explicit retry policies (a full block and a partial one inheriting engine defaults, ADR-006), a per-step execution timeout (ticket 5.3), the continue_independent_branches failure policy, a journaled side effect (ticket 5.5), and an engine-opaque ui block that round-trips byte-for-byte.",
   "on_failure": "continue_independent_branches",
   "params": {
     "goal": {
@@ -186,6 +186,20 @@
       "config": {
         "path": "out/publish-count.log"
       }
+    },
+    {
+      "id": "notify",
+      "type": "effectful_echo",
+      "config": {
+        "path": "out/notify-count.log",
+        "input": {
+          "notified": true
+        },
+        "fail_times": 1
+      },
+      "retry": {
+        "max_attempts": 3
+      }
     }
   ],
   "edges": [
@@ -287,6 +301,10 @@
     {
       "from": "publish",
       "to": "tally"
+    },
+    {
+      "from": "tally",
+      "to": "notify"
     }
   ],
   "ui": {

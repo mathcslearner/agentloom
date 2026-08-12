@@ -58,6 +58,7 @@ func TestLoadDefaults(t *testing.T) {
 		ReconcileRunningStale: config.DefaultWorkerReconcileRunningStale,
 		ReconcileRetryStale:   config.DefaultWorkerReconcileRetryStale,
 		ReconcileLimit:        config.DefaultWorkerReconcileLimit,
+		EffectsStrict:         true,
 	}
 	if cfg.Worker != wantWorker {
 		t.Errorf("default Worker config = %+v, want %+v", cfg.Worker, wantWorker)
@@ -128,6 +129,7 @@ func TestLoadWorkerOverrides(t *testing.T) {
 		config.EnvWorkerReconcileRunningStale: "2m",
 		config.EnvWorkerReconcileRetryStale:   "30s",
 		config.EnvWorkerReconcileLimit:        "50",
+		config.EnvWorkerEffectsStrict:         "false",
 	}))
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
@@ -141,6 +143,7 @@ func TestLoadWorkerOverrides(t *testing.T) {
 		ReconcileRunningStale: 2 * time.Minute,
 		ReconcileRetryStale:   30 * time.Second,
 		ReconcileLimit:        50,
+		EffectsStrict:         false,
 	}
 	if cfg.Worker != want {
 		t.Errorf("Worker config = %+v, want %+v", cfg.Worker, want)
@@ -154,6 +157,7 @@ func TestLoadWorkerInvalidValues(t *testing.T) {
 		config.EnvWorkerDispatchBatch:    "0",
 		config.EnvWorkerReconcileLimit:   "-3",
 		config.EnvWorkerDispatchInterval: "soon",
+		config.EnvWorkerEffectsStrict:    "loudly",
 	}))
 	if err == nil {
 		t.Fatal("Load with invalid worker values: want error, got nil")
@@ -162,6 +166,7 @@ func TestLoadWorkerInvalidValues(t *testing.T) {
 		config.EnvWorkerDispatchBatch,
 		config.EnvWorkerReconcileLimit,
 		config.EnvWorkerDispatchInterval,
+		config.EnvWorkerEffectsStrict,
 	} {
 		if !strings.Contains(err.Error(), env) {
 			t.Errorf("error %q does not mention %s", err, env)

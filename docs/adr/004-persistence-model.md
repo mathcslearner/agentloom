@@ -315,6 +315,19 @@ class; NULL for poison — nothing judged it), `error` (JSONB), `payload`
 `attempts_at_death`. Written exclusively inside the dead-lettering
 transitions, never updated or deleted.
 
+**`side_effects`** (since 5.5) — the side-effect journal (ADR-006
+"Idempotency keys & side-effect journal"). One row per journaled external
+effect, keyed `(run_id, step_id, effect_id)` with a composite FK to
+`run_steps` — `effect_id` is executor-chosen and scopes multiple effects
+within one step. `status` (`intent | done`; a CHECK requires `done` rows
+to carry `result_at`), `attempt` + `claim_id` (who last held the intent —
+diagnostics, never fencing: the result write is first-wins by the status
+guard on the completing UPDATE), `result` (JSONB, the journaled result
+that short-circuits re-execution), `intent_at`, `result_at`. Written only
+through the journal protocol in `internal/exec/effects`; a `done` row is
+immutable. Deliberately no event appends — journal rows are not step
+state transitions, and the table itself is the audit record.
+
 **`events`** — `(run_id, seq)` PK, `type`, `payload` (JSONB),
 `created_at`. Append-only.
 

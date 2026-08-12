@@ -92,6 +92,18 @@ type SchemaBaseline struct {
 	CreatedAt time.Time
 }
 
+type SideEffect struct {
+	RunID    uuid.UUID
+	StepID   string
+	EffectID string
+	Status   string
+	Attempt  int32
+	ClaimID  uuid.UUID
+	Result   json.RawMessage
+	IntentAt time.Time
+	ResultAt *time.Time
+}
+
 type StepAttempt struct {
 	RunID      uuid.UUID
 	StepID     string

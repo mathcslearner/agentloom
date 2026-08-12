@@ -447,13 +447,13 @@ Terminal failures (exhausted retries, permanent class, poison messages from 3.4'
 - [x] Poison message (handler crash loop) reaches DLQ instead of redelivering forever
 - [x] Requeue op re-executes the step and completes the run (integration test)
 
-#### 5.5 — Idempotency keys & side-effect journal
+#### 5.5 — Idempotency keys & side-effect journal ✅
 **Depends on:** 4.5
-`StepContext` exposes a **stable idempotency key** per (run, step) — unchanged across attempts and reclaims — for external calls. `internal/exec/effects`: journal helper (`record-intent → execute → record-result` in `side_effects` table) so executors can make external side effects effectively-once; journaled results short-circuit re-execution on retry. Test executor `effectful_echo` increments an external counter through the journal.
+`StepContext` exposes a **stable idempotency key** per (run, step) — unchanged across attempts and reclaims — for external calls. `internal/exec/effects`: journal helper (`record-intent → execute → record-result` in `side_effects` table) so executors can make external side effects effectively-once; journaled results short-circuit re-execution on retry. Test executor `effectful_echo` increments an external counter through the journal. *(As built: the key is derived, not stored — a UUIDv5 over a fixed project namespace and `run_id/step_id`, stable by construction; the journal runs each phase in its own short transaction, never spanning the external call, with dangling-intent takeover (the documented residual at-least-once window the key absorbs externally) and a first-wins result write; misuse loudness is `AGENTLOOM_EFFECTS_STRICT` — panic riding the consumer's panic path into poison DLQ (default, dev/test) vs. a permanent-classified dead-letter; `effectful_echo` gained a `fail_times` knob so a retrying step proves the short-circuit: N+1 attempts, one file line.)*
 **Done when:**
-- [ ] Key stable across retry and reclaim (asserted in kill/reclaim test)
-- [ ] Journaled effect executes once despite retry + reclaim + zombie scenarios
-- [ ] Journal misuse (execute without intent) fails loudly in dev/test mode
+- [x] Key stable across retry and reclaim (asserted in kill/reclaim test)
+- [x] Journaled effect executes once despite retry + reclaim + zombie scenarios
+- [x] Journal misuse (execute without intent) fails loudly in dev/test mode
 
 #### 5.6 — Cancel, park/resume, run deadlines
 **Depends on:** 5.2

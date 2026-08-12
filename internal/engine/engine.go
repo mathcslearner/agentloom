@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/mathcslearner/agentloom/internal/exec"
+	"github.com/mathcslearner/agentloom/internal/exec/effects"
 	"github.com/mathcslearner/agentloom/internal/queue"
 	"github.com/mathcslearner/agentloom/internal/store"
 )
@@ -61,6 +62,13 @@ type Engine struct {
 	scheduler RetryScheduler
 	// jitterRand supplies the [0,1) draw for full-jitter backoff.
 	jitterRand func() float64
+	// effects is the side-effect journal (ticket 5.5), bound per claimed
+	// step and handed to executors through StepContext.Effects. Built in
+	// New over the same store and clock the engine uses.
+	effects *effects.Journal
+	// effectsStrict makes journal misuse panic (dev/test loudness) instead
+	// of dead-lettering the step; see config.WorkerConfig.EffectsStrict.
+	effectsStrict bool
 }
 
 // Option customizes an Engine.
@@ -97,6 +105,15 @@ func WithJitterRand(r func() float64) Option {
 	return func(e *Engine) { e.jitterRand = r }
 }
 
+// WithStrictEffects sets the side-effect journal's misuse behavior (ticket
+// 5.5): strict panics — the loud dev/test mode, riding the consumer's
+// panic path into poison dead-lettering — while non-strict dead-letters
+// the step cleanly with a permanent-classified error. cmd/worker wires
+// config.WorkerConfig.EffectsStrict here.
+func WithStrictEffects(strict bool) Option {
+	return func(e *Engine) { e.effectsStrict = strict }
+}
+
 // New builds an Engine over the given store and executor registry.
 // workerID may be empty (logs then carry an empty worker_id — the queue
 // consumer name is the conventional value).
@@ -111,5 +128,12 @@ func New(s *store.Store, r *exec.Registry, workerID string, opts ...Option) (*En
 	for _, opt := range opts {
 		opt(e)
 	}
+	// Built after the options so the journal shares whatever clock the
+	// engine ended up with (tests inject fixed clocks through WithClock).
+	j, err := effects.New(s, effects.WithClock(func() time.Time { return e.now() }), effects.WithStrict(e.effectsStrict))
+	if err != nil {
+		return nil, err
+	}
+	e.effects = j
 	return e, nil
 }

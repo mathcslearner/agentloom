@@ -2331,3 +2331,106 @@ failure tests updated to the new terminal state. Full unit + integration
 - Poison on a `retrying` step dead-letters it even though its delayed
   retry entry is still out there — the claim classifier's new
   terminal-status drop consumes that entry harmlessly when it fires.
+
+### 5.5 — Idempotency keys & side-effect journal ✅
+
+**Delivered.** The "re-execution is safe" premise ADR-006 and ADR-005's
+accepted races lean on, made real: a stable per-(run, step) idempotency
+key on `StepContext`, the `internal/exec/effects` journal
+(record-intent → execute → record-result over the new `side_effects`
+table) that makes external side effects effectively-once across retries,
+reclaims, and zombie takeovers, loud misuse detection, and the
+`effectful_echo` proof executor wired through the dag catalog, the
+builtin registry, and both kitchen-sink corpora.
+
+**The key is derived, not stored:** `effects.Key(runID, stepID)` is a
+UUIDv5 over a fixed project namespace (constant `keyNamespace` — must
+never change; a golden test pins the derivation and says so) and
+`run_id/step_id`. Stability across attempts/reclaims/takeovers is by
+construction, no migration or lookup involved, and the token is opaque
+and header-safe for M8's `http_request` `Idempotency-Key`. The engine
+stamps `StepContext.IdempotencyKey` + a bound journal handle
+(`StepContext.Effects`, interface `exec.EffectJournal` — `exec` stays
+store-free; the concrete `*effects.StepJournal` lives in the new
+subpackage) in `execute()`, so executors see effect identity without
+ever seeing run/step IDs (4.1's minimal-SPI stance preserved).
+
+**Migration 0006** (`side_effects`): `(run_id, step_id, effect_id)` PK
+with composite FK to `run_steps` (ON DELETE CASCADE), `status`
+(`intent | done`, CHECK: done requires `result_at`), `attempt` +
+`claim_id` (diagnostics — who last held the intent, never fencing),
+`result` JSONB, injected-clock timestamps. Store surface: repo
+primitives only (`SideEffectRepo`: Get/GetForUpdate/InsertIntent/
+TakeoverIntent/Complete/ListByStep) — the protocol lives in the effects
+package, which runs each phase in its own `WithTx`, deliberately never
+holding a transaction across the external call.
+
+**Protocol semantics** (ADR-006 gained the as-built section):
+- Done row at Begin → short-circuit: the stored result returns, `fn`
+  never runs. This is the exactly-once half.
+- Dangling intent at Begin → takeover + re-execute: the recorder died
+  between intent and result, the effect state is unknowable. The
+  residual at-least-once window; the idempotency key absorbs it at the
+  external service. Two fresh recorders racing the first insert are
+  handled by a one-retry loop (the loser's second pass locks the
+  winner's row via FOR UPDATE).
+- Complete is first-wins (UPDATE guarded on `status = 'intent'`): a
+  zombie's late result loses and reads back the stored result — the
+  journal stays single-valued; step-level claim fencing already rejects
+  the zombie's outcome, so the journal is deliberately not claim-fenced.
+- `fn` error → intent left dangling, error returned as-is (retry
+  re-executes).
+- Misuse (Complete with nil/consumed/done token, or no intent row —
+  "execute without intent") panics in strict mode (new
+  `AGENTLOOM_EFFECTS_STRICT`, `WorkerConfig.EffectsStrict`, default
+  **true** while everything is dev/test; engine option
+  `WithStrictEffects`) — the panic rides the consumer's containment into
+  no-ACK → poison threshold → DLQ, loud and bounded. Non-strict returns
+  `*MisuseError` wrapped in a permanent `ClassifiedError` → clean
+  dead-letter, never a retry.
+
+**`effectful_echo`** (dag `StepEffectfulEcho` + executor in
+`Builtins()`): journals one file-append (`key=<idempotency key>
+attempt=<n>` — the file alone proves single-fire and key stability) via
+`Do`, echoes `input` as output, and — the important knob — `fail_times`
+fails attempts 1..N transiently *after* the journal, so a retrying step
+takes N+1 attempts while the counter gains exactly one line. Validation:
+`path` required, `fail_times ≥ 0`; `input` gets the same `compactRaw`
+normalization as echo/tool/branch (the round-trip corpus caught that).
+Both kitchen sinks grew a `notify` step with `fail_times: 1` and a
+3-attempt policy (construct-coverage pins enforced the extension).
+
+**Headline integration tests** (`internal/engine/
+effects_integration_test.go`): retry short-circuit on the fake clock
+(attempt history `[transient, transient, succeeded]`, file exactly one
+line, journal row `done` recorded by attempt 1); the kill/reclaim
+acceptance — worker A journals then stalls holding its claim, B
+reclaims/takes over/short-circuits/completes, A's resumed completion is
+fenced, file has one line under the one derived key, attempt history
+`[lost, succeeded]`; misuse both ways (non-strict → permanent DLQ row
+naming the misuse; strict → panic → poison DLQ row). Plus the journal
+protocol suite in `internal/exec/effects` (short-circuit, dangling-
+intent takeover, first-wins race, all four misuse shapes incl. the
+raw-SQL vanished-row case, strict panic) and the store-primitive suite
+(status guards, PK/FK conflicts). Full unit + integration + crash
+suites green; lint clean.
+
+**Non-obvious decisions / deferred.**
+- No events for journal writes: they are not step state transitions, the
+  table is the audit record, and skipping them avoids run-lock ordering
+  questions inside executor runtime. Recorded in ADR-004's table note.
+- The exactly-once claim is scoped honestly in ADR-006: after the result
+  commits, re-execution is impossible; the effect-fired/result-uncommitted
+  gap is irreducible without external cooperation, which is exactly what
+  the key provides. Tests prove the scenarios where the result committed.
+- Strict-mode default is true (dev/test posture); production flips
+  `AGENTLOOM_EFFECTS_STRICT=false` for the clean dead-letter path. M6.2's
+  test-executor-gating decision should revisit the default alongside it.
+- `Begin`/`Complete` primitives are exported on `*StepJournal` (not on
+  the `exec.EffectJournal` interface) for future multi-part effects; the
+  interface stays `Do`-only so well-behaved executors cannot misuse the
+  protocol at all.
+- The `counter` executor stays unjournaled on purpose — it measures how
+  often the engine really executed (4.7's probe); `effectful_echo`
+  measures that journaled effects fire once. The 5.8 chaos suite needs
+  both.

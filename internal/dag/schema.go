@@ -13,7 +13,7 @@ import (
 var stepTypes = []StepType{
 	StepLLM, StepTool, StepRetrieve, StepMap, StepPlanner, StepAgent,
 	StepHumanApproval, StepJoin, StepBranch, StepNoop, StepEcho,
-	StepSleep, StepFailNTimes, StepCounter,
+	StepSleep, StepFailNTimes, StepCounter, StepEffectfulEcho,
 }
 
 // StepTypes returns the step-type catalog in documentation order. It

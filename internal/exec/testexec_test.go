@@ -295,6 +295,113 @@ func TestCounter(t *testing.T) {
 	})
 }
 
+// fakeJournal implements EffectJournal in memory with the real journal's
+// observable contract: the first Do per effect ID executes fn and stores
+// its result; every later Do short-circuits to the stored result.
+type fakeJournal struct {
+	results map[string]json.RawMessage
+}
+
+func (f *fakeJournal) Do(ctx context.Context, effectID string, fn func(context.Context) (json.RawMessage, error)) (json.RawMessage, error) {
+	if r, ok := f.results[effectID]; ok {
+		return r, nil
+	}
+	out, err := fn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if f.results == nil {
+		f.results = map[string]json.RawMessage{}
+	}
+	f.results[effectID] = out
+	return out, nil
+}
+
+func TestEffectfulEcho(t *testing.T) {
+	t.Parallel()
+
+	e := EffectfulEchoExecutor{}
+	sc := func(path string, attempt int, j EffectJournal) StepContext {
+		cfg, err := json.Marshal(map[string]any{"path": path, "input": map[string]bool{"sent": true}, "fail_times": 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return StepContext{
+			StepType: dag.StepEffectfulEcho, Config: cfg, Attempt: attempt,
+			IdempotencyKey: "idem-key-1", Effects: j,
+		}
+	}
+
+	t.Run("journals once across a retry and echoes on success", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "notify.log")
+		j := &fakeJournal{}
+
+		// Attempt 1: the effect fires and journals, then fail_times=1 fails
+		// the attempt transiently — after the journal, by design.
+		_, err := e.Execute(context.Background(), sc(path, 1, j))
+		var ce *ClassifiedError
+		if !errors.As(err, &ce) || ce.Class != dag.ClassTransient {
+			t.Fatalf("attempt 1 error = %v, want a transient ClassifiedError", err)
+		}
+
+		// Attempt 2: the journal short-circuits — no new line — and the
+		// attempt is past fail_times, so the step succeeds with the echo.
+		out, err := e.Execute(context.Background(), sc(path, 2, j))
+		if err != nil {
+			t.Fatalf("attempt 2: %v", err)
+		}
+		if string(out.Data) != `{"sent":true}` {
+			t.Errorf("output = %s, want the configured input echoed", out.Data)
+		}
+		data, err := os.ReadFile(path) // #nosec G304 -- t.TempDir path, test-only
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		if got, want := string(data), "key=idem-key-1 attempt=1\n"; got != want {
+			t.Errorf("file contents = %q, want exactly one line from attempt 1: %q", got, want)
+		}
+	})
+
+	t.Run("nil journal is a permanent wiring error", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "notify.log")
+		_, err := e.Execute(context.Background(), sc(path, 1, nil))
+		var ce *ClassifiedError
+		if !errors.As(err, &ce) || ce.Class != dag.ClassPermanent {
+			t.Fatalf("error = %v, want a permanent ClassifiedError", err)
+		}
+		if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+			t.Error("effect fired despite the missing journal")
+		}
+	})
+
+	t.Run("config errors", func(t *testing.T) {
+		t.Parallel()
+		for _, cfg := range []json.RawMessage{nil, json.RawMessage(`{}`), json.RawMessage(`{"path": ""}`)} {
+			_, err := e.Execute(context.Background(), StepContext{
+				StepType: dag.StepEffectfulEcho, Config: cfg, Attempt: 1, Effects: &fakeJournal{},
+			})
+			if !errors.Is(err, ErrInvalidConfig) {
+				t.Errorf("Execute(config=%s) error = %v, want ErrInvalidConfig", cfg, err)
+			}
+		}
+	})
+
+	t.Run("append failure surfaces as the fn error, unjournaled", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "no-such-dir", "notify.log")
+		j := &fakeJournal{}
+		_, err := e.Execute(context.Background(), sc(path, 1, j))
+		if err == nil {
+			t.Fatal("Execute succeeded, want open error")
+		}
+		if len(j.results) != 0 {
+			t.Error("failed effect left a journaled result")
+		}
+	})
+}
+
 // TestConfigAsWrongType pins the executor-vs-step-type mismatch branch: a
 // context whose step type decodes to a different struct than the executor
 // expects is an *InvalidConfigError, not a silent zero config.

@@ -236,6 +236,8 @@ func decodeStepConfig(st StepType, raw json.RawMessage, path string, errs *errLi
 		compactRaw(&c.Input)
 	case *EchoConfig:
 		compactRaw(&c.Input)
+	case *EffectfulEchoConfig:
+		compactRaw(&c.Input)
 	case *JoinConfig:
 		if c.Mode != "" && c.Mode != JoinAll && c.Mode != JoinAny {
 			errs.add(path+".mode", "unknown join mode %q (expected %q or %q)", string(c.Mode), JoinAll, JoinAny)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/exec"
+	"github.com/mathcslearner/agentloom/internal/exec/effects"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/queue"
 	"github.com/mathcslearner/agentloom/internal/store"
@@ -148,12 +149,23 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 			slog.Any("error", terr))
 		return e.completeFailure(ctx, step, terr, dag.ClassPermanent)
 	}
+	// The claim always stamps a claim_id; the guard only keeps a corrupt
+	// row from panicking the journal binding (misuse detection catches the
+	// rest downstream).
+	claimID := uuid.Nil
+	if step.ClaimID != nil {
+		claimID = *step.ClaimID
+	}
 	out, expired, execErr := runExecutor(ctx, executor, exec.StepContext{
 		StepType: dag.StepType(step.StepType),
 		Config:   step.Config,
 		Input:    nil, // input rendering is M6; run_steps carries no input yet
 		Attempt:  int(step.AttemptCount),
-		Logger:   logger,
+		// Stable per (run, step) — the same key on every attempt, retry,
+		// reclaim, and takeover of this step (ticket 5.5).
+		IdempotencyKey: effects.Key(step.RunID, step.StepID),
+		Effects:        e.effects.ForStep(step.RunID, step.StepID, int(step.AttemptCount), claimID, logger),
+		Logger:         logger,
 	}, timeout)
 	if expired {
 		if execErr != nil {

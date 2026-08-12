@@ -153,6 +153,21 @@ func applyPositiveInt(errs []error, fn LookupFunc, key string, dst *int) []error
 	return errs
 }
 
+// applyBool overrides *dst from the environment when the variable is set,
+// appending an error for a value strconv.ParseBool rejects.
+func applyBool(errs []error, fn LookupFunc, key string, dst *bool) []error {
+	raw, ok := lookup(fn, key)
+	if !ok {
+		return errs
+	}
+	b, err := strconv.ParseBool(raw)
+	if err != nil {
+		return append(errs, fmt.Errorf("%s: invalid value %q (want a boolean, e.g. true)", key, raw))
+	}
+	*dst = b
+	return errs
+}
+
 // applyPositiveDuration is applyPositiveInt for Go durations.
 func applyPositiveDuration(errs []error, fn LookupFunc, key string, dst *time.Duration) []error {
 	raw, ok := lookup(fn, key)

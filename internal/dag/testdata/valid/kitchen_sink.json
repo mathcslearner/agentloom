@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "kitchen-sink",
-  "description": "Exercises every step type, edge feature, retry policies, execution timeouts, the failure policy, and the ui block.",
+  "description": "Exercises every step type, edge feature, retry policies, execution timeouts, the failure policy, journaled side effects, and the ui block.",
   "on_failure": "continue_independent_branches",
   "params": {
     "goal": {"type": "string", "required": true},
@@ -25,7 +25,8 @@
     {"id": "flaky_probe", "type": "fail_n_times", "config": {"n": 2}, "retry": {"max_attempts": 4, "backoff": {"initial": "100ms", "cap": "2s", "multiplier": 2}, "jitter": "full", "retry_on": ["transient", "timeout"]}},
     {"id": "approve", "type": "human_approval", "config": {"prompt": "OK to send?"}},
     {"id": "cooldown", "type": "sleep", "config": {"duration": "250ms"}, "retry": {"backoff": {"initial": "500ms", "cap": "500ms", "multiplier": 1.5}, "jitter": "none"}, "timeout": "5s"},
-    {"id": "tally", "type": "counter", "config": {"path": "/tmp/kitchen-sink-tally"}}
+    {"id": "tally", "type": "counter", "config": {"path": "/tmp/kitchen-sink-tally"}},
+    {"id": "notify", "type": "effectful_echo", "config": {"path": "/tmp/kitchen-sink-notify", "input": {"sent": true}, "fail_times": 1}, "retry": {"max_attempts": 3}}
   ],
   "edges": [
     {"from": "start", "to": "fetch"},
@@ -45,6 +46,7 @@
     {"from": "gather", "to": "approve"},
     {"from": "approve", "to": "cooldown"},
     {"from": "cooldown", "to": "tally"},
+    {"from": "tally", "to": "notify"},
     {"from": "critique", "to": "draft", "type": "loop", "condition": "output.verdict == 'revise'", "max_iterations": 3}
   ],
   "ui": {

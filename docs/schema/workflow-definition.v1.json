@@ -133,6 +133,19 @@
         "loop"
       ]
     },
+    "EffectfulEchoConfig": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "input": true,
+        "fail_times": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "ErrorClass": {
       "type": "string",
       "enum": [
@@ -479,6 +492,16 @@
               "$ref": "#/$defs/CounterConfig"
             }
           }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "effectful_echo"
+            },
+            "config": {
+              "$ref": "#/$defs/EffectfulEchoConfig"
+            }
+          }
         }
       ],
       "properties": {
@@ -522,7 +545,8 @@
         "echo",
         "sleep",
         "fail_n_times",
-        "counter"
+        "counter",
+        "effectful_echo"
       ]
     },
     "ToolConfig": {

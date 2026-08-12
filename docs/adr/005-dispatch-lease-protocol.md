@@ -220,7 +220,8 @@ ACK-dropping it, that duplicate is later *reclaimed* while the real
 holder still runs, and the takeover steals a live claim. It is rare
 (needs a duplicate *and* a crash), bounded (one wasted execution), and
 safe — the fenced original's completion is rejected, the step re-executes,
-and side-effect idempotency (M5.5) absorbs the external effects. Accepted.
+and side-effect idempotency (built in 5.5: journaled results short-circuit
+the re-execution) absorbs the external effects. Accepted.
 
 ### Crash matrix
 
@@ -468,8 +469,9 @@ Negative:
   is a second truth store; 3.6's harness exists to keep paths honest.
 - **TTL tuning is a real hazard.** A stall longer than the lease TTL
   (GC pause, VM freeze) causes a spurious reclaim: safe (fenced) but
-  wasted work — and with side effects, wasted *external* calls until
-  M5.5's journal absorbs them. Mitigated by heartbeat = TTL/3 and the
+  wasted work — and with side effects, wasted *external* calls unless
+  5.5's journal absorbs them (it does, for any effect whose result was
+  journaled before the stall). Mitigated by heartbeat = TTL/3 and the
   takeover CAS window being race-free; not eliminated.
 - **The duplicate-reclaim takeover race** (a duplicate entry's reader
   crashes; its reclaim steals a live claim) is accepted as rare, bounded,
@@ -481,7 +483,7 @@ Negative:
   ping-pong (original entry goes stale after its handler errors on the
   fence, redelivers, takes over the new holder). Same bound applies: each
   round costs one fenced execution, and the poison threshold caps the
-  loop; M5.5's side-effect journal absorbs the external effects.
+  loop; 5.5's side-effect journal (built) absorbs the external effects.
 - **A failed completion transaction now re-executes, not just
   redelivers** (*post-M4 audit*). Before 4.5 a transient completion-tx
   failure left the entry to bounce off the claim CAS; with the takeover

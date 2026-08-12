@@ -91,7 +91,8 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	// duty (ticket 5.2).
 	eng, err := engine.New(st, exec.Builtins(), workerID,
 		engine.WithDispatchNudge(dispatcher.Nudge),
-		engine.WithRetryScheduler(q.NewDelayed(cfg.Queue.DelayedKey)))
+		engine.WithRetryScheduler(q.NewDelayed(cfg.Queue.DelayedKey)),
+		engine.WithStrictEffects(cfg.Worker.EffectsStrict))
 	if err != nil {
 		return err
 	}
