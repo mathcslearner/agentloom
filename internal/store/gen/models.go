@@ -69,6 +69,7 @@ type RunStep struct {
 	FinishedAt    *time.Time
 	RetryPolicy   json.RawMessage
 	NextAttemptAt *time.Time
+	Timeout       *string
 }
 
 type SchemaBaseline struct {

@@ -494,6 +494,9 @@
         },
         "retry": {
           "$ref": "#/$defs/RetryPolicy"
+        },
+        "timeout": {
+          "type": "string"
         }
       },
       "additionalProperties": false,

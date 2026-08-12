@@ -59,6 +59,7 @@ const (
 	CodeLoopFieldForbidden      ValidationCode = "loop_field_forbidden"
 	CodeRetryFieldRequired      ValidationCode = "retry_field_required"
 	CodeRetryFieldInvalid       ValidationCode = "retry_field_invalid"
+	CodeTimeoutFieldInvalid     ValidationCode = "timeout_field_invalid"
 	CodeLimitExceeded           ValidationCode = "limit_exceeded"
 	CodeCycle                   ValidationCode = "cycle_detected"
 	CodeLoopEdgeNotAncestor     ValidationCode = "loop_edge_not_ancestor"
@@ -202,8 +203,28 @@ func (v *validator) checkSteps(def *Definition) map[string]int {
 		}
 		v.checkStepConfig(path, s)
 		v.checkRetry(path, s.Retry)
+		v.checkTimeout(path, s.Timeout)
 	}
 	return index
+}
+
+// checkTimeout enforces the per-attempt execution timeout bounds (ticket
+// 5.3): parseable, positive, at most MaxStepTimeout. An empty string means
+// the key was absent — no timeout, nothing to check.
+func (v *validator) checkTimeout(path, val string) {
+	if val == "" {
+		return
+	}
+	path += ".timeout"
+	d, err := time.ParseDuration(val)
+	switch {
+	case err != nil:
+		v.add(CodeTimeoutFieldInvalid, path, "not a Go duration string: %v", err)
+	case d <= 0:
+		v.add(CodeTimeoutFieldInvalid, path, "must be positive, got %q", val)
+	case d > MaxStepTimeout:
+		v.add(CodeTimeoutFieldInvalid, path, "must be at most %s, got %q", MaxStepTimeout, val)
+	}
 }
 
 // checkRetry enforces ADR-006's retry-policy bounds. The codec already

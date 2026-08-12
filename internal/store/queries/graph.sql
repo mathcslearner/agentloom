@@ -7,20 +7,22 @@
 -- reads it, so tests must be able to control it.
 -- retry_policy is the step's effective policy, materialized at
 -- instantiation (ticket 5.2, ADR-006) — required on every row.
+-- timeout is the step's per-attempt execution timeout, materialized the
+-- same way (ticket 5.3); NULL means no timeout.
 -- name: CreateRunStep :one
 INSERT INTO run_steps (run_id, step_id, step_type, config, retry_policy,
-                       status, remaining_deps, fired_deps, graph_version,
-                       updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                       timeout, status, remaining_deps, fired_deps,
+                       graph_version, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING *;
 
 -- CreateRunSteps is the batch (COPY) form for run instantiation (2.5) and
 -- expansion (M13), which write whole graphs at once.
 -- name: CreateRunSteps :copyfrom
 INSERT INTO run_steps (run_id, step_id, step_type, config, retry_policy,
-                       status, remaining_deps, fired_deps, graph_version,
-                       updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+                       timeout, status, remaining_deps, fired_deps,
+                       graph_version, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 
 -- name: GetRunStep :one
 SELECT * FROM run_steps WHERE run_id = $1 AND step_id = $2;

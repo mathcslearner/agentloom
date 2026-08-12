@@ -72,9 +72,11 @@ type WorkerConfig struct {
 	// Must be ≫ the lease TTL — and, in effect, it is a hard cap on a
 	// step's wall-clock execution time: a live executor still running
 	// past it gets taken over and its side effects run twice (state stays
-	// correct; the fenced completion is rejected). Until M5.3 adds real
-	// step timeouts, size this above the longest step you expect to run.
-	// Must be positive.
+	// correct; the fenced completion is rejected). Since M5.3 the per-step
+	// `timeout` is the intended execution bound — size this above the
+	// largest configured step timeout, or a timeout will never fire before
+	// the takeover; it remains the backstop for executors that ignore
+	// cancellation. Must be positive.
 	ReconcileRunningStale time.Duration
 	// ReconcileRetryStale is how long past its next_attempt_at a retrying
 	// step may sit before the reconciler presumes its delayed re-dispatch

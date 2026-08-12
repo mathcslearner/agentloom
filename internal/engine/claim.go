@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/google/uuid"
@@ -139,13 +140,34 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 		return e.completeFailure(ctx, step, err, dag.ClassPermanent)
 	}
 
-	out, execErr := executor.Execute(ctx, exec.StepContext{
+	timeout, terr := stepTimeout(step.Timeout)
+	if terr != nil {
+		// Corrupt materialized timeout — deterministic stored-state failure
+		// (ADR-006 taxonomy row 7 in spirit), like a corrupt retry policy.
+		logger.ErrorContext(ctx, "corrupt materialized step timeout; recording step failure",
+			slog.Any("error", terr))
+		return e.completeFailure(ctx, step, terr, dag.ClassPermanent)
+	}
+	out, expired, execErr := runExecutor(ctx, executor, exec.StepContext{
 		StepType: dag.StepType(step.StepType),
 		Config:   step.Config,
 		Input:    nil, // input rendering is M6; run_steps carries no input yet
 		Attempt:  int(step.AttemptCount),
 		Logger:   logger,
-	})
+	}, timeout)
+	if expired {
+		if execErr != nil {
+			// The engine assigns the timeout class from context state
+			// (ADR-006 row 3) — the executor's own error, whatever it
+			// wrapped, is the recorded cause.
+			return e.completeFailure(ctx, step,
+				fmt.Errorf("step timed out after %s: %w", timeout, execErr), dag.ClassTimeout)
+		}
+		// Success racing the deadline: the work is done, and discarding it
+		// to record a timeout would waste budget and re-run side effects.
+		logger.WarnContext(ctx, "executor succeeded after its timeout deadline; honoring the result",
+			slog.Duration("timeout", timeout))
+	}
 	if execErr != nil {
 		// Worker-side classification at completion time (ADR-006): a
 		// declared class is honored, config-decode misses are permanent,

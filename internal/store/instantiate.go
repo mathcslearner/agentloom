@@ -257,12 +257,19 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		if err != nil {
 			return gen.Run{}, fmt.Errorf("marshaling retry policy of step %q: %w", step.ID, err)
 		}
+		// The per-attempt execution timeout is materialized alongside config
+		// and retry_policy (ticket 5.3); nil means no timeout.
+		var timeout *string
+		if step.Timeout != "" {
+			timeout = &step.Timeout
+		}
 		steps[i] = gen.CreateRunStepsParams{
 			RunID:         run.ID,
 			StepID:        step.ID,
 			StepType:      string(step.Type),
 			Config:        config,
 			RetryPolicy:   retryPolicy,
+			Timeout:       timeout,
 			Status:        status,
 			RemainingDeps: p.remaining[step.ID],
 			GraphVersion:  1,

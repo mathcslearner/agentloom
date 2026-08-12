@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "name": "timeout-bad-bounds",
+  "steps": [
+    {"id": "a", "type": "noop", "timeout": "fast"},
+    {"id": "b", "type": "noop", "timeout": "-1s"},
+    {"id": "c", "type": "noop", "timeout": "25h"}
+  ],
+  "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "c"}]
+}

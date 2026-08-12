@@ -145,6 +145,11 @@ var structuralCases = map[string][]issueRef{
 		{dag.CodeRetryFieldInvalid, "steps[0].retry.retry_on[3]"},
 		{dag.CodeRetryFieldInvalid, "steps[1].retry.retry_on"},
 	},
+	"timeout_bad_bounds.json": {
+		{dag.CodeTimeoutFieldInvalid, "steps[0].timeout"},
+		{dag.CodeTimeoutFieldInvalid, "steps[1].timeout"},
+		{dag.CodeTimeoutFieldInvalid, "steps[2].timeout"},
+	},
 	"name_too_long.json": {{dag.CodeLimitExceeded, "name"}},
 	"expr_too_long.json": {{dag.CodeLimitExceeded, "edges[0].when"}},
 	"when_syntax_error.json": {

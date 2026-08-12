@@ -188,9 +188,12 @@ func decodeStep(raw json.RawMessage, path string, errs *errList) Step {
 	if retryRaw, present := m["retry"]; present {
 		step.Retry = decodeRetry(retryRaw, path+".retry", errs)
 	}
+	if timeoutRaw, present := m["timeout"]; present {
+		step.Timeout, _ = decodeString(timeoutRaw, path+".timeout", errs)
+	}
 	for _, k := range sortedKeys(m) {
 		switch k {
-		case "id", "type", "config", "retry":
+		case "id", "type", "config", "retry", "timeout":
 		default:
 			errs.add(path+"."+k, "unknown field")
 		}

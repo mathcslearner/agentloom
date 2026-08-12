@@ -95,6 +95,11 @@ const (
 
 	// MaxBackoffMultiplier caps `retry.backoff.multiplier`.
 	MaxBackoffMultiplier = 100
+
+	// MaxStepTimeout caps the step-envelope `timeout` field (ticket 5.3).
+	// Same ceiling as the backoff cap: an execution bound past a day is an
+	// authoring mistake, not a workload.
+	MaxStepTimeout = 24 * time.Hour
 )
 
 // RetryPolicy is a step's authored retry policy (ADR-006). Every field

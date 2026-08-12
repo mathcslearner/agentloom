@@ -2101,3 +2101,96 @@ an as-built note recording the collapsed transitions.
   `dead_lettered` + the failure policy, poison wiring, and the
   dispatcher skipping terminal runs (today those rows drain, deliver,
   and ack-drop at the run-status guard — harmless, slightly wasteful).
+
+### 5.3 — Step execution timeouts ✅
+
+**Delivered.** Per-step execution timeouts end to end: the `timeout`
+step-envelope field in the definition contract, its materialization onto
+`run_steps` (migration 0004), and deadline enforcement in the engine's
+execute path — the attempt records the `timeout` class (ADR-006 taxonomy
+row 3, engine-assigned from context state) and routes through 5.2's
+retry engine unchanged. ADR-006 gained an as-built "Step execution
+timeouts" section documenting the mechanism and the watchdog/heartbeat
+interplay.
+
+**Contract** (`internal/dag`). `Step.Timeout` — a Go duration string,
+sibling of `retry`, uniform across step types; absent = no timeout. The
+clock bounds one *attempt* and starts when the executor starts (queue
+wait and claim latency do not count). Strict decode admits the new key
+(string-typed); Validate enforces parseable / positive / ≤ 24h
+(`MaxStepTimeout`, same ceiling as `backoff.cap`) under new code
+`timeout_field_invalid`; canonical encoding rides struct order with
+omitempty; JSON Schema regenerated. Kitchen-sink fixtures (both corpora)
+carry timeouts and the construct-coverage pin requires one.
+
+**Store.** Migration 0004: `run_steps.timeout TEXT` nullable — the
+duration string verbatim (the `ResolvedRetryPolicy` convention:
+readable in the row, guaranteed parseable by submit-time validation),
+NULL = no timeout so pre-5.3 rows need no backfill. Materialized at
+instantiation alongside `config`/`retry_policy`; sqlc regenerated
+(`gen.RunStep.Timeout *string`). The direct-create repo path defaults
+nil (no timeout) — unlike `retry_policy` there is no merge to apply.
+
+**Engine** (`internal/engine/timeout.go` + the `execute` wiring).
+Enforcement is **synchronous cooperative cancellation**: `runExecutor`
+wraps the executor call in `context.WithTimeout` when a timeout is set
+and reports `expired` from context state after it returns. Deliberately
+no detached goroutine that abandons the executor at the deadline — that
+would allow the same step to run concurrently with its own retry inside
+one process (side-effect double-fire) and permit real goroutine leaks;
+synchronously there is nothing to leak by construction. A joined
+watchdog observer goroutine logs when the deadline fires while the
+executor is still running (the only sign of life from an executor that
+ignores cancellation — which stalls its consumer visibly, heartbeat
+alive, until `ReconcileRunningStale`'s cap takes over; that knob's
+comment now says to size it above the largest configured timeout).
+Routing rules: expired + executor error → `completeFailure` with
+`ClassTimeout` (wrapping "step timed out after X"), bypassing
+`classifyFailure` like the registry-miss path; parent cancellation is
+*not* a timeout (`context.Canceled` ≠ `DeadlineExceeded`) and keeps its
+4.x redeliver route until 5.6; success racing the deadline is honored
+with a warning (finished work is never discarded — the fenced CAS
+guards correctness). A corrupt materialized timeout (unparseable /
+non-positive) lands a permanent failure completion, mirroring the
+corrupt-retry-policy handling. Completions always run on the parent
+ctx, never the expired child.
+
+**Tests.** Unit (`timeout_test.go`): `stepTimeout` table,
+`timedOut` discriminator, and `runExecutor` contracts — sleep(10s)
+under 20ms cancelled at the deadline with the goroutine count settling
+back to baseline (the no-leak acceptance criterion, stack dump on
+failure), zero-timeout installs no deadline, success-after-deadline
+preserved with `expired=true`, parent-cancel not judged timeout.
+Integration (`timeout_integration_test.go`): headline
+`TestTimeoutRetriesPerPolicy` — sleep(10s)/timeout=100ms/max_attempts=2
+records outcome history exactly `[timeout, timeout]`, retries on 5.2's
+injected-clock backoff (due at +1s, jitter none), exhausts to
+step/run failed, and proves timeout ≠ crash: zero `step_reclaimed`
+events, no `lost` outcomes, error payload carrying the message + class;
+`TestTimeoutNotHitIsInert` — a generous timeout changes nothing. The
+watchdog deadline is genuinely wall-clock-bound, so these follow the
+queue package's timing convention (small real durations, sleep ≫
+timeout) while backoff stays on the fake clock. Migration round-trip
+test bumped to version 4 (one Down drops `timeout`, keeps 0003's
+columns). dag corpus: `timeout_wrong_type.json` (decode) and
+`timeout_bad_bounds.json` (structural, all three bound violations).
+Full unit + integration + crash suites green; lint clean.
+
+**Non-obvious decisions / deferred.**
+- `timeout` lives on the step envelope (like `retry`), not in per-type
+  config — it is uniform semantics the engine owns, and executors never
+  see it (they just observe ctx cancellation, per ADR-006).
+- Stored as TEXT duration string rather than integer millis for
+  consistency with the retry policy's duration convention; the engine
+  parses per execution (cheap, validated at submit).
+- `expired` is judged *after* the executor returns rather than by
+  racing a select: the class must reflect what actually happened to the
+  context, and an executor may return a real error microseconds before
+  the deadline — that stays its own class.
+- Timeouts larger than `ReconcileRunningStale` never fire (takeover
+  wins first). Documented in the knob's comment and ADR-006 rather than
+  cross-validated at submit time — the bound is a deployment knob the
+  definition layer cannot see.
+- Deferred to 5.6: assigning `cancelled` on parent-context
+  cancellation; today a shutdown mid-execution still redelivers (4.x
+  behavior, unchanged).

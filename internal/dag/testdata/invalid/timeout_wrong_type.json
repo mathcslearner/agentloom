@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "timeout-wrong-type",
+  "steps": [{"id": "a", "type": "noop", "timeout": 30}],
+  "edges": []
+}

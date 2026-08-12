@@ -226,6 +226,59 @@ retry behavior must be frozen at submit time (per-run snapshots are the
 compatibility surface, ADR-001). Runtime-injected steps (M13
 expansion) inherit the same materialization path.
 
+### Step execution timeouts (as built, 5.3)
+
+The definition format gains the step-envelope field **`timeout`** — a
+sibling of `retry`, uniform across step types — a Go duration string
+bounding one execution *attempt* (the clock starts when the executor
+starts; queue wait and claim latency do not count). Absent means no
+timeout. Validation: parseable, positive, ≤ 24h (same ceiling as
+`backoff.cap`), reported under code `timeout_field_invalid`. Migration
+0004 materializes it onto `run_steps.timeout` (nullable TEXT, the
+duration string verbatim) at instantiation, exactly like `retry_policy`
+and for the same reasons; a value that no longer parses at execution
+time is corrupt stored state and lands a permanent failure completion,
+mirroring the corrupt-policy handling.
+
+**Enforcement is cooperative and synchronous.** The executor keeps
+running on the handler goroutine under a deadline-bearing child context
+(`context.WithTimeout`); the SPI already requires executors to return
+promptly on cancellation. There is deliberately no detached goroutine
+that abandons the executor at the deadline: abandonment would let the
+same step execute concurrently with its own retry inside one process
+(a side-effect double-fire the invariants forbid) and permits true
+goroutine leaks. With the synchronous model nothing can leak — the
+watchdog's only goroutine is a joined observer that logs when the
+deadline fires while the executor is still running.
+
+**Class assignment is from context state**, honoring the
+Classification section: after the executor returns, the engine judges
+`timeout` iff the child context's deadline elapsed
+(`context.DeadlineExceeded`) and the executor returned an error —
+whatever error it wrapped. A parent cancellation (shutdown) surfaces as
+`context.Canceled`, is *not* a timeout, and keeps its 4.x redeliver
+route until 5.6 assigns `cancelled`. A success racing the deadline is
+honored (with a warning log): the work is done, and discarding it to
+record a timeout would waste budget and re-run side effects; the fenced
+CAS already guards correctness. The timeout failure routes through the
+ordinary retry engine — `timeout` is in the default `retry_on`, counts
+against the budget, and exhaustion takes the terminal path.
+
+**Watchdog ≠ reclaim (the lease interplay).** The consumer's heartbeat
+wraps the whole handler invocation, so the lease stays alive through a
+slow — even hung — executor; nothing about a timeout surrenders the
+claim. That is precisely what distinguishes a timeout from a crash in
+durable state: a timeout is judged by a live worker and records the
+`timeout` outcome; a crash records nothing until another worker's
+takeover closes the attempt as `lost` (with a `step_reclaimed` event —
+absent from any timed-out run). An executor that ignores cancellation
+(an SPI violation) stalls its consumer visibly — the watchdog logs at
+the deadline while the heartbeat keeps the entry pending — until
+`ReconcileRunningStale`'s wall-clock cap takes the step over; that knob
+must therefore be sized well above the largest configured step timeout,
+or the takeover fires before the timeout can (its comment says so).
+The poison threshold remains the other backstop.
+
 ### Step failure lifecycle
 
 `failed` changes from a terminal state to a **routing state** the

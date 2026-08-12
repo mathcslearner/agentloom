@@ -103,6 +103,14 @@ type Step struct {
 	// across step types, so it lives on the step envelope, not in the
 	// per-type config.
 	Retry *RetryPolicy `json:"retry,omitempty"`
+
+	// Timeout is the step's per-attempt execution timeout (ticket 5.3), a
+	// Go duration string; empty means the key was absent (no timeout). The
+	// clock starts when the executor starts — queue wait and claim latency
+	// do not count — and expiry cancels the executor's context; the attempt
+	// records the `timeout` class and routes through the retry policy.
+	// Uniform across step types, so it lives on the step envelope.
+	Timeout string `json:"timeout,omitempty"`
 }
 
 // EdgeType distinguishes normal dependency edges from marked loop edges.

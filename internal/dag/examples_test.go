@@ -225,4 +225,15 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	if !partialRetry {
 		t.Error("no partial retry policy (inheriting engine defaults) in kitchen_sink.json")
 	}
+
+	// Ticket 5.3 construct: a per-step execution timeout.
+	var hasTimeout bool
+	for _, s := range def.Steps {
+		if s.Timeout != "" {
+			hasTimeout = true
+		}
+	}
+	if !hasTimeout {
+		t.Error("no step with an execution timeout in kitchen_sink.json")
+	}
 }

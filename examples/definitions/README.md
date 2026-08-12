@@ -43,7 +43,8 @@ each example's "header comment" is its top-level `description` field.
   edges, `has()` guards, a branch with a trailing default, a loop edge,
   all five param types, explicit retry policies (one full block, one
   partial block inheriting engine defaults) with the
-  `continue_independent_branches` failure policy (ADR-006), and an
+  `continue_independent_branches` failure policy (ADR-006), a per-step
+  execution `timeout` (ticket 5.3), and an
   engine-opaque `ui` block that round-trips byte-for-byte. A test asserts
   this file's coverage, so a new step type fails CI until the example
   uses it.

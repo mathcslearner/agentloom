@@ -431,13 +431,13 @@ On classified-transient failure: record failed attempt, compute backoff (exponen
 - [x] Exhaustion transitions to the permanent-failure path with full error history
 - [x] Crash between attempt-fail commit and delayed-schedule is healed by the reconciler
 
-#### 5.3 — Step execution timeouts
+#### 5.3 — Step execution timeouts ✅
 **Depends on:** 5.2
-Per-step `timeout` config: executor context cancelled at deadline; attempt recorded as `timeout` class (distinct from crash — the worker is alive to report it) and routed through the retry engine. Watchdog interplay documented: lease heartbeat continues *during* a hung executor until the watchdog kills it, so timeout ≠ reclaim.
+Per-step `timeout` config: executor context cancelled at deadline; attempt recorded as `timeout` class (distinct from crash — the worker is alive to report it) and routed through the retry engine. Watchdog interplay documented: lease heartbeat continues *during* a hung executor until the watchdog kills it, so timeout ≠ reclaim. *(As built: `timeout` is a step-envelope field like `retry`, materialized onto `run_steps` by migration 0004; enforcement is synchronous cooperative cancellation — no detached goroutine, so no leak and no intra-process double execution by construction — with a joined watchdog goroutine that logs a deadline overrun; the class is judged from context state, parent cancellation is not a timeout, and a success racing the deadline is honored.)*
 **Done when:**
-- [ ] `sleep(10s)` with `timeout=1s` records a timeout attempt and retries per policy
-- [ ] Executor goroutine actually terminates (no leak — asserted with goroutine count)
-- [ ] Timeout vs crash distinguishable in attempt history/events
+- [x] `sleep(10s)` with `timeout=1s` records a timeout attempt and retries per policy
+- [x] Executor goroutine actually terminates (no leak — asserted with goroutine count)
+- [x] Timeout vs crash distinguishable in attempt history/events
 
 #### 5.4 — Dead-letter handling
 **Depends on:** 5.2, 3.4
