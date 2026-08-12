@@ -2556,3 +2556,105 @@ green; lint clean.
   (ADR-004's accepted trade, note updated): the *engine's* completion
   transactions branch on the locked status instead, and parked runs
   deliberately accept normal completions.
+
+### 5.7 — Graceful shutdown & drain ✅
+
+**Delivered.** SIGTERM is now a first-class lifecycle event, not a
+simulated crash: the worker stops claiming, finishes everything it
+already holds — heartbeating until done, acking after each completion
+commits — and exits clean; a configurable drain deadline bounds the
+whole affair by abandoning the remainder to natural lease expiry.
+
+**The consumer's two-phase shutdown** (`internal/queue/consumer.go`) is
+the core. The pre-5.7 worker shared one context between the read loop
+and the handlers, so SIGTERM cancelled the in-flight executor mid-step,
+its completion transaction failed on the cancelled context, and the
+un-acked entry cost the fleet a reclaim → takeover → `lost` → re-execute
+cycle per restart — exactly the churn the ticket eliminates. Now
+cancelling Run's ctx is only the *soft* stop: fresh `XREADGROUP`s and
+all periodic duties (reclaim, promoter, janitor, trim) stop, while
+handlers run under a **work context** — `WithCancel(WithoutCancel(ctx))`
+— that a watchdog goroutine cancels `ConsumerConfig.DrainTimeout` after
+the soft stop. Heartbeats and ACKs were already detached (3.3/3.4), so
+a draining step keeps its lease and acks normally. The drain deliberately
+covers the *whole PEL in hand*, not just the running handler: the
+unprocessed remainder of the last read batch and reclaimed entries
+mid-pass route through the same new `deliver` path (the per-entry
+early-return on cancellation is gone), because every delivered entry is
+a lease this consumer owes a disposition — abandoning a 15-entry batch
+remainder would cost a reclaim cycle each under rolling restarts.
+
+**Dispositions and exit hygiene.** Each entry in hand at shutdown gets a
+logged disposition — `drained` (completed + acked), `redeliver` (handler
+error; stays pending as in normal operation), `abandoned` (drain
+deadline; lease expires into reclaim) — plus a `shutdown drain complete`
+summary with counts, and the watchdog narrates drain start and deadline
+excess. A consumer exiting with an empty PEL deregisters itself
+(`XGROUP DELCONSUMER`) — safe because after the soft stop nothing can be
+assigned to it, so the emptiness check is stable — ending the
+one-stranded-consumer-per-restart drip the janitor existed to mop up;
+anything pending keeps it registered (DELCONSUMER drops PEL state).
+Zero `DrainTimeout` (the internal/queue default; `withDefaults`
+deliberately leaves it) preserves the pre-5.7 immediate-cancel semantics
+*including* no deregistration: that mode is the queuetest kill switches'
+crash simulation and must stay a faithful sudden death.
+
+**Engine abandon path** (`internal/engine/claim.go`): when the handler's
+own context is cancelled after the executor returns (only shutdown does
+this — the 5.6 run-cancel watch cancels a child), `execute` returns a
+clean `step abandoned at shutdown` error without attempting the doomed
+completion transaction: nothing was decided, no ACK, the lease expires
+into another worker's reclaim/takeover — the abandon path *is* the crash
+path, so no new recovery machinery exists.
+
+**Deployable wiring** (`cmd/worker`, `internal/config`): new knob
+`AGENTLOOM_WORKER_DRAIN_TIMEOUT` (`WorkerConfig.DrainTimeout`, default
+25s — inside K8s's default 30s `terminationGracePeriodSeconds` with exit
+margin; must be positive, the production worker always drains) mapped
+into `ConsumerConfig` by `consumerConfig`. The dispatcher, reconciler,
+and health loops moved onto a `loopCtx` that deliberately **outlives
+SIGTERM** until `consumer.Run` returns: the draining steps' completions
+fan successors out through the outbox, and the draining worker's own
+dispatcher is what hands them to survivors promptly (previously the
+loops died with the signal). The post-M4-audit bootstrap-failure defer
+ordering is preserved, and the worker narrates the sequence (signal
+received → draining → drained → stopping loops → stopped).
+
+**Tests.** Queue level (`drain_integration_test.go`, + a queuetest
+`ConsumerHandle.Interrupt` that cancels without joining — the SIGTERM
+analogue Kill's blocking join can't provide): the in-flight hang stays
+blocked across the interrupt and succeeds on release (the discriminator
+against pre-5.7 cancellation), acked + quiescent + self-deregistered; a
+batch of four with the first hanging drains all four exactly once; a
+300ms deadline abandons an unreleasable hang (resolves to
+`context.Canceled`, entry stays pending, consumer stays registered).
+Crash suite (`test/crash/drain_integration_test.go`, real processes +
+real SIGTERM via the new `workerProc.terminate` asserting exit 0):
+**rolling restart under continuous load** — a submitter instantiates a
+counter → sleep → counter run every 250ms while both workers are
+SIGTERMed (each provably holding a lease first) and replaced; at
+quiescence every run succeeded with every step's history exactly
+`[succeeded]`, zero `step_reclaimed` events fleet-wide, every counter
+file exactly one line, outbox empty; and the **drain-timeout scenario**
+— 6s sleep vs 500ms budget: the victim exits 0 in well under the sleep,
+logging the abandoned step's disposition, and the survivor reclaims,
+takes over, and completes with history `[lost, succeeded]` and exactly
+one `step_reclaimed`. Existing SIGKILL/chaos suites untouched and green.
+
+**Non-obvious decisions / deferred.**
+- "In-flight" was interpreted as *the whole PEL in hand* (running
+  handler + read-batch remainder + reclaimed entries), not just the
+  running step — required by the zero-reclaim-churn acceptance under
+  batched reads, and what makes the empty-PEL deregistration meaningful.
+- No detached grace for a completion racing the hard deadline: the
+  deadline is the operator's hard bound (K8s SIGKILLs next). A commit
+  torn down mid-flight either lands (the entry redelivers and ack-drops
+  at the claim CAS) or rolls back — both safe, documented in ADR-005's
+  amendment as accepted residuals.
+- The rolling-restart scenario pins lease TTL at 5s (vs the suite's 2s)
+  and batch 4: no one crashes there, so reclaim latency is irrelevant,
+  and the wider TTL keeps a CI stall from triggering a spurious —
+  harmless but assertion-muddying — reclaim of a queued batch entry.
+- The reclaimer leaves an over-threshold poison entry pending when the
+  drain deadline has already passed (next reclaimer diverts it) rather
+  than racing a doomed DLQ write.

@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -101,6 +102,7 @@ func workerEnv(dsn string, h *queuetest.Harness) map[string]string {
 		"AGENTLOOM_QUEUE_LEASE_TTL":           leaseTTL.String(),
 		"AGENTLOOM_QUEUE_CONSUMER_BLOCK":      "100ms",
 		"AGENTLOOM_QUEUE_CONSUMER_BATCH":      "1",
+		"AGENTLOOM_WORKER_DRAIN_TIMEOUT":      "15s",
 		"AGENTLOOM_WORKER_DISPATCH_INTERVAL":  "50ms",
 		"AGENTLOOM_WORKER_RECONCILE_INTERVAL": "10m",
 		"AGENTLOOM_WORKER_HEALTH_INTERVAL":    "10m",
@@ -199,6 +201,46 @@ func (w *workerProc) id() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.workerID
+}
+
+// terminate delivers SIGTERM — the graceful path (ticket 5.7): the worker
+// stops claiming, drains what it holds, and exits — then waits for the
+// process to be gone and asserts a clean exit (status 0).
+func (w *workerProc) terminate() {
+	w.t.Helper()
+	w.mu.Lock()
+	alreadyKilled := w.killed
+	w.killed = true
+	w.mu.Unlock()
+	if alreadyKilled {
+		w.t.Fatalf("terminate on %s: already signaled", w.name)
+	}
+	if err := w.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		w.t.Fatalf("SIGTERM worker %s: %v", w.name, err)
+	}
+	select {
+	case <-w.done:
+	case <-time.After(waitTimeout):
+		w.dumpOutput()
+		w.t.Fatalf("worker %s did not exit after SIGTERM (drain hung?)", w.name)
+	}
+	if code := w.cmd.ProcessState.ExitCode(); code != 0 {
+		w.dumpOutput()
+		w.t.Errorf("worker %s exited with status %d after SIGTERM, want 0", w.name, code)
+	}
+}
+
+// logged reports whether any captured log line contains the substring —
+// how tests assert the shutdown sequence was narrated.
+func (w *workerProc) logged(substr string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, line := range w.lines {
+		if strings.Contains(line, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 // kill delivers SIGKILL — genuine process death: no drain, no deferred
@@ -443,22 +485,40 @@ func requireOutboxEmpty(t *testing.T, s *store.Store) {
 	}
 }
 
-// setupRun builds one test's isolated world — migrated database, isolated
-// queue keys, instantiated run — and returns the store, harness, worker
-// env, and run ID.
-func setupRun(t *testing.T, defJSON string) (*store.Store, *queuetest.Harness, map[string]string, uuid.UUID) {
+// setupWorld builds one test's isolated world — migrated database and
+// isolated queue keys — and returns the store, harness, and worker env.
+func setupWorld(t *testing.T) (*store.Store, *queuetest.Harness, map[string]string) {
 	t.Helper()
 	pool, dsn := storetest.NewDBWithDSN(t)
 	s := store.NewFromPool(pool)
 	h := queuetest.New(t)
 	h.EnsureGroup(context.Background())
+	return s, h, workerEnv(dsn, h)
+}
+
+// newRun instantiates one run of the definition. It returns an error
+// instead of failing the test so the rolling-restart scenario's
+// continuous-load submitter can call it from its own goroutine (FailNow
+// must not be called off the test goroutine).
+func newRun(s *store.Store, defJSON string) (uuid.UUID, error) {
 	def, err := dag.Decode([]byte(defJSON))
 	if err != nil {
-		t.Fatalf("decoding definition: %v", err)
+		return uuid.Nil, fmt.Errorf("decoding definition: %w", err)
 	}
 	res, err := s.CreateRun(context.Background(), store.CreateRunArgs{Definition: def, Now: time.Now().UTC()})
 	if err != nil {
-		t.Fatalf("CreateRun: %v", err)
+		return uuid.Nil, fmt.Errorf("CreateRun: %w", err)
 	}
-	return s, h, workerEnv(dsn, h), res.Run.ID
+	return res.Run.ID, nil
+}
+
+// setupRun is setupWorld plus one instantiated run.
+func setupRun(t *testing.T, defJSON string) (*store.Store, *queuetest.Harness, map[string]string, uuid.UUID) {
+	t.Helper()
+	s, h, env := setupWorld(t)
+	runID, err := newRun(s, defJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, h, env, runID
 }

@@ -463,13 +463,13 @@ Run-level controls as engine ops (API exposure in M6.5): **cancel** (cooperative
 - [x] Park → fleet stops claiming that run; unpark resumes to completion
 - [x] Deadline exceeded → run cancelled with `deadline_exceeded` reason and event
 
-#### 5.7 — Graceful shutdown & drain
+#### 5.7 — Graceful shutdown & drain ✅
 **Depends on:** 5.6
-SIGTERM: worker stops claiming, finishes in-flight steps (heartbeating until done), ACKs, then exits; configurable drain timeout after which it abandons (lease expires naturally → reclaim). This is what K8s `preStop`/rolling restarts (M20) rely on.
+SIGTERM: worker stops claiming, finishes in-flight steps (heartbeating until done), ACKs, then exits; configurable drain timeout after which it abandons (lease expires naturally → reclaim). This is what K8s `preStop`/rolling restarts (M20) rely on. *(As built: a two-phase shutdown inside the consumer — soft stop suspends reads and every periodic duty, while handlers keep running under a work context that survives the cancellation until a watchdog cancels it at `ConsumerConfig.DrainTimeout`; the drain covers the whole PEL in hand (in-flight handler, read-batch remainder, reclaimed entries mid-pass), each entry getting a logged disposition (drained/redeliver/abandoned) plus a summary; the abandon path is deliberately the crash path — the engine returns without attempting a completion on a canceled handler context, the entry stays un-acked, and the lease expires into reclaim/takeover; a fully clean drain deregisters the consumer from the group (guarded by a provably-stable empty-PEL check), so graceful restarts strand no orphan; the worker's dispatch loops outlive SIGTERM until the consumer finishes so draining completions' successors still dispatch; `DrainTimeout` zero preserves the pre-5.7 immediate-cancel semantics the queuetest kill switches rely on to simulate crashes, and the production knob `AGENTLOOM_WORKER_DRAIN_TIMEOUT` — default 25s, sized inside K8s's 30s grace — must be positive.)*
 **Done when:**
-- [ ] Rolling restart of 2 workers under continuous load: zero lost runs, zero reclaim churn from drained workers
-- [ ] Drain-timeout path verified: abandoned step reclaimed by survivor
-- [ ] Shutdown sequence logged with per-step disposition
+- [x] Rolling restart of 2 workers under continuous load: zero lost runs, zero reclaim churn from drained workers
+- [x] Drain-timeout path verified: abandoned step reclaimed by survivor
+- [x] Shutdown sequence logged with per-step disposition
 
 #### 5.8 — Sustained chaos suite
 **Depends on:** 5.7, 5.5, 3.6

@@ -123,6 +123,13 @@ func (c *ConsumerHandle) killCheck(phase queue.Phase, d queue.Delivery) error {
 	return fmt.Errorf("queuetest: simulated crash of %s at %s (step %s)", c.name, phase, d.Envelope.StepID)
 }
 
+// Interrupt cancels the consumer's context WITHOUT waiting for Run to
+// return — the SIGTERM analogue for graceful-drain tests (ticket 5.7),
+// where the test must keep driving the scenario (releasing hangs,
+// inspecting the PEL) while the consumer drains. Join afterwards with
+// Kill, which is idempotent over the cancellation.
+func (c *ConsumerHandle) Interrupt() { c.cancel() }
+
 // Kill cancels the consumer and waits for Run to return, returning Run's
 // error. Idempotent, and registered as test cleanup, so tests that never
 // call it still join the loop goroutine. A consumer already dead from a

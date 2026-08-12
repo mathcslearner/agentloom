@@ -59,6 +59,7 @@ func TestLoadDefaults(t *testing.T) {
 		ReconcileRetryStale:   config.DefaultWorkerReconcileRetryStale,
 		ReconcileLimit:        config.DefaultWorkerReconcileLimit,
 		CancelPollInterval:    config.DefaultWorkerCancelPollInterval,
+		DrainTimeout:          config.DefaultWorkerDrainTimeout,
 		EffectsStrict:         true,
 	}
 	if cfg.Worker != wantWorker {
@@ -131,6 +132,7 @@ func TestLoadWorkerOverrides(t *testing.T) {
 		config.EnvWorkerReconcileRetryStale:   "30s",
 		config.EnvWorkerReconcileLimit:        "50",
 		config.EnvWorkerCancelPollInterval:    "3s",
+		config.EnvWorkerDrainTimeout:          "40s",
 		config.EnvWorkerEffectsStrict:         "false",
 	}))
 	if err != nil {
@@ -146,6 +148,7 @@ func TestLoadWorkerOverrides(t *testing.T) {
 		ReconcileRetryStale:   30 * time.Second,
 		ReconcileLimit:        50,
 		CancelPollInterval:    3 * time.Second,
+		DrainTimeout:          40 * time.Second,
 		EffectsStrict:         false,
 	}
 	if cfg.Worker != want {
@@ -160,6 +163,7 @@ func TestLoadWorkerInvalidValues(t *testing.T) {
 		config.EnvWorkerDispatchBatch:    "0",
 		config.EnvWorkerReconcileLimit:   "-3",
 		config.EnvWorkerDispatchInterval: "soon",
+		config.EnvWorkerDrainTimeout:     "0s",
 		config.EnvWorkerEffectsStrict:    "loudly",
 	}))
 	if err == nil {
@@ -169,6 +173,7 @@ func TestLoadWorkerInvalidValues(t *testing.T) {
 		config.EnvWorkerDispatchBatch,
 		config.EnvWorkerReconcileLimit,
 		config.EnvWorkerDispatchInterval,
+		config.EnvWorkerDrainTimeout,
 		config.EnvWorkerEffectsStrict,
 	} {
 		if !strings.Contains(err.Error(), env) {

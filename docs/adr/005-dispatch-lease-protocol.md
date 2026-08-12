@@ -408,6 +408,65 @@ is merely quiet still heartbeats its entries, keeping them visibly
 pending. Janitor races (two workers deleting the same dead consumer) are
 benign: `DELCONSUMER` of an absent consumer is a no-op.
 
+*Amendment (5.7):* gracefully drained workers deregister themselves at
+exit (below), so the janitor's caseload shrinks to genuine crashes; its
+guard and cadence are unchanged.
+
+### Graceful shutdown & drain (ticket 5.7, as built)
+
+Everything above treats worker death as sudden — heartbeats stop, leases
+expire, survivors reclaim. A rolling restart through that path works but
+is wasteful: every deploy would cost one reclaim cycle per in-flight
+step, a `lost` attempt, and a re-execution. SIGTERM therefore gets a
+deliberate two-phase shutdown, built on the observation that "stop
+taking work" and "stop doing work" are different events:
+
+- **Soft stop (SIGTERM / context cancellation).** The consumer stops
+  issuing `XREADGROUP` and suspends every periodic duty — reclaim,
+  promotion, janitor, trim. From this moment nothing can be added to
+  this consumer's PEL (only its own reads and reclaims ever grow it),
+  which is what makes the exit-time logic below race-free.
+- **Drain.** The in-flight handler *and every already-delivered entry*
+  (the unprocessed remainder of the last read batch, plus any reclaimed
+  entries in hand) keep processing under a **work context** that
+  survives the cancellation. Heartbeats and ACKs already run detached,
+  so a draining step keeps its lease alive and acks normally after its
+  completion commits. The worker's outbox drain loop deliberately
+  outlives the SIGTERM too: the draining steps' completions fan
+  successors out through the outbox, and the draining worker's own
+  dispatcher is what hands them to survivors promptly.
+- **Hard stop (drain deadline).** A watchdog cancels the work context
+  `DrainTimeout` after the soft stop. Whatever is still running is
+  abandoned: the executor's context cancels, the engine returns without
+  attempting a completion (nothing can commit on a canceled context),
+  the entry stays un-acked, and its lease expires naturally into the
+  reclaim → takeover path. **The abandon path IS the crash path** — no
+  new recovery machinery, the existing matrix cells cover it.
+
+Every entry in hand at shutdown gets a logged disposition — `drained`
+(completed and acked), `redeliver` (handler error, stays pending as in
+normal operation), or `abandoned` (drain deadline) — plus a summary line
+with counts. A consumer that exits with a provably empty PEL deletes its
+own consumer record (`XGROUP DELCONSUMER`, safe because nothing can be
+assigned to it anymore); one that abandoned or left entries pending
+stays registered so its PEL state remains owned until reclaim.
+
+`DrainTimeout` zero (the internal/queue default) preserves the pre-5.7
+semantics — cancellation reaches the handler immediately, no drain, no
+deregistration. That mode exists for the queuetest chaos harness, whose
+kill switches simulate crashes via context cancellation and must remain
+a faithful sudden death. The production worker always drains:
+`AGENTLOOM_WORKER_DRAIN_TIMEOUT` must be positive (default 25s, sized to
+fit inside Kubernetes's default 30s `terminationGracePeriodSeconds` with
+margin — the contract M20's `preStop`/rolling restarts build on).
+
+Accepted residuals: a completion transaction torn down by the hard
+deadline mid-commit either lands (the un-acked entry later redelivers
+and ack-drops at the claim CAS) or rolls back (normal abandon) — both
+safe; and an executor succeeding just before the deadline may be
+abandoned anyway and re-executed elsewhere, absorbed by idempotency keys
+and the side-effect journal like any reclaim.
+
 ### Tuning parameters
 
 All values are config (0.5's loader) with these defaults; 3.2–3.5 wire
@@ -432,6 +491,7 @@ it).
 | Running-stale threshold | 5m | ≫ the lease TTL because `updated_at` moves on transitions, not heartbeats (R1(c)); a hit gets takeover + re-outbox (4.5) — a false positive is fenced, so the cost of too tight a bound is wasted re-execution, not corruption. |
 | Retry-stale threshold | 1m | Measured from a retrying step's `next_attempt_at` (5.2, crash cell P3), so no lease-TTL margin applies; it need only comfortably exceed the promoter tick. A false positive (delayed entry merely slow) costs one duplicate dispatch, absorbed at the claim CAS. |
 | Reconciler sweep limit | 256 rows/scan | Caps sweep transaction size; a hit is logged (no silent truncation) and the next sweep continues. |
+| Drain timeout (`AGENTLOOM_WORKER_DRAIN_TIMEOUT`) | 25s | The SIGTERM grace budget (5.7): long enough to finish a typical in-flight step plus a read batch, short enough to fit inside K8s's default 30s termination grace with margin for the final exit. Size it alongside `terminationGracePeriodSeconds` (M20): grace period ≥ drain timeout + a few seconds. Steps longer than the budget are abandoned to the crash path by design. |
 | Stream / group / delayed-set names | `steps:ready` / `workers` / `sched:delayed` | The fleet-wide names above; overridable via env (`AGENTLOOM_QUEUE_STREAM`/`_GROUP`/`_DELAYED_KEY`, 4.7) for test isolation only — the crash-recovery suite runs real worker processes against per-test keys on a shared Redis. Production sharding is M19's lever, not this knob. |
 
 ### Deployment expectation

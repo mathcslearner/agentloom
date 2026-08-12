@@ -154,6 +154,22 @@ type ConsumerConfig struct {
 	// (3.5). Each pass moves up to Batch due entries from the delayed set
 	// onto the ready stream.
 	PromoterTick time.Duration
+	// DrainTimeout is the graceful-shutdown grace period (ticket 5.7).
+	// When positive, canceling Run's context stops fresh reads and the
+	// periodic duties but NOT the work: the in-flight handler and every
+	// already-delivered entry keep processing — heartbeating and acking as
+	// usual, under a context that survives the cancellation — until they
+	// finish or this budget elapses, at which point the remaining work is
+	// abandoned un-acked and its leases expire naturally into reclaim. A
+	// consumer that drains fully clean also deletes its own consumer-group
+	// record on exit, so graceful restarts leave no orphan for the janitor.
+	//
+	// Zero (the default — withDefaults deliberately does not touch it)
+	// keeps the pre-5.7 semantics: handlers see the cancellation
+	// immediately and delivered-but-unhandled entries are abandoned. That
+	// mode is how the queuetest chaos harness simulates crashes, so it
+	// must stay a faithful sudden death: no drain, no deregistration.
+	DrainTimeout time.Duration
 	// DelayedKey is the delayed-delivery sorted-set key this consumer
 	// promotes from. Empty falls back to DefaultDelayedKey; tests pass
 	// unique keys for isolation.
@@ -218,6 +234,26 @@ type Consumer struct {
 	// ticks so a bounded per-tick batch still sweeps the whole PEL over
 	// successive passes. Only touched from Run's goroutine.
 	reclaimCursor string
+	// work is the handler-side context of the current Run (ticket 5.7):
+	// with a drain budget it survives Run's ctx cancellation until the
+	// drain deadline; without one it is Run's ctx itself. Set at the top
+	// of Run; only touched from Run's goroutine.
+	work context.Context
+	// drain accumulates the per-entry shutdown dispositions finishShutdown
+	// reports. Only touched from Run's goroutine.
+	drain drainStats
+}
+
+// drainStats counts what became of the entries a shutting-down consumer
+// still had in hand (ticket 5.7): drained (handled to completion and
+// acked), redeliver (handler failed — the entry stays pending and
+// redelivers via reclaim, as in normal operation), abandoned (not handled,
+// or aborted mid-handler, because the drain deadline passed — the lease
+// expires naturally into reclaim).
+type drainStats struct {
+	drained   int
+	redeliver int
+	abandoned int
 }
 
 // NewConsumer binds a handler to this queue under the given consumer name.
@@ -246,10 +282,18 @@ func (q *Queue) NewConsumer(name string, handler Handler, cfg ConsumerConfig) *C
 func (c *Consumer) Name() string { return c.name }
 
 // Run blocks reading fresh deliveries and feeding them to the handler
-// until ctx is canceled, then returns nil once the in-flight handler (if
-// any) has drained. It ensures the consumer group exists first; that is
-// the only error it returns. Read errors are logged and retried after
-// ErrorBackoff — a Redis outage stalls the loop, it does not kill it.
+// until ctx is canceled, then drains and returns nil. What draining means
+// depends on DrainTimeout (ticket 5.7): with a budget, the in-flight
+// handler and every already-delivered entry finish processing — under the
+// work context, which survives the cancellation — before Run returns,
+// unless the budget elapses first and the remainder is abandoned to
+// natural lease expiry; without one (the zero default), the in-flight
+// handler sees the cancellation immediately and only its own return is
+// awaited. Either way Run logs a per-entry disposition and a summary, and
+// a fully clean drain deregisters the consumer from the group. Run
+// ensures the consumer group exists first; that is the only error it
+// returns. Read errors are logged and retried after ErrorBackoff — a
+// Redis outage stalls the loop, it does not kill it.
 //
 // Between reads, Run also performs the consumer's periodic duties: the
 // reclaim pass (XAUTOCLAIM of expired leases, every ReclaimInterval), the
@@ -279,8 +323,24 @@ func (c *Consumer) Run(ctx context.Context) error {
 		slog.Int("poison_threshold", c.cfg.PoisonThreshold),
 		slog.Duration("promoter_tick", c.cfg.PromoterTick),
 		slog.Duration("trim_interval", c.cfg.TrimInterval),
+		slog.Duration("drain_timeout", c.cfg.DrainTimeout),
 		slog.String("delayed_key", c.delayed.Key()))
 	defer logger.InfoContext(ctx, "queue consumer stopped")
+
+	// The work context is what handlers run under. With a drain budget it
+	// survives ctx's cancellation — shutdown stops the reads, not the
+	// work — until the watchdog cancels it at the drain deadline. Without
+	// one it IS ctx: cancellation reaches the handler immediately, the
+	// sudden-death mode the chaos harness relies on.
+	c.work = ctx
+	c.drain = drainStats{}
+	if c.cfg.DrainTimeout > 0 {
+		work, hardCancel := context.WithCancel(context.WithoutCancel(ctx))
+		defer hardCancel()
+		stopWatchdog := c.startDrainWatchdog(ctx, hardCancel)
+		defer stopWatchdog()
+		c.work = work
+	}
 
 	nextReclaim := time.Now().Add(c.cfg.ReclaimInterval)
 	nextJanitor := time.Now().Add(c.cfg.JanitorInterval)
@@ -288,6 +348,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 	nextTrim := time.Now().Add(c.cfg.TrimInterval)
 	for {
 		if ctx.Err() != nil {
+			c.finishShutdown(ctx)
 			return nil
 		}
 		if !time.Now().Before(nextReclaim) {
@@ -307,7 +368,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 			nextTrim = time.Now().Add(c.cfg.TrimInterval)
 		}
 		if ctx.Err() != nil {
-			return nil
+			continue // loop top runs the shutdown path
 		}
 		// Cap the blocking read at the next due duty so an idle consumer's
 		// reclaim and promotion cadences are governed by their intervals,
@@ -344,8 +405,9 @@ func (c *Consumer) Run(ctx context.Context) error {
 			// BLOCK expired with nothing to read.
 			continue
 		case ctx.Err() != nil:
-			// Canceled mid-block; the read error is shutdown noise.
-			return nil
+			// Canceled mid-block; the read error is shutdown noise, and
+			// the loop top runs the shutdown path.
+			continue
 		default:
 			logger.ErrorContext(ctx, "XREADGROUP failed; backing off",
 				slog.Any("error", err),
@@ -356,14 +418,138 @@ func (c *Consumer) Run(ctx context.Context) error {
 		for _, s := range streams {
 			for _, msg := range s.Messages {
 				// Fresh `>` deliveries are by definition first deliveries,
-				// so the count is 1 without an XPENDING round-trip.
-				c.process(ctx, msg, 1)
-				if ctx.Err() != nil {
-					return nil
-				}
+				// so the count is 1 without an XPENDING round-trip. No
+				// early return on cancellation: every read entry is a PEL
+				// lease this consumer owes a disposition — deliver drains
+				// or abandons it, and the loop top runs the shutdown path
+				// once the batch is settled.
+				c.deliver(ctx, msg, 1)
 			}
 		}
 	}
+}
+
+// deliver feeds one delivered entry through the shared process path under
+// the work context and, once shutdown has begun, records and logs its
+// disposition (ticket 5.7). Fresh reads and reclaimed entries alike come
+// through here: both are leases in this consumer's PEL, and a graceful
+// shutdown owes both the same treatment — finish and ack, or abandon
+// visibly.
+func (c *Consumer) deliver(ctx context.Context, msg redis.XMessage, deliveryCount int64) {
+	if c.work.Err() != nil {
+		// The drain deadline has passed (or there is no drain budget):
+		// leave the entry untouched — its lease expires into reclaim.
+		c.drain.abandoned++
+		log.From(ctx).WarnContext(ctx, "shutdown: abandoning delivered entry; lease expires into reclaim",
+			slog.String("entry_id", msg.ID),
+			slog.String("step_id", envelopeStep(msg)))
+		return
+	}
+	acked := c.process(c.work, msg, deliveryCount)
+	if ctx.Err() == nil {
+		return // normal operation: process said everything there is to say
+	}
+	switch {
+	case acked:
+		c.drain.drained++
+		log.From(ctx).InfoContext(ctx, "shutdown drain: entry completed and acked",
+			slog.String("entry_id", msg.ID),
+			slog.String("step_id", envelopeStep(msg)))
+	case c.work.Err() != nil:
+		c.drain.abandoned++
+		log.From(ctx).WarnContext(ctx, "shutdown drain: entry aborted at the drain deadline; lease expires into reclaim",
+			slog.String("entry_id", msg.ID),
+			slog.String("step_id", envelopeStep(msg)))
+	default:
+		c.drain.redeliver++
+		log.From(ctx).WarnContext(ctx, "shutdown drain: handler failed; entry stays pending to redeliver",
+			slog.String("entry_id", msg.ID),
+			slog.String("step_id", envelopeStep(msg)))
+	}
+}
+
+// envelopeStep best-effort decodes an entry's step ID for the shutdown
+// disposition logs ("" when the envelope does not decode); the process
+// path decodes properly on its own.
+func envelopeStep(msg redis.XMessage) string {
+	env, err := DecodeEnvelope(msg.Values)
+	if err != nil {
+		return ""
+	}
+	return env.StepID
+}
+
+// startDrainWatchdog arms the drain deadline: when ctx is canceled —
+// shutdown — it logs the drain start and cancels the work context
+// DrainTimeout later, abandoning whatever is still in flight. The
+// returned stop signals and joins the goroutine, so Run never leaves it
+// behind.
+func (c *Consumer) startDrainWatchdog(ctx context.Context, hardCancel context.CancelFunc) (stop func()) {
+	stopped := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-stopped:
+			return
+		case <-ctx.Done():
+		}
+		log.From(ctx).InfoContext(ctx, "shutdown: draining in-flight deliveries",
+			slog.Duration("drain_timeout", c.cfg.DrainTimeout))
+		t := time.NewTimer(c.cfg.DrainTimeout)
+		defer t.Stop()
+		select {
+		case <-stopped:
+		case <-t.C:
+			log.From(ctx).WarnContext(ctx, "shutdown: drain deadline exceeded; abandoning remaining deliveries")
+			hardCancel()
+		}
+	}()
+	return func() {
+		close(stopped)
+		<-done
+	}
+}
+
+// finishShutdown logs the shutdown summary and — in drain mode only, when
+// this consumer's PEL is empty — deletes its own consumer-group record,
+// so graceful restarts leave no orphan for the janitor to collect an hour
+// later. The emptiness check is stable by construction: reads and
+// reclaims have stopped, so nothing can be assigned to this consumer
+// anymore. An entry left pending keeps the consumer registered — XGROUP
+// DELCONSUMER would drop its PEL state — and the zero-drain mode never
+// deregisters at all: it simulates crashes, and a crashed process gets no
+// exit-time hygiene. Best effort on a detached context.
+func (c *Consumer) finishShutdown(ctx context.Context) {
+	logger := log.From(ctx)
+	logger.InfoContext(ctx, "shutdown drain complete",
+		slog.Int("drained", c.drain.drained),
+		slog.Int("redeliver", c.drain.redeliver),
+		slog.Int("abandoned", c.drain.abandoned))
+	if c.cfg.DrainTimeout <= 0 {
+		return
+	}
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedOpTimeout)
+	defer cancel()
+	pending, err := c.queue.client.XPendingExt(opCtx, &redis.XPendingExtArgs{
+		Stream: c.queue.stream, Group: c.queue.group, Consumer: c.name,
+		Start: "-", End: "+", Count: 1,
+	}).Result()
+	if err != nil {
+		logger.WarnContext(ctx, "shutdown: could not inspect own PEL; leaving consumer registered",
+			slog.Any("error", err))
+		return
+	}
+	if len(pending) != 0 {
+		logger.InfoContext(ctx, "shutdown: entries still pending; consumer stays registered until they resolve")
+		return
+	}
+	if err := c.queue.client.XGroupDelConsumer(opCtx, c.queue.stream, c.queue.group, c.name).Err(); err != nil {
+		logger.WarnContext(ctx, "shutdown: XGROUP DELCONSUMER failed; the janitor will collect this consumer",
+			slog.Any("error", err))
+		return
+	}
+	logger.InfoContext(ctx, "shutdown: consumer deregistered from group")
 }
 
 // process runs one delivered entry through decode → handler → ACK and

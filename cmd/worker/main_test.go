@@ -41,9 +41,10 @@ func TestConsumerConfigMapping(t *testing.T) {
 		JanitorIdleThreshold: 6 * time.Second,
 		PromoterTick:         7 * time.Second,
 		TrimInterval:         8 * time.Second,
+		DrainTimeout:         9 * time.Second,
 	}
 	poison := func(context.Context, queue.PoisonMessage) error { return nil }
-	got := consumerConfig(in, poison)
+	got := consumerConfig(in, 9*time.Second, poison)
 	// ConsumerConfig carries two non-comparable fields (PoisonHandler,
 	// PhaseHook): the poison handler must pass through (ticket 5.4 wires
 	// the engine's dead-lettering here), the phase hook must stay nil.

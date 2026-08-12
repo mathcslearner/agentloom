@@ -10,7 +10,12 @@
 //
 // Configuration comes entirely from AGENTLOOM_* environment variables
 // (internal/config); there are no flags. SIGINT/SIGTERM trigger a
-// graceful shutdown that drains the in-flight handler.
+// graceful shutdown (ticket 5.7): the consumer stops claiming but
+// finishes the entries it already holds — heartbeating until done, acking
+// after each completion commits — while the dispatch loops keep draining
+// the outbox; after AGENTLOOM_WORKER_DRAIN_TIMEOUT the remainder is
+// abandoned un-acked, and its leases expire naturally into reclaim by a
+// surviving worker.
 package main
 
 import (
@@ -97,7 +102,7 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	if err != nil {
 		return err
 	}
-	consumer := q.NewConsumer(workerID, eng.Handle, consumerConfig(cfg.Queue, eng.HandlePoison))
+	consumer := q.NewConsumer(workerID, eng.Handle, consumerConfig(cfg.Queue, cfg.Worker.DrainTimeout, eng.HandlePoison))
 
 	logger = logger.With(log.WorkerID(workerID))
 	ctx = log.Into(ctx, logger)
@@ -107,27 +112,46 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		slog.String("group", q.Group()),
 		slog.Duration("health_interval", cfg.Worker.HealthInterval),
 		slog.Duration("dispatch_interval", cfg.Worker.DispatchInterval),
-		slog.Duration("reconcile_interval", cfg.Worker.ReconcileInterval))
+		slog.Duration("reconcile_interval", cfg.Worker.ReconcileInterval),
+		slog.Duration("drain_timeout", cfg.Worker.DrainTimeout))
 	defer logger.InfoContext(ctx, "worker stopped")
 
-	// The dispatch duties stop on the same ctx as the consumer; wait for
-	// them before the deferred store/client closes tear down their
-	// backends (an in-flight drain transaction simply rolls back). The
-	// cancel is deferred AFTER wg.Wait so LIFO runs it first: if
-	// consumer.Run returns on its own (group bootstrap failure), the
-	// loops still stop instead of deadlocking the wait.
-	ctx, cancel := context.WithCancel(ctx)
+	// The dispatch duties run on loopCtx, which deliberately OUTLIVES the
+	// signal context (ticket 5.7): a SIGTERM must stop the consumer's
+	// claiming, not the outbox drain — the steps finishing during the
+	// consumer's drain fan successors out through the outbox, and this
+	// worker's own dispatcher is what hands them to a survivor promptly.
+	// The loops stop when run returns (consumer drained, or group
+	// bootstrap failed), via the deferred cancel; wg.Wait is deferred
+	// AFTER it so LIFO runs the cancel first, and both run before the
+	// deferred store/client closes tear down the backends (an in-flight
+	// drain transaction simply rolls back).
+	loopCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	defer cancel()
-	wg.Add(3)
-	go func() { defer wg.Done(); dispatcher.Run(ctx) }()
-	go func() { defer wg.Done(); reconciler.Run(ctx) }()
-	go func() { defer wg.Done(); healthLoop(ctx, q, cfg.Worker.HealthInterval) }()
+	wg.Add(4)
+	go func() { defer wg.Done(); dispatcher.Run(loopCtx) }()
+	go func() { defer wg.Done(); reconciler.Run(loopCtx) }()
+	go func() { defer wg.Done(); healthLoop(loopCtx, q, cfg.Worker.HealthInterval) }()
+	go func() { // narrate the shutdown sequence for the ops log
+		defer wg.Done()
+		select {
+		case <-ctx.Done():
+			logger.InfoContext(ctx, "worker shutdown: signal received; consumer draining",
+				slog.Duration("drain_timeout", cfg.Worker.DrainTimeout))
+		case <-loopCtx.Done():
+		}
+	}()
 
-	// Blocks until ctx is canceled, then drains the in-flight handler
-	// (3.3's contract). The only error it can return is group bootstrap.
-	return consumer.Run(ctx)
+	// Blocks until ctx is canceled, then drains per ConsumerConfig's
+	// DrainTimeout (ticket 5.7). The only error it can return is group
+	// bootstrap.
+	err = consumer.Run(ctx)
+	if ctx.Err() != nil {
+		logger.InfoContext(ctx, "worker shutdown: consumer drained; stopping dispatch loops")
+	}
+	return err
 }
 
 // consumerConfig maps the deployable's queue tuning onto the consumer's.
@@ -135,8 +159,10 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 // through obs/log, which imports config). The poison handler is the
 // engine's dead-lettering path (ticket 5.4, ADR-006): an over-threshold
 // entry lands its step in the DLQ and is acked — the durable row is the
-// consumption of the message.
-func consumerConfig(cfg config.QueueConfig, poison queue.PoisonHandler) queue.ConsumerConfig {
+// consumption of the message. The drain timeout comes from WorkerConfig —
+// a deployable-lifecycle knob, not queue tuning (ticket 5.7) — and is
+// always positive here: the production worker always drains.
+func consumerConfig(cfg config.QueueConfig, drainTimeout time.Duration, poison queue.PoisonHandler) queue.ConsumerConfig {
 	return queue.ConsumerConfig{
 		DelayedKey:           cfg.DelayedKey,
 		Batch:                cfg.ConsumerBatch,
@@ -150,6 +176,7 @@ func consumerConfig(cfg config.QueueConfig, poison queue.PoisonHandler) queue.Co
 		JanitorIdleThreshold: cfg.JanitorIdleThreshold,
 		TrimInterval:         cfg.TrimInterval,
 		PromoterTick:         cfg.PromoterTick,
+		DrainTimeout:         drainTimeout,
 	}
 }
 

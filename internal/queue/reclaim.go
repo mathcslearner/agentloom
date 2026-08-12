@@ -77,9 +77,6 @@ func (c *Consumer) reclaimTick(ctx context.Context) {
 		slog.Int("count", len(msgs)),
 		slog.String("cursor", next))
 	for _, msg := range msgs {
-		if ctx.Err() != nil {
-			return
-		}
 		count, ok := counts[msg.ID]
 		if !ok {
 			// The entry left the PEL between the claim and the count
@@ -88,10 +85,20 @@ func (c *Consumer) reclaimTick(ctx context.Context) {
 			continue
 		}
 		if count > int64(c.cfg.PoisonThreshold) {
-			c.divertPoison(ctx, msg, count)
+			if c.work.Err() != nil {
+				// Shutdown past the drain deadline: leave the poison entry
+				// pending — the next reclaimer diverts it.
+				log.From(ctx).WarnContext(ctx, "shutdown: leaving reclaimed poison entry pending",
+					slog.String("entry_id", msg.ID))
+				continue
+			}
+			c.divertPoison(c.work, msg, count)
 			continue
 		}
-		c.process(ctx, msg, count)
+		// The XAUTOCLAIM above put these entries in this consumer's PEL,
+		// so a shutdown mid-pass owes them the same drain-or-abandon
+		// treatment as fresh reads — deliver handles both (ticket 5.7).
+		c.deliver(ctx, msg, count)
 	}
 }
 

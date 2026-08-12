@@ -13,6 +13,7 @@ const (
 	EnvWorkerReconcileRetryStale   = "AGENTLOOM_WORKER_RECONCILE_RETRY_STALE"
 	EnvWorkerReconcileLimit        = "AGENTLOOM_WORKER_RECONCILE_LIMIT"
 	EnvWorkerCancelPollInterval    = "AGENTLOOM_WORKER_CANCEL_POLL_INTERVAL"
+	EnvWorkerDrainTimeout          = "AGENTLOOM_WORKER_DRAIN_TIMEOUT"
 	EnvWorkerEffectsStrict         = "AGENTLOOM_EFFECTS_STRICT"
 )
 
@@ -52,6 +53,13 @@ const (
 	// cancellation". The default lease TTL / 3, i.e. heartbeat cadence: a
 	// cancel reaches a live executor about as fast as a lease beat.
 	DefaultWorkerCancelPollInterval = 10 * time.Second
+	// DefaultWorkerDrainTimeout is the graceful-shutdown grace period
+	// (ticket 5.7): how long after SIGTERM the consumer keeps finishing
+	// its in-flight and already-delivered entries before abandoning the
+	// remainder to natural lease expiry. 25s fits inside Kubernetes's
+	// default 30s terminationGracePeriodSeconds with margin for the final
+	// exit — the substrate M20's preStop/rolling restarts rely on.
+	DefaultWorkerDrainTimeout = 25 * time.Second
 )
 
 // WorkerConfig configures the worker deployable (cmd/worker) beyond what
@@ -99,6 +107,14 @@ type WorkerConfig struct {
 	// polls the run's status during executor invocations (ticket 5.6).
 	// Must be positive.
 	CancelPollInterval time.Duration
+	// DrainTimeout is the graceful-shutdown grace period (ticket 5.7):
+	// after SIGTERM the consumer stops claiming but keeps finishing the
+	// entries it already holds — heartbeating until done — for up to this
+	// long; the remainder is then abandoned un-acked and its leases expire
+	// naturally into reclaim. Must be positive: the production worker
+	// always drains (internal/queue's zero-drain mode exists only for
+	// crash simulation in tests).
+	DrainTimeout time.Duration
 	// EffectsStrict makes side-effect journal misuse panic instead of
 	// dead-lettering the step (ticket 5.5) — the loud dev/test behavior.
 	// Default true while every deployment is dev; production deployments
@@ -117,6 +133,7 @@ func defaultWorkerConfig() WorkerConfig {
 		ReconcileRetryStale:   DefaultWorkerReconcileRetryStale,
 		ReconcileLimit:        DefaultWorkerReconcileLimit,
 		CancelPollInterval:    DefaultWorkerCancelPollInterval,
+		DrainTimeout:          DefaultWorkerDrainTimeout,
 		EffectsStrict:         true,
 	}
 }
@@ -134,6 +151,7 @@ func (c *WorkerConfig) applyEnv(fn LookupFunc) []error {
 	errs = applyPositiveDuration(errs, fn, EnvWorkerReconcileRetryStale, &c.ReconcileRetryStale)
 	errs = applyPositiveInt(errs, fn, EnvWorkerReconcileLimit, &c.ReconcileLimit)
 	errs = applyPositiveDuration(errs, fn, EnvWorkerCancelPollInterval, &c.CancelPollInterval)
+	errs = applyPositiveDuration(errs, fn, EnvWorkerDrainTimeout, &c.DrainTimeout)
 	errs = applyBool(errs, fn, EnvWorkerEffectsStrict, &c.EffectsStrict)
 	return errs
 }

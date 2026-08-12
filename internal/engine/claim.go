@@ -173,6 +173,20 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 		Logger:         logger,
 	}, timeout)
 	stopWatch()
+	if ctx.Err() != nil {
+		// The handler context itself is canceled — the consumer's drain
+		// deadline at shutdown (ticket 5.7), or the zero-drain immediate
+		// cancellation tests use to simulate crashes. The run-cancel watch
+		// never cancels this context (only watchCtx), so this is always
+		// shutdown. No completion transaction can commit on a canceled
+		// context, so decide nothing: the returned error leaves the entry
+		// un-acked and the lease expires naturally into another worker's
+		// reclaim/takeover — the crash path, which is exactly what an
+		// abandon is.
+		logger.WarnContext(ctx, "shutdown abandoned in-flight step; lease expires into reclaim",
+			slog.Bool("executor_errored", execErr != nil))
+		return fmt.Errorf("engine: step abandoned at shutdown: %w", context.Cause(ctx))
+	}
 	if errors.Is(context.Cause(watchCtx), errRunCancelled) {
 		// The routing below stays uniform: a success is honored (the
 		// completion transaction skips fan-out on a cancelling run) and a
