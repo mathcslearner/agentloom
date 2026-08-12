@@ -98,7 +98,11 @@ services:
       # unset, the root auth path simply doesn't exist.
       AGENTLOOM_API_ROOT_KEY: ${AGENTLOOM_API_ROOT_KEY:-}
     ports:
-      - "${AGENTLOOM_API_PORT:-8080}:8080"
+      # Loopback by default (ticket 6.2, ADR-007): every /v1 route now
+      # requires a scoped key, but a dev stack carrying a bootstrap
+      # credential still shouldn't listen on all interfaces. Set
+      # AGENTLOOM_API_BIND=0.0.0.0 to expose it deliberately.
+      - "${AGENTLOOM_API_BIND:-127.0.0.1}:${AGENTLOOM_API_PORT:-8080}:8080"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -122,6 +126,10 @@ services:
       # internal/config's DefaultQueueLeaseTTL. Heartbeat and reclaim
       # intervals derive from the TTL, so one knob retunes all three.
       AGENTLOOM_QUEUE_LEASE_TTL: ${AGENTLOOM_QUEUE_LEASE_TTL:-30s}
+      # The compose stack is the dev/demo environment, so the
+      # filesystem-writing test executors (counter, effectful_echo) stay
+      # registered here — the binary's default is off (ticket 6.2).
+      AGENTLOOM_WORKER_TEST_EXECUTORS: ${AGENTLOOM_WORKER_TEST_EXECUTORS:-true}
     depends_on:
       migrate:
         condition: service_completed_successfully

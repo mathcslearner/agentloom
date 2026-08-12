@@ -499,13 +499,13 @@ Chaos test: continuous submitter (mixed fixtures incl. retries and effectful ste
 - [x] `ctl keys` round-trip works against compose
 - [x] Scope model documented with a route→scope table
 
-#### 6.2 — Auth middleware
+#### 6.2 — Auth middleware ✅
 **Depends on:** 6.1
-Bearer parsing, prefix lookup + constant-time hash compare, revocation/expiry checks, scope enforcement per route, `key_id` injected into request context/logs. `/healthz`, `/readyz`, `/metrics` exempt. 401 vs 403 semantics per ADR. *(Post-M4 audit notes for this ticket: compose publishes the dev API on `0.0.0.0` — flip to `127.0.0.1` or make auth the gate here; and the `counter` test executor writes to an arbitrary submitted filesystem path — decide whether test executors stay registered on authed deployments.)*
+Bearer parsing, prefix lookup + constant-time hash compare, revocation/expiry checks, scope enforcement per route, `key_id` injected into request context/logs. `/healthz`, `/readyz`, `/metrics` exempt. 401 vs 403 semantics per ADR. *(Post-M4 audit notes for this ticket: compose publishes the dev API on `0.0.0.0` — flip to `127.0.0.1` or make auth the gate here; and the `counter` test executor writes to an arbitrary submitted filesystem path — decide whether test executors stay registered on authed deployments.)* *(As built: 6.1's scope-parameterized `requireScope` mounted per-route per ADR-007's table — submit on `POST /v1/runs`, read on `GET /v1/runs/{id}`, admin on `/v1/keys` — with a chi.Walk route-coverage test failing any /v1 route missing from the route→scope table, so a new endpoint cannot ship anonymous by omission; 404/405 fallbacks deliberately anonymous (outside the middleware tree, route existence is public). The middleware stamps the authenticated identity into the request context (6.4's per-key rate-limit hook) and reports key_id back up to the per-request log line via a mutable slot. Both parked audit items resolved: compose api binds `127.0.0.1` by default (`AGENTLOOM_API_BIND` overrides), and the filesystem-writing test executors (counter, effectful_echo) moved out of the production default registry — `exec.CoreBuiltins()` unless `AGENTLOOM_WORKER_TEST_EXECUTORS=true` (binary default false; compose sets true), unregistered types dead-lettering permanent at claim time per 5.4. ctl already sent the bearer everywhere; demo-crash authenticates as the root credential, minting an ephemeral one when `.env` has none.)*
 **Done when:**
-- [ ] Every `/v1` route rejects missing/invalid/revoked keys (table-driven route test)
-- [ ] Scope violations → 403 with machine-readable error body
-- [ ] Auth outcomes logged with `key_id`, never with the key itself
+- [x] Every `/v1` route rejects missing/invalid/revoked keys (table-driven route test)
+- [x] Scope violations → 403 with machine-readable error body
+- [x] Auth outcomes logged with `key_id`, never with the key itself
 
 #### 6.3 — Redis token-bucket limiter (shared library)
 **Depends on:** 3.2

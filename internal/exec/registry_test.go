@@ -90,6 +90,30 @@ func TestBuiltinsRegistersAllTestExecutors(t *testing.T) {
 	}
 }
 
+// TestCoreBuiltinsExcludesFilesystemExecutors pins the 6.2 split: the
+// production default registry is Builtins minus exactly the two test
+// executors with filesystem side effects.
+func TestCoreBuiltinsExcludesFilesystemExecutors(t *testing.T) {
+	t.Parallel()
+
+	core := CoreBuiltins()
+	for _, typ := range []string{"counter", "effectful_echo"} {
+		if _, err := core.Get(typ); err == nil {
+			t.Errorf("CoreBuiltins registers %q — filesystem test executors must be opt-in", typ)
+		}
+	}
+	full := Builtins()
+	if got, want := len(core.Types())+2, len(full.Types()); got != want {
+		t.Errorf("core (%d) + 2 = %d types, Builtins has %d — the split no longer partitions the set",
+			len(core.Types()), got, want)
+	}
+	for _, typ := range core.Types() {
+		if _, err := full.Get(typ); err != nil {
+			t.Errorf("core type %q missing from Builtins", typ)
+		}
+	}
+}
+
 // deferredStepTypes are the dag catalog types deliberately without an
 // executor yet. A definition using one passes submit-time validation and
 // then fails permanently at claim time (registry miss → dead-letter), which

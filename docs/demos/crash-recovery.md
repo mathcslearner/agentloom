@@ -72,6 +72,11 @@ specifically about the worker that never got to say goodbye.
 - The demo loads `.env` exactly like the Makefile and Compose do, so
   remapped ports (`AGENTLOOM_API_PORT`, `AGENTLOOM_POSTGRES_PORT`, …)
   just work.
+- Auth (ticket 6.2): every `/v1` route requires a bearer key, so the
+  demo authenticates as the stack's root credential — the
+  `AGENTLOOM_API_ROOT_KEY` from `.env` if set, otherwise an ephemeral
+  one minted at startup and handed to the api container through the
+  environment. No key setup is needed to run the demo.
 
 ## Prerequisites & troubleshooting
 

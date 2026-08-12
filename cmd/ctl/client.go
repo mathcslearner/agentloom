@@ -20,7 +20,7 @@ import (
 type client struct {
 	base string
 	// key is the bearer credential presented on every request (empty =
-	// anonymous; only key-management routes require one until ticket 6.2).
+	// anonymous, which every /v1 route rejects since ticket 6.2).
 	key string
 	hc  *http.Client
 }

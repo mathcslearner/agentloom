@@ -7,8 +7,9 @@
 //
 // The API base URL comes from --api or AGENTLOOM_API_URL (default
 // http://localhost:8080); the bearer credential from --key or
-// AGENTLOOM_API_KEY (only key-management routes require one until ticket
-// 6.2). ctl is a pure HTTP client — it never touches Postgres or Redis.
+// AGENTLOOM_API_KEY (every /v1 route requires a scoped key since ticket
+// 6.2 — submit needs the submit scope, watch needs read). ctl is a pure
+// HTTP client — it never touches Postgres or Redis.
 package main
 
 import (

@@ -15,6 +15,7 @@ const (
 	EnvWorkerCancelPollInterval    = "AGENTLOOM_WORKER_CANCEL_POLL_INTERVAL"
 	EnvWorkerDrainTimeout          = "AGENTLOOM_WORKER_DRAIN_TIMEOUT"
 	EnvWorkerEffectsStrict         = "AGENTLOOM_EFFECTS_STRICT"
+	EnvWorkerTestExecutors         = "AGENTLOOM_WORKER_TEST_EXECUTORS"
 )
 
 // DefaultWorkerHealthInterval spaces the worker's periodic health log —
@@ -120,6 +121,15 @@ type WorkerConfig struct {
 	// Default true while every deployment is dev; production deployments
 	// set AGENTLOOM_EFFECTS_STRICT=false for the clean dead-letter path.
 	EffectsStrict bool
+	// TestExecutors registers the full exec.Builtins set instead of
+	// exec.CoreBuiltins (ticket 6.2, ADR-007): the difference is the two
+	// test executors with filesystem side effects (counter,
+	// effectful_echo), which write to arbitrary submitter-chosen paths and
+	// so must be opt-in. Default false (secure); the compose dev stack and
+	// the crash/chaos suites set AGENTLOOM_WORKER_TEST_EXECUTORS=true. A
+	// submitted step of an unregistered type dead-letters permanent at
+	// claim time (registry miss).
+	TestExecutors bool
 }
 
 func defaultWorkerConfig() WorkerConfig {
@@ -135,6 +145,7 @@ func defaultWorkerConfig() WorkerConfig {
 		CancelPollInterval:    DefaultWorkerCancelPollInterval,
 		DrainTimeout:          DefaultWorkerDrainTimeout,
 		EffectsStrict:         true,
+		TestExecutors:         false,
 	}
 }
 
@@ -153,5 +164,6 @@ func (c *WorkerConfig) applyEnv(fn LookupFunc) []error {
 	errs = applyPositiveDuration(errs, fn, EnvWorkerCancelPollInterval, &c.CancelPollInterval)
 	errs = applyPositiveDuration(errs, fn, EnvWorkerDrainTimeout, &c.DrainTimeout)
 	errs = applyBool(errs, fn, EnvWorkerEffectsStrict, &c.EffectsStrict)
+	errs = applyBool(errs, fn, EnvWorkerTestExecutors, &c.TestExecutors)
 	return errs
 }

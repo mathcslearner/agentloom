@@ -2832,3 +2832,101 @@ now because it reintroduces revocation lag). No `last_used_at` tracking
 is design-only here — `internal/ratelimit` lands in 6.3, enforcement in
 6.4. Scope enforcement on `/v1/runs` is 6.2, not here: submitting runs
 stays anonymous for exactly one more ticket.
+
+### 6.2 — Auth middleware ✅
+
+**Delivered.** Scope enforcement on every `/v1` route per ADR-007's
+route→scope table, closing the anonymous-ingest window 6.1 left open for
+exactly one ticket: `submit` on `POST /v1/runs`, `read` on
+`GET /v1/runs/{id}`, `admin` on the `/v1/keys` subtree, `/healthz`
+exempt for probes. Plus the two post-M4-audit items this ticket owned:
+the compose api port now binds `127.0.0.1` by default, and the
+filesystem-writing test executors are no longer registered on production
+workers by default.
+
+**Wiring, as predicted by the ADR — thin.** 6.1's scope-parameterized
+`requireScope` middleware (verifier, 401-collapse, 403-with-named-scope,
+key_id logging) needed no behavioral change; 6.2 mounts it per-route
+with chi's `With`. What it grew: the authenticated identity (key id +
+scopes) is stamped into the request context via `identityInto`/
+`identityFrom` — the hook 6.4's per-key rate limiting will read — and
+the key_id is reported back **up** to `requestLog`'s one-line-per-
+request log through a mutable `authStamp` slot installed before routing
+(a context written inside the routing tree cannot flow upward, so the
+slot pattern is the honest mechanism; same-goroutine write-then-read,
+no locking). The stamp is filled right after authentication, so both
+success and 403 request lines carry key_id; 401s have no identity to
+carry. Deliberate edge, documented in the package doc: 404/405 fallback
+responses under `/v1` stay anonymous — chi's NotFound/MethodNotAllowed
+run outside the subtree middleware, and route existence is public
+knowledge (the spec), so nothing leaks.
+
+**Route-coverage drift guard.** `auth_routes_test.go` (unit, in-package)
+spells out the route→scope table as data and `chi.Walk`s the live
+router both directions: every mounted `/v1` route must be in the table,
+every table row must be mounted, and anything outside `/v1` other than
+`/healthz` fails. A 6.5 route added without deciding its scope — or
+mounted without `requireScope` and matrix coverage — fails a unit test,
+not a review. (The router walk needs no database: the handler is built
+over a nil-pool store.)
+
+**Test-executor gating (the audit decision).** `counter` and
+`effectful_echo` both append to a submitter-chosen filesystem path —
+fine as crash-suite instruments, indefensible on an authed deployment.
+Decision: registration, not sandboxing. `exec.CoreBuiltins()` is
+Builtins minus exactly those two; `cmd/worker` registers core unless
+`config.WorkerConfig.TestExecutors` (`AGENTLOOM_WORKER_TEST_EXECUTORS`,
+default **false**) opts the full set in, logging the mode in its startup
+line. docker-compose.yml overrides to true (the compose stack is the
+dev/demo environment; `make demo-crash` needs `counter`), and the
+crash-suite harness sets it on spawned workers. A submitted step of an
+unregistered type still validates — the dag catalog is definition shape,
+not fleet capability — and dead-letters permanent at claim time via the
+registry miss, landing visibly in the DLQ. A unit test pins the split as
+a partition (core + 2 = Builtins) so a future executor can't silently
+land on the wrong side; the registry↔catalog sync test still runs
+against the full set and is untouched.
+
+**Tests, mapping to the ACs.** `auth_routes_integration_test.go`
+(`TestV1AuthMatrix`) drives every route in the table through the
+credential matrix: missing header, non-Bearer scheme, malformed token,
+unknown well-shaped key, forged credential (a real key's lookup prefix
+with a fabricated suffix — prefix found, hash mismatch), and a revoked
+fully-scoped key all collapse to the uniform 401 with the
+WWW-Authenticate challenge; a valid key carrying every scope *except*
+the route's gets the 403 whose envelope names the missing scope (proving
+the check is on the right scope, not "any scope"); the exact scope and
+admin-implies-all both succeed; the TTL'd key collapses to 401 on every
+route after a clock advance; `/healthz` answers 200 anonymously
+throughout. The log-discipline criterion extends 6.1's captured-slog
+pattern: request lines and forbidden outcomes carry `key_id` (root's
+pseudo-id included), `missing_scope` appears structured, and no minted
+plaintext is anywhere in the capture — with the prefix as the positive
+control. The 4.6 suite's helpers grew a bearer parameter and its
+`newServer` now boots with a runtime root key and mints a submit+read
+client key, exercising the bootstrap flow on every test.
+
+**Ripples.** ctl needed no functional change (the shared client has sent
+`Authorization: Bearer` on every request since 6.1) — only stale
+only-keys-need-auth comments died. `scripts/demo-crash.sh` authenticates
+as the stack's root credential, minting an ephemeral sk_-shaped value at
+runtime when `.env` has none (constructed, never committed — the CI
+secret grep stays clean) and passing it to compose, ctl, and curl.
+README documents the bootstrap flow (root key into `.env` → `make
+up-app` → `ctl keys create` → `AGENTLOOM_API_KEY`); `.env.example`
+gained `AGENTLOOM_API_BIND` and `AGENTLOOM_WORKER_TEST_EXECUTORS`
+stanzas and updated root-key/API-key prose; docs/demos/crash-recovery.md
+notes the demo needs no key setup. ADR-007 gained the as-built 6.2
+section.
+
+**Verified.** Lint, `go test -race ./...`, and the full compose-backed
+`-race -tags integration ./...` (crash + chaos suites included, running
+real workers with the new env knob) all green.
+
+**Deferred / notes.** `/readyz` and `/metrics` don't exist yet — the
+exemption list gains them when M7 wires telemetry. The identity context
+accessor is deliberately unexported (6.4 lives in the same package). The
+unit route table and the integration matrix's route list are separate
+literals by construction (external test package can't see the router);
+the walk test catches router↔table drift, and cross-file drift is a
+review concern flagged in both files' comments.

@@ -19,9 +19,31 @@ import (
 // stubs (llm, tool, retrieve; devstub.go) that make the canonical example
 // definitions runnable until the real executors arrive through the M8
 // plugin SPI and the M9 provider layer.
+//
+// This is the registry for tests and dev/demo deployments. Production
+// workers default to CoreBuiltins — see the AGENTLOOM_WORKER_TEST_EXECUTORS
+// knob (ticket 6.2).
 func Builtins() *Registry {
+	r := CoreBuiltins()
+	for _, e := range []Executor{CounterExecutor{}, EffectfulEchoExecutor{}} {
+		if err := r.Register(e); err != nil {
+			panic(err) // unreachable: a fixed set of distinct, non-empty types
+		}
+	}
+	return r
+}
+
+// CoreBuiltins is Builtins minus the two test executors with filesystem
+// side effects (counter, effectful_echo — both append to a caller-chosen
+// path, which an authed deployment must not expose to arbitrary
+// submitters; ticket 6.2, ADR-007). cmd/worker registers this set unless
+// AGENTLOOM_WORKER_TEST_EXECUTORS opts the full set in. A submitted step
+// of an unregistered type still validates (the dag catalog is definition
+// shape, not fleet capability) and then dead-letters permanent at claim
+// time via the registry miss — the established 5.4 path.
+func CoreBuiltins() *Registry {
 	r, err := NewRegistry(NoopExecutor{}, EchoExecutor{}, NewSleep(), FailNTimesExecutor{},
-		CounterExecutor{}, EffectfulEchoExecutor{}, JoinExecutor{}, BranchExecutor{},
+		JoinExecutor{}, BranchExecutor{},
 		StubLLMExecutor{}, StubToolExecutor{}, StubRetrieveExecutor{})
 	if err != nil {
 		panic(err) // unreachable: a fixed set of distinct, non-empty types

@@ -38,6 +38,20 @@ fi
 # intervals derive from it.
 export AGENTLOOM_QUEUE_LEASE_TTL="${DEMO_LEASE_TTL:-5s}"
 
+# Every /v1 route requires a scoped bearer key since ticket 6.2. The demo
+# authenticates with the stack's root credential (implicit admin): reuse
+# the one from .env, or mint an ephemeral one at runtime (constructed,
+# never a committed literal — the CI secret grep forbids those) and hand
+# it to the api container via the environment.
+if [ -z "${AGENTLOOM_API_ROOT_KEY:-}" ]; then
+  AGENTLOOM_API_ROOT_KEY="sk_$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')"
+  export AGENTLOOM_API_ROOT_KEY
+  note_root_key=" (ephemeral root key minted for this demo)"
+else
+  note_root_key=" (root key from .env)"
+fi
+API_KEY="$AGENTLOOM_API_ROOT_KEY"
+
 API_URL="http://localhost:${AGENTLOOM_API_PORT:-8080}"
 FIXTURE=docs/demos/crash-demo.json
 
@@ -50,7 +64,7 @@ for dep in docker go curl jq; do
   command -v "$dep" >/dev/null || fail "missing dependency: $dep"
 done
 
-run_json()    { curl -fsS "$API_URL/v1/runs/$1"; }
+run_json()    { curl -fsS -H "Authorization: Bearer $API_KEY" "$API_URL/v1/runs/$1"; }
 run_status()  { run_json "$1" | jq -r '.run.status'; }
 step_status() { run_json "$1" | jq -r --arg s "$2" '.steps[] | select(.id==$s) | .status'; }
 
@@ -96,11 +110,11 @@ victim_container() {
   done
 }
 
-submit() { go run ./cmd/ctl --api "$API_URL" submit "$FIXTURE"; }
-watch()  { go run ./cmd/ctl --api "$API_URL" watch "$1"; }
+submit() { go run ./cmd/ctl --api "$API_URL" --key "$API_KEY" submit "$FIXTURE"; }
+watch()  { go run ./cmd/ctl --api "$API_URL" --key "$API_KEY" watch "$1"; }
 
 # ---------------------------------------------------------------- Act 0
-say "Act 0 — booting the full stack (api + 2 workers), lease TTL $AGENTLOOM_QUEUE_LEASE_TTL"
+say "Act 0 — booting the full stack (api + 2 workers), lease TTL $AGENTLOOM_QUEUE_LEASE_TTL$note_root_key"
 note "docker compose --profile app up -d --build --wait"
 docker compose --profile app up -d --build --wait
 

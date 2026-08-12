@@ -3,7 +3,6 @@
 package api_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -32,51 +31,38 @@ import (
 // end-to-end test uses time.Now, exactly as cmd/api wires it).
 var testNow = time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 
-// newServer boots the API over a fresh per-test database.
-func newServer(t *testing.T) (*store.Store, *httptest.Server) {
+// newServer boots the API over a fresh per-test database and returns a
+// bearer key scoped submit+read — since ticket 6.2 every /v1 route
+// requires one. The root credential is discarded after minting it, as
+// ADR-007's bootstrap flow prescribes.
+func newServer(t *testing.T) (*store.Store, *httptest.Server, string) {
 	t.Helper()
 	s := store.NewFromPool(storetest.NewDB(t))
-	h, err := api.New(s, func() time.Time { return testNow }, nil, "")
+	rootKey := mintTestKey(t)
+	h, err := api.New(s, func() time.Time { return testNow }, nil, rootKey)
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return s, srv
+	client := createKey(t, srv, rootKey, api.CreateKeyRequest{Name: "test-client", Scopes: []string{"submit", "read"}})
+	return s, srv, client.Key
 }
 
-// postJSON POSTs body to the run-submission route and decodes the
-// response into out (may be nil), returning the status code.
-func postJSON(t *testing.T, srv *httptest.Server, body []byte, out any) int {
+// postJSON POSTs body to the run-submission route with the bearer
+// credential and decodes the response into out (may be nil), returning
+// the status code.
+func postJSON(t *testing.T, srv *httptest.Server, bearer string, body []byte, out any) int {
 	t.Helper()
-	const path = "/v1/runs"
-	res, err := srv.Client().Post(srv.URL+path, "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST %s: %v", path, err)
-	}
-	defer res.Body.Close() //nolint:errcheck // read-side close
-	if out != nil {
-		if err := json.NewDecoder(res.Body).Decode(out); err != nil {
-			t.Fatalf("decoding POST %s response: %v", path, err)
-		}
-	}
+	res := doAuth(t, srv, http.MethodPost, "/v1/runs", bearer, body, out)
 	return res.StatusCode
 }
 
-// getJSON GETs path and decodes the response into out (may be nil),
-// returning the status code.
-func getJSON(t *testing.T, srv *httptest.Server, path string, out any) int {
+// getJSON GETs path with the bearer credential (empty = anonymous) and
+// decodes the response into out (may be nil), returning the status code.
+func getJSON(t *testing.T, srv *httptest.Server, bearer, path string, out any) int {
 	t.Helper()
-	res, err := srv.Client().Get(srv.URL + path)
-	if err != nil {
-		t.Fatalf("GET %s: %v", path, err)
-	}
-	defer res.Body.Close() //nolint:errcheck // read-side close
-	if out != nil {
-		if err := json.NewDecoder(res.Body).Decode(out); err != nil {
-			t.Fatalf("decoding GET %s response: %v", path, err)
-		}
-	}
+	res := doAuth(t, srv, http.MethodGet, path, bearer, nil, out)
 	return res.StatusCode
 }
 
@@ -107,10 +93,10 @@ func fanoutJSON(t *testing.T) []byte {
 
 func TestHealthz(t *testing.T) {
 	t.Parallel()
-	_, srv := newServer(t)
+	_, srv, _ := newServer(t)
 
 	var body map[string]string
-	if status := getJSON(t, srv, "/healthz", &body); status != http.StatusOK {
+	if status := getJSON(t, srv, "", "/healthz", &body); status != http.StatusOK {
 		t.Fatalf("GET /healthz = %d, want 200", status)
 	}
 	if body["status"] != "ok" {
@@ -120,10 +106,10 @@ func TestHealthz(t *testing.T) {
 
 func TestSubmitAndGetRun(t *testing.T) {
 	t.Parallel()
-	_, srv := newServer(t)
+	_, srv, key := newServer(t)
 
 	var sub api.SubmitRunResponse
-	status := postJSON(t, srv, submitBody(t, fanoutJSON(t), `{"topic": "durable execution"}`, ""), &sub)
+	status := postJSON(t, srv, key, submitBody(t, fanoutJSON(t), `{"topic": "durable execution"}`, ""), &sub)
 	if status != http.StatusCreated {
 		t.Fatalf("POST /v1/runs = %d, want 201", status)
 	}
@@ -135,7 +121,7 @@ func TestSubmitAndGetRun(t *testing.T) {
 	}
 
 	var run api.RunResponse
-	if status := getJSON(t, srv, "/v1/runs/"+sub.RunID, &run); status != http.StatusOK {
+	if status := getJSON(t, srv, key, "/v1/runs/"+sub.RunID, &run); status != http.StatusOK {
 		t.Fatalf("GET /v1/runs/%s = %d, want 200", sub.RunID, status)
 	}
 	if run.Run.ID != sub.RunID || run.Run.Status != store.RunStatusRunning {
@@ -169,7 +155,7 @@ func TestSubmitAndGetRun(t *testing.T) {
 
 func TestSubmitInvalidDefinitionRejected(t *testing.T) {
 	t.Parallel()
-	_, srv := newServer(t)
+	_, srv, key := newServer(t)
 
 	// Fanout with a broken edge: structural validation must reject it with
 	// the path-qualified issue, and nothing may be written.
@@ -180,7 +166,7 @@ func TestSubmitInvalidDefinitionRejected(t *testing.T) {
 		"edges": [{"from": "a", "to": "ghost"}]
 	}`)
 	var envelope api.ErrorBody
-	status := postJSON(t, srv, submitBody(t, bad, "", ""), &envelope)
+	status := postJSON(t, srv, key, submitBody(t, bad, "", ""), &envelope)
 	if status != http.StatusBadRequest {
 		t.Fatalf("POST invalid definition = %d, want 400", status)
 	}
@@ -200,7 +186,7 @@ func TestSubmitInvalidDefinitionRejected(t *testing.T) {
 
 func TestSubmitMalformedRequests(t *testing.T) {
 	t.Parallel()
-	_, srv := newServer(t)
+	_, srv, key := newServer(t)
 
 	cases := []struct {
 		name string
@@ -217,7 +203,7 @@ func TestSubmitMalformedRequests(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var envelope api.ErrorBody
-			status := postJSON(t, srv, []byte(tc.body), &envelope)
+			status := postJSON(t, srv, key, []byte(tc.body), &envelope)
 			if status != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400", status)
 			}
@@ -230,15 +216,15 @@ func TestSubmitMalformedRequests(t *testing.T) {
 
 func TestSubmitIdempotencyToken(t *testing.T) {
 	t.Parallel()
-	_, srv := newServer(t)
+	_, srv, key := newServer(t)
 
 	body := submitBody(t, fanoutJSON(t), `{"topic": "x"}`, "ctl-test-token")
 	var first api.SubmitRunResponse
-	if status := postJSON(t, srv, body, &first); status != http.StatusCreated {
+	if status := postJSON(t, srv, key, body, &first); status != http.StatusCreated {
 		t.Fatalf("first POST = %d, want 201", status)
 	}
 	var second api.SubmitRunResponse
-	if status := postJSON(t, srv, body, &second); status != http.StatusOK {
+	if status := postJSON(t, srv, key, body, &second); status != http.StatusOK {
 		t.Fatalf("second POST = %d, want 200", status)
 	}
 	if !second.Reused || second.RunID != first.RunID {
@@ -248,7 +234,7 @@ func TestSubmitIdempotencyToken(t *testing.T) {
 
 func TestSubmitByStoredDefinitionRef(t *testing.T) {
 	t.Parallel()
-	s, srv := newServer(t)
+	s, srv, key := newServer(t)
 
 	row, err := s.Definitions().Create(t.Context(), gen.CreateDefinitionParams{
 		Name: "fanout-fanin", Version: 1, Spec: fanoutJSON(t),
@@ -265,7 +251,7 @@ func TestSubmitByStoredDefinitionRef(t *testing.T) {
 		t.Fatalf("marshaling request: %v", err)
 	}
 	var sub api.SubmitRunResponse
-	if status := postJSON(t, srv, body, &sub); status != http.StatusCreated {
+	if status := postJSON(t, srv, key, body, &sub); status != http.StatusCreated {
 		t.Fatalf("POST by ref = %d, want 201", status)
 	}
 
@@ -281,16 +267,16 @@ func TestSubmitByStoredDefinitionRef(t *testing.T) {
 
 func TestGetRunMisses(t *testing.T) {
 	t.Parallel()
-	_, srv := newServer(t)
+	_, srv, key := newServer(t)
 
 	var envelope api.ErrorBody
-	if status := getJSON(t, srv, "/v1/runs/"+uuid.NewString(), &envelope); status != http.StatusNotFound {
+	if status := getJSON(t, srv, key, "/v1/runs/"+uuid.NewString(), &envelope); status != http.StatusNotFound {
 		t.Fatalf("GET unknown run = %d, want 404", status)
 	}
 	if envelope.Error.Code != api.ErrCodeRunNotFound {
 		t.Errorf("error code = %q, want %q", envelope.Error.Code, api.ErrCodeRunNotFound)
 	}
-	if status := getJSON(t, srv, "/v1/runs/not-a-uuid", &envelope); status != http.StatusBadRequest {
+	if status := getJSON(t, srv, key, "/v1/runs/not-a-uuid", &envelope); status != http.StatusBadRequest {
 		t.Fatalf("GET bad uuid = %d, want 400", status)
 	}
 }
@@ -308,7 +294,10 @@ func TestSubmitFanoutRunsToCompletion(t *testing.T) {
 	s := store.NewFromPool(storetest.NewDB(t))
 	h := queuetest.New(t)
 	h.EnsureGroup(ctx)
-	handler, err := api.New(s, time.Now, nil, "")
+	// The root credential doubles as the bearer here (implicit admin
+	// covers submit + read) — the end-to-end test needs no stored key.
+	rootKey := mintTestKey(t)
+	handler, err := api.New(s, time.Now, nil, rootKey)
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
@@ -335,7 +324,7 @@ func TestSubmitFanoutRunsToCompletion(t *testing.T) {
 	}
 
 	var sub api.SubmitRunResponse
-	status := postJSON(t, srv, submitBody(t, fanoutJSON(t), `{"topic": "durable execution"}`, ""), &sub)
+	status := postJSON(t, srv, rootKey, submitBody(t, fanoutJSON(t), `{"topic": "durable execution"}`, ""), &sub)
 	if status != http.StatusCreated {
 		t.Fatalf("POST /v1/runs = %d, want 201", status)
 	}
@@ -344,7 +333,7 @@ func TestSubmitFanoutRunsToCompletion(t *testing.T) {
 	deadline := time.Now().Add(15 * time.Second)
 	var run api.RunResponse
 	for {
-		if getJSON(t, srv, "/v1/runs/"+sub.RunID, &run) != http.StatusOK {
+		if getJSON(t, srv, rootKey, "/v1/runs/"+sub.RunID, &run) != http.StatusOK {
 			t.Fatal("GET run failed mid-watch")
 		}
 		if run.Run.Status != store.RunStatusRunning {

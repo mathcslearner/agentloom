@@ -106,8 +106,11 @@ func workerEnv(dsn string, h *queuetest.Harness) map[string]string {
 		"AGENTLOOM_WORKER_DISPATCH_INTERVAL":  "50ms",
 		"AGENTLOOM_WORKER_RECONCILE_INTERVAL": "10m",
 		"AGENTLOOM_WORKER_HEALTH_INTERVAL":    "10m",
-		"AGENTLOOM_LOG_FORMAT":                "json",
-		"AGENTLOOM_LOG_LEVEL":                 "info",
+		// The suites' fixtures use counter/effectful_echo, which real
+		// workers no longer register by default (ticket 6.2).
+		"AGENTLOOM_WORKER_TEST_EXECUTORS": "true",
+		"AGENTLOOM_LOG_FORMAT":            "json",
+		"AGENTLOOM_LOG_LEVEL":             "info",
 	}
 }
 

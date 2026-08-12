@@ -91,10 +91,18 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	if err != nil {
 		return err
 	}
+	// Production workers register the core set; the filesystem-writing
+	// test executors (counter, effectful_echo) are opt-in via
+	// AGENTLOOM_WORKER_TEST_EXECUTORS (ticket 6.2) — the compose dev
+	// stack and the crash/chaos suites set it.
+	registry := exec.CoreBuiltins()
+	if cfg.Worker.TestExecutors {
+		registry = exec.Builtins()
+	}
 	// The engine's own delayed handle shares the consumer's key: retry
 	// re-dispatches scheduled here are promoted by any worker's promoter
 	// duty (ticket 5.2).
-	eng, err := engine.New(st, exec.Builtins(), workerID,
+	eng, err := engine.New(st, registry, workerID,
 		engine.WithDispatchNudge(dispatcher.Nudge),
 		engine.WithRetryScheduler(q.NewDelayed(cfg.Queue.DelayedKey)),
 		engine.WithStrictEffects(cfg.Worker.EffectsStrict),
@@ -113,7 +121,8 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		slog.Duration("health_interval", cfg.Worker.HealthInterval),
 		slog.Duration("dispatch_interval", cfg.Worker.DispatchInterval),
 		slog.Duration("reconcile_interval", cfg.Worker.ReconcileInterval),
-		slog.Duration("drain_timeout", cfg.Worker.DrainTimeout))
+		slog.Duration("drain_timeout", cfg.Worker.DrainTimeout),
+		slog.Bool("test_executors", cfg.Worker.TestExecutors))
 	defer logger.InfoContext(ctx, "worker stopped")
 
 	// The dispatch duties run on loopCtx, which deliberately OUTLIVES the

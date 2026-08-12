@@ -1,12 +1,12 @@
 package api
 
-// This file is API key authentication (ticket 6.1, ADR-007): key
+// This file is API key authentication (tickets 6.1/6.2, ADR-007): key
 // generation and hashing mechanics, the bearer verifier, and the
-// scope-gate middleware. In 6.1 only the /v1/keys subtree is gated (the
-// admin bootstrap makes no sense otherwise); 6.2 generalizes
-// requireScope to every /v1 route per ADR-007's route→scope table.
+// scope-gate middleware that fronts every /v1 route per ADR-007's
+// route→scope table (/healthz stays exempt for probes).
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -123,6 +123,23 @@ type identity struct {
 	scopes []string
 }
 
+// ctxKeyIdentity keys the authenticated identity in the request context.
+type ctxKeyIdentity struct{}
+
+// identityInto returns ctx carrying the authenticated identity for
+// downstream handlers and middleware (6.4's per-key rate limiting reads
+// it via identityFrom).
+func identityInto(ctx context.Context, id identity) context.Context {
+	return context.WithValue(ctx, ctxKeyIdentity{}, id)
+}
+
+// identityFrom returns the identity requireScope stamped into the
+// context, if the request authenticated.
+func identityFrom(ctx context.Context) (identity, bool) {
+	id, ok := ctx.Value(ctxKeyIdentity{}).(identity)
+	return id, ok
+}
+
 // errUnauthorized collapses every credential failure — missing header,
 // bad shape, unknown prefix, hash mismatch, revoked, expired — into one
 // indistinguishable answer (ADR-007: the response never reveals whether
@@ -173,7 +190,9 @@ func (h *Handler) authenticate(r *http.Request) (identity, error) {
 // answering 401 (credential failure) or 403 (valid key, missing scope)
 // per ADR-007. Outcomes are logged with key_id and never with key
 // material; the authenticated key_id is stamped onto the request logger
-// so downstream handler lines carry it.
+// (so downstream handler lines carry it), into the request context (for
+// handlers and 6.4's per-key rate limiting), and back up to requestLog's
+// per-request line via the authStamp slot.
 func (h *Handler) requireScope(want Scope) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -192,6 +211,9 @@ func (h *Handler) requireScope(want Scope) func(http.Handler) http.Handler {
 				internalError(w, r, "authenticating request", err)
 				return
 			}
+			if stamp, ok := authStampFrom(ctx); ok {
+				stamp.keyID = id.keyID
+			}
 			if !hasScope(id.scopes, want) {
 				log.From(ctx).InfoContext(ctx, "api: request forbidden",
 					log.KeyID(id.keyID),
@@ -204,7 +226,8 @@ func (h *Handler) requireScope(want Scope) func(http.Handler) http.Handler {
 				return
 			}
 			logger := log.From(ctx).With(log.KeyID(id.keyID))
-			next.ServeHTTP(w, r.WithContext(log.Into(ctx, logger)))
+			ctx = identityInto(log.Into(ctx, logger), id)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

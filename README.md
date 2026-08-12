@@ -37,7 +37,17 @@ make down       # stop the stack — data volumes are KEPT
 
 (The `redis-chaos` service on port 6380 exists solely for the sustained chaos suite, which restarts it mid-test — see `make test-chaos-long`.)
 
-`make up-app` (the compose `app` profile) builds the deployable images from [deploy/dockerfiles/Dockerfile](deploy/dockerfiles/Dockerfile), applies migrations via a one-shot job, and publishes the API on `localhost:8080` (`AGENTLOOM_API_PORT`). Then submit and watch a run with the `ctl` CLI:
+`make up-app` (the compose `app` profile) builds the deployable images from [deploy/dockerfiles/Dockerfile](deploy/dockerfiles/Dockerfile), applies migrations via a one-shot job, and publishes the API on `127.0.0.1:8080` (`AGENTLOOM_API_PORT`; loopback-only by default — set `AGENTLOOM_API_BIND=0.0.0.0` to expose it).
+
+Every `/v1` route requires a scoped bearer key (ADR-007). Bootstrap one before first use: generate a root credential into `.env`, boot the stack, mint a real key with it, then export the key for `ctl`:
+
+```sh
+echo "AGENTLOOM_API_ROOT_KEY=sk_$(openssl rand 32 | base64 | tr '+/' '-_' | tr -d '=')" >> .env
+make up-app
+export AGENTLOOM_API_KEY=$(source .env && go run ./cmd/ctl --key "$AGENTLOOM_API_ROOT_KEY" keys create --name dev --scopes submit,read)
+```
+
+Then submit and watch a run with the `ctl` CLI:
 
 ```sh
 go run ./cmd/ctl validate examples/definitions/fanout.json

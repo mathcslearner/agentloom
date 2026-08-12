@@ -1,23 +1,28 @@
-// Package api implements agentloom's HTTP ingest surface (ticket 4.6, dev
-// mode — no auth until M6): run submission, run inspection, and the health
-// probe. The API talks only to Postgres: submission writes the run and its
-// entry-step outbox rows in CreateRun's single transaction, and the worker
-// fleet's dispatchers drain the outbox to Redis (ADR-002 — no central
-// scheduler, so no Redis client here).
+// Package api implements agentloom's HTTP ingest surface (tickets 4.6,
+// 6.1, 6.2): run submission, run inspection, key management, and the
+// health probe. The API talks only to Postgres: submission writes the run
+// and its entry-step outbox rows in CreateRun's single transaction, and
+// the worker fleet's dispatchers drain the outbox to Redis (ADR-002 — no
+// central scheduler, so no Redis client here).
 //
-// Routes:
+// Routes (scope per ADR-007's route→scope table):
 //
-//	POST   /v1/runs        submit a run (inline definition or stored ref)
-//	GET    /v1/runs/{id}   run status + step tree + attempt history
-//	POST   /v1/keys        mint an API key (admin; plaintext shown once)
-//	GET    /v1/keys        list API keys (admin; prefixes only)
-//	DELETE /v1/keys/{id}   revoke an API key (admin; soft, idempotent)
-//	GET    /healthz        liveness (Postgres ping)
+//	POST   /v1/runs        submit  submit a run (inline definition or stored ref)
+//	GET    /v1/runs/{id}   read    run status + step tree + attempt history
+//	POST   /v1/keys        admin   mint an API key (plaintext shown once)
+//	GET    /v1/keys        admin   list API keys (prefixes only)
+//	DELETE /v1/keys/{id}   admin   revoke an API key (soft, idempotent)
+//	GET    /healthz        exempt  liveness (Postgres ping)
 //
-// Auth (ticket 6.1, ADR-007): the /v1/keys subtree requires an admin
-// bearer credential — a stored admin-scoped key, or the env-provided
-// root key that bootstraps the first one. The other /v1 routes stay
-// anonymous until 6.2 generalizes enforcement.
+// Auth (tickets 6.1/6.2, ADR-007): every /v1 route requires a bearer API
+// key carrying the route's scope — a stored key, or the env-provided
+// root key (implicit admin) that bootstraps the first one. Credential
+// failures are a uniform 401; a valid key lacking the scope is a 403
+// naming the missing scope. /healthz stays exempt so probes need no
+// secret. Requests to paths outside the route table (404/405) answer
+// anonymously — chi's fallback handlers run outside the /v1 middleware
+// tree, and route existence is public knowledge (the spec), so this
+// leaks nothing.
 //
 // Every error response carries the JSON envelope {"error": {code, message,
 // issues?}}; definition problems surface M1's path-qualified issues
@@ -26,6 +31,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -94,8 +100,11 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 	})
 	r.Get("/healthz", h.handleHealthz)
 	r.Route("/v1", func(r chi.Router) {
-		r.Post("/runs", h.handleSubmitRun)
-		r.Get("/runs/{runID}", h.handleGetRun)
+		// Ticket 6.2: every route below carries its ADR-007 scope. A new
+		// /v1 route without a requireScope wrapper fails the route-coverage
+		// test in auth_routes_test.go.
+		r.With(h.requireScope(ScopeSubmit)).Post("/runs", h.handleSubmitRun)
+		r.With(h.requireScope(ScopeRead)).Get("/runs/{runID}", h.handleGetRun)
 		r.Route("/keys", func(r chi.Router) {
 			r.Use(h.requireScope(ScopeAdmin))
 			r.Post("/", h.handleCreateKey)
@@ -124,18 +133,44 @@ func (h *Handler) handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 // requestLog stamps the base logger into the request context (so handlers
 // and the store log with request scope) and emits one structured line per
-// request.
+// request — carrying key_id whenever the request authenticated (ticket
+// 6.2), reported back up from requireScope via the authStamp slot.
 func (h *Handler) requestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := h.now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r.WithContext(log.Into(r.Context(), h.logger)))
-		h.logger.LogAttrs(r.Context(), slog.LevelInfo, "http request",
+		stamp := &authStamp{}
+		ctx := authStampInto(log.Into(r.Context(), h.logger), stamp)
+		next.ServeHTTP(rec, r.WithContext(ctx))
+		attrs := []slog.Attr{
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.Int("status", rec.status),
-			slog.Duration("duration", h.now().Sub(start)))
+			slog.Duration("duration", h.now().Sub(start)),
+		}
+		if stamp.keyID != "" {
+			attrs = append(attrs, log.KeyID(stamp.keyID))
+		}
+		h.logger.LogAttrs(r.Context(), slog.LevelInfo, "http request", attrs...)
 	})
+}
+
+// authStamp is a mutable per-request slot: requestLog installs it before
+// routing, requireScope (which runs later, inside the routing tree — a
+// context added there cannot flow back up) fills in the authenticated
+// key_id. Written and read on the request goroutine, so no locking.
+type authStamp struct{ keyID string }
+
+// ctxKeyAuthStamp keys the authStamp slot in the request context.
+type ctxKeyAuthStamp struct{}
+
+func authStampInto(ctx context.Context, s *authStamp) context.Context {
+	return context.WithValue(ctx, ctxKeyAuthStamp{}, s)
+}
+
+func authStampFrom(ctx context.Context) (*authStamp, bool) {
+	s, ok := ctx.Value(ctxKeyAuthStamp{}).(*authStamp)
+	return s, ok
 }
 
 // recoverPanic converts a handler panic into a logged 500 carrying the

@@ -157,6 +157,41 @@ route per the table above, and also owns the two parked post-M4-audit
 items (compose publishes the dev API on `0.0.0.0`; the `counter` test
 executor writes to arbitrary submitted paths).
 
+### As built (ticket 6.2)
+
+Enforcement landed exactly per the table: `requireScope` is mounted
+per-route (`submit` on `POST /v1/runs`, `read` on `GET /v1/runs/{id}`,
+`admin` on the `/v1/keys` subtree), and a walk-based route-coverage test
+fails any future `/v1` route that is not in the route→scope table — a
+new endpoint cannot ship anonymous by omission. Deliberate edge: 404/405
+responses for unmatched paths answer anonymously (chi's fallback
+handlers run outside the `/v1` middleware tree); route existence is
+public knowledge — the spec — so this leaks nothing.
+
+`requireScope` now also stamps the authenticated identity (key id +
+scopes) into the request context — the hook 6.4's per-key rate limiting
+reads — and reports `key_id` back up to the per-request log line, so
+every authenticated request is attributable without ever logging key
+material. A non-`Bearer` authorization scheme is one more uniform 401.
+
+The two parked post-M4-audit items were resolved here:
+
+- **Compose bind**: the api port mapping defaults to `127.0.0.1`
+  (`AGENTLOOM_API_BIND` overrides). Auth is now the real gate, but a dev
+  stack carrying a bootstrap credential still shouldn't listen on all
+  interfaces by default — defense in depth, one line.
+- **Test executors**: the two with filesystem side effects (`counter`,
+  `effectful_echo` — both append to a submitter-chosen path) moved out
+  of the production default registry. `exec.CoreBuiltins()` is what
+  `cmd/worker` registers unless `AGENTLOOM_WORKER_TEST_EXECUTORS=true`
+  opts the full `exec.Builtins()` set in (binary default **false**;
+  docker-compose.yml sets it true — the compose stack is the dev/demo
+  environment and the crash demo's fixtures need `counter`). A submitted
+  step of an unregistered type still passes validation (the dag catalog
+  is definition shape, not fleet capability) and then dead-letters
+  permanent at claim time via the registry miss — the established 5.4
+  path, visible in the DLQ rather than silently dropped.
+
 ### Rate limiting (design here, built in 6.3/6.4, reused in M9)
 
 One generic **token-bucket library** (`internal/ratelimit`): an atomic

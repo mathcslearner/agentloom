@@ -139,6 +139,7 @@ func TestLoadWorkerOverrides(t *testing.T) {
 		config.EnvWorkerCancelPollInterval:    "3s",
 		config.EnvWorkerDrainTimeout:          "40s",
 		config.EnvWorkerEffectsStrict:         "false",
+		config.EnvWorkerTestExecutors:         "true",
 	}))
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
@@ -155,6 +156,7 @@ func TestLoadWorkerOverrides(t *testing.T) {
 		CancelPollInterval:    3 * time.Second,
 		DrainTimeout:          40 * time.Second,
 		EffectsStrict:         false,
+		TestExecutors:         true,
 	}
 	if cfg.Worker != want {
 		t.Errorf("Worker config = %+v, want %+v", cfg.Worker, want)
@@ -170,6 +172,7 @@ func TestLoadWorkerInvalidValues(t *testing.T) {
 		config.EnvWorkerDispatchInterval: "soon",
 		config.EnvWorkerDrainTimeout:     "0s",
 		config.EnvWorkerEffectsStrict:    "loudly",
+		config.EnvWorkerTestExecutors:    "maybe",
 	}))
 	if err == nil {
 		t.Fatal("Load with invalid worker values: want error, got nil")
@@ -180,6 +183,7 @@ func TestLoadWorkerInvalidValues(t *testing.T) {
 		config.EnvWorkerDispatchInterval,
 		config.EnvWorkerDrainTimeout,
 		config.EnvWorkerEffectsStrict,
+		config.EnvWorkerTestExecutors,
 	} {
 		if !strings.Contains(err.Error(), env) {
 			t.Errorf("error %q does not mention %s", err, env)
