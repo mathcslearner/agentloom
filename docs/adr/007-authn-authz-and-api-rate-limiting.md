@@ -215,6 +215,47 @@ Two tenants, same library:
 The two differ only in key naming and cost semantics — which is why the
 library takes both as parameters and knows nothing about HTTP or LLMs.
 
+### As built (ticket 6.3: the library)
+
+`internal/ratelimit`: `New(redis.Cmdable)` wraps an existing client
+(mirroring `queue.New`); `Acquire(ctx, Bucket{Key, Capacity,
+RefillPerSec}, cost)` runs one atomic Lua script and returns `Result{
+Allowed, Remaining, RetryAfter}`. Decisions made here:
+
+- **Clock: Redis `TIME` inside the script**, not a caller-injected now —
+  a deliberate divergence from the queue library's convention. Acquirers
+  are many API replicas and workers with independently skewed clocks,
+  and a bucket is *shared* state: a skewed caller passing its own now
+  could mint or destroy tokens for everyone. One Redis = one clock (safe
+  under Redis 7's effect replication). The injectable-time invariant is
+  honored through a test-only seam: the script takes an optional ARGV
+  time override, reachable only via an unexported method exposed to
+  tests through `export_test.go` — production code cannot pass a time.
+  Negative elapsed time (a clock step backwards across failover) is
+  clamped to zero rather than minting tokens.
+- **State: one hash per bucket key (`tokens`, `ts` in epoch µs), absent
+  key = full bucket.** Every acquire re-arms the key's TTL to
+  time-to-full plus a safety margin (a late expiry only fires once the
+  bucket would have refilled anyway, so expiry can never over-grant);
+  idle buckets self-clean, which is what keeps 6.4's per-key cardinality
+  bounded. Rate-zero buckets (fixed quotas) `PERSIST` instead — expiring
+  their state would silently re-arm the quota. The balance is serialized
+  with `%.17g` so the float64 round-trips exactly (`tostring`'s `%.14g`
+  would corrupt it); the refill-math property test compares the script
+  against a pure-Go model for *exact* equality, on the strength of that
+  round-trip.
+- **Config lives with the caller, not in Redis**: capacity and rate ride
+  along on every acquire, so limit changes take effect on the next
+  request; a capacity shrink clamps stored balances down.
+- **`cost > capacity` is a typed error (`ErrCostExceedsCapacity`), not a
+  denial** — it can never succeed, and M9 must distinguish "wait and
+  requeue" from "perm-fail". A denial on a never-refilling bucket
+  reports the `RetryAfterNever` sentinel for the same reason.
+- **The library does not log**: acquire is a per-request hot-path
+  primitive (~141µs sequential / ~44µs at GOMAXPROCS parallelism against
+  a local dockerized Redis, ≈7× under the 1ms target); deny/429 logging
+  belongs to the callers who know the tenant semantics (6.4/M9).
+
 ## Consequences
 
 Easier:

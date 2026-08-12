@@ -507,13 +507,13 @@ Bearer parsing, prefix lookup + constant-time hash compare, revocation/expiry ch
 - [x] Scope violations → 403 with machine-readable error body
 - [x] Auth outcomes logged with `key_id`, never with the key itself
 
-#### 6.3 — Redis token-bucket limiter (shared library)
+#### 6.3 — Redis token-bucket limiter (shared library) ✅
 **Depends on:** 3.2
-`internal/ratelimit`: atomic Lua token bucket (capacity, refill rate, variable cost per acquire), returning `allowed`, `remaining`, `retry_after`. Deliberately generic: M6.4 uses it per API key; M9 reuses it per LLM resource. Correctness under concurrency is the point.
+`internal/ratelimit`: atomic Lua token bucket (capacity, refill rate, variable cost per acquire), returning `allowed`, `remaining`, `retry_after`. Deliberately generic: M6.4 uses it per API key; M9 reuses it per LLM resource. Correctness under concurrency is the point. *(As built: `Limiter.Acquire(ctx, Bucket{Key, Capacity, RefillPerSec}, cost)` → `Result{Allowed, Remaining, RetryAfter}`; the script reads Redis `TIME` — one clock for all acquirers of a shared bucket, deliberately not caller-injected time, with fake time reaching the script only through a test-only ARGV override behind `export_test.go`; state is one hash per bucket key with absent-key-=-full-bucket and TTL re-armed to time-to-full so idle buckets self-clean (rate-zero quotas PERSIST instead); balance serialized `%.17g` so the float64 round-trips exactly, letting the rapid property test demand exact equality against a pure-Go model; `cost > capacity` is typed `ErrCostExceedsCapacity` and never-refilling denials report `RetryAfterNever`, both for M9's wait-vs-perm-fail distinction; no logging in the library — callers own deny/429 semantics.)*
 **Done when:**
-- [ ] Stress test: N concurrent clients never over-grant beyond capacity (strict accounting)
-- [ ] Refill math property-tested with fake time (Lua uses Redis TIME — injectable in tests via wrapper)
-- [ ] Benchmark documents acquire latency (<1ms local target)
+- [x] Stress test: N concurrent clients never over-grant beyond capacity (strict accounting)
+- [x] Refill math property-tested with fake time (Lua uses Redis TIME — injectable in tests via wrapper)
+- [x] Benchmark documents acquire latency (<1ms local target)
 
 #### 6.4 — Per-client API rate limiting middleware
 **Depends on:** 6.3, 6.2

@@ -2930,3 +2930,98 @@ unit route table and the integration matrix's route list are separate
 literals by construction (external test package can't see the router);
 the walk test catches router↔table drift, and cross-file drift is a
 review concern flagged in both files' comments.
+
+### 6.3 — Redis token-bucket limiter (shared library) ✅
+
+**Delivered.** `internal/ratelimit`, the generic atomic token bucket of
+ADR-007's rate-limiting design: `New(redis.Cmdable)` wraps an existing
+client (the `queue.New` shape), and `Acquire(ctx, Bucket{Key, Capacity,
+RefillPerSec}, cost)` runs one Lua script — refill for elapsed time,
+grant-or-deny, re-arm TTL, all in one atomic step — returning
+`Result{Allowed, Remaining, RetryAfter}`. Deliberately tenant-agnostic:
+key naming and cost semantics are the caller's parameters (6.4 keys per
+API key and route class with cost 1; M9 keys per provider resource with
+token costs). No config changes and no logging in the library — knobs
+and deny/429 logging land with the tenants.
+
+**The clock decision (the one real divergence from house convention).**
+The script reads Redis `TIME` instead of taking a caller-injected now.
+A bucket is *shared* state acquired from many API replicas and workers
+with independently skewed clocks — a skewed caller passing its own now
+could mint or destroy tokens for everyone sharing the bucket, so the
+promoter-style injected-now contract would be actively wrong here. One
+Redis = one clock (legal under Redis 7's effect replication). The
+injectable-time invariant is honored through a test-only seam: ARGV
+carries an optional time override, reachable only via the unexported
+`acquireAt` exposed through `export_test.go` — the production `Acquire`
+hardcodes the empty override, so no production path can skew a bucket.
+Backwards time (a failover clock step, or an injected regression) clamps
+elapsed to zero rather than minting tokens; a test pins it.
+
+**State layout.** One hash per bucket key (`tokens`, `ts` in epoch µs —
+TIME's native precision, exact in a float64 until ~2255), with **absent
+key = full bucket**. That identity composes with the TTL rule: every
+acquire re-arms `PEXPIRE` to time-to-full plus a 1s margin, so an idle
+bucket expires exactly when its state becomes indistinguishable from no
+state — per-key buckets self-clean instead of accumulating forever
+(what keeps 6.4's per-key cardinality bounded). A persisted balance is
+provably always below capacity (cost ≥ 1 on a grant, balance < cost on
+a denial), so the TTL is always positive; a *late* expiry only fires
+after the bucket would have refilled anyway, so expiry can never
+over-grant. Rate-zero buckets (fixed quotas) `PERSIST` instead —
+expiring their state would silently re-arm the quota. Bucket config
+(capacity, rate) lives with the caller and rides along on every
+acquire: limit changes take effect on the next request, and a capacity
+shrink clamps the stored balance down (pinned by a test).
+
+**Two float traps dodged, deliberately.** The balance is serialized
+with `string.format('%.17g', …)` — Lua's `tostring` uses `%.14g`, which
+silently corrupts the float64 round-trip and would make refill math
+drift per acquire. And the script returns the balance as that same
+string (not a Redis integer reply, which truncates), so Go parses the
+exact float back; `Remaining` is its floor.
+
+**Contract edges for M9.** `cost > capacity` is the typed
+`ErrCostExceedsCapacity`, rejected Go-side before Redis — it can never
+succeed, and M9 must perm-fail those instead of scheduling a delayed
+requeue. A denial from a never-refilling bucket reports the
+`RetryAfterNever` sentinel for the same wait-vs-never distinction.
+`RetryAfter` is per-cost (ceil of exactly this cost's shortfall), so a
+cheaper acquire may succeed sooner than a denied expensive one.
+
+**Tests, mapping to the ACs.** (1) `TestStressNoOverGrant`: 32
+goroutines × 100 racing cost-1 acquires against a rate-zero capacity-500
+bucket grant *exactly* 500 and deny exactly 2700, under `-race`;
+`TestStressVariableCost` re-proves it with mixed costs 1–20 (sum of
+grants ≤ capacity, stored balance exactly capacity − granted). (2)
+`TestAcquireRefillMathProp` (rapid): random buckets driven through
+random op sequences — including zero-rate quotas, backwards and zero
+time deltas, costs up to exactly capacity, and long idles hitting the
+cap — against a pure-Go model mirroring the script's float64 operations
+in the same order, comparing `Allowed`, the exact fractional balance,
+`Remaining`, and `RetryAfter` for **exact equality** (Lua numbers are
+IEEE-754 doubles; the %.17g round-trip makes bit-exactness a fair
+demand — a single ULP of drift fails the property). Green at 2000
+iterations. Deterministic `TestRetryAfterExact` pins hand-computed
+refill/retry-after points on the injected clock, and doubles as the
+denials-don't-consume proof. (3) `BenchmarkAcquire`: **~141µs/op
+sequential, ~44µs/op at GOMAXPROCS parallelism** (Apple M2, dockerized
+local Redis, ~19 allocs/op) — ≈7× under the 1ms local target. Unit
+tests cover parameter validation (nil-client limiter proves rejection
+precedes any Redis call) and every malformed script-reply shape.
+Integration tests follow the queuetest isolation discipline (unique
+`agentloom-test:` key prefixes, `AGENTLOOM_TEST_REDIS_ADDR`, deleted on
+cleanup) via a local ~25-line helper — importing the queue harness for
+a string constant and a client opener was the only reuse worth taking.
+
+**Verified.** Lint, `go test -race ./...`, and the full compose-backed
+`-race -tags integration ./...` all green.
+
+**Deferred / notes.** No `Reset`-style introspection (time-to-full for
+6.4's `X-RateLimit-Reset`) — 6.4 can derive it from `Remaining` and its
+own configured rate, or grow the script's reply by one field if headers
+want server-computed truth; decide there. Multi-bucket acquire (global
++ per-key in one round trip) also waits for 6.4 — if the two sequential
+acquires measurably matter, the honest fix is a second Lua script taking
+two keys, not client-side pipelining of a check-then-take. M7 metrics
+hooks (grant/deny counters, acquire latency) stubbed per roadmap.
