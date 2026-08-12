@@ -7,6 +7,7 @@ package gen
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -113,4 +114,27 @@ func (q *Queries) ListOutboxTasksForDrain(ctx context.Context, limit int32) ([]T
 		return nil, err
 	}
 	return items, nil
+}
+
+const outboxStats = `-- name: OutboxStats :one
+SELECT count(*) AS backlog,
+       COALESCE(min(created_at), 'epoch'::timestamptz)::timestamptz AS oldest_created_at
+FROM task_outbox
+`
+
+type OutboxStatsRow struct {
+	Backlog         int64
+	OldestCreatedAt time.Time
+}
+
+// Backlog snapshot (ticket 7.2): pending-row count plus the oldest row's
+// created_at, one aggregate scan feeding the outbox gauges. Diagnostics
+// only — never an input to drain logic.
+// COALESCE keeps the column NOT NULL for sqlc; the repo maps the epoch
+// placeholder back to "no rows" via the zero backlog.
+func (q *Queries) OutboxStats(ctx context.Context) (OutboxStatsRow, error) {
+	row := q.db.QueryRow(ctx, outboxStats)
+	var i OutboxStatsRow
+	err := row.Scan(&i.Backlog, &i.OldestCreatedAt)
+	return i, err
 }

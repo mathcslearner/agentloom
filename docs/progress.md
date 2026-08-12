@@ -3404,3 +3404,119 @@ lands `HTTP POST`/`HTTP GET` spans in Jaeger under `agentloom-api`.
 - Worker replica scrape relies on compose DNS A-record behavior; if it
   ever proves flaky the fallback is two named worker services (noted
   in the plan, not needed so far).
+
+### 7.2 — Core engine metrics ✅
+
+**Delivered.** The full 7.2 instrument set on the 7.1 registries:
+queue ready depth / stream length / PEL size / delayed count, outbox
+backlog + oldest age, per-row dispatch (drain) lag, reconcile-heal
+counters, claim decisions, step duration by type + outcome, the
+ready→running scheduling-latency histogram, retries by class,
+takeovers, fencing rejections, the DLQ counter by source, run
+completion latency by terminal status, the active-workers gauge, and
+the API request histogram/counter plus the 6.4 `RateLimitMetrics`
+seam's Prometheus implementation. Plus the `make smoke-metrics`
+acceptance script and ADR-008's as-built inventory + label-allowlist
+amendments.
+
+**Shape.** Every instrument is declared in one file —
+`internal/obs/metrics/instruments.go` (`NewWorkerMetrics` /
+`NewAPIMetrics`) — so the cardinality audit is a single-file read;
+the producing packages stay free of any prometheus dependency by
+declaring narrow seams the instrument structs satisfy structurally:
+`queue.ConsumerMetrics` (a `ConsumerConfig` field: reclaims, poison
+diversions, promotions + `PromoteResult.MaxLag`, the hook 3.5 left
+for exactly this), `engine.Metrics` (`WithMetrics` on the Engine,
+`WithDispatcherMetrics`, `WithReconcilerMetrics`), and
+`api.RequestMetrics` (a new variadic `api.Option` on `api.New`).
+Defaults everywhere are no-op recorders — every existing test layer,
+harness, and crash-suite subprocess keeps running with recording off,
+byte-for-byte.
+
+**Scheduling latency (the AC proof).** `store.ClaimStepWithOrigin`
+extends the claim with one extra primary-key read *under the run lock
+the transition already takes*, returning the pre-claim status and
+`updated_at` (`ClaimOrigin`); `ClaimStep` stays a thin wrapper with
+its contract untouched. The engine observes claim-time −
+ready-`updated_at` — both injected clocks — and only when the origin
+status was `ready`: a retrying→running claim's interval includes the
+deliberate backoff and is excluded by design (asserted in the test).
+The integration proof scripts a 7s delay between instantiation clock
+and claim clock and asserts the histogram holds exactly one sample of
+exactly 7.0s — no tolerance.
+
+**Run completion latency** is terminal-transition time minus the
+run's `started_at` (the injected instantiation clock), not
+`created_at` — that column is a DB `now()` default, and mixing it
+with the app clock produced garbage under fixed-clock tests (caught
+by the first integration run). The rollup helpers
+(`attemptRunRollup`, `attemptCancelRollup`) now return the terminal
+run row so completion transactions, the poison handler, and the
+cancel-settle path can all observe it; API-side cancel finalizations
+(a cancel request that finds nothing in flight) go unrecorded — a
+documented gap, workers record everything else.
+
+**Gauges** are sampled by a new `cmd/worker` loop every
+`AGENTLOOM_WORKER_METRICS_SAMPLE_INTERVAL` (default 10s, under the
+15s scrape convention), running only when the admin listener is
+configured; each source (queue stats, delayed ZCARD, outbox stats,
+XINFO CONSUMERS) samples independently so one backend outage doesn't
+blank the rest. Ready depth is the group lag from XINFO GROUPS —
+`StreamStats` grew `Lag` plus the `ReadyDepth()` accessor that falls
+back to `XLEN − PEL` when Redis reports the lag unknowable (go-redis
+surfaces that as -1); active workers = consumers with idle ≤ 3× the
+read block, via the new `Queue.ActiveConsumers`. The outbox side is
+the new `OutboxRepo.Stats` (one aggregate query; COALESCE keeps sqlc
+non-nullable, the repo maps the empty-table sentinel back to nil).
+
+**API metrics** record in `requestLog` — it already measured status
+and duration — using `chi.RouteContext(...).RoutePattern()` after
+routing as the bounded `route` label; 404/405 fallbacks collapse to
+`route="unmatched"` and unrecognized client verbs clamp to
+`method="other"` so clients can never mint label values. The
+duration histogram deliberately drops `code` (route×method×code×
+buckets would blow the ~1,000-series budget); 429s live on the
+counter. `cmd/api` wires `APIMetrics` into both the request option
+and `RateLimitOptions.Metrics`, retiring the 6.4 no-op stub.
+
+**Cardinality audit.** ADR-008's allowlist gained `result` (4),
+`bucket` (2), `decision` (2) plus the unmatched/other clamp notes,
+and an as-built inventory table of all 26 metrics. The audit is
+executable: `TestInstrumentConformance` exercises every instrument on
+a fresh registry and fails any metric outside the `engine_` namespace
+or subsystem vocabulary, any counter without `_total`, any histogram
+without `_seconds`, and any label key not in the allowlist. Interface
+conformance is compile-time-asserted in the same test file.
+
+**Verified.** `make lint` / `make test` / full
+`make test-integration` green. New integration tests: the scripted-
+delay scheduling proof (plus duplicate-delivery ack_drop leaving the
+histogram untouched), retry-exhaustion driving retries/DLQ/run-failed
+counters with exact 9s run latency and the retrying-claim exclusion,
+dispatcher drain-lag observation, the reconcile-heal counter off a
+provoked lost dispatch, and the API request + rate-limit counters
+through the real router (429/401/404/201 label matrix). Live
+acceptance: `make smoke-metrics` (fanouts + retry + dead-letter
+against compose) — all 28 checks green, `engine_worker_active` = 2.
+
+**Non-obvious decisions / deferred.**
+- Instruments always exist on both deployables (recording on an
+  unexposed registry is cheap); only the *sampler* is gated on the
+  admin listener being configured.
+- Step-duration outcomes derive from the executor invocation
+  (`executionOutcome`, pure) rather than the durable attempt row —
+  the rare divergence (e.g. success racing a run-cancel) was not
+  worth threading transaction results back out.
+- Dispatch lag compares the app clock against the row's DB-default
+  `created_at`; ordinary clock skew accepted for a gauge-grade
+  number (noted in code and ADR).
+- `engine_reconcile_healed_total` (and other label-vec series) have
+  no series until their first event; the smoke script asserts
+  presence only for plain counters and movement where the workload
+  guarantees it — crash-only paths are the chaos suite's business.
+- Reconciler cancel-heals count toward `takeovers_total` but write
+  no heal reason (they create no outbox row; the reason vocabulary
+  is outbox reasons by construction).
+- The queue seam records poison diversion after the handler consumed
+  the message even if the XACK itself fails (the DLQ row is the
+  durable consumption; the redelivered entry ack-drops).

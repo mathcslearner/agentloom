@@ -422,6 +422,21 @@ type OutboxRepo interface {
 	ListForDrain(ctx context.Context, limit int32) ([]gen.TaskOutbox, error)
 	// Delete removes the given tasks, returning how many existed.
 	Delete(ctx context.Context, ids []int64) (int64, error)
+	// Stats returns the pending-row count and the oldest row's created_at
+	// (nil when the outbox is empty) — the backlog observables behind the
+	// 7.2 outbox gauges. Diagnostics only, never an input to drain logic.
+	Stats(ctx context.Context) (OutboxStats, error)
+}
+
+// OutboxStats is a point-in-time outbox backlog snapshot (ticket 7.2).
+type OutboxStats struct {
+	// Backlog is the number of pending (undispatched) rows.
+	Backlog int64
+	// OldestCreatedAt is the oldest pending row's created_at; nil when the
+	// outbox is empty. Note created_at is the DB clock (schema default),
+	// so ages derived against an app clock carry ordinary clock skew —
+	// acceptable for a gauge.
+	OldestCreatedAt *time.Time
 }
 
 type outboxRepo struct{ q *gen.Queries }
@@ -447,6 +462,20 @@ func (r outboxRepo) ListForDrain(ctx context.Context, limit int32) ([]gen.TaskOu
 func (r outboxRepo) Delete(ctx context.Context, ids []int64) (int64, error) {
 	rows, err := r.q.DeleteOutboxTasks(ctx, ids)
 	return rows, wrapErr("delete outbox tasks", err)
+}
+
+func (r outboxRepo) Stats(ctx context.Context) (OutboxStats, error) {
+	row, err := r.q.OutboxStats(ctx)
+	if err != nil {
+		return OutboxStats{}, wrapErr("outbox stats", err)
+	}
+	stats := OutboxStats{Backlog: row.Backlog}
+	if row.Backlog > 0 {
+		// The COALESCE epoch placeholder only appears when count(*) is 0.
+		oldest := row.OldestCreatedAt
+		stats.OldestCreatedAt = &oldest
+	}
+	return stats, nil
 }
 
 // APIKeyRepo stores api_keys rows (ticket 6.1, ADR-007). Plain CRUD by

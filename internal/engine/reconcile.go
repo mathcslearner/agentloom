@@ -79,6 +79,9 @@ type Reconciler struct {
 	// nudge, when set, wakes the dispatcher after a sweep wrote outbox
 	// rows, so recovery latency is one nudge rather than one drain tick.
 	nudge func()
+	// metrics receives heal observations (ticket 7.2). Never nil after
+	// NewReconciler — the default is the no-op recorder.
+	metrics Metrics
 }
 
 // ReconcilerOption customizes a Reconciler.
@@ -95,6 +98,18 @@ func WithReconcilerClock(now func() time.Time) ReconcilerOption {
 // concurrent calls and must not block.
 func WithReconcilerNudge(nudge func()) ReconcilerOption {
 	return func(r *Reconciler) { r.nudge = nudge }
+}
+
+// WithReconcilerMetrics sets the reconciler's metrics recorder (ticket
+// 7.2) — cmd/worker wires obs/metrics.WorkerMetrics here. Nil restores
+// the no-op default.
+func WithReconcilerMetrics(m Metrics) ReconcilerOption {
+	return func(r *Reconciler) {
+		if m == nil {
+			m = nopMetrics{}
+		}
+		r.metrics = m
+	}
 }
 
 // NewReconciler builds a Reconciler over the store.
@@ -117,7 +132,7 @@ func NewReconciler(s *store.Store, cfg ReconcilerConfig, opts ...ReconcilerOptio
 	if cfg.Limit <= 0 {
 		return nil, errors.New("engine: NewReconciler requires a positive Limit")
 	}
-	r := &Reconciler{store: s, cfg: cfg, now: time.Now}
+	r := &Reconciler{store: s, cfg: cfg, now: time.Now, metrics: nopMetrics{}}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -315,6 +330,23 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 	}
 	if res.Skipped {
 		return res, nil
+	}
+
+	// Heal counters (ticket 7.2), keyed by the outbox reason each heal
+	// writes; takeovers (worker-path and reconciler alike) share the one
+	// takeover counter. Cancel heals write no outbox row — they ride the
+	// takeover counter only.
+	if n := len(res.Requeued); n > 0 {
+		r.metrics.ReconcileHealed(store.OutboxReasonReconcileReady, n)
+	}
+	if n := len(res.TakenOver); n > 0 {
+		r.metrics.ReconcileHealed(store.OutboxReasonReconcileRunning, n)
+	}
+	if n := len(res.RetriesHealed); n > 0 {
+		r.metrics.ReconcileHealed(store.OutboxReasonReconcileRetry, n)
+	}
+	for range len(res.TakenOver) + len(res.CancelHealed) {
+		r.metrics.Takeover()
 	}
 
 	logger := log.From(ctx)

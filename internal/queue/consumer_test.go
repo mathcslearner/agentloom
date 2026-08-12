@@ -30,6 +30,12 @@ func TestConsumerConfigDefaults(t *testing.T) {
 		PromoterTick:         queue.DefaultPromoterTick,
 		TrimInterval:         queue.DefaultTrimInterval,
 	}
+	// The metrics default is the package's no-op recorder (ticket 7.2) —
+	// assert it is filled, then mirror it into want for the DeepEqual.
+	if got.Metrics == nil {
+		t.Error("zero config with defaults left Metrics nil; want the no-op recorder")
+	}
+	want.Metrics = got.Metrics
 	// PoisonHandler makes the struct non-comparable; DeepEqual treats the
 	// nil func fields on both sides as equal.
 	if !reflect.DeepEqual(got, want) {
@@ -50,7 +56,12 @@ func TestConsumerConfigDefaults(t *testing.T) {
 		TrimInterval:         30 * time.Second,
 		DelayedKey:           "custom:delayed",
 	}
-	if got := explicit.WithDefaults(); !reflect.DeepEqual(got, explicit) {
+	got = explicit.WithDefaults()
+	if got.Metrics == nil {
+		t.Error("explicit config with defaults left Metrics nil; want the no-op recorder")
+	}
+	explicit.Metrics = got.Metrics
+	if !reflect.DeepEqual(got, explicit) {
 		t.Errorf("explicit config with defaults = %+v, want unchanged %+v", got, explicit)
 	}
 }

@@ -41,9 +41,10 @@ func (e *Engine) Handle(ctx context.Context, d queue.Delivery) error {
 
 	now := e.now()
 	var step gen.RunStep
+	var origin store.ClaimOrigin
 	err := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
 		var err error
-		step, err = store.ClaimStep(ctx, q, store.ClaimStepArgs{
+		step, origin, err = store.ClaimStepWithOrigin(ctx, q, store.ClaimStepArgs{
 			RunID:  d.Envelope.RunID,
 			StepID: d.Envelope.StepID,
 			Now:    now,
@@ -52,6 +53,7 @@ func (e *Engine) Handle(ctx context.Context, d queue.Delivery) error {
 	})
 	if err != nil {
 		dec := classifyClaimFailure(err, d.DeliveryCount)
+		e.metrics.ClaimDecision(dec.action.String())
 		log.From(ctx).LogAttrs(ctx, dec.level, "claim rejected: "+dec.reason,
 			slog.String("action", dec.action.String()),
 			slog.Any("error", err))
@@ -64,9 +66,20 @@ func (e *Engine) Handle(ctx context.Context, d queue.Delivery) error {
 			return err
 		}
 	}
+	e.metrics.ClaimDecision(claimResultWon)
+	if origin.Known && origin.FromStatus == store.StepStatusReady {
+		// The scheduling-latency histogram (ticket 7.2): time from the step
+		// turning ready to this claim winning. Retrying origins are skipped —
+		// their interval includes the deliberate backoff, not scheduling.
+		e.metrics.SchedulingLatency(now.Sub(origin.ChangedAt))
+	}
 
 	return e.execute(ctx, step)
 }
+
+// claimResultWon is the successful-claim value of the metrics `result`
+// label; the failure values are the claimAction strings.
+const claimResultWon = "won"
 
 // takeoverAndClaim is the lease-expiry takeover (ADR-005): one transaction
 // composing TakeoverStep (running → ready, fenced on the observed holder's
@@ -102,6 +115,11 @@ func (e *Engine) takeoverAndClaim(ctx context.Context, d queue.Delivery, holderC
 	})
 	if err != nil {
 		dec := classifyTakeoverFailure(err)
+		if dec.fenced {
+			// The observed claim was stale — the fence protected a newer live
+			// holder from this takeover (ticket 7.2's fencing counter).
+			e.metrics.FencingRejection()
+		}
 		log.From(ctx).LogAttrs(ctx, dec.level, "takeover rejected: "+dec.reason,
 			slog.String("action", dec.action.String()),
 			slog.String("holder_claim_id", holderClaim.String()),
@@ -112,6 +130,7 @@ func (e *Engine) takeoverAndClaim(ctx context.Context, d queue.Delivery, holderC
 		return err
 	}
 
+	e.metrics.Takeover()
 	log.From(ctx).InfoContext(ctx, "lease-expiry takeover: step reclaimed from silent holder",
 		slog.String("displaced_claim_id", holderClaim.String()),
 		slog.String("claim_id", claimIDString(step)))
@@ -161,6 +180,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 	// turns cancelling. Pure latency — the completion transactions below
 	// re-check the run status under the run lock either way.
 	watchCtx, stopWatch := e.watchRunCancel(ctx, step.RunID)
+	execStart := e.now()
 	out, expired, execErr := runExecutor(watchCtx, executor, exec.StepContext{
 		StepType: dag.StepType(step.StepType),
 		Config:   step.Config,
@@ -172,6 +192,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 		Effects:        e.effects.ForStep(step.RunID, step.StepID, int(step.AttemptCount), claimID, logger),
 		Logger:         logger,
 	}, timeout)
+	execDur := e.now().Sub(execStart)
 	stopWatch()
 	if ctx.Err() != nil {
 		// The handler context itself is canceled — the consumer's drain
@@ -187,7 +208,8 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 			slog.Bool("executor_errored", execErr != nil))
 		return fmt.Errorf("engine: step abandoned at shutdown: %w", context.Cause(ctx))
 	}
-	if errors.Is(context.Cause(watchCtx), errRunCancelled) {
+	cancelled := errors.Is(context.Cause(watchCtx), errRunCancelled)
+	if cancelled {
 		// The routing below stays uniform: a success is honored (the
 		// completion transaction skips fan-out on a cancelling run) and a
 		// failure settles the step as cancelled — both via the run-status
@@ -195,6 +217,10 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep) error {
 		logger.InfoContext(ctx, "executor interrupted by run cancellation",
 			slog.Bool("executor_errored", execErr != nil))
 	}
+	// The step-duration histogram (ticket 7.2), labeled by the executor
+	// invocation's outcome — mirroring the routing below, which the
+	// completion transactions then make durable.
+	e.metrics.StepDuration(step.StepType, executionOutcome(execErr, expired, cancelled), execDur)
 	if expired {
 		if execErr != nil {
 			// The engine assigns the timeout class from context state
@@ -252,6 +278,9 @@ type claimDecision struct {
 	// holderClaim is the observed holder's fencing token, set only for
 	// claimTakeover — the takeover CAS is fenced on it.
 	holderClaim *uuid.UUID
+	// fenced marks a rejection produced by claim_id fencing (a stale
+	// takeover bounced off a newer live claim) — the 7.2 fencing counter.
+	fenced bool
 }
 
 // classifyClaimFailure maps a failed claim onto ADR-005's ACK-discipline
@@ -378,6 +407,7 @@ func classifyTakeoverFailure(err error) claimDecision {
 			return claimDecision{
 				action: claimAckDrop, level: slog.LevelWarn,
 				reason: "step re-claimed by a newer holder since observation — stale takeover dropped",
+				fenced: true,
 			}
 		case te.Reason == store.ConflictWrongStatus &&
 			(te.From == store.StepStatusSucceeded || te.From == store.StepStatusFailed ||
@@ -408,6 +438,26 @@ func classifyTakeoverFailure(err error) claimDecision {
 			action: claimRedeliver, level: slog.LevelError,
 			reason: "takeover transaction failed",
 		}
+	}
+}
+
+// executionOutcome derives the step-duration metric's outcome label from
+// one executor invocation's result, mirroring the routing in execute: the
+// classed failure vocabulary plus succeeded and cancelled (`lost` never
+// appears — a crashed worker records nothing). Pure — unit-tested without
+// a database.
+func executionOutcome(execErr error, expired, cancelled bool) string {
+	switch {
+	case execErr == nil:
+		return store.StepStatusSucceeded
+	case cancelled:
+		// The completion transaction settles a failure on a cancelling run
+		// as cancelled, never judged (ADR-006 row 8).
+		return store.AttemptOutcomeCancelled
+	case expired:
+		return store.AttemptOutcomeTimeout
+	default:
+		return string(classifyFailure(execErr))
 	}
 }
 

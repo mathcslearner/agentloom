@@ -87,6 +87,25 @@ type ClaimStepArgs struct {
 	Now time.Time
 }
 
+// ClaimOrigin describes the row a winning claim CAS consumed: the step's
+// status and updated_at immediately before the transition (ticket 7.2).
+// For a ready step, ChangedAt is the instant it turned ready — so
+// claim-time minus ChangedAt is the ready→running scheduling latency the
+// engine's histogram observes; for a retrying step the interval includes
+// the deliberate backoff and is not a scheduling latency. Read under the
+// run lock, so it is exact with respect to the claim.
+type ClaimOrigin struct {
+	// FromStatus is the pre-claim step status (ready or retrying).
+	FromStatus string
+	// ChangedAt is the pre-claim updated_at: when the step entered
+	// FromStatus.
+	ChangedAt time.Time
+	// Known reports whether the pre-read succeeded; observers must skip
+	// recording when false. Meaningful only when ClaimStepWithOrigin
+	// returns nil error.
+	Known bool
+}
+
 // ClaimStep transitions a step ready → running — or retrying → running
 // once its next_attempt_at has passed (ticket 5.2; the backoff guard means
 // an early duplicate delivery bounces instead of executing before its
@@ -99,53 +118,67 @@ type ClaimStepArgs struct {
 // ConflictRunNotRunning (ADR-006: the claim path refuses terminal runs;
 // 5.6's park/cancel reuses the guard).
 func ClaimStep(ctx context.Context, q Querier, args ClaimStepArgs) (gen.RunStep, error) {
+	step, _, err := ClaimStepWithOrigin(ctx, q, args)
+	return step, err
+}
+
+// ClaimStepWithOrigin is ClaimStep plus the pre-claim row observation the
+// scheduling-latency metric needs (ticket 7.2): one extra primary-key
+// read under the run lock every transition already takes, so the origin
+// is exact and race-free. The read is best-effort — a failure leaves
+// origin.Known false and never changes ClaimStep's error contract.
+func ClaimStepWithOrigin(ctx context.Context, q Querier, args ClaimStepArgs) (gen.RunStep, ClaimOrigin, error) {
 	const op = "claim step"
+	var origin ClaimOrigin
 	gq, err := transitionQueries(ctx, q, op, args.Now)
 	if err != nil {
-		return gen.RunStep{}, err
+		return gen.RunStep{}, origin, err
 	}
 	run, err := lockRun(ctx, gq, op, args.RunID)
 	if err != nil {
-		return gen.RunStep{}, err
+		return gen.RunStep{}, origin, err
 	}
 	if run.Status != RunStatusRunning {
 		step, gerr := gq.GetRunStep(ctx, gen.GetRunStepParams{RunID: args.RunID, StepID: args.StepID})
 		if gerr != nil {
-			return gen.RunStep{}, wrapErr(op, gerr)
+			return gen.RunStep{}, origin, wrapErr(op, gerr)
 		}
-		return gen.RunStep{}, fmt.Errorf("store: %s: %w", op, &TransitionError{
+		return gen.RunStep{}, origin, fmt.Errorf("store: %s: %w", op, &TransitionError{
 			Entity: "step", RunID: args.RunID, StepID: args.StepID,
 			From: run.Status, To: StepStatusRunning,
 			Reason: ConflictRunNotRunning, CurrentClaimID: step.ClaimID,
 		})
+	}
+	if prev, perr := gq.GetRunStep(ctx, gen.GetRunStepParams{RunID: args.RunID, StepID: args.StepID}); perr == nil {
+		origin = ClaimOrigin{FromStatus: prev.Status, ChangedAt: prev.UpdatedAt, Known: true}
 	}
 	claimID := uuid.New()
 	step, err := gq.ClaimRunStep(ctx, gen.ClaimRunStepParams{
 		RunID: args.RunID, StepID: args.StepID, ClaimID: &claimID, Now: args.Now,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return gen.RunStep{}, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
+		return gen.RunStep{}, origin, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
 			want: StepStatusReady, to: StepStatusRunning,
 		})
 	}
 	if err != nil {
-		return gen.RunStep{}, wrapErr(op, err)
+		return gen.RunStep{}, origin, wrapErr(op, err)
 	}
 	_, err = gq.CreateStepAttempt(ctx, gen.CreateStepAttemptParams{
 		RunID: args.RunID, StepID: args.StepID, AttemptNo: step.AttemptCount,
 		ClaimID: claimID, StartedAt: &args.Now,
 	})
 	if err != nil {
-		return gen.RunStep{}, wrapErr(op+": insert attempt", err)
+		return gen.RunStep{}, origin, wrapErr(op+": insert attempt", err)
 	}
 	if err := appendEvent(ctx, gq, op, args.RunID, EventStepClaimed, stepClaimedPayload{
 		StepID: args.StepID, ClaimID: claimID.String(), AttemptNo: step.AttemptCount,
 	}); err != nil {
-		return gen.RunStep{}, err
+		return gen.RunStep{}, origin, err
 	}
 	log.From(ctx).DebugContext(ctx, "step claimed",
 		log.RunID(args.RunID.String()), log.StepID(args.StepID), log.Attempt(int(step.AttemptCount)))
-	return step, nil
+	return step, origin, nil
 }
 
 // TakeoverStepArgs are the inputs to TakeoverStep.

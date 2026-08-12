@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/mathcslearner/agentloom/internal/config"
+	"github.com/mathcslearner/agentloom/internal/obs/metrics"
 	"github.com/mathcslearner/agentloom/internal/queue"
 )
 
@@ -44,18 +47,24 @@ func TestConsumerConfigMapping(t *testing.T) {
 		DrainTimeout:         9 * time.Second,
 	}
 	poison := func(context.Context, queue.PoisonMessage) error { return nil }
-	got := consumerConfig(in, 9*time.Second, poison)
-	// ConsumerConfig carries two non-comparable fields (PoisonHandler,
-	// PhaseHook): the poison handler must pass through (ticket 5.4 wires
-	// the engine's dead-lettering here), the phase hook must stay nil.
+	m := metrics.NewWorkerMetrics(prometheus.NewRegistry())
+	got := consumerConfig(in, 9*time.Second, poison, m)
+	// ConsumerConfig carries non-comparable fields (PoisonHandler,
+	// PhaseHook, Metrics): the poison handler must pass through (ticket
+	// 5.4 wires the engine's dead-lettering here), the phase hook must
+	// stay nil, and the metrics recorder must pass through (ticket 7.2).
 	if got.PoisonHandler == nil {
 		t.Error("PoisonHandler is nil; the mapping must pass the engine's dead-lettering handler through")
 	}
 	if got.PhaseHook != nil {
 		t.Error("PhaseHook is set; it is test instrumentation, never production config")
 	}
+	if got.Metrics != queue.ConsumerMetrics(m) {
+		t.Error("Metrics does not pass the worker's recorder through (ticket 7.2)")
+	}
 	got.PoisonHandler = nil
 	got.PhaseHook = nil
+	got.Metrics = nil
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("consumerConfig(%+v)\n got %+v\nwant %+v", in, got, want)
 	}

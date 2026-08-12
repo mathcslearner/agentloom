@@ -181,6 +181,10 @@ type ConsumerConfig struct {
 	// process had died there. Test instrumentation for the queuetest
 	// chaos harness (ticket 3.6); production configs leave it nil.
 	PhaseHook func(phase Phase, d Delivery) error
+	// Metrics receives duty observations (ticket 7.2): reclaims, poison
+	// diversions, delayed promotions. Nil means the no-op recorder —
+	// cmd/worker wires the Prometheus implementation.
+	Metrics ConsumerMetrics
 }
 
 func (c ConsumerConfig) withDefaults() ConsumerConfig {
@@ -216,6 +220,9 @@ func (c ConsumerConfig) withDefaults() ConsumerConfig {
 	}
 	if c.PromoterTick <= 0 {
 		c.PromoterTick = DefaultPromoterTick
+	}
+	if c.Metrics == nil {
+		c.Metrics = nopConsumerMetrics{}
 	}
 	return c
 }

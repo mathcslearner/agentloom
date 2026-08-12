@@ -81,6 +81,9 @@ type Engine struct {
 	// transaction re-checks under the run lock); only the executor then
 	// runs to its own end before the cancel settles.
 	cancelPollInterval time.Duration
+	// metrics receives execution-pipeline observations (ticket 7.2).
+	// Never nil after New — the default is the no-op recorder.
+	metrics Metrics
 }
 
 // Option customizes an Engine.
@@ -135,6 +138,18 @@ func WithCancelPollInterval(d time.Duration) Option {
 	return func(e *Engine) { e.cancelPollInterval = d }
 }
 
+// WithMetrics sets the engine's metrics recorder (ticket 7.2) —
+// cmd/worker wires obs/metrics.WorkerMetrics here. Nil restores the
+// no-op default.
+func WithMetrics(m Metrics) Option {
+	return func(e *Engine) {
+		if m == nil {
+			m = nopMetrics{}
+		}
+		e.metrics = m
+	}
+}
+
 // New builds an Engine over the given store and executor registry.
 // workerID may be empty (logs then carry an empty worker_id — the queue
 // consumer name is the conventional value).
@@ -145,7 +160,7 @@ func New(s *store.Store, r *exec.Registry, workerID string, opts ...Option) (*En
 	if r == nil {
 		return nil, errors.New("engine: New requires an executor registry")
 	}
-	e := &Engine{store: s, registry: r, workerID: workerID, now: time.Now, jitterRand: rand.Float64}
+	e := &Engine{store: s, registry: r, workerID: workerID, now: time.Now, jitterRand: rand.Float64, metrics: nopMetrics{}}
 	for _, opt := range opts {
 		opt(e)
 	}

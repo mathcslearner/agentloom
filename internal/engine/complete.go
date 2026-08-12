@@ -266,7 +266,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 	now := e.now()
 	var fanned fanOutResult
 	var fenced *store.TransitionError
-	runDone := false
+	var terminalRun *gen.Run
 	cancelling := false
 	txErr := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
 		// The run-status check (ticket 5.6): serialized against CancelRun
@@ -313,7 +313,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 			}
 		}
 		var rerr error
-		runDone, rerr = attemptRunRollup(ctx, q, step.RunID, now)
+		terminalRun, rerr = attemptRunRollup(ctx, q, step.RunID, now)
 		return rerr
 	})
 	if txErr != nil {
@@ -348,7 +348,10 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		slog.Int("steps_readied", len(fanned.readied)),
 		slog.Int("steps_skipped", len(fanned.skipped)),
 		slog.Bool("run_cancelling", cancelling),
-		slog.Bool("run_terminal", runDone))
+		slog.Bool("run_terminal", terminalRun != nil))
+	if terminalRun != nil {
+		e.recordRunCompleted(terminalRun.Status, terminalRun.StartedAt, now)
+	}
 	if len(fanned.readied) > 0 && e.nudge != nil {
 		e.nudge()
 	}
@@ -365,21 +368,24 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 // partial success is still a failed run, with the per-step statuses
 // carrying the nuance (ADR-006); CancelRunRollup (ticket 5.6) on the one
 // that settles the last in-flight step of a cancelling run.
-func attemptRunRollup(ctx context.Context, q store.Querier, runID uuid.UUID, now time.Time) (bool, error) {
-	_, err := store.SucceedRun(ctx, q, store.SucceedRunArgs{RunID: runID, Now: now})
+//
+// Returns the terminal run row when a rollup landed (its Status and
+// CreatedAt feed the 7.2 run-completion metric), nil when no guard held.
+func attemptRunRollup(ctx context.Context, q store.Querier, runID uuid.UUID, now time.Time) (*gen.Run, error) {
+	run, err := store.SucceedRun(ctx, q, store.SucceedRunArgs{RunID: runID, Now: now})
 	if err == nil {
-		return true, nil
+		return &run, nil
 	}
 	var te *store.TransitionError
 	if !errors.As(err, &te) {
-		return false, err
+		return nil, err
 	}
-	_, err = store.FailRunRollup(ctx, q, store.FailRunArgs{RunID: runID, Now: now})
+	run, err = store.FailRunRollup(ctx, q, store.FailRunArgs{RunID: runID, Now: now})
 	if err == nil {
-		return true, nil
+		return &run, nil
 	}
 	if !errors.As(err, &te) {
-		return false, err
+		return nil, err
 	}
 	return attemptCancelRollup(ctx, q, runID, now)
 }
@@ -422,7 +428,9 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 	now := e.now()
 	runFailed := false
 	cancelSettled := false
-	cancelFinalized := false
+	var terminalRun *gen.Run
+	var dlqSource string
+	var run gen.Run
 	var cancelledSteps []string
 	var fireAt time.Time
 	scheduled := false
@@ -447,7 +455,7 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 			}
 			cancelSettled = true
 			var rerr error
-			cancelFinalized, rerr = attemptCancelRollup(ctx, q, step.RunID, now)
+			terminalRun, rerr = attemptCancelRollup(ctx, q, step.RunID, now)
 			return rerr
 		}
 		retry := perr == nil && policy.Retries(class)
@@ -492,13 +500,13 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 		// disposition records — retries_exhausted iff a retryable class ran
 		// out of budget; permanent otherwise (a never-retryable class, a
 		// class outside retry_on, or a corrupt policy).
-		source := store.DeadLetterSourcePermanent
+		dlqSource = store.DeadLetterSourcePermanent
 		if exhausted {
-			source = store.DeadLetterSourceRetriesExhausted
+			dlqSource = store.DeadLetterSourceRetriesExhausted
 		}
 		if _, err := store.DeadLetterStep(ctx, q, store.DeadLetterStepArgs{
 			RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
-			Source: source, Outcome: string(class), Error: payload, Now: now,
+			Source: dlqSource, Outcome: string(class), Error: payload, Now: now,
 		}); err != nil {
 			// The fence firing on the failure path — see completeSuccess.
 			errors.As(err, &fenced)
@@ -510,7 +518,8 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 		// The failure policy is immutable run state; reading it under the
 		// run lock DeadLetterStep took keeps the transaction's one read
 		// consistent with its writes.
-		run, err := q.Runs().Get(ctx, step.RunID)
+		var err error
+		run, err = q.Runs().Get(ctx, step.RunID)
 		if err != nil {
 			return err
 		}
@@ -530,16 +539,24 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 	if cancelSettled {
 		logger.InfoContext(ctx, "step cancelled: run is cancelling — failure not judged",
 			slog.Any("error", execErr),
-			slog.Bool("run_cancelled", cancelFinalized))
+			slog.Bool("run_cancelled", terminalRun != nil))
+		if terminalRun != nil {
+			e.recordRunCompleted(terminalRun.Status, terminalRun.StartedAt, now)
+		}
 		return nil
 	}
 	if scheduled {
+		e.metrics.RetryScheduled(string(class))
 		e.scheduleRetry(ctx, step, fireAt)
 		logger.WarnContext(ctx, "step attempt failed; retry scheduled",
 			slog.Any("error", execErr),
 			slog.String("class", string(class)),
 			slog.Time("next_attempt_at", fireAt))
 		return nil
+	}
+	e.metrics.DeadLetter(dlqSource)
+	if runFailed {
+		e.recordRunCompleted(store.RunStatusFailed, run.StartedAt, now)
 	}
 	logger.WarnContext(ctx, "step dead-lettered",
 		slog.Any("error", execErr),
@@ -585,6 +602,18 @@ func decodeRetryPolicy(raw json.RawMessage) (dag.ResolvedRetryPolicy, error) {
 	return p, nil
 }
 
+// recordRunCompleted records one run-completion latency observation:
+// terminal-transition time minus the run's started_at — both stamps come
+// from the injected clock (runs.created_at is a DB default and would mix
+// clocks). A run without started_at (impossible for instantiated runs,
+// which start running) is skipped rather than recorded as garbage.
+func (e *Engine) recordRunCompleted(status string, startedAt *time.Time, now time.Time) {
+	if startedAt == nil {
+		return
+	}
+	e.metrics.RunCompleted(status, now.Sub(*startedAt))
+}
+
 // errFencedCompletion marks a completion abandoned because its terminal CAS
 // was rejected — this worker's claim is no longer current. Returned (never
 // nil) so the consumer does not ACK: for a reclaimed entry the ACK would
@@ -602,6 +631,7 @@ var errFencedCompletion = errors.New("engine: completion fenced by a lost claim 
 // from a terminal state (the new holder already completed) or from ready
 // (taken over, not yet re-claimed).
 func (e *Engine) abandonFenced(ctx context.Context, step gen.RunStep, te *store.TransitionError, cause error) error {
+	e.metrics.FencingRejection()
 	log.From(ctx).ErrorContext(ctx, "completion fenced: claim no longer current — abandoning without ACK",
 		slog.String("claim_id_caller", claimIDString(step)),
 		slog.String("claim_id_current", claimIDRefString(te.CurrentClaimID)),

@@ -89,6 +89,10 @@ down: ## Stop the dev stack, app services included (data volumes are kept)
 demo-crash: ## SIGKILL a worker mid-run against compose and watch the run recover (docs/demos/crash-recovery.md)
 	bash scripts/demo-crash.sh
 
+.PHONY: smoke-metrics
+smoke-metrics: ## Boot app+obs, drive a workload, and assert every 7.2 metric is visible in Prometheus
+	bash scripts/metrics-smoke.sh
+
 .PHONY: psql
 psql: ## Open a psql shell inside the running postgres container
 	$(COMPOSE) exec postgres sh -c 'exec psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'

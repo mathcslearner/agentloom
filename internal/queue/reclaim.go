@@ -76,6 +76,7 @@ func (c *Consumer) reclaimTick(ctx context.Context) {
 	log.From(ctx).InfoContext(ctx, "reclaimed expired leases",
 		slog.Int("count", len(msgs)),
 		slog.String("cursor", next))
+	c.cfg.Metrics.Reclaimed(len(msgs))
 	for _, msg := range msgs {
 		count, ok := counts[msg.ID]
 		if !ok {
@@ -163,6 +164,9 @@ func (c *Consumer) divertPoison(ctx context.Context, msg redis.XMessage, deliver
 	if c.ack(ctx, msg.ID) {
 		logger.WarnContext(ctx, "poison message diverted and acked")
 	}
+	// Counted once the handler consumed it (the DLQ row is durable even
+	// when the ack itself fails and the entry redelivers).
+	c.cfg.Metrics.PoisonDiverted()
 }
 
 // safePoison invokes the poison callback, converting a panic into an error

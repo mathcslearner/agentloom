@@ -60,6 +60,7 @@ func TestLoadDefaults(t *testing.T) {
 		ReconcileLimit:        config.DefaultWorkerReconcileLimit,
 		CancelPollInterval:    config.DefaultWorkerCancelPollInterval,
 		DrainTimeout:          config.DefaultWorkerDrainTimeout,
+		MetricsSampleInterval: config.DefaultWorkerMetricsSampleInterval,
 		EffectsStrict:         true,
 	}
 	if cfg.Worker != wantWorker {
@@ -219,6 +220,7 @@ func TestLoadWorkerOverrides(t *testing.T) {
 		config.EnvWorkerReconcileLimit:        "50",
 		config.EnvWorkerCancelPollInterval:    "3s",
 		config.EnvWorkerDrainTimeout:          "40s",
+		config.EnvWorkerMetricsSampleInterval: "7s",
 		config.EnvWorkerEffectsStrict:         "false",
 		config.EnvWorkerTestExecutors:         "true",
 	}))
@@ -236,6 +238,7 @@ func TestLoadWorkerOverrides(t *testing.T) {
 		ReconcileLimit:        50,
 		CancelPollInterval:    3 * time.Second,
 		DrainTimeout:          40 * time.Second,
+		MetricsSampleInterval: 7 * time.Second,
 		EffectsStrict:         false,
 		TestExecutors:         true,
 	}

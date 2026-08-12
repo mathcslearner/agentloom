@@ -93,14 +93,65 @@ requires amending this table first, and must be a closed vocabulary.
 | `reason` | outbox reasons: `step_ready`, `retry`, `reconcile_ready`, `reconcile_running`, `reconcile_retry`, `dlq_requeue`, `unpark` | 7 |
 | `class` | error classes (ADR-006) or rate-limit classes (`submit`, `read`, `admin`, `global`) | ≤ 5 |
 | `source` | dead-letter sources: `retries_exhausted`, `permanent`, `poison` | 3 |
-| `route` | chi route *pattern* (`/v1/runs/{id}`), never the raw path | ~17, grows by endpoint ticket |
-| `method` | HTTP methods actually routed | ≤ 5 |
+| `route` | chi route *pattern* (`/v1/runs/{id}`), never the raw path; unrouted requests (404/405) collapse to the single value `unmatched` | ~17, grows by endpoint ticket |
+| `method` | HTTP methods actually routed; unrouted requests clamp unrecognized verbs to `other` (client-supplied methods must never mint values) | ≤ 8 |
 | `code` | HTTP status code | ~10 in practice |
 | `duty` | consumer duties: `consume`, `heartbeat`, `reclaim`, `janitor`, `trim`, `promote` | 6 |
+| `result` | claim decisions (7.2): `won`, `ack_drop`, `redeliver`, `takeover` | 4 |
+| `bucket` | rate-limit bucket kind (7.2): `per_key`, `global` | 2 |
+| `decision` | rate-limit decision (7.2): `allowed`, `denied` | 2 |
 
 Worst-case series count per metric is the product of its label bounds;
 any metric whose product exceeds ~1,000 needs an explicit justification
 in its registering ticket.
+
+### Metric inventory (as built by ticket 7.2)
+
+Every instrument is declared in `internal/obs/metrics/instruments.go`;
+`TestInstrumentConformance` in that package is this table's executable
+form — it gathers the full instrument set and fails on any name outside
+the subsystem vocabulary, any counter without `_total`, any histogram
+without `_seconds`, or any label key missing from the allowlist above.
+
+| Metric | Type | Labels | Recorded by |
+|---|---|---|---|
+| `engine_queue_ready_depth` | gauge | — | worker sampler: XINFO GROUPS lag; when Redis reports lag as unknowable (possible after trims), falls back to XLEN − PEL, which overstates only by acked-untrimmed entries |
+| `engine_queue_stream_length` | gauge | — | worker sampler (XLEN) |
+| `engine_queue_pel_size` | gauge | — | worker sampler (XPENDING) |
+| `engine_queue_delayed_depth` | gauge | — | worker sampler (ZCARD) |
+| `engine_queue_reclaimed_total` | counter | — | reclaim duty, per XAUTOCLAIMed entry |
+| `engine_queue_poison_total` | counter | — | poison diversion, once consumed |
+| `engine_queue_promoted_total` | counter | — | promoter duty |
+| `engine_queue_promote_lag_seconds` | histogram | — | promoter duty (`PromoteResult.MaxLag` per pass) |
+| `engine_outbox_backlog` | gauge | — | worker sampler (row count) |
+| `engine_outbox_oldest_age_seconds` | gauge | — | worker sampler (oldest row age; 0 when empty) |
+| `engine_dispatch_dispatched_total` | counter | `reason` | dispatcher, per XADDed row, post-commit |
+| `engine_dispatch_lag_seconds` | histogram | — | dispatcher: dispatch time − row `created_at` (DB clock vs app clock — gauge-grade skew accepted) |
+| `engine_reconcile_healed_total` | counter | `reason` | reconciler sweeps (`reconcile_ready` / `reconcile_running` / `reconcile_retry`); no series until a heal happens |
+| `engine_step_claims_total` | counter | `result` | claim path, one decision per delivery |
+| `engine_step_scheduling_latency_seconds` | histogram | — | claim path: claim time − the step's ready `updated_at`, both injected clocks, read under the run lock; **ready→running only** — retrying claims are skipped (backoff is not scheduling) |
+| `engine_step_duration_seconds` | histogram | `step_type`, `outcome` | executor invocation; outcome vocabulary = classed failures + `succeeded`/`cancelled` (`lost` never observable in-process) |
+| `engine_step_retries_total` | counter | `class` | retry routing, post-commit |
+| `engine_step_takeovers_total` | counter | — | worker takeover path + reconciler heals |
+| `engine_step_fencing_rejections_total` | counter | — | abandoned fenced completions + stale takeovers |
+| `engine_step_dead_letters_total` | counter | `source` | judged dead-letter completions + poison handler |
+| `engine_run_duration_seconds` | histogram | `status` | run-terminalizing transactions on workers: terminal time − run `started_at` (both injected clocks; `created_at` is a DB default and would mix clocks). API-side cancel finalizations are not recorded — a known, documented gap |
+| `engine_worker_active` | gauge | — | worker sampler: consumers with idle ≤ 3× read block (each worker reports the fleet-wide count; dashboards take `max`) |
+| `engine_api_requests_total` | counter | `route`, `method`, `code` | API request middleware, post-routing |
+| `engine_api_request_duration_seconds` | histogram | `route`, `method` | same; `code` deliberately excluded to keep route×method×code×buckets under the series budget |
+| `engine_api_ratelimit_decisions_total` | counter | `class`, `bucket`, `decision` | the 6.4 `RateLimitMetrics` seam's Prometheus implementation |
+| `engine_api_ratelimit_failopen_total` | counter | `class` | same (errored acquire allowed through) |
+
+Gauges are sampled by a cmd/worker loop every
+`AGENTLOOM_WORKER_METRICS_SAMPLE_INTERVAL` (default 10s, under the 15s
+scrape convention), running only when the admin listener is configured;
+counters and histograms record at their event sites through narrow
+per-package seams (`queue.ConsumerMetrics`, `engine.Metrics`,
+`api.RequestMetrics`) whose defaults are no-ops — every test layer keeps
+running with recording off. `make smoke-metrics` is the acceptance
+script: it drives a mixed workload on compose and asserts every metric
+above is visible in Prometheus (crash-only counters at presence, the
+rest at movement).
 
 ### Log field dictionary
 

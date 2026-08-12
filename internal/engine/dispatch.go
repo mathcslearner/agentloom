@@ -48,6 +48,9 @@ type Dispatcher struct {
 	enq   Enqueuer
 	cfg   DispatcherConfig
 	now   func() time.Time
+	// metrics receives dispatch observations (ticket 7.2). Never nil
+	// after NewDispatcher — the default is the no-op recorder.
+	metrics Metrics
 	// wake coalesces nudges: capacity 1, non-blocking send. A nudge while
 	// a drain is running is not lost — it stays buffered and triggers one
 	// more pass.
@@ -59,9 +62,22 @@ type DispatcherOption func(*Dispatcher)
 
 // WithDispatcherClock overrides the dispatcher's clock (project
 // invariant: time is injectable). The clock only stamps envelope
-// enqueued_at_ms — informational, never an input to logic.
+// enqueued_at_ms and the drain-lag observation — informational, never an
+// input to logic.
 func WithDispatcherClock(now func() time.Time) DispatcherOption {
 	return func(d *Dispatcher) { d.now = now }
+}
+
+// WithDispatcherMetrics sets the dispatcher's metrics recorder (ticket
+// 7.2) — cmd/worker wires obs/metrics.WorkerMetrics here. Nil restores
+// the no-op default.
+func WithDispatcherMetrics(m Metrics) DispatcherOption {
+	return func(d *Dispatcher) {
+		if m == nil {
+			m = nopMetrics{}
+		}
+		d.metrics = m
+	}
 }
 
 // NewDispatcher builds a Dispatcher over the store and producer.
@@ -78,7 +94,7 @@ func NewDispatcher(s *store.Store, enq Enqueuer, cfg DispatcherConfig, opts ...D
 	if cfg.Batch <= 0 {
 		return nil, errors.New("engine: NewDispatcher requires a positive Batch")
 	}
-	d := &Dispatcher{store: s, enq: enq, cfg: cfg, now: time.Now, wake: make(chan struct{}, 1)}
+	d := &Dispatcher{store: s, enq: enq, cfg: cfg, now: time.Now, metrics: nopMetrics{}, wake: make(chan struct{}, 1)}
 	for _, opt := range opts {
 		opt(d)
 	}
@@ -161,9 +177,16 @@ func recoverPass(pass func() error) (err error) {
 // its XADD landed is unknown (the P1 window), so it stays pending and the
 // next pass re-dispatches it — at-least-once, deduplicated at claim.
 func (d *Dispatcher) DrainOnce(ctx context.Context) (int, error) {
+	// One observation per XADDed row, recorded only after the deletes
+	// commit — a rolled-back pass dispatched nothing durably.
+	type dispatchObs struct {
+		reason string
+		lag    time.Duration
+	}
 	var (
 		drained int
 		enqErr  error
+		obs     []dispatchObs
 	)
 	txErr := d.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
 		tasks, err := q.Outbox().ListForDrain(ctx, int32(d.cfg.Batch)) //nolint:gosec // Batch is a small validated positive
@@ -174,17 +197,22 @@ func (d *Dispatcher) DrainOnce(ctx context.Context) (int, error) {
 			return nil
 		}
 		ids := make([]int64, 0, len(tasks))
+		obs = obs[:0] // a retried closure starts its observations over
 		for _, task := range tasks {
+			now := d.now()
 			if _, err := d.enq.Enqueue(ctx, queue.Envelope{
 				RunID:      task.RunID,
 				StepID:     task.StepID,
 				Reason:     task.Reason,
-				EnqueuedAt: d.now(),
+				EnqueuedAt: now,
 			}); err != nil {
 				enqErr = err
 				break
 			}
 			ids = append(ids, task.ID)
+			// Drain lag compares the app clock against the row's DB-default
+			// created_at — ordinary clock skew applies; a gauge-grade number.
+			obs = append(obs, dispatchObs{reason: task.Reason, lag: now.Sub(task.CreatedAt)})
 		}
 		if len(ids) > 0 {
 			if _, err := q.Outbox().Delete(ctx, ids); err != nil {
@@ -198,6 +226,9 @@ func (d *Dispatcher) DrainOnce(ctx context.Context) (int, error) {
 		// Rolled back: any XADDs that happened this pass are now duplicates
 		// of rows still in the outbox — the P1 shape, absorbed at claim.
 		return 0, txErr
+	}
+	for _, o := range obs {
+		d.metrics.Dispatched(o.reason, o.lag)
 	}
 	if drained > 0 {
 		log.From(ctx).DebugContext(ctx, "outbox drained",

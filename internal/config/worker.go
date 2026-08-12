@@ -16,6 +16,7 @@ const (
 	EnvWorkerDrainTimeout          = "AGENTLOOM_WORKER_DRAIN_TIMEOUT"
 	EnvWorkerEffectsStrict         = "AGENTLOOM_EFFECTS_STRICT"
 	EnvWorkerTestExecutors         = "AGENTLOOM_WORKER_TEST_EXECUTORS"
+	EnvWorkerMetricsSampleInterval = "AGENTLOOM_WORKER_METRICS_SAMPLE_INTERVAL"
 )
 
 // DefaultWorkerHealthInterval spaces the worker's periodic health log —
@@ -54,6 +55,12 @@ const (
 	// cancellation". The default lease TTL / 3, i.e. heartbeat cadence: a
 	// cancel reaches a live executor about as fast as a lease beat.
 	DefaultWorkerCancelPollInterval = 10 * time.Second
+	// DefaultWorkerMetricsSampleInterval spaces the depth-gauge sampler
+	// (ticket 7.2): queue/PEL/delayed depths, outbox backlog, active
+	// workers. 10s sits under the conventional 15s Prometheus scrape so
+	// every scrape sees a fresh sample; the sampler only runs when the
+	// admin metrics listener is configured.
+	DefaultWorkerMetricsSampleInterval = 10 * time.Second
 	// DefaultWorkerDrainTimeout is the graceful-shutdown grace period
 	// (ticket 5.7): how long after SIGTERM the consumer keeps finishing
 	// its in-flight and already-delivered entries before abandoning the
@@ -121,6 +128,12 @@ type WorkerConfig struct {
 	// Default true while every deployment is dev; production deployments
 	// set AGENTLOOM_EFFECTS_STRICT=false for the clean dead-letter path.
 	EffectsStrict bool
+	// MetricsSampleInterval is the period between depth-gauge samples
+	// (ticket 7.2): queue ready depth, stream length, PEL size, delayed
+	// count, outbox backlog, active workers. Only used when the admin
+	// metrics listener (AGENTLOOM_OBS_METRICS_ADDR) is configured. Must be
+	// positive.
+	MetricsSampleInterval time.Duration
 	// TestExecutors registers the full exec.Builtins set instead of
 	// exec.CoreBuiltins (ticket 6.2, ADR-007): the difference is the two
 	// test executors with filesystem side effects (counter,
@@ -144,6 +157,7 @@ func defaultWorkerConfig() WorkerConfig {
 		ReconcileLimit:        DefaultWorkerReconcileLimit,
 		CancelPollInterval:    DefaultWorkerCancelPollInterval,
 		DrainTimeout:          DefaultWorkerDrainTimeout,
+		MetricsSampleInterval: DefaultWorkerMetricsSampleInterval,
 		EffectsStrict:         true,
 		TestExecutors:         false,
 	}
@@ -163,6 +177,7 @@ func (c *WorkerConfig) applyEnv(fn LookupFunc) []error {
 	errs = applyPositiveInt(errs, fn, EnvWorkerReconcileLimit, &c.ReconcileLimit)
 	errs = applyPositiveDuration(errs, fn, EnvWorkerCancelPollInterval, &c.CancelPollInterval)
 	errs = applyPositiveDuration(errs, fn, EnvWorkerDrainTimeout, &c.DrainTimeout)
+	errs = applyPositiveDuration(errs, fn, EnvWorkerMetricsSampleInterval, &c.MetricsSampleInterval)
 	errs = applyBool(errs, fn, EnvWorkerEffectsStrict, &c.EffectsStrict)
 	errs = applyBool(errs, fn, EnvWorkerTestExecutors, &c.TestExecutors)
 	return errs

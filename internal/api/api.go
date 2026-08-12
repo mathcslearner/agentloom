@@ -98,6 +98,39 @@ type Handler struct {
 	// rl configures per-client rate limiting (ticket 6.4); a nil
 	// rl.Acquirer disables it. rl.Metrics is never nil after New.
 	rl RateLimitOptions
+	// metrics receives per-request observations (ticket 7.2). Never nil
+	// after New — the default is the no-op recorder.
+	metrics RequestMetrics
+}
+
+// RequestMetrics is the API's per-request observability seam (ticket 7.2,
+// ADR-008): cmd/api wires internal/obs/metrics.APIMetrics here, which
+// satisfies this interface structurally. Implementations must be safe for
+// concurrent use and must not block — they sit on the request hot path.
+type RequestMetrics interface {
+	// Request records one served request. route is the chi route pattern
+	// (or "unmatched"), never the raw path; method is clamped to the
+	// routed vocabulary.
+	Request(route, method string, status int, d time.Duration)
+}
+
+// nopRequestMetrics is the default RequestMetrics.
+type nopRequestMetrics struct{}
+
+func (nopRequestMetrics) Request(string, string, int, time.Duration) {}
+
+// Option customizes a Handler beyond New's required arguments.
+type Option func(*Handler)
+
+// WithRequestMetrics sets the per-request metrics recorder (ticket 7.2).
+// Nil restores the no-op default.
+func WithRequestMetrics(m RequestMetrics) Option {
+	return func(h *Handler) {
+		if m == nil {
+			m = nopRequestMetrics{}
+		}
+		h.metrics = m
+	}
 }
 
 // New builds the Handler. now is the injected clock (project invariant —
@@ -106,8 +139,9 @@ type Handler struct {
 // (ADR-007) — empty disables the root path, and a set-but-malformed key
 // is a configuration error caught here rather than a silent 401 later;
 // rl configures per-client rate limiting (ticket 6.4) — the zero value
-// disables it.
-func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey string, rl RateLimitOptions) (*Handler, error) {
+// disables it; opts carry the optional extras (request metrics, ticket
+// 7.2).
+func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey string, rl RateLimitOptions, opts ...Option) (*Handler, error) {
 	if st == nil {
 		return nil, errors.New("api: nil store")
 	}
@@ -127,7 +161,10 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 	if err != nil {
 		return nil, err
 	}
-	h := &Handler{st: st, ctl: ctl, now: now, logger: logger, keyRand: cryptoRand, rl: rl}
+	h := &Handler{st: st, ctl: ctl, now: now, logger: logger, keyRand: cryptoRand, rl: rl, metrics: nopRequestMetrics{}}
+	for _, opt := range opts {
+		opt(h)
+	}
 	if rootKey != "" {
 		if !keyShapeOK(rootKey) {
 			// Deliberately no detail: the message must never echo the value.
@@ -199,7 +236,10 @@ func (h *Handler) handleHealthz(w http.ResponseWriter, r *http.Request) {
 // requestLog stamps the base logger into the request context (so handlers
 // and the store log with request scope) and emits one structured line per
 // request — carrying key_id whenever the request authenticated (ticket
-// 6.2), reported back up from requireScope via the authStamp slot.
+// 6.2), reported back up from requireScope via the authStamp slot. It is
+// also the request-metrics recording point (ticket 7.2): after routing,
+// chi's RouteContext holds the matched pattern, which is the bounded
+// `route` label ADR-008 requires — never the raw path.
 func (h *Handler) requestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := h.now()
@@ -207,17 +247,47 @@ func (h *Handler) requestLog(next http.Handler) http.Handler {
 		stamp := &authStamp{}
 		ctx := authStampInto(log.Into(r.Context(), h.logger), stamp)
 		next.ServeHTTP(rec, r.WithContext(ctx))
+		duration := h.now().Sub(start)
+		h.metrics.Request(metricRoute(ctx), metricMethod(r.Method), rec.status, duration)
 		attrs := []slog.Attr{
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.Int("status", rec.status),
-			slog.Duration("duration", h.now().Sub(start)),
+			slog.Duration("duration", duration),
 		}
 		if stamp.keyID != "" {
 			attrs = append(attrs, log.KeyID(stamp.keyID))
 		}
 		h.logger.LogAttrs(r.Context(), slog.LevelInfo, "http request", attrs...)
 	})
+}
+
+// metricRoute resolves the bounded route label after routing: the chi
+// route pattern for matched requests, "unmatched" for 404/405 fallbacks.
+// The RouteContext is allocated before the middleware chain runs and
+// mutated during routing, so reading it after next.ServeHTTP sees the
+// final pattern.
+func metricRoute(ctx context.Context) string {
+	if rctx := chi.RouteContext(ctx); rctx != nil {
+		if pattern := rctx.RoutePattern(); pattern != "" {
+			return pattern
+		}
+	}
+	return "unmatched"
+}
+
+// metricMethod clamps the method label to the vocabulary chi routes.
+// Matched requests can only carry routed methods, but 404/405 fallbacks
+// echo whatever verb the client sent — an unbounded label value without
+// this clamp (ADR-008).
+func metricMethod(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodHead, http.MethodOptions:
+		return method
+	default:
+		return "other"
+	}
 }
 
 // authStamp is a mutable per-request slot: requestLog installs it before

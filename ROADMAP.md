@@ -559,13 +559,13 @@ Hand-maintained `api/openapi.yaml` as the contract: all routes, schemas (reusing
 - [x] ADR reviewed; conventions referenced by later tickets' ACs
 - [x] Telemetry cleanly disabled via config (no-op providers) for tests
 
-#### 7.2 — Core engine metrics
+#### 7.2 — Core engine metrics ✅
 **Depends on:** 7.1, 3.2
-Instrument: queue ready depth, PEL size, delayed count, outbox backlog + drain lag, claims/s, step duration histograms (by step type + outcome), retries, reclaims, fencing rejections, DLQ counter, scheduling latency (ready→running) histogram, run completion latency, active workers (heartbeat gauge), API request histograms + 429 counters (hooks from 6.4).
+Instrument: queue ready depth, PEL size, delayed count, outbox backlog + drain lag, claims/s, step duration histograms (by step type + outcome), retries, reclaims, fencing rejections, DLQ counter, scheduling latency (ready→running) histogram, run completion latency, active workers (heartbeat gauge), API request histograms + 429 counters (hooks from 6.4). *(As built: every instrument declared in `internal/obs/metrics/instruments.go` — `WorkerMetrics`/`APIMetrics` structs on the 7.1 instance registries, satisfying narrow per-package seams structurally (`queue.ConsumerMetrics` on `ConsumerConfig`, `engine.Metrics` via `WithMetrics`/`WithDispatcherMetrics`/`WithReconcilerMetrics`, `api.RequestMetrics` via the new variadic `api.Option`, plus the 6.4 `RateLimitMetrics` seam finally wired) with no-op defaults so every test layer keeps recording off; scheduling latency ready→running measured exactly via `store.ClaimStepWithOrigin` — one extra PK read under the run lock returns the pre-claim status + `updated_at`, retrying-origin claims deliberately skipped (backoff ≠ scheduling); run completion latency = terminal − `started_at` (both injected clocks — `created_at` is a DB default and would mix clocks); depth gauges (ready depth via XINFO GROUPS lag with an XLEN−PEL fallback when Redis nulls it, stream length, PEL, delayed, outbox backlog + oldest age, active workers = consumers idle ≤ 3× read block) sampled by a cmd/worker loop every `AGENTLOOM_WORKER_METRICS_SAMPLE_INTERVAL` (default 10s) only when the admin listener is on; drain lag observed per XADDed row post-commit; API requests recorded in `requestLog` off the chi route pattern with 404/405 collapsed to `route="unmatched"` and client verbs clamped; ADR-008 gained label keys `result`/`bucket`/`decision` + the full metric inventory table, enforced by `TestInstrumentConformance` (names, suffixes, label allowlist); scheduling latency proven by an integration test with a scripted 7s delay on fully injected clocks (exact-equality assert); `make smoke-metrics` boots app+obs, drives fanouts + a retry + a retries-exhausted dead-letter, and asserts all listed metrics in Prometheus — verified green live.)*
 **Done when:**
-- [ ] All listed metrics exposed and visible in Prometheus under load (smoke script)
-- [ ] Cardinality audit: label sets bounded and enumerated in ADR-008
-- [ ] Scheduling-latency histogram proven accurate against a scripted delay
+- [x] All listed metrics exposed and visible in Prometheus under load (smoke script)
+- [x] Cardinality audit: label sets bounded and enumerated in ADR-008
+- [x] Scheduling-latency histogram proven accurate against a scripted delay
 
 #### 7.3 — Distributed tracing across the queue
 **Depends on:** 7.1

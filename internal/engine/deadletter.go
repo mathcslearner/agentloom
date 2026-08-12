@@ -215,6 +215,7 @@ func (e *Engine) HandlePoison(ctx context.Context, p queue.PoisonMessage) error 
 
 	now := e.now()
 	var cancelled []string
+	var cancelFinalized *gen.Run
 	runFailed := false
 	txErr := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
 		if _, err := store.PoisonDeadLetterStep(ctx, q, store.PoisonDeadLetterStepArgs{
@@ -233,7 +234,9 @@ func (e *Engine) HandlePoison(ctx context.Context, p queue.PoisonMessage) error 
 			// while the run quiesced): both dispositions conflict-drop on
 			// the run status, and the DLQ row may have settled the last
 			// in-flight step — attempt the cancel finalization (ticket 5.6).
-			if _, cerr := attemptCancelRollup(ctx, q, p.Envelope.RunID, now); cerr != nil {
+			var cerr error
+			cancelFinalized, cerr = attemptCancelRollup(ctx, q, p.Envelope.RunID, now)
+			if cerr != nil {
 				return cerr
 			}
 		}
@@ -257,6 +260,13 @@ func (e *Engine) HandlePoison(ctx context.Context, p queue.PoisonMessage) error 
 		logger.ErrorContext(ctx, "poison dead-letter transaction failed; entry stays pending",
 			slog.Any("error", txErr))
 		return txErr
+	}
+	e.metrics.DeadLetter(store.DeadLetterSourcePoison)
+	switch {
+	case runFailed:
+		e.recordRunCompleted(store.RunStatusFailed, run.StartedAt, now)
+	case cancelFinalized != nil:
+		e.recordRunCompleted(cancelFinalized.Status, cancelFinalized.StartedAt, now)
 	}
 	logger.ErrorContext(ctx, "poison message dead-lettered",
 		slog.String("entry_id", p.ID),

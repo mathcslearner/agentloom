@@ -84,6 +84,10 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 		}
 	}()
 	registry := metrics.NewRegistry(metrics.ServiceAPI)
+	// The request + rate-limit instruments (ticket 7.2) always exist —
+	// recording on an unexposed registry is cheap; the admin listener
+	// below is what makes them scrapeable.
+	apiMetrics := metrics.NewAPIMetrics(registry)
 	if cfg.Obs.MetricsAddr != "" {
 		admin, err := metrics.Listen(cfg.Obs.MetricsAddr, registry)
 		if err != nil {
@@ -128,10 +132,14 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 			Read:      api.ClassLimit(cfg.API.RateLimit.Read),
 			Admin:     api.ClassLimit(cfg.API.RateLimit.Admin),
 			Global:    api.ClassLimit(cfg.API.RateLimit.Global),
+			// The 6.4 metrics seam gets its Prometheus implementation
+			// (ticket 7.2).
+			Metrics: apiMetrics,
 		}
 	}
 
-	apiHandler, err := api.New(st, time.Now, logger, cfg.API.RootKey, rl)
+	apiHandler, err := api.New(st, time.Now, logger, cfg.API.RootKey, rl,
+		api.WithRequestMetrics(apiMetrics))
 	if err != nil {
 		return err
 	}

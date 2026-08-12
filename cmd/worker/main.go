@@ -95,6 +95,10 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		}
 	}()
 	promRegistry := metrics.NewRegistry(metrics.ServiceWorker)
+	// The engine instruments (ticket 7.2) always exist — recording on an
+	// unexposed registry is cheap — while the depth-gauge sampler below
+	// only runs when the admin listener is configured.
+	engineMetrics := metrics.NewWorkerMetrics(promRegistry)
 	var admin *metrics.Server
 	if cfg.Obs.MetricsAddr != "" {
 		admin, err = metrics.Listen(cfg.Obs.MetricsAddr, promRegistry)
@@ -106,7 +110,7 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	dispatcher, err := engine.NewDispatcher(st, q, engine.DispatcherConfig{
 		Interval: cfg.Worker.DispatchInterval,
 		Batch:    cfg.Worker.DispatchBatch,
-	})
+	}, engine.WithDispatcherMetrics(engineMetrics))
 	if err != nil {
 		return err
 	}
@@ -116,7 +120,7 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		RunningStale: cfg.Worker.ReconcileRunningStale,
 		RetryStale:   cfg.Worker.ReconcileRetryStale,
 		Limit:        cfg.Worker.ReconcileLimit,
-	}, engine.WithReconcilerNudge(dispatcher.Nudge))
+	}, engine.WithReconcilerNudge(dispatcher.Nudge), engine.WithReconcilerMetrics(engineMetrics))
 	if err != nil {
 		return err
 	}
@@ -135,11 +139,12 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		engine.WithDispatchNudge(dispatcher.Nudge),
 		engine.WithRetryScheduler(q.NewDelayed(cfg.Queue.DelayedKey)),
 		engine.WithStrictEffects(cfg.Worker.EffectsStrict),
-		engine.WithCancelPollInterval(cfg.Worker.CancelPollInterval))
+		engine.WithCancelPollInterval(cfg.Worker.CancelPollInterval),
+		engine.WithMetrics(engineMetrics))
 	if err != nil {
 		return err
 	}
-	consumer := q.NewConsumer(workerID, eng.Handle, consumerConfig(cfg.Queue, cfg.Worker.DrainTimeout, eng.HandlePoison))
+	consumer := q.NewConsumer(workerID, eng.Handle, consumerConfig(cfg.Queue, cfg.Worker.DrainTimeout, eng.HandlePoison, engineMetrics))
 
 	logger = logger.With(log.WorkerID(workerID))
 	ctx = log.Into(ctx, logger)
@@ -177,10 +182,17 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	if admin != nil {
 		// The admin server rides loopCtx like the dispatch duties: /metrics
 		// stays scrapeable through the consumer's drain and stops when run
-		// returns.
-		wg.Add(1)
+		// returns. The depth-gauge sampler (ticket 7.2) rides along — it
+		// only makes sense while something can scrape the gauges.
+		wg.Add(2)
 		go func() { defer wg.Done(); admin.Serve(loopCtx, logger) }()
-		logger.InfoContext(ctx, "worker admin listener started", slog.String("addr", admin.Addr()))
+		go func() {
+			defer wg.Done()
+			sampleLoop(loopCtx, q, q.NewDelayed(cfg.Queue.DelayedKey), st, engineMetrics, cfg.Worker.MetricsSampleInterval, activeIdleMax(cfg.Queue))
+		}()
+		logger.InfoContext(ctx, "worker admin listener started",
+			slog.String("addr", admin.Addr()),
+			slog.Duration("metrics_sample_interval", cfg.Worker.MetricsSampleInterval))
 	}
 	go func() { // narrate the shutdown sequence for the ops log
 		defer wg.Done()
@@ -210,7 +222,7 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 // consumption of the message. The drain timeout comes from WorkerConfig —
 // a deployable-lifecycle knob, not queue tuning (ticket 5.7) — and is
 // always positive here: the production worker always drains.
-func consumerConfig(cfg config.QueueConfig, drainTimeout time.Duration, poison queue.PoisonHandler) queue.ConsumerConfig {
+func consumerConfig(cfg config.QueueConfig, drainTimeout time.Duration, poison queue.PoisonHandler, m queue.ConsumerMetrics) queue.ConsumerConfig {
 	return queue.ConsumerConfig{
 		DelayedKey:           cfg.DelayedKey,
 		Batch:                cfg.ConsumerBatch,
@@ -225,6 +237,69 @@ func consumerConfig(cfg config.QueueConfig, drainTimeout time.Duration, poison q
 		TrimInterval:         cfg.TrimInterval,
 		PromoterTick:         cfg.PromoterTick,
 		DrainTimeout:         drainTimeout,
+		Metrics:              m,
+	}
+}
+
+// activeIdleMax derives the active-worker idle threshold from the
+// consumer's read cadence: a live consumer re-issues its blocking
+// XREADGROUP every Block, so three missed cycles separates live members
+// from dead ones the janitor has not yet collected.
+func activeIdleMax(cfg config.QueueConfig) time.Duration {
+	block := cfg.ConsumerBlock
+	if block <= 0 {
+		block = queue.DefaultConsumerBlock
+	}
+	return 3 * block
+}
+
+// sampleLoop periodically samples the depth gauges (ticket 7.2): queue
+// ready depth / stream length / PEL size from Stats, the delayed-set
+// cardinality, the outbox backlog + oldest-row age from Postgres, and the
+// active-consumer count. Each source samples independently — one backend
+// being down must not blank the others' gauges — and failures are logged
+// and retried next tick, like healthLoop. Runs only when the admin
+// metrics listener is configured.
+func sampleLoop(ctx context.Context, q *queue.Queue, delayed *queue.Delayed, st *store.Store, m *metrics.WorkerMetrics, interval, activeIdleMax time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		logger := log.From(ctx)
+		if stats, err := q.Stats(ctx); err != nil {
+			logSampleErr(ctx, logger, "queue stats", err)
+		} else if delayedLen, derr := delayed.Len(ctx); derr != nil {
+			logSampleErr(ctx, logger, "delayed length", derr)
+		} else {
+			m.SetQueueDepths(stats.ReadyDepth(), stats.Length, stats.Pending, delayedLen)
+		}
+		if active, err := q.ActiveConsumers(ctx, activeIdleMax); err != nil {
+			logSampleErr(ctx, logger, "active consumers", err)
+		} else {
+			m.SetActiveWorkers(active)
+		}
+		if ob, err := st.Outbox().Stats(ctx); err != nil {
+			logSampleErr(ctx, logger, "outbox stats", err)
+		} else {
+			var oldest time.Duration
+			if ob.OldestCreatedAt != nil {
+				oldest = max(time.Since(*ob.OldestCreatedAt), 0)
+			}
+			m.SetOutbox(ob.Backlog, oldest)
+		}
+	}
+}
+
+// logSampleErr logs one failed gauge sample unless the loop is shutting
+// down (a canceled context makes every backend call fail noisily).
+func logSampleErr(ctx context.Context, logger *slog.Logger, what string, err error) {
+	if ctx.Err() == nil {
+		logger.WarnContext(ctx, "metrics sample failed; gauges keep their last value",
+			slog.String("sample", what), slog.Any("error", err))
 	}
 }
 

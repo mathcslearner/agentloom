@@ -120,26 +120,28 @@ func cancelRunTx(ctx context.Context, q store.Querier, runID uuid.UUID, reason s
 
 	// Finalize when nothing was in flight; otherwise the last in-flight
 	// completion (or the reconciler heal) attempts the same rollup.
-	res.Finalized, err = attemptCancelRollup(ctx, q, runID, now)
+	finalized, err := attemptCancelRollup(ctx, q, runID, now)
 	if err != nil {
 		return CancelResult{}, err
 	}
+	res.Finalized = finalized != nil
 	return res, nil
 }
 
 // attemptCancelRollup tries the cancelling → cancelled finalization and
 // drops the conflict when the guard does not (yet) hold — the exact shape
-// of attemptRunRollup's members.
-func attemptCancelRollup(ctx context.Context, q store.Querier, runID uuid.UUID, now time.Time) (bool, error) {
-	_, err := store.CancelRunRollup(ctx, q, store.FailRunArgs{RunID: runID, Now: now})
+// of attemptRunRollup's members. Returns the terminal run row when the
+// finalization landed (ticket 7.2's run-completion metric), nil otherwise.
+func attemptCancelRollup(ctx context.Context, q store.Querier, runID uuid.UUID, now time.Time) (*gen.Run, error) {
+	run, err := store.CancelRunRollup(ctx, q, store.FailRunArgs{RunID: runID, Now: now})
 	if err == nil {
-		return true, nil
+		return &run, nil
 	}
 	var te *store.TransitionError
 	if errors.As(err, &te) {
-		return false, nil
+		return nil, nil
 	}
-	return false, err
+	return nil, err
 }
 
 // healCancellingStep settles one stale running step of a cancelling run

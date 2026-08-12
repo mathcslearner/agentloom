@@ -260,5 +260,6 @@ func (c *Consumer) promoteTick(ctx context.Context) {
 		log.From(ctx).InfoContext(ctx, "promoted delayed entries",
 			slog.Int("count", res.Promoted),
 			slog.Duration("max_lag", res.MaxLag))
+		c.cfg.Metrics.Promoted(res.Promoted, res.MaxLag)
 	}
 }
