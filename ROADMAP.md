@@ -575,13 +575,13 @@ Inject W3C trace context into task envelopes at enqueue (root span at submission
 - [x] `trace_id` present in structured logs for correlation
 - [x] Envelope schema change is versioned and backward-tolerant
 
-#### 7.4 — Per-step log capture & API
+#### 7.4 — Per-step log capture & API ✅
 **Depends on:** 7.1, 6.5
-`StepContext` logger tees to a `step_logs` store (per-attempt, level-filtered, size-capped ring — oldest dropped with a truncation marker). `GET /v1/runs/{id}/steps/{sid}/logs?attempt=` with pagination. This feeds the dashboard's per-step log view (M18).
+`StepContext` logger tees to a `step_logs` store (per-attempt, level-filtered, size-capped ring — oldest dropped with a truncation marker). `GET /v1/runs/{id}/steps/{sid}/logs?attempt=` with pagination. This feeds the dashboard's per-step log view (M18). *(As built: migration 0011's `step_logs` table keyed `(run_id, step_id, attempt, seq)` — one ring per attempt with exactly one writer, because retries/reclaims/takeovers all mint a new attempt at claim, so `seq` is an in-process atomic counter and a zombie's late flush lands harmlessly under its old attempt. Capture is `internal/exec/steplog`: `Sink.LoggerFor` fans the engine's per-attempt logger out to the terminal handler and a capture handler (level-filtered before seq allocation — default info via `AGENTLOOM_WORKER_STEPLOG_LEVEL` — attrs marshaled to `fields` JSONB with slog group semantics, errors stringified, message/fields each truncated at `MAX_LINE_BYTES`), enqueueing non-blocking O(1) into a bounded drop-oldest ring buffer; an async flusher batches per-attempt COPY + ring-cap `Trim` transactions (cap default 1000 via `_CAP`), dropping failed batches — forward progress over completeness. The truncation marker is derived, never stored: every captured line consumes a seq, so dropped = max(seq) − stored, one aggregate read. Engine seam `WithStepLogs` (nil default keeps every test layer capture-free); the executor's logger — and only it — is teed, stamped with the attempt span's trace_id; cmd/worker runs the flusher on loopCtx with a final bounded flush after the consumer drains. API: `GET /v1/runs/{id}/steps/{sid}/logs` (read scope/class) with ascending-seq keyset cursor (default 200, max 1000), `attempt` defaulting to the step's latest (unattempted = empty page, not 404), min-`level` filter, `truncated`/`dropped_lines`; spec + route tables extended, lint 100/100. New counters `engine_steplog_{captured,dropped,flush_failures}_total` under new subsystem `steplog` (ADR-008 amended). Headline tests: 10k-line flood against a small buffer completes promptly with stored ≤ cap and the derived marker; per-attempt rings across a retry; trace_id/fields/level-filter end-to-end on a span recorder; API pagination/filter/404 matrix. Verified live on compose.)*
 **Done when:**
-- [ ] Cap enforced (write 10k lines → stored ≤ cap with truncation marker)
-- [ ] Logs carry `trace_id` and attempt; endpoint paginates correctly
-- [ ] Executor log flooding cannot stall execution (async buffered writer, drop-oldest)
+- [x] Cap enforced (write 10k lines → stored ≤ cap with truncation marker)
+- [x] Logs carry `trace_id` and attempt; endpoint paginates correctly
+- [x] Executor log flooding cannot stall execution (async buffered writer, drop-oldest)
 
 #### 7.5 — Grafana dashboards & alert rules
 **Depends on:** 7.2, 7.3

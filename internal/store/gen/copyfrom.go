@@ -94,3 +94,51 @@ func (r iteratorForCreateRunSteps) Err() error {
 func (q *Queries) CreateRunSteps(ctx context.Context, arg []CreateRunStepsParams) (int64, error) {
 	return q.db.CopyFrom(ctx, []string{"run_steps"}, []string{"run_id", "step_id", "step_type", "config", "retry_policy", "timeout", "status", "remaining_deps", "fired_deps", "graph_version", "updated_at"}, &iteratorForCreateRunSteps{rows: arg})
 }
+
+// iteratorForCreateStepLogs implements pgx.CopyFromSource.
+type iteratorForCreateStepLogs struct {
+	rows                 []CreateStepLogsParams
+	skippedFirstNextCall bool
+}
+
+func (r *iteratorForCreateStepLogs) Next() bool {
+	if len(r.rows) == 0 {
+		return false
+	}
+	if !r.skippedFirstNextCall {
+		r.skippedFirstNextCall = true
+		return true
+	}
+	r.rows = r.rows[1:]
+	return len(r.rows) > 0
+}
+
+func (r iteratorForCreateStepLogs) Values() ([]interface{}, error) {
+	return []interface{}{
+		r.rows[0].RunID,
+		r.rows[0].StepID,
+		r.rows[0].Attempt,
+		r.rows[0].Seq,
+		r.rows[0].Level,
+		r.rows[0].Message,
+		r.rows[0].Fields,
+		r.rows[0].TraceID,
+		r.rows[0].LoggedAt,
+	}, nil
+}
+
+func (r iteratorForCreateStepLogs) Err() error {
+	return nil
+}
+
+// Per-step log capture (ticket 7.4, ADR-008). Rows are written only by
+// the async buffered writer (internal/exec/steplog); the ring cap and the
+// derived truncation marker are its and the logs API's business — the
+// queries here are deliberately dumb.
+// CreateStepLogs is the writer's batch insert. COPY, like the graph batch
+// inserts: a flush's lines are all-or-nothing with its trim in one
+// transaction, and per-attempt seq uniqueness is guaranteed by the
+// single-writer-per-attempt protocol, so no conflict handling is needed.
+func (q *Queries) CreateStepLogs(ctx context.Context, arg []CreateStepLogsParams) (int64, error) {
+	return q.db.CopyFrom(ctx, []string{"step_logs"}, []string{"run_id", "step_id", "attempt", "seq", "level", "message", "fields", "trace_id", "logged_at"}, &iteratorForCreateStepLogs{rows: arg})
+}

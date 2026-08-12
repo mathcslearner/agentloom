@@ -176,6 +176,38 @@ type DeadLetterView struct {
 	CreatedAt       time.Time       `json:"created_at"`
 }
 
+// StepLogLineView is one captured executor log line (ticket 7.4).
+type StepLogLineView struct {
+	// Seq is the line's position in the attempt's log stream, 1-based and
+	// monotonic; gaps mark lines lost to the capture buffer or ring cap.
+	Seq     int64  `json:"seq"`
+	Level   string `json:"level"`
+	Message string `json:"message"`
+	// Fields carries the executor call-site attributes as one JSON object;
+	// absent when the line had none.
+	Fields json.RawMessage `json:"fields,omitempty"`
+	// TraceID joins the line to its attempt's trace (hex); absent when
+	// tracing was off at capture.
+	TraceID  string    `json:"trace_id,omitempty"`
+	LoggedAt time.Time `json:"logged_at"`
+}
+
+// StepLogsResponse answers GET /v1/runs/{id}/steps/{sid}/logs (ticket
+// 7.4): one ascending-seq keyset page of one attempt's captured lines.
+// Truncated reports that the attempt lost lines — DroppedLines many —
+// to the size-capped ring or the capture buffer; the retained window is
+// the newest lines. NextCursor, when set, fetches the next page via
+// ?cursor=; absent means this was the last page.
+type StepLogsResponse struct {
+	RunID        string            `json:"run_id"`
+	StepID       string            `json:"step_id"`
+	Attempt      int               `json:"attempt"`
+	Lines        []StepLogLineView `json:"lines"`
+	Truncated    bool              `json:"truncated"`
+	DroppedLines int64             `json:"dropped_lines,omitempty"`
+	NextCursor   string            `json:"next_cursor,omitempty"`
+}
+
 // ListRunsResponse answers GET /v1/runs (ticket 6.5): one keyset page,
 // newest-first. NextCursor, when set, fetches the next page verbatim via
 // ?cursor=; absent means this was the last page.

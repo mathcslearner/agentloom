@@ -3629,3 +3629,85 @@ Jaeger trace URL in the output.
 - `slog` capture in the headline test swaps the process-global default
   logger (the spawned consumer's context carries none), so that one
   test is deliberately not `t.Parallel()`.
+
+### 7.4 — Per-step log capture & API ✅
+
+**Delivered.** Durable per-step log capture end to end: migration 0011's
+`step_logs` table (one size-capped ring per attempt), the
+`internal/exec/steplog` capture package (slog tee + bounded drop-oldest
+queue + async flusher), the `engine.WithStepLogs` seam stamping the tee
+onto `StepContext.Logger` per attempt, `AGENTLOOM_WORKER_STEPLOG_*`
+config (on by default, capture level info, cap 1000 lines/attempt),
+cmd/worker lifecycle wiring, three new `engine_steplog_*` counters
+under the new ADR-008 subsystem `steplog`, and
+`GET /v1/runs/{id}/steps/{sid}/logs?attempt=&level=&cursor=&limit=`
+(read scope/class, spec'd in `api/openapi.yaml` at lint 100/100).
+Verified live on compose: a `fail_n_times` run's attempt-1 failure line
+served with fields via curl.
+
+**Non-obvious decisions.**
+
+- **Per-attempt rings need no seq coordination.** Retries, reclaims,
+  and takeovers all mint a new attempt number at claim (ADR-004), so an
+  attempt's log stream has exactly one writer and `seq` is an atomic
+  counter on the attempt's capture handler — shared by `With`/
+  `WithGroup` derivatives, allocated only for records that pass the
+  capture level. A displaced zombie's late flush lands under its old
+  attempt number: harmless, preserved diagnostics.
+- **The truncation marker is derived, never stored.** Both loss
+  mechanisms (queue overflow pre-storage, ring-cap eviction
+  post-storage) drop oldest, and every captured line consumes a seq
+  either way — so `dropped_lines = max(seq) − count(*)` from one
+  aggregate read, and seq gaps mark losses line-by-line. No marker row
+  to keep transactionally consistent with the data it describes.
+- **"Flooding cannot stall execution" is structural, not tuned.** The
+  capture path is one mutex-guarded ring-buffer append — no DB call, no
+  channel send that can block; a slow/wedged Postgres fills the queue
+  and drops oldest while the executor runs on. Failed flushes drop
+  their batch (log + counter) instead of retrying: a poisoned group (FK
+  gone after run deletion, seq conflict from a protocol bug) must not
+  wedge the flusher. The 10k-line flood test pins completion time,
+  stored ≤ cap, and the marker.
+- **Only the executor's logger is teed.** The engine's own pipeline
+  lines (claim decisions, takeovers, completion logging) are worker
+  diagnostics, not step logs; `execute()` builds `execLogger` for the
+  `StepContext` alone and keeps the plain logger for itself. The base
+  handler keeps its own level policy — a debug line can reach stdout
+  while the durable side captures info+ (or vice versa).
+- **Fields JSONB carries call-site attrs only.** The canonical
+  correlation fields (run_id/step_id/attempt/trace_id) are columns; the
+  capture handler starts attr-empty (the fanout hands the accumulated
+  context attrs to the terminal side only), so nothing is stored twice.
+  Errors stringify (`errors.New(...)` marshals uselessly as `{}`);
+  unmarshalable values fall back to `fmt.Sprint`; message and fields
+  each truncate at `MAX_LINE_BYTES` with explicit markers.
+- **`attempt` beyond the step's history answers an empty page, not a
+  404** — "no such attempt" and "attempt that logged nothing" are
+  indistinguishable by design (empty rings write no rows), so the
+  endpoint doesn't pretend otherwise. Never-attempted steps report
+  `attempt: 0` with no lines. Missing run vs missing step keeps the
+  requeue endpoint's two-code 404 shape.
+- **Level vocabulary is closed at the schema** (`debug|info|warn|error`
+  CHECK): capture canonicalizes arbitrary slog levels into the four
+  bands, the API's `level=` is a minimum-severity filter implemented as
+  a `level = ANY(suffix)` array (index-friendlier than rank CASE).
+- **Logs are poll-based in v1** (ROADMAP's recorded non-goal): follow
+  mode = polling the keyset cursor. The response shape (ascending seq,
+  opaque cursor) is chosen so M18's log view can tail by cursor.
+
+**Deferred / quirks.**
+
+- The ring-cap `Trim` deletes by `seq <= max − cap`, so seq gaps from
+  buffer drops can leave slightly *fewer* than cap rows — the cap is an
+  upper bound, documented in the query.
+- Flush timing uses a real ticker (like the dispatcher's drain loop);
+  `logged_at` is the slog record's call-site wall clock. Both are
+  diagnostics, deliberately outside the injectable-clock invariant —
+  tests flush manually and don't assert on timestamps.
+- `make smoke-metrics` was not extended to the `engine_steplog_*`
+  counters (they're unit-conformance-covered and exercised by the
+  engine integration tests); fold them in when 7.5 touches the smoke
+  script anyway.
+- The compose `up-app` stack runs with OTel off, so live-served lines
+  carry no `trace_id` there; `make up-obs` stacks get it. The engine
+  integration test pins the traced path with an in-memory recorder.

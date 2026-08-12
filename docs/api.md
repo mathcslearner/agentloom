@@ -271,6 +271,54 @@ curl -s -X POST http://127.0.0.1:8080/v1/runs/$RUN_ID/steps/flaky-fetch/requeue 
 Requeueing a step that is not dead-lettered — or any step of a
 cancelled run — is a `409`.
 
+## Per-step logs
+
+Everything a step's executor logs through its step logger is captured
+durably per attempt (retries, reclaims, and takeovers each get their own
+attempt, so each has its own log stream). Read one attempt's lines —
+`attempt` defaults to the step's latest:
+
+```bash
+curl -s "http://127.0.0.1:8080/v1/runs/$RUN_ID/steps/flaky-fetch/logs?attempt=1" \
+  -H "Authorization: Bearer $API_KEY" | jq
+```
+
+```json
+{
+  "run_id": "018f3b1c-…",
+  "step_id": "flaky-fetch",
+  "attempt": 1,
+  "lines": [
+    {
+      "seq": 1,
+      "level": "info",
+      "message": "fetching",
+      "fields": {"url": "https://example.com"},
+      "trace_id": "80f198ee56343ba864fe8b2a57d3eff7",
+      "logged_at": "2026-08-12T14:04:58Z"
+    }
+  ],
+  "truncated": false
+}
+```
+
+Lines page in ascending `seq` order — feed `next_cursor` back as
+`?cursor=` (limit up to 1000, default 200). `level=` filters to a
+minimum severity (`level=warn` returns warn and error lines);
+`trace_id` joins a line to its attempt's trace in Jaeger. Follow mode is
+polling the cursor — there is no streaming channel in v1.
+
+Storage per attempt is a size-capped ring (newest lines win) behind a
+bounded capture buffer, so a flooding executor can never stall
+execution. When lines were lost, the response says so:
+
+```json
+{"attempt": 1, "lines": [ … ], "truncated": true, "dropped_lines": 9900}
+```
+
+`seq` gaps mark the same thing line-by-line: every captured line
+consumed a sequence number, stored or not.
+
 ## Errors and rate limits
 
 Every non-2xx response carries one envelope:

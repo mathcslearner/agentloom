@@ -18,9 +18,11 @@ package engine
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math/rand/v2"
 	"time"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
@@ -38,6 +40,15 @@ import (
 // failing implementation to provoke that gap.
 type RetryScheduler interface {
 	Schedule(ctx context.Context, env queue.Envelope, fireAt time.Time) error
+}
+
+// StepLogSink is the engine's seam onto per-step log capture (ticket
+// 7.4) — satisfied by *steplog.Sink. LoggerFor returns base teed into the
+// durable step_logs store for one attempt; implementations must keep the
+// returned logger's capture path non-blocking (execution must never wait
+// on log persistence).
+type StepLogSink interface {
+	LoggerFor(base *slog.Logger, runID uuid.UUID, stepID string, attempt int, traceID string) *slog.Logger
 }
 
 // Engine executes claimed steps for one worker process. It is safe for
@@ -84,6 +95,10 @@ type Engine struct {
 	// transaction re-checks under the run lock); only the executor then
 	// runs to its own end before the cancel settles.
 	cancelPollInterval time.Duration
+	// stepLogs, when set, tees each attempt's StepContext.Logger into the
+	// durable step_logs store (ticket 7.4). Nil means no capture — the
+	// default for every test layer that doesn't opt in.
+	stepLogs StepLogSink
 	// metrics receives execution-pipeline observations (ticket 7.2).
 	// Never nil after New — the default is the no-op recorder.
 	metrics Metrics
@@ -159,6 +174,12 @@ func WithMetrics(m Metrics) Option {
 		}
 		e.metrics = m
 	}
+}
+
+// WithStepLogs sets the per-step log capture sink (ticket 7.4) —
+// cmd/worker wires *steplog.Sink here. Nil disables capture.
+func WithStepLogs(s StepLogSink) Option {
+	return func(e *Engine) { e.stepLogs = s }
 }
 
 // WithTracerProvider sets the provider for the engine's pipeline spans

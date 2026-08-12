@@ -425,6 +425,69 @@ paths:
         "500":
           $ref: "#/components/responses/Internal"
 
+  /v1/runs/{run_id}/steps/{step_id}/logs:
+    get:
+      operationId: getStepLogs
+      tags: [Runs]
+      summary: Get one attempt's captured executor logs
+      description: |
+        Scope `read`, rate-limit class `read`. One ascending-seq keyset
+        page of the log lines the step's executor emitted through its
+        step logger, captured durably per attempt (retries, reclaims,
+        and takeovers each get their own attempt and so their own log
+        stream). Lines carry the attempt's `trace_id` for joining to
+        traces. `attempt` defaults to the step's latest; an attempt with
+        no lines — never reached, level-filtered at capture, or simply
+        quiet — answers an empty page, not a `404`. Storage is a
+        size-capped ring with a bounded capture buffer, both dropping
+        oldest: `truncated`/`dropped_lines` report what was lost, and
+        the retained window is the newest lines. Poll for follow-mode;
+        there is no streaming channel in v1. A missing run is
+        `404 run_not_found`; an existing run without that step is
+        `404 step_not_found`.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - $ref: "#/components/parameters/StepID"
+        - name: attempt
+          in: query
+          description: The 1-based attempt whose logs to read; default the step's latest.
+          schema:
+            type: integer
+            minimum: 1
+        - name: level
+          in: query
+          description: Minimum severity; lines below it are filtered out.
+          schema:
+            $ref: "#/components/schemas/LogLevel"
+        - name: limit
+          in: query
+          description: Page size; an integer in [1, 1000].
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+        - $ref: "#/components/parameters/PageCursor"
+      responses:
+        "200":
+          description: One page of log lines.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StepLogsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
   /v1/definitions:
     post:
       operationId: createDefinition
@@ -1332,6 +1395,65 @@ components:
           description: Steps re-dispatched by the requeue (the requeued step plus any stranded ready steps).
           items:
             type: string
+
+    # --- Per-step logs (ticket 7.4). ---
+    LogLevel:
+      type: string
+      description: Step-log severity, canonicalized at capture.
+      enum: [debug, info, warn, error]
+    StepLogLineView:
+      type: object
+      description: One captured executor log line.
+      required: [seq, level, message, logged_at]
+      properties:
+        seq:
+          type: integer
+          format: int64
+          description: >
+            The line's position in the attempt's log stream, 1-based and
+            monotonic; gaps mark lines lost to the capture buffer or the
+            ring cap.
+        level:
+          $ref: "#/components/schemas/LogLevel"
+        message:
+          type: string
+          description: The log message, truncated with an explicit marker when oversized.
+        fields:
+          type: object
+          description: The executor call-site attributes as one JSON object; absent when the line had none.
+        trace_id:
+          type: string
+          description: The attempt's trace id (hex) for joining to traces; absent when tracing was off at capture.
+        logged_at:
+          type: string
+          format: date-time
+    StepLogsResponse:
+      type: object
+      description: One ascending-seq keyset page of one attempt's captured log lines.
+      required: [run_id, step_id, attempt, lines, truncated]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        step_id:
+          type: string
+        attempt:
+          type: integer
+          description: The attempt served; 0 when the step has never been attempted.
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/StepLogLineView"
+        truncated:
+          type: boolean
+          description: True when the attempt lost lines to the ring cap or capture buffer; the retained window is the newest lines.
+        dropped_lines:
+          type: integer
+          format: int64
+          description: How many lines were lost (derived as max seq minus stored rows). Absent when zero.
+        next_cursor:
+          type: string
+          description: Opaque cursor fetching the next page of lines; absent on the last page.
 
     # --- Definition registry. ---
     CreateDefinitionRequest:

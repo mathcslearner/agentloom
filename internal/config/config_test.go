@@ -62,6 +62,13 @@ func TestLoadDefaults(t *testing.T) {
 		DrainTimeout:          config.DefaultWorkerDrainTimeout,
 		MetricsSampleInterval: config.DefaultWorkerMetricsSampleInterval,
 		EffectsStrict:         true,
+		StepLogEnabled:        true,
+		StepLogLevel:          slog.LevelInfo,
+		StepLogCap:            config.DefaultWorkerStepLogCap,
+		StepLogBuffer:         config.DefaultWorkerStepLogBuffer,
+		StepLogMaxLineBytes:   config.DefaultWorkerStepLogMaxLineBytes,
+		StepLogFlushInterval:  config.DefaultWorkerStepLogFlushInterval,
+		StepLogFlushBatch:     config.DefaultWorkerStepLogFlushBatch,
 	}
 	if cfg.Worker != wantWorker {
 		t.Errorf("default Worker config = %+v, want %+v", cfg.Worker, wantWorker)
@@ -223,6 +230,13 @@ func TestLoadWorkerOverrides(t *testing.T) {
 		config.EnvWorkerMetricsSampleInterval: "7s",
 		config.EnvWorkerEffectsStrict:         "false",
 		config.EnvWorkerTestExecutors:         "true",
+		config.EnvWorkerStepLogEnabled:        "false",
+		config.EnvWorkerStepLogLevel:          "debug",
+		config.EnvWorkerStepLogCap:            "200",
+		config.EnvWorkerStepLogBuffer:         "1024",
+		config.EnvWorkerStepLogMaxLineBytes:   "4096",
+		config.EnvWorkerStepLogFlushInterval:  "250ms",
+		config.EnvWorkerStepLogFlushBatch:     "64",
 	}))
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
@@ -241,6 +255,13 @@ func TestLoadWorkerOverrides(t *testing.T) {
 		MetricsSampleInterval: 7 * time.Second,
 		EffectsStrict:         false,
 		TestExecutors:         true,
+		StepLogEnabled:        false,
+		StepLogLevel:          slog.LevelDebug,
+		StepLogCap:            200,
+		StepLogBuffer:         1024,
+		StepLogMaxLineBytes:   4096,
+		StepLogFlushInterval:  250 * time.Millisecond,
+		StepLogFlushBatch:     64,
 	}
 	if cfg.Worker != want {
 		t.Errorf("Worker config = %+v, want %+v", cfg.Worker, want)
@@ -257,6 +278,8 @@ func TestLoadWorkerInvalidValues(t *testing.T) {
 		config.EnvWorkerDrainTimeout:     "0s",
 		config.EnvWorkerEffectsStrict:    "loudly",
 		config.EnvWorkerTestExecutors:    "maybe",
+		config.EnvWorkerStepLogLevel:     "verbose",
+		config.EnvWorkerStepLogCap:       "0",
 	}))
 	if err == nil {
 		t.Fatal("Load with invalid worker values: want error, got nil")
@@ -268,6 +291,8 @@ func TestLoadWorkerInvalidValues(t *testing.T) {
 		config.EnvWorkerDrainTimeout,
 		config.EnvWorkerEffectsStrict,
 		config.EnvWorkerTestExecutors,
+		config.EnvWorkerStepLogLevel,
+		config.EnvWorkerStepLogCap,
 	} {
 		if !strings.Contains(err.Error(), env) {
 			t.Errorf("error %q does not mention %s", err, env)

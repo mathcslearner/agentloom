@@ -9,6 +9,7 @@ import (
 
 	"github.com/mathcslearner/agentloom/internal/api"
 	"github.com/mathcslearner/agentloom/internal/engine"
+	"github.com/mathcslearner/agentloom/internal/exec/steplog"
 	"github.com/mathcslearner/agentloom/internal/obs/metrics"
 	"github.com/mathcslearner/agentloom/internal/queue"
 )
@@ -19,6 +20,7 @@ import (
 var (
 	_ engine.Metrics        = (*metrics.WorkerMetrics)(nil)
 	_ queue.ConsumerMetrics = (*metrics.WorkerMetrics)(nil)
+	_ steplog.Metrics       = (*metrics.WorkerMetrics)(nil)
 	_ api.RequestMetrics    = (*metrics.APIMetrics)(nil)
 	_ api.RateLimitMetrics  = (*metrics.APIMetrics)(nil)
 )
@@ -26,7 +28,7 @@ var (
 // allowedSubsystems is ADR-008's subsystem vocabulary; extending it is an
 // ADR amendment first.
 var allowedSubsystems = []string{
-	"build", "queue", "outbox", "dispatch", "reconcile", "step", "run", "api", "worker",
+	"build", "queue", "outbox", "dispatch", "reconcile", "step", "steplog", "run", "api", "worker",
 }
 
 // allowedLabels is ADR-008's label allowlist. run_id, step_id, attempt,
@@ -59,6 +61,9 @@ func exercise(w *metrics.WorkerMetrics, a *metrics.APIMetrics) {
 	w.SetQueueDepths(1, 2, 3, 4)
 	w.SetOutbox(5, time.Second)
 	w.SetActiveWorkers(2)
+	w.StepLogCaptured(3)
+	w.StepLogDropped(1)
+	w.StepLogFlushFailure()
 	a.Request("/v1/runs", "POST", 200, 20*time.Millisecond)
 	a.Decision("submit", false, true)
 	a.Decision("submit", true, false)

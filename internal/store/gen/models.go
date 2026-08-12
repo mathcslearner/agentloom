@@ -133,6 +133,18 @@ type StepAttempt struct {
 	FinishedAt *time.Time
 }
 
+type StepLog struct {
+	RunID    uuid.UUID
+	StepID   string
+	Attempt  int32
+	Seq      int64
+	Level    string
+	Message  string
+	Fields   json.RawMessage
+	TraceID  *string
+	LoggedAt time.Time
+}
+
 type TaskOutbox struct {
 	ID          int64
 	RunID       uuid.UUID

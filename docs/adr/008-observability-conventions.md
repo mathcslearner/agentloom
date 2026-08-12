@@ -61,8 +61,8 @@ Rules, following Prometheus upstream conventions:
   `instance` labels), not the metric name. API-surface metrics use the
   `api` subsystem (`engine_api_requests_total`), not a second namespace.
 - Subsystem vocabulary (extended only by ADR amendment): `build`,
-  `queue`, `outbox`, `dispatch`, `reconcile`, `step`, `run`, `api`,
-  `worker`.
+  `queue`, `outbox`, `dispatch`, `reconcile`, `step`, `steplog` (7.4),
+  `run`, `api`, `worker`.
 - Base units and suffixes: durations in seconds (`_seconds`), sizes in
   bytes (`_bytes`), counters end `_total`, gauges carry no suffix
   (`engine_queue_ready_depth`). Histograms are the default for
@@ -141,6 +141,9 @@ without `_seconds`, or any label key missing from the allowlist above.
 | `engine_api_request_duration_seconds` | histogram | `route`, `method` | same; `code` deliberately excluded to keep route×method×code×buckets under the series budget |
 | `engine_api_ratelimit_decisions_total` | counter | `class`, `bucket`, `decision` | the 6.4 `RateLimitMetrics` seam's Prometheus implementation |
 | `engine_api_ratelimit_failopen_total` | counter | `class` | same (errored acquire allowed through) |
+| `engine_steplog_captured_total` | counter | — | step-log capture (7.4): lines accepted into the sink's queue |
+| `engine_steplog_dropped_total` | counter | — | step-log capture (7.4): lines lost before storage — queue overflow (drop-oldest) or a failed flush; ring-cap evictions are not drops (stored, then rotated out) |
+| `engine_steplog_flush_failures_total` | counter | — | step-log capture (7.4): flush transactions that failed and dropped their batch |
 
 Gauges are sampled by a cmd/worker loop every
 `AGENTLOOM_WORKER_METRICS_SAMPLE_INTERVAL` (default 10s, under the 15s
@@ -247,6 +250,50 @@ asserts one Jaeger trace per run spanning both compose worker replicas
 with a FOLLOWS_FROM retry link; the hermetic span-topology tests run
 against an in-memory recorder in `internal/engine`
 (`trace_integration_test.go`).
+
+### Per-step log capture (as built by ticket 7.4)
+
+Executor log lines — everything emitted through
+`exec.StepContext.Logger`, and only that (the engine's own pipeline
+lines are diagnostics, not step logs) — tee into the durable `step_logs`
+table (migration 0011), serving
+`GET /v1/runs/{id}/steps/{sid}/logs?attempt=&level=&cursor=&limit=` and
+M18's per-step log view. The capture side is `internal/exec/steplog`: a
+per-worker `Sink` holding a bounded in-memory queue, drained to Postgres
+by an async flusher (`AGENTLOOM_WORKER_STEPLOG_*` knobs; capture on by
+default at level `info`, ring cap 1000 lines per attempt). The design
+decisions worth remembering:
+
+- **Execution never waits on log persistence.** The capture path is a
+  non-blocking O(1) enqueue; when the queue is full the *oldest* queued
+  line is dropped, and a failed flush drops its batch rather than
+  retrying — a poisoned batch must not wedge the flusher. The flood
+  acceptance test (10k lines against a small buffer) pins this.
+- **Rings are per attempt, with exactly one writer.** Retries, reclaims,
+  and takeovers all mint a new attempt number at claim (ADR-004), so
+  per-line `seq` is allocated in-process (an atomic counter on the
+  attempt's capture handler) with no coordination. A displaced zombie's
+  late flush lands under its old attempt number — harmless, preserved
+  diagnostics.
+- **The truncation marker is derived, never stored.** Every captured
+  line consumes a seq whether or not it survives (the ring-cap trim
+  keeps the newest `cap` lines; buffer overflow drops before storage),
+  so the API reports `dropped_lines = max(seq) − stored rows` from one
+  aggregate read. No marker row to keep consistent.
+- **Levels are canonicalized at capture** onto the closed vocabulary
+  `debug|info|warn|error` (schema CHECK); the capture level filters
+  *before* seq allocation (a filtered line is invisible, not dropped),
+  while the API's `level=` parameter filters within what was stored.
+  Lines carry `trace_id` (the attempt span's, NULL when tracing is off)
+  and the canonical correlation fields as columns, never duplicated
+  into the `fields` JSONB.
+- **Shutdown loses nothing in hand:** the flusher rides cmd/worker's
+  loop context (outliving SIGTERM through the consumer drain, like the
+  dispatcher) and performs one final bounded flush before the store
+  closes.
+
+Logs remain poll-based in v1 (the recorded non-goal); follow mode is
+polling the endpoint's cursor.
 
 ### Wiring: admin ports, providers, and the off switch
 

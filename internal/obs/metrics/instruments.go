@@ -79,6 +79,10 @@ type WorkerMetrics struct {
 	runDuration *prometheus.HistogramVec
 
 	workerActive prometheus.Gauge
+
+	stepLogCaptured      prometheus.Counter
+	stepLogDropped       prometheus.Counter
+	stepLogFlushFailures prometheus.Counter
 }
 
 // NewWorkerMetrics registers the worker instrument set on reg (ADR-008:
@@ -179,6 +183,18 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 			Namespace: Namespace, Subsystem: "worker", Name: "active",
 			Help: "Consumer-group members recently active (idle below the activity threshold) — the fleet-wide worker count as this worker observes it.",
 		}),
+		stepLogCaptured: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "steplog", Name: "captured_total",
+			Help: "Executor log lines accepted into the step-log capture queue (ticket 7.4).",
+		}),
+		stepLogDropped: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "steplog", Name: "dropped_total",
+			Help: "Captured lines lost before storage: queue overflow (drop-oldest) or a failed flush abandoning its batch. Cap-evicted ring lines are not drops — they were stored, then rotated out.",
+		}),
+		stepLogFlushFailures: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "steplog", Name: "flush_failures_total",
+			Help: "Step-log flush transactions that failed and dropped their batch.",
+		}),
 	}
 	reg.MustRegister(
 		m.queueReadyDepth, m.queueStreamLength, m.queuePELSize, m.queueDelayedDepth,
@@ -190,6 +206,7 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 		m.takeovers, m.fencingRejections, m.deadLetters,
 		m.runDuration,
 		m.workerActive,
+		m.stepLogCaptured, m.stepLogDropped, m.stepLogFlushFailures,
 	)
 	return m
 }
@@ -271,6 +288,17 @@ func (m *WorkerMetrics) SetOutbox(backlog int64, oldestAge time.Duration) {
 
 // SetActiveWorkers records one active-consumer sample.
 func (m *WorkerMetrics) SetActiveWorkers(n int) { m.workerActive.Set(float64(n)) }
+
+// The methods below satisfy steplog.Metrics (ticket 7.4).
+
+// StepLogCaptured records n lines accepted into the capture queue.
+func (m *WorkerMetrics) StepLogCaptured(n int) { m.stepLogCaptured.Add(float64(n)) }
+
+// StepLogDropped records n captured lines lost before storage.
+func (m *WorkerMetrics) StepLogDropped(n int) { m.stepLogDropped.Add(float64(n)) }
+
+// StepLogFlushFailure records one failed flush transaction.
+func (m *WorkerMetrics) StepLogFlushFailure() { m.stepLogFlushFailures.Inc() }
 
 // APIMetrics is the API deployable's instrument set: request histograms
 // and the rate-limit decision counters (the 6.4 RateLimitMetrics seam,

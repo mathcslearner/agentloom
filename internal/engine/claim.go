@@ -203,6 +203,18 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	if step.ClaimID != nil {
 		claimID = *step.ClaimID
 	}
+	// Per-step log capture (ticket 7.4): the executor's logger — and only
+	// the executor's — tees into the durable step_logs store, stamped with
+	// the attempt span's trace id. The engine's own lines are pipeline
+	// diagnostics, not step logs, and keep the plain logger.
+	execLogger := logger
+	if e.stepLogs != nil {
+		traceID := ""
+		if sc := oteltrace.SpanContextFromContext(ctx); sc.HasTraceID() {
+			traceID = sc.TraceID().String()
+		}
+		execLogger = e.stepLogs.LoggerFor(logger, step.RunID, step.StepID, int(step.AttemptCount), traceID)
+	}
 	// The in-flight cancellation watch (ticket 5.6): polls the run's
 	// status while the executor runs and cancels its context when the run
 	// turns cancelling. Pure latency — the completion transactions below
@@ -219,7 +231,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		// reclaim, and takeover of this step (ticket 5.5).
 		IdempotencyKey: effects.Key(step.RunID, step.StepID),
 		Effects:        e.effects.ForStep(step.RunID, step.StepID, int(step.AttemptCount), claimID, logger),
-		Logger:         logger,
+		Logger:         execLogger,
 	}, timeout)
 	if execErr != nil {
 		execSpan.RecordError(execErr)

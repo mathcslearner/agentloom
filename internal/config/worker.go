@@ -1,6 +1,9 @@
 package config
 
-import "time"
+import (
+	"log/slog"
+	"time"
+)
 
 // Environment variables read by WorkerConfig.
 const (
@@ -17,6 +20,13 @@ const (
 	EnvWorkerEffectsStrict         = "AGENTLOOM_EFFECTS_STRICT"
 	EnvWorkerTestExecutors         = "AGENTLOOM_WORKER_TEST_EXECUTORS"
 	EnvWorkerMetricsSampleInterval = "AGENTLOOM_WORKER_METRICS_SAMPLE_INTERVAL"
+	EnvWorkerStepLogEnabled        = "AGENTLOOM_WORKER_STEPLOG_ENABLED"
+	EnvWorkerStepLogLevel          = "AGENTLOOM_WORKER_STEPLOG_LEVEL"
+	EnvWorkerStepLogCap            = "AGENTLOOM_WORKER_STEPLOG_CAP"
+	EnvWorkerStepLogBuffer         = "AGENTLOOM_WORKER_STEPLOG_BUFFER"
+	EnvWorkerStepLogMaxLineBytes   = "AGENTLOOM_WORKER_STEPLOG_MAX_LINE_BYTES"
+	EnvWorkerStepLogFlushInterval  = "AGENTLOOM_WORKER_STEPLOG_FLUSH_INTERVAL"
+	EnvWorkerStepLogFlushBatch     = "AGENTLOOM_WORKER_STEPLOG_FLUSH_BATCH"
 )
 
 // DefaultWorkerHealthInterval spaces the worker's periodic health log —
@@ -61,6 +71,15 @@ const (
 	// every scrape sees a fresh sample; the sampler only runs when the
 	// admin metrics listener is configured.
 	DefaultWorkerMetricsSampleInterval = 10 * time.Second
+	// Step-log capture defaults (ticket 7.4), mirroring
+	// internal/exec/steplog's own: capture at info+, keep the newest 1000
+	// lines per attempt, an 8192-line worker-wide queue, 8 KiB per line,
+	// flushed every 500ms in transactions of at most 512 lines.
+	DefaultWorkerStepLogCap           = 1000
+	DefaultWorkerStepLogBuffer        = 8192
+	DefaultWorkerStepLogMaxLineBytes  = 8192
+	DefaultWorkerStepLogFlushInterval = 500 * time.Millisecond
+	DefaultWorkerStepLogFlushBatch    = 512
 	// DefaultWorkerDrainTimeout is the graceful-shutdown grace period
 	// (ticket 5.7): how long after SIGTERM the consumer keeps finishing
 	// its in-flight and already-delivered entries before abandoning the
@@ -134,6 +153,30 @@ type WorkerConfig struct {
 	// metrics listener (AGENTLOOM_OBS_METRICS_ADDR) is configured. Must be
 	// positive.
 	MetricsSampleInterval time.Duration
+	// StepLogEnabled turns per-step log capture on (ticket 7.4): executor
+	// log lines tee into the step_logs store serving the logs API. Default
+	// true — the API endpoint is only useful with data behind it; disable
+	// for capture-free deployments.
+	StepLogEnabled bool
+	// StepLogLevel is the minimum captured level; records below it are
+	// filtered at the tee (the terminal logger keeps its own level).
+	StepLogLevel slog.Level
+	// StepLogCap is the per-attempt ring size: the store keeps at most
+	// this many newest lines per attempt. Must be positive.
+	StepLogCap int
+	// StepLogBuffer is the capture queue's capacity in lines, shared by
+	// every in-flight step on this worker; overflow drops the oldest
+	// queued line. Must be positive.
+	StepLogBuffer int
+	// StepLogMaxLineBytes caps one line's message and marshaled fields,
+	// each truncated with an explicit marker. Must be positive.
+	StepLogMaxLineBytes int
+	// StepLogFlushInterval is the async writer's flush cadence. Must be
+	// positive.
+	StepLogFlushInterval time.Duration
+	// StepLogFlushBatch is the maximum lines per flush transaction. Must
+	// be positive.
+	StepLogFlushBatch int
 	// TestExecutors registers the full exec.Builtins set instead of
 	// exec.CoreBuiltins (ticket 6.2, ADR-007): the difference is the two
 	// test executors with filesystem side effects (counter,
@@ -160,6 +203,13 @@ func defaultWorkerConfig() WorkerConfig {
 		MetricsSampleInterval: DefaultWorkerMetricsSampleInterval,
 		EffectsStrict:         true,
 		TestExecutors:         false,
+		StepLogEnabled:        true,
+		StepLogLevel:          slog.LevelInfo,
+		StepLogCap:            DefaultWorkerStepLogCap,
+		StepLogBuffer:         DefaultWorkerStepLogBuffer,
+		StepLogMaxLineBytes:   DefaultWorkerStepLogMaxLineBytes,
+		StepLogFlushInterval:  DefaultWorkerStepLogFlushInterval,
+		StepLogFlushBatch:     DefaultWorkerStepLogFlushBatch,
 	}
 }
 
@@ -180,5 +230,18 @@ func (c *WorkerConfig) applyEnv(fn LookupFunc) []error {
 	errs = applyPositiveDuration(errs, fn, EnvWorkerMetricsSampleInterval, &c.MetricsSampleInterval)
 	errs = applyBool(errs, fn, EnvWorkerEffectsStrict, &c.EffectsStrict)
 	errs = applyBool(errs, fn, EnvWorkerTestExecutors, &c.TestExecutors)
+	errs = applyBool(errs, fn, EnvWorkerStepLogEnabled, &c.StepLogEnabled)
+	if raw, ok := lookup(fn, EnvWorkerStepLogLevel); ok {
+		if lvl, err := parseLogLevel(EnvWorkerStepLogLevel, raw); err != nil {
+			errs = append(errs, err)
+		} else {
+			c.StepLogLevel = lvl
+		}
+	}
+	errs = applyPositiveInt(errs, fn, EnvWorkerStepLogCap, &c.StepLogCap)
+	errs = applyPositiveInt(errs, fn, EnvWorkerStepLogBuffer, &c.StepLogBuffer)
+	errs = applyPositiveInt(errs, fn, EnvWorkerStepLogMaxLineBytes, &c.StepLogMaxLineBytes)
+	errs = applyPositiveDuration(errs, fn, EnvWorkerStepLogFlushInterval, &c.StepLogFlushInterval)
+	errs = applyPositiveInt(errs, fn, EnvWorkerStepLogFlushBatch, &c.StepLogFlushBatch)
 	return errs
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/config"
 	"github.com/mathcslearner/agentloom/internal/engine"
 	"github.com/mathcslearner/agentloom/internal/exec"
+	"github.com/mathcslearner/agentloom/internal/exec/steplog"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/obs/metrics"
 	"github.com/mathcslearner/agentloom/internal/obs/trace"
@@ -132,15 +133,34 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	if cfg.Worker.TestExecutors {
 		registry = exec.Builtins()
 	}
-	// The engine's own delayed handle shares the consumer's key: retry
-	// re-dispatches scheduled here are promoted by any worker's promoter
-	// duty (ticket 5.2).
-	eng, err := engine.New(st, registry, workerID,
+	// Per-step log capture (ticket 7.4): the sink tees every executor's
+	// StepContext.Logger into the step_logs store; its flusher runs on
+	// loopCtx below so lines from steps finishing during the consumer's
+	// drain still land, with one final bounded flush at shutdown.
+	engineOpts := []engine.Option{
 		engine.WithDispatchNudge(dispatcher.Nudge),
 		engine.WithRetryScheduler(q.NewDelayed(cfg.Queue.DelayedKey)),
 		engine.WithStrictEffects(cfg.Worker.EffectsStrict),
 		engine.WithCancelPollInterval(cfg.Worker.CancelPollInterval),
-		engine.WithMetrics(engineMetrics))
+		engine.WithMetrics(engineMetrics),
+	}
+	var logSinkStep *steplog.Sink
+	if cfg.Worker.StepLogEnabled {
+		logSinkStep = steplog.New(st, steplog.Config{
+			Level:         cfg.Worker.StepLogLevel,
+			Cap:           cfg.Worker.StepLogCap,
+			Buffer:        cfg.Worker.StepLogBuffer,
+			MaxLineBytes:  cfg.Worker.StepLogMaxLineBytes,
+			FlushInterval: cfg.Worker.StepLogFlushInterval,
+			FlushBatch:    cfg.Worker.StepLogFlushBatch,
+			Metrics:       engineMetrics,
+		}, logger)
+		engineOpts = append(engineOpts, engine.WithStepLogs(logSinkStep))
+	}
+	// The engine's own delayed handle shares the consumer's key: retry
+	// re-dispatches scheduled here are promoted by any worker's promoter
+	// duty (ticket 5.2).
+	eng, err := engine.New(st, registry, workerID, engineOpts...)
 	if err != nil {
 		return err
 	}
@@ -157,6 +177,7 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		slog.Duration("reconcile_interval", cfg.Worker.ReconcileInterval),
 		slog.Duration("drain_timeout", cfg.Worker.DrainTimeout),
 		slog.Bool("test_executors", cfg.Worker.TestExecutors),
+		slog.Bool("steplog_enabled", cfg.Worker.StepLogEnabled),
 		slog.String("metrics_addr", cfg.Obs.MetricsAddr),
 		slog.Bool("otel_enabled", cfg.Obs.OTelEnabled))
 	defer logger.InfoContext(ctx, "worker stopped")
@@ -179,6 +200,14 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	go func() { defer wg.Done(); dispatcher.Run(loopCtx) }()
 	go func() { defer wg.Done(); reconciler.Run(loopCtx) }()
 	go func() { defer wg.Done(); healthLoop(loopCtx, q, cfg.Worker.HealthInterval) }()
+	if logSinkStep != nil {
+		// Rides loopCtx like the dispatch duties: keeps flushing through the
+		// consumer's drain, final bounded flush when run returns. The
+		// deferred wg.Wait runs before the store closes, so that flush still
+		// has its backend.
+		wg.Add(1)
+		go func() { defer wg.Done(); logSinkStep.Run(loopCtx) }()
+	}
 	if admin != nil {
 		// The admin server rides loopCtx like the dispatch duties: /metrics
 		// stays scrapeable through the consumer's drain and stops when run

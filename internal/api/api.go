@@ -19,6 +19,7 @@
 //	POST   /v1/runs/{id}/park                       submit  submit  pause dispatch
 //	POST   /v1/runs/{id}/unpark                     submit  submit  resume dispatch (re-outboxes stranded ready steps)
 //	POST   /v1/runs/{id}/steps/{sid}/requeue        submit  submit  requeue a dead-lettered step (budget re-armed)
+//	GET    /v1/runs/{id}/steps/{sid}/logs           read    read    one attempt's captured executor logs (keyset pages)
 //	POST   /v1/definitions                          submit  submit  register a definition (version 1; name must be new)
 //	GET    /v1/definitions                          read    read    list definitions (latest version per name, keyset by name)
 //	GET    /v1/definitions/{id}                     read    read    one stored definition, spec included
@@ -202,6 +203,8 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/runs/{runID}/park", h.handleParkRun)
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/runs/{runID}/unpark", h.handleUnparkRun)
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/runs/{runID}/steps/{stepID}/requeue", h.handleRequeueStep)
+		// Per-step logs (ticket 7.4).
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/runs/{runID}/steps/{stepID}/logs", h.handleStepLogs)
 		// Definition registry (ticket 6.5).
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/definitions", h.handleCreateDefinition)
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/definitions", h.handleListDefinitions)

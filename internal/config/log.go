@@ -48,7 +48,7 @@ func defaultLogConfig() LogConfig {
 func (c *LogConfig) applyEnv(fn LookupFunc) []error {
 	var errs []error
 	if raw, ok := lookup(fn, EnvLogLevel); ok {
-		if lvl, err := parseLogLevel(raw); err != nil {
+		if lvl, err := parseLogLevel(EnvLogLevel, raw); err != nil {
 			errs = append(errs, err)
 		} else {
 			c.Level = lvl
@@ -71,7 +71,9 @@ func (c *LogConfig) applyEnv(fn LookupFunc) []error {
 	return errs
 }
 
-func parseLogLevel(raw string) (slog.Level, error) {
+// parseLogLevel parses the shared level vocabulary; key names the env var
+// in the error (the step-log capture level reuses this, ticket 7.4).
+func parseLogLevel(key, raw string) (slog.Level, error) {
 	switch strings.ToLower(raw) {
 	case "debug":
 		return slog.LevelDebug, nil
@@ -82,7 +84,7 @@ func parseLogLevel(raw string) (slog.Level, error) {
 	case "error":
 		return slog.LevelError, nil
 	default:
-		return 0, fmt.Errorf("%s: invalid value %q (want one of debug, info, warn, error)", EnvLogLevel, raw)
+		return 0, fmt.Errorf("%s: invalid value %q (want one of debug, info, warn, error)", key, raw)
 	}
 }
 
