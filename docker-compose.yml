@@ -49,6 +49,27 @@ services:
       timeout: 3s
       retries: 15
 
+  # Dedicated Redis for the sustained chaos suite (ticket 5.8), so the
+  # suite's "one Redis restart blip" never disturbs the shared test Redis
+  # that every other integration test runs against. The test bounces it by
+  # issuing SHUTDOWN NOSAVE through the client; `restart: always` is what
+  # brings it back — the blip is Docker's restart latency. AOF means the
+  # restart is a connection blip with at most ~1s of tail loss (appendfsync
+  # everysec), which is exactly the gap the reconciler must heal.
+  redis-chaos:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: always
+    ports:
+      - "${AGENTLOOM_REDIS_CHAOS_PORT:-6380}:6379"
+    volumes:
+      - redis-chaos-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
   # One-shot: applies embedded schema migrations, then exits. api and
   # worker gate on its success so `make up-app` works on a fresh volume.
   migrate:
@@ -108,3 +129,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  redis-chaos-data:

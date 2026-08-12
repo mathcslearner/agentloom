@@ -56,12 +56,21 @@ type Harness struct {
 // prefixed `agentloom-test:<random>:` and deleted on cleanup.
 func New(tb testing.TB) *Harness {
 	tb.Helper()
+	return NewAt(tb, redisAddr())
+}
+
+// NewAt is New against an explicit Redis address instead of the
+// AGENTLOOM_TEST_REDIS_ADDR default. The sustained chaos suite (ticket 5.8)
+// uses it to run against the dedicated redis-chaos instance it restarts
+// mid-test, so the blip never disturbs the shared test Redis.
+func NewAt(tb testing.TB, addr string) *Harness {
+	tb.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 
-	client, err := queue.Open(ctx, redisAddr())
+	client, err := queue.Open(ctx, addr)
 	if err != nil {
-		tb.Fatalf("cannot reach Redis (is the dev stack running? try `make up`): %v", err)
+		tb.Fatalf("cannot reach Redis at %s (is the dev stack running? try `make up`): %v", addr, err)
 	}
 	tb.Cleanup(func() { client.Close() }) //nolint:errcheck // best-effort cleanup in tests
 

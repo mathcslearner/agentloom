@@ -41,6 +41,11 @@ test: ## Run unit tests with the race detector
 test-integration: ## Run integration tests (requires the Docker Compose stack: make up)
 	go test -race -tags integration ./...
 
+.PHONY: test-chaos-long
+test-chaos-long: ## Run the sustained chaos suite in long mode (override with AGENTLOOM_CHAOS_DURATION=10m)
+	AGENTLOOM_CHAOS_DURATION=$${AGENTLOOM_CHAOS_DURATION:-5m} \
+		go test -race -tags integration -run TestSustainedChaos -count=1 -timeout 20m -v ./test/crash
+
 .PHONY: migrate-up
 migrate-up: ## Apply all pending schema migrations (AGENTLOOM_POSTGRES_DSN overrides the target)
 	go run ./cmd/migrate up

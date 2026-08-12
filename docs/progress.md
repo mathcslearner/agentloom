@@ -2658,3 +2658,84 @@ one `step_reclaimed`. Existing SIGKILL/chaos suites untouched and green.
 - The reclaimer leaves an over-threshold poison entry pending when the
   drain deadline has already passed (next reclaimer diverts it) rather
   than racing a doomed DLQ write.
+
+### 5.8 — Sustained chaos suite ✅
+
+**Delivered.** `TestSustainedChaos` in `test/crash` — the milestone-closing
+scenario: a continuous submitter cycles five mixed fixtures (one every
+250ms) against a 3-worker fleet of real `cmd/worker` subprocesses while
+random SIGKILLs land every ~3s and the Redis instance is restarted once
+mid-run; at quiescence every run sits at exactly its fixture's expected
+terminal state, journaled side effects are exactly-once by idempotency
+key, the queue is fully quiescent (3.6's `WaitQuiescent`: stream drained,
+PEL empty, delayed empty — with `DumpDiagnostics` on failure), and the
+outbox is empty. CI short mode is a 24s chaos window (~28s wall, ~104
+runs, 7 kills, one ~2.5s blip), verified green across 5 consecutive
+`-race` runs; `make test-chaos-long` scales the window via
+`AGENTLOOM_CHAOS_DURATION` (default 5m).
+
+**The fixture mix** (inline JSON like 4.7's `crashDef`, per-run effect
+files under `t.TempDir()`): *chain* (counter → sleep → counter), *retry*
+(`fail_n_times(n=2)` under a 100ms-base full-jitter policy — exercises the
+delayed ZSET + promoter through the blip), *effectful*
+(`effectful_echo(fail_times=1)` — the journal short-circuit under chaos),
+*fanout* (two sleeps of different lengths into a `join all` — readiness
+counters under crash), and *deadletter* (`fail_n_times(n=1000)`,
+`max_attempts=2`, `fail_fast` — the "explainably dead-lettered"
+population: run failed with exactly one `retries_exhausted` DLQ row).
+Every expected outcome is kill-proof by construction: `lost` attempts are
+excluded from the retry budget (5.2), `fail_n_times` keys off the durable
+attempt number, and the poison threshold is raised to 50 so random kills
+bumping delivery counts can never poison-divert a healthy step (poison
+has its own 5.4 suite; a poison DLQ row here fails the test).
+
+**The Redis blip: a dedicated `redis-chaos` compose service** (default
+profile, port 6380, own AOF volume, `restart: always`), because
+restarting the shared test Redis would break every integration test
+running in parallel. The test bounces it by issuing `SHUTDOWN NOSAVE`
+through the client — no docker CLI coupling — and Docker's restart policy
+brings it back. Two non-obvious findings baked into the code: go-redis
+maps the dropped connection on SHUTDOWN to a *nil* error, and its
+client-level retries mask the sub-second downtime from a Ping poll
+entirely, so the restart is proven by the server **run_id changing**
+(regenerated every server start), never by observing downtime. NOSAVE +
+appendfsync-everysec deliberately permits ~1s of AOF tail loss: lost
+XADDs, delayed ZADDs, and PEL entries are exactly the gaps only the
+reconciler can heal — so unlike 4.7 (reconciler exiled at 10m), this
+suite runs it HOT (1s sweeps, 2s ready/retry staleness, 8s running
+staleness) and convergence to quiescence is the proof it healed every
+gap. New knobs for operators/tests: `AGENTLOOM_REDIS_CHAOS_PORT`
+(compose) and `AGENTLOOM_TEST_CHAOS_REDIS_ADDR` (suite), documented in
+`.env.example`; `queuetest.NewAt(tb, addr)` (New now delegates to it) is
+the only harness addition — zero production-code changes.
+
+**Assertion discipline — chaos-tolerant by design.** Nothing here pins
+attempt histories, reclaim counts, or churn: random kill timing makes
+those nondeterministic, and they are owned by 4.7/5.7. What is asserted
+is exact where exactness is honest: journaled effects are exactly-once
+**by idempotency key** (every line carries the derived
+`effects.Key(run, step)`, distinct-keys == 1, plus exactly one `done`
+`side_effects` row) — raw line count is only ≥1 because a kill inside the
+intent→result window re-executes the effect, the journal's *documented*
+residual at-least-once that the stable key exists to let the external
+system absorb. Unjournaled `counter` files are bounded by
+[1, attempts] — the at-least-once contrast that motivates the journal.
+The kill choreography stays on the test goroutine (spawnWorker's Fatalf
+is illegal elsewhere), sequenced kills → blip → kills so no worker spawn
+races the outage (bootstrap pings Redis); the RNG seed is logged for
+post-mortem; convergence timeout failures dump stuck runs' step states
+plus full queue diagnostics.
+
+**Verified.** Short mode green 5× consecutively under `-race` (~27s
+each); full `make test-integration` green alongside the parallel crash/
+drain scenarios; `SHUTDOWN NOSAVE` + `restart: always` behavior confirmed
+against the live compose service (RestartCount increments, run_id
+rotates).
+
+**Deferred / notes.** The blip is single by design (the ticket's "one
+Redis restart blip"); long mode lengthens the kill window but keeps one
+blip. Postgres chaos (restart/failover) is out of scope until the ops
+milestones. If CI runner contention ever flakes the *other* crash-suite
+tests while chaos runs in parallel, the recorded fallback is dropping
+`t.Parallel()` from `TestSustainedChaos` so it serializes within the
+package.

@@ -471,13 +471,13 @@ SIGTERM: worker stops claiming, finishes in-flight steps (heartbeating until don
 - [x] Drain-timeout path verified: abandoned step reclaimed by survivor
 - [x] Shutdown sequence logged with per-step disposition
 
-#### 5.8 — Sustained chaos suite
+#### 5.8 — Sustained chaos suite ✅
 **Depends on:** 5.7, 5.5, 3.6
-Chaos test: continuous submitter (mixed fixtures incl. retries and effectful steps), random worker kills every few seconds, one Redis restart blip; assert at quiescence: all runs terminal-succeeded (or explainably dead-lettered), side-effect counters exactly at expected values, PEL/outbox/delayed all empty, reconciler healed every gap. CI short mode (~1 min) + longer local mode.
+Chaos test: continuous submitter (mixed fixtures incl. retries and effectful steps), random worker kills every few seconds, one Redis restart blip; assert at quiescence: all runs terminal-succeeded (or explainably dead-lettered), side-effect counters exactly at expected values, PEL/outbox/delayed all empty, reconciler healed every gap. CI short mode (~1 min) + longer local mode. *(As built: `TestSustainedChaos` in `test/crash` — five-fixture round-robin (chain, retry, effectful, fan-out/join, deliberate dead-letter) against a 3-worker fleet on a **dedicated `redis-chaos` compose service**, restarted mid-test via `SHUTDOWN NOSAVE` + `restart: always` (proven by the server run_id changing — go-redis client retries mask the sub-second downtime) so the blip never touches the shared test Redis; the reconciler runs hot (1s sweeps) because the blip's AOF tail loss is healable only by its scans; expected terminal states are kill-proof by construction (`lost` excluded from budgets, `fail_n_times` keyed off durable attempts, poison threshold raised out of kill range); journaled effects asserted exactly-once **by idempotency key** (raw line count is the journal's documented residual at-least-once window), unjournaled counters bounded by [1, attempts] as the motivating contrast; long mode via `AGENTLOOM_CHAOS_DURATION` / `make test-chaos-long`.)*
 **Done when:**
-- [ ] CI short mode green and deterministic across 5 consecutive runs
-- [ ] Effect counters exact (no dupes/losses) after chaos
-- [ ] Quiescence invariants asserted via 3.6 helpers; failures dump full diagnostic state
+- [x] CI short mode green and deterministic across 5 consecutive runs
+- [x] Effect counters exact (no dupes/losses) after chaos
+- [x] Quiescence invariants asserted via 3.6 helpers; failures dump full diagnostic state
 
 ---
 

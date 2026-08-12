@@ -28,12 +28,14 @@ Other targets: `make fmt` (format + tidy), `make test-integration` (integration 
 Local development and integration tests run against a Docker Compose stack defined in [docker-compose.yml](docker-compose.yml):
 
 ```sh
-make up         # boot Postgres 16 + Redis 7, wait until both are healthy
+make up         # boot Postgres 16 + Redis 7 (plus a dedicated chaos Redis), wait until healthy
 make up-app     # boot the full stack: stores + migrations + api + 2 workers
 make psql       # psql shell inside the postgres container
 make redis-cli  # redis-cli shell inside the redis container
 make down       # stop the stack — data volumes are KEPT
 ```
+
+(The `redis-chaos` service on port 6380 exists solely for the sustained chaos suite, which restarts it mid-test — see `make test-chaos-long`.)
 
 `make up-app` (the compose `app` profile) builds the deployable images from [deploy/dockerfiles/Dockerfile](deploy/dockerfiles/Dockerfile), applies migrations via a one-shot job, and publishes the API on `localhost:8080` (`AGENTLOOM_API_PORT`). Then submit and watch a run with the `ctl` CLI:
 
