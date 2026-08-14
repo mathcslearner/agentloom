@@ -664,6 +664,26 @@ exactly like the llm executor.
   functions of (expr, input) → **permanent**; a ctx error from a
   cancelled evaluation passes through unwrapped.
 
+### Retrieval error taxonomy (as built, 8.8)
+
+The `retrieve` step's errors classify on the same two-class model.
+`internal/retrieval` carries a `*retrieval.Error{Class, ...}` (the
+`*tools.Error` shape; secret hygiene is structural — no field can hold a
+query or document content). The `retrieve` executor wraps a classified
+retriever error into `exec.ClassifiedError` and lets context errors pass
+through unwrapped, exactly like the llm and tool executors.
+
+- **Config, lookup, and bound failures are permanent, before any query**:
+  an **unknown retriever** (`*UnknownRetrieverError`), an **empty rendered
+  query**, and a **negative `top_k`** are deterministic — the same rendered
+  config fails identically on retry — so they fail permanent with no call.
+- **`pg_fulltext`** treats a **datastore error** as **transient** (a
+  Postgres hiccup may clear on retry) and a **no-match / empty query** as a
+  successful empty result, *not* an error (`websearch_to_tsquery` never
+  errors on arbitrary input). Engine context cancellation/deadline passes
+  through unwrapped so the engine keeps the timeout/cancelled judgment
+  (rows 3/8).
+
 ### Enforcement points
 
 **5.1** (this ticket) — the schema: `retry` on steps, `on_failure`

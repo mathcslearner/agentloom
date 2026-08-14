@@ -370,6 +370,13 @@ func (v *validator) checkStepConfig(path string, s Step) {
 		if c.Query == "" {
 			v.add(CodeConfigFieldRequired, path+".config.query", "required field is missing")
 		}
+		// top_k is optional (0 = absent, the executor's default); a
+		// negative count is nonsensical. It is always an int literal
+		// (templating rewrites string values only), so this is a static
+		// check with no runtime carve-out.
+		if c.TopK < 0 {
+			v.add(CodeConfigFieldInvalid, path+".config.top_k", "must not be negative, got %d", c.TopK)
+		}
 	case StepMap:
 		c := cfg[MapConfig](s)
 		if c.Items == "" {

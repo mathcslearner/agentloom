@@ -47,9 +47,11 @@ var builtinCapabilities = map[string]plugin.Capabilities{
 
 // stubTypes are the dev-stub executors, whose manifests carry the
 // pre-release stub version (ADR-009). The llm stub was replaced by the
-// production executor in ticket 8.6 and the tool stub in 8.7, so both left
-// this set (version 1.0.0); only retrieve remains until 8.8.
-var stubTypes = map[string]bool{"retrieve": true}
+// production executor in ticket 8.6, the tool stub in 8.7, and the last
+// one — retrieve — in 8.8, so the set is now empty (every builtin ships at
+// a real 1.0.0). It stays here as the enforced record: a future dev stub
+// must be listed, and nothing may carry the -stub suffix that is not.
+var stubTypes = map[string]bool{}
 
 // TestBuiltinManifestConformance pins that every shipped builtin
 // self-describes (ADR-009's synthesized-manifest escape hatch is for
@@ -58,7 +60,7 @@ var stubTypes = map[string]bool{"retrieve": true}
 func TestBuiltinManifestConformance(t *testing.T) {
 	t.Parallel()
 
-	manifests := Builtins(nil, nil).Manifests()
+	manifests := Builtins(nil, nil, nil).Manifests()
 	if got, want := len(manifests), len(builtinCapabilities); got != want {
 		t.Fatalf("Builtins has %d manifests, flag table has %d — keep them in lockstep", got, want)
 	}

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "name": "rag-lite",
+  "description": "The ticket 8.8 retrieval-augmented-generation proof: a `retrieve` step queries the reference `pg_fulltext` retriever for the documents most relevant to a run param, then an `llm` step answers the question grounded in those documents and cites each by id. Data flows from retrieve to llm through 8.2 templating — `${{ steps.search.output.results }}` splices the ranked results (an array of {id, content, score, metadata}) into the prompt as compact JSON. It runs fully offline: the retriever is local Postgres full-text search over an ingested corpus, and the model is the deterministic mock (`mock/sim-1`), so the answer is reproducible with no API key and no network; swapping the model id to a real provider makes it a live RAG workflow unchanged.",
+  "params": {
+    "question": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "search",
+      "type": "retrieve",
+      "config": {
+        "retriever": "pg_fulltext",
+        "query": "${{ run.params.question }}",
+        "top_k": 3
+      }
+    },
+    {
+      "id": "answer",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Answer the question \"${{ run.params.question }}\" using only the retrieved documents below, and cite each claim with the document id it came from. Documents: ${{ steps.search.output.results }}",
+        "max_tokens": 512
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "search",
+      "to": "answer"
+    }
+  ]
+}

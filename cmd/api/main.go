@@ -43,6 +43,8 @@ import (
 	"github.com/mathcslearner/agentloom/internal/obs/metrics"
 	"github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/ratelimit"
+	"github.com/mathcslearner/agentloom/internal/retrieval"
+	"github.com/mathcslearner/agentloom/internal/retrieval/pgfts"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/tools"
 	"github.com/mathcslearner/agentloom/internal/version"
@@ -148,9 +150,9 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 	// listing matches what the fleet executes. The API never executes
 	// steps (ADR-002), so the llm executor's provider registry is nil
 	// here — its self-described manifest is identical either way.
-	pluginRegistry := exec.CoreBuiltins(nil, nil)
+	pluginRegistry := exec.CoreBuiltins(nil, nil, nil)
 	if cfg.API.TestExecutors {
-		pluginRegistry = exec.Builtins(nil, nil)
+		pluginRegistry = exec.Builtins(nil, nil, nil)
 	}
 	plugins := pluginRegistry.Manifests()
 
@@ -181,6 +183,17 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 		return fmt.Errorf("configuring model providers: %w", err)
 	}
 	plugins = append(plugins, providers.Manifests()...)
+
+	// Reference retrievers (ticket 8.8, ADR-009): the retriever-kind
+	// plugins the retrieve executor queries. The API never executes steps,
+	// but it lists the catalog the fleet runs — pg_fulltext is always
+	// present (it needs no key, only the shared Postgres). WithPlugins
+	// re-sorts the combined slice into (kind, name) order.
+	retrievers, err := retrieval.NewRegistry(pgfts.New(st))
+	if err != nil {
+		return fmt.Errorf("configuring retrievers: %w", err)
+	}
+	plugins = append(plugins, retrievers.Manifests()...)
 
 	apiHandler, err := api.New(st, time.Now, logger, cfg.API.RootKey, rl,
 		api.WithRequestMetrics(apiMetrics), api.WithPlugins(plugins))

@@ -23,6 +23,8 @@ import (
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
+	"github.com/mathcslearner/agentloom/internal/retrieval"
+	"github.com/mathcslearner/agentloom/internal/retrieval/pgfts"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/storetest"
 	"github.com/mathcslearner/agentloom/internal/tools"
@@ -35,7 +37,7 @@ func pluginsServer(t *testing.T, rootKey string) *httptest.Server {
 	s := store.NewFromPool(storetest.NewDB(t))
 	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
 	h, err := api.New(s, func() time.Time { return testNow }, logger, rootKey, api.RateLimitOptions{},
-		api.WithPlugins(exec.Builtins(nil, nil).Manifests()))
+		api.WithPlugins(exec.Builtins(nil, nil, nil).Manifests()))
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
@@ -125,7 +127,7 @@ func TestListPluginsCoreSet(t *testing.T) {
 	s := store.NewFromPool(storetest.NewDB(t))
 	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
 	h, err := api.New(s, func() time.Time { return testNow }, logger, rootKey, api.RateLimitOptions{},
-		api.WithPlugins(exec.CoreBuiltins(nil, nil).Manifests()))
+		api.WithPlugins(exec.CoreBuiltins(nil, nil, nil).Manifests()))
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
@@ -162,7 +164,7 @@ func TestListPluginsWithProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistryFromKeys: %v", err)
 	}
-	manifests := append(exec.CoreBuiltins(nil, nil).Manifests(), providers.Manifests()...)
+	manifests := append(exec.CoreBuiltins(nil, nil, nil).Manifests(), providers.Manifests()...)
 
 	s := store.NewFromPool(storetest.NewDB(t))
 	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
@@ -222,7 +224,7 @@ func TestListPluginsWithMockProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistryFromKeys: %v", err)
 	}
-	manifests := append(exec.CoreBuiltins(nil, nil).Manifests(), providers.Manifests()...)
+	manifests := append(exec.CoreBuiltins(nil, nil, nil).Manifests(), providers.Manifests()...)
 
 	s := store.NewFromPool(storetest.NewDB(t))
 	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
@@ -264,7 +266,7 @@ func TestListPluginsWithTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tools.NewBuiltins: %v", err)
 	}
-	manifests := append(exec.CoreBuiltins(nil, nil).Manifests(), toolReg.Manifests()...)
+	manifests := append(exec.CoreBuiltins(nil, nil, nil).Manifests(), toolReg.Manifests()...)
 
 	s := store.NewFromPool(storetest.NewDB(t))
 	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
@@ -304,6 +306,63 @@ func TestListPluginsWithTools(t *testing.T) {
 	}
 	if _, ok := httpSchema.Properties["url"]; !ok {
 		t.Error("http_request args schema does not declare the url property")
+	}
+}
+
+// TestListPluginsWithRetrievers pins ticket 8.8's catalog wiring: the
+// reference retriever (the way cmd/api folds in retrieval.NewRegistry)
+// surfaces on GET /v1/plugins with kind retriever, its capability flags,
+// and no config schema (retrievers declare none), sorted into (kind, name)
+// order alongside the executors.
+func TestListPluginsWithRetrievers(t *testing.T) {
+	t.Parallel()
+	rootKey := mintTestKey(t)
+
+	s := store.NewFromPool(storetest.NewDB(t))
+	retrievers, err := retrieval.NewRegistry(pgfts.New(s))
+	if err != nil {
+		t.Fatalf("retrieval.NewRegistry: %v", err)
+	}
+	manifests := append(exec.CoreBuiltins(nil, nil, nil).Manifests(), retrievers.Manifests()...)
+
+	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
+	h, err := api.New(s, func() time.Time { return testNow }, logger, rootKey, api.RateLimitOptions{},
+		api.WithPlugins(manifests))
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	var resp api.ListPluginsResponse
+	if res := doAuth(t, srv, http.MethodGet, "/v1/plugins", rootKey, nil, &resp); res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/plugins = %d, want 200", res.StatusCode)
+	}
+	var pg *api.PluginInfo
+	for i := range resp.Plugins {
+		if resp.Plugins[i].Kind == "retriever" && resp.Plugins[i].Name == "pg_fulltext" {
+			pg = &resp.Plugins[i]
+		}
+	}
+	if pg == nil {
+		t.Fatalf("pg_fulltext retriever missing from catalog: %+v", resp.Plugins)
+	}
+	if !pg.Capabilities.Cacheable || pg.Capabilities.SideEffectful || pg.Capabilities.CostBearing {
+		t.Errorf("pg_fulltext capabilities = %+v — want cacheable only", pg.Capabilities)
+	}
+	if pg.Version == "" {
+		t.Error("pg_fulltext has an empty version")
+	}
+	// The combined catalog stays sorted by (kind, name): executors precede
+	// retriever in the documentation order.
+	if !sort.SliceIsSorted(resp.Plugins, func(i, j int) bool {
+		a, b := resp.Plugins[i], resp.Plugins[j]
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		return a.Name < b.Name
+	}) {
+		t.Error("combined catalog is not sorted by (kind, name)")
 	}
 }
 

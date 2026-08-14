@@ -77,7 +77,7 @@ func TestRegistryRejectsBadRegistrations(t *testing.T) {
 func TestBuiltinsRegistersAllTestExecutors(t *testing.T) {
 	t.Parallel()
 
-	r := Builtins(nil, nil)
+	r := Builtins(nil, nil, nil)
 	for _, typ := range []string{"noop", "echo", "sleep", "fail_n_times", "counter", "join", "branch", "llm", "tool", "retrieve"} {
 		e, err := r.Get(typ)
 		if err != nil {
@@ -96,13 +96,13 @@ func TestBuiltinsRegistersAllTestExecutors(t *testing.T) {
 func TestCoreBuiltinsExcludesFilesystemExecutors(t *testing.T) {
 	t.Parallel()
 
-	core := CoreBuiltins(nil, nil)
+	core := CoreBuiltins(nil, nil, nil)
 	for _, typ := range []string{"counter", "effectful_echo"} {
 		if _, err := core.Get(typ); err == nil {
 			t.Errorf("CoreBuiltins registers %q — filesystem test executors must be opt-in", typ)
 		}
 	}
-	full := Builtins(nil, nil)
+	full := Builtins(nil, nil, nil)
 	if got, want := len(core.Types())+2, len(full.Types()); got != want {
 		t.Errorf("core (%d) + 2 = %d types, Builtins has %d — the split no longer partitions the set",
 			len(core.Types()), got, want)
@@ -135,7 +135,7 @@ var deferredStepTypes = map[dag.StepType]string{
 func TestBuiltinsSyncWithCatalog(t *testing.T) {
 	t.Parallel()
 
-	r := Builtins(nil, nil)
+	r := Builtins(nil, nil, nil)
 	catalog := make(map[string]bool)
 	for _, st := range dag.StepTypes() {
 		catalog[string(st)] = true

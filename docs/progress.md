@@ -4606,3 +4606,120 @@ ticket touches no schema.
   hostname and every redirect hop, which is the ticket's SSRF bar.
 - The multi-turn tool loop (model → tool_call → tool → model) is still
   unbuilt; 8.7 ships the `tool` step, not the agentic tool-use loop.
+
+### 8.8 — Retrieval SPI & reference backend ✅
+
+**Delivered.** The retrieval SPI (`internal/retrieval`), a Postgres
+full-text reference backend (`internal/retrieval/pgfts`), a real `retrieve`
+step executor replacing the **last** dev stub in place, a RAG-lite fixture,
+and the plugin-SPI docs page. Migration 0013 adds the corpus table. With
+this ticket every builtin ships at a real `1.0.0` — no dev stub remains,
+and M8 is complete.
+
+- **The SPI** (`internal/retrieval`, the fifth kind-owning leaf package —
+  imports `plugin`+`dag`+stdlib, never exec/engine/**store**). `Retriever`
+  = `Manifest()` + `Ingest(ctx, []Doc) error` + `Query(ctx, q, k)
+  ([]ScoredDoc, error)`. `Doc` is `{id, content, metadata}` (id the upsert
+  key, so re-ingesting a corpus is idempotent); `ScoredDoc` embeds `Doc`
+  and adds `score` — the shape written into step output. `Ingest` is
+  deliberately **off** the step path (steps only `Query`): it is
+  corpus-loading code (tests, seeding, a future ingest API — not an
+  endpoint in v1). `retrieval.Registry` is the plain typed facade over
+  `plugin.Registry` (kind retriever) — register/get/manifests, **no**
+  per-retriever schema compilation, because retrievers declare a nil
+  `ConfigSchema` by decision: the `retrieve` step's config shape
+  (`retriever`, `query`, `top_k`) is uniform and its schema lives on the
+  executor. `*retrieval.Error{Class}` + `*UnknownRetrieverError` mirror
+  `internal/tools`; secret hygiene is structural (no field can hold a query
+  or content), and ctx errors are never wrapped.
+
+- **The reference backend is a subpackage** (`internal/retrieval/pgfts`) —
+  deliberately split from the SPI so `internal/retrieval` stays a leaf and
+  only `pgfts` imports `store`. That split is also the point: `pgfts` is
+  the worked example `docs/plugins.md` points at. It runs over Postgres
+  full-text search — **zero new infrastructure**, the reason it is the
+  reference: the corpus is one table in the same Postgres the engine
+  already depends on. Migration 0013's `retrieval_docs` is
+  `id`/`content`/`metadata`/timestamps plus a **functional GIN index** on
+  `to_tsvector('english', content)` — no materialized tsvector column, so
+  the sqlc row type stays scalar columns. `Query` ranks by `ts_rank`
+  descending (id ascending as a deterministic tiebreak) via
+  `websearch_to_tsquery`, which ANDs query terms and never errors on
+  arbitrary input, so an empty/no-match query returns an empty slice, not a
+  failure; a datastore error is transient, a ctx error passes through. The
+  manifest is `(retriever, pg_fulltext, 1.0.0, cacheable-only)`. Store grew
+  `RetrievalDocRepo` (Upsert/Query/Count) on `Querier`/`repos` +
+  `queries/retrieval.sql`.
+
+- **`exec.RetrieveExecutor`** replaces `StubRetrieveExecutor` in place
+  (version `0.1.0-stub` → `1.0.0`, the M9 cache-bust trigger; flag
+  unchanged — cacheable). It decodes the already-8.2-rendered
+  `RetrieveConfig`, defaults `top_k` to 5 when absent and caps it at 100,
+  resolves the retriever (unknown → permanent), runs one `Query`, and
+  writes `{retriever, query, top_k, results}` where `results` is an array
+  of `{id, content, score, metadata}` — **always present** (empty array on
+  no match, never null) so `${{ steps.<id>.output.results }}` never misses.
+  A `*retrieval.Error`'s class is honored via `ClassifiedError`; context
+  errors pass through unwrapped; an empty rendered query and a negative
+  `top_k` are deterministic ⇒ permanent. dag validation gained a
+  `top_k >= 0` check (`config_field_invalid`; top_k is always an int
+  literal — templating rewrites string values only — so it is a static
+  check with no runtime carve-out).
+
+- **Wiring.** `exec.Builtins`/`CoreBuiltins` grew a third
+  `*retrieval.Registry` parameter (the 8.6/8.7 precedent; nil valid — a
+  retrieve step then fails permanent at lookup). `cmd/worker` **always**
+  builds `retrieval.NewRegistry(pgfts.New(st))` (no key, no toggle: it
+  needs only the shared Postgres) and hands it to the exec registry;
+  `cmd/api` folds the manifest into `GET /v1/plugins`. The OpenAPI spec
+  already enumerated the `retriever` kind and made `config_schema` optional
+  (8.1's forethought), so no spec change was needed.
+
+- **RAG-lite fixture.** New canonical `examples/definitions/rag_lite.json`
+  (corpus-pinned in `examples_test.go`): a `pg_fulltext` retrieve step
+  feeds its ranked results into a mock-backed `llm` step via
+  `${{ steps.search.output.results }}`, executed end-to-end against a
+  seeded corpus in the engine integration suite — the answer text carries
+  the seeded document ids (the citation proof). `fanout.json`'s retrieve
+  step is now the real executor against an empty corpus, keeping the M8
+  exit-criterion workflow offline-green on compose/CI.
+
+- **Tests.** retrieval registry matrix (nil/wrong-kind/duplicate/unknown);
+  `exec` retrieveexec suite (top_k default/cap/negative, empty-query
+  permanent, nil-registry & unknown-retriever permanent, class + ctx
+  passthrough, output shape incl. empty-array-not-null); pgfts integration
+  (ingest+rank with more-matches-ranks-higher, top-k bound, no-match/empty
+  query, re-ingest upsert with count unchanged, metadata round-trip,
+  empty-field rejection); engine RAG-lite e2e + unknown-retriever
+  dead-letter (source permanent); api plugins-listing for kind retriever;
+  the migrate up/down round-trip bumped to latest version 13 (one Down
+  drops `retrieval_docs`, 0012's `usage` column survives). `manifest_test`
+  flag table updated (retrieve → 1.0.0), `stubTypes` now empty.
+
+- **Docs.** New `docs/plugins.md` — the plugin-SPI guide (five kinds,
+  capability flags, and a worked "writing a retriever plugin" walkthrough
+  with `pgfts` as the exemplar), linked from `docs/README.md`. ADR-009
+  gained the retrieval as-built section and updated flag table (retrieve
+  1.0.0, `pg_fulltext` row, the last "(stub)" gone). ADR-006 gained the
+  retrieval error taxonomy. The examples README describes `rag_lite.json`
+  and `mock_pipeline.json`.
+
+**Deferred / quirks.**
+
+- **No ingest API endpoint** — `Ingest` is Go-level only (tests, seeding);
+  an HTTP route to load a corpus is backlog. The ticket's acceptance only
+  needs the integration test.
+- **Single flat corpus, fixed `'english'`** — no namespace/collection
+  column and no per-corpus language in v1. Both, plus the alternate
+  backends (**pgvector**, external vector stores), are documented backlog
+  plugins on this same SPI.
+- **`builtinManifest`'s `version` parameter** now always receives `1.0.0`
+  (the last non-1.0.0 caller, the retrieve stub, is gone), so `unparam`
+  flags it; kept with a `//nolint:unparam` and a reason because the
+  parameter is part of the manifest contract and a future dev stub carries
+  a pre-release version there.
+- **Pre-existing lint debt untouched:** `make lint` reports issues in
+  `internal/tools/*` and `internal/engine/tool_integration_test.go` (from
+  ticket 8.7 — errcheck on `w.Write`, revive unused-parameter, unparam on
+  `transientf`); those files have zero diff in this ticket, so they are out
+  of scope for 8.8. Every package 8.8 touched is lint-clean.

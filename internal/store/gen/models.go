@@ -42,6 +42,14 @@ type Event struct {
 	CreatedAt time.Time
 }
 
+type RetrievalDoc struct {
+	ID        string
+	Content   string
+	Metadata  json.RawMessage
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type Run struct {
 	ID                     uuid.UUID
 	DefinitionID           *uuid.UUID

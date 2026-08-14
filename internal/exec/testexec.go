@@ -11,6 +11,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/plugin"
+	"github.com/mathcslearner/agentloom/internal/retrieval"
 	"github.com/mathcslearner/agentloom/internal/tools"
 )
 
@@ -18,6 +19,13 @@ import (
 // (ticket 8.1, ADR-009): kind executor, name = step type, the flag table
 // from ADR-009. The registry fills ConfigSchema from the dag catalog at
 // registration, so manifests here never carry one.
+//
+// version is a real parameter of a plugin's identity even though every
+// shipped builtin now sits at "1.0.0" (the last dev stub, retrieve, was
+// promoted in 8.8): a future dev stub carries a pre-release version here,
+// so the parameter stays.
+//
+//nolint:unparam // version is part of the manifest contract; all builtins happen to be 1.0.0 today
 func builtinManifest(st dag.StepType, version, description string, caps plugin.Capabilities) plugin.Manifest {
 	return plugin.Manifest{
 		Kind:         plugin.KindExecutor,
@@ -35,19 +43,19 @@ func builtinManifest(st dag.StepType, version, description string, caps plugin.C
 // rule — so their executors are trivial by design, the production llm
 // executor (ticket 8.6, backed by the given provider registry), the
 // production tool executor (ticket 8.7, backed by the given tool
-// registry), and the last dev stub (retrieve; devstub.go) that makes the
-// canonical example definitions runnable until its real executor arrives
-// (ticket 8.8).
+// registry), and the production retrieve executor (ticket 8.8, backed by
+// the given retriever registry — the last dev stub, now replaced in
+// place).
 //
-// providers routes llm-step models to providers and toolReg backs the
-// tool executor; a nil registry is valid for either — a step of that type
-// then fails permanent at resolve/lookup time — which suits the
-// non-executing call sites (manifest and registry-shape tests). This is
-// the registry for tests and dev/demo deployments. Production workers
-// default to CoreBuiltins — see the AGENTLOOM_WORKER_TEST_EXECUTORS knob
-// (ticket 6.2).
-func Builtins(providers *llm.Registry, toolReg *tools.Registry) *Registry {
-	r := CoreBuiltins(providers, toolReg)
+// providers routes llm-step models to providers, toolReg backs the tool
+// executor, and retrievers back the retrieve executor; a nil registry is
+// valid for any of the three — a step of that type then fails permanent at
+// resolve/lookup time — which suits the non-executing call sites (manifest
+// and registry-shape tests). This is the registry for tests and dev/demo
+// deployments. Production workers default to CoreBuiltins — see the
+// AGENTLOOM_WORKER_TEST_EXECUTORS knob (ticket 6.2).
+func Builtins(providers *llm.Registry, toolReg *tools.Registry, retrievers *retrieval.Registry) *Registry {
+	r := CoreBuiltins(providers, toolReg, retrievers)
 	for _, e := range []Executor{CounterExecutor{}, EffectfulEchoExecutor{}} {
 		if err := r.Register(e); err != nil {
 			panic(err) // unreachable: a fixed set of distinct, non-empty types
@@ -64,11 +72,12 @@ func Builtins(providers *llm.Registry, toolReg *tools.Registry) *Registry {
 // of an unregistered type still validates (the dag catalog is definition
 // shape, not fleet capability) and then dead-letters permanent at claim
 // time via the registry miss — the established 5.4 path. providers backs
-// the llm executor and toolReg the tool executor (see Builtins).
-func CoreBuiltins(providers *llm.Registry, toolReg *tools.Registry) *Registry {
+// the llm executor, toolReg the tool executor, and retrievers the retrieve
+// executor (see Builtins).
+func CoreBuiltins(providers *llm.Registry, toolReg *tools.Registry, retrievers *retrieval.Registry) *Registry {
 	r, err := NewRegistry(NoopExecutor{}, EchoExecutor{}, NewSleep(), FailNTimesExecutor{},
 		JoinExecutor{}, BranchExecutor{},
-		NewLLMExecutor(providers), NewToolExecutor(toolReg), StubRetrieveExecutor{})
+		NewLLMExecutor(providers), NewToolExecutor(toolReg), NewRetrieveExecutor(retrievers))
 	if err != nil {
 		panic(err) // unreachable: a fixed set of distinct, non-empty types
 	}

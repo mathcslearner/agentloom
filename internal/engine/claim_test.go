@@ -314,7 +314,7 @@ func TestClassifyTakeoverFailure(t *testing.T) {
 func TestNewValidation(t *testing.T) {
 	t.Parallel()
 
-	if _, err := New(nil, exec.Builtins(nil, nil), "w"); err == nil {
+	if _, err := New(nil, exec.Builtins(nil, nil, nil), "w"); err == nil {
 		t.Error("New with nil store: want error, got nil")
 	}
 	if _, err := New(&store.Store{}, nil, "w"); err == nil {

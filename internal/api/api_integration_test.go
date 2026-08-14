@@ -20,6 +20,8 @@ import (
 	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/queue"
 	"github.com/mathcslearner/agentloom/internal/queue/queuetest"
+	"github.com/mathcslearner/agentloom/internal/retrieval"
+	"github.com/mathcslearner/agentloom/internal/retrieval/pgfts"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 	"github.com/mathcslearner/agentloom/internal/store/storetest"
@@ -306,9 +308,10 @@ func TestGetRunMisses(t *testing.T) {
 // TestSubmitFanoutRunsToCompletion is the ticket's acceptance loop minus
 // Docker: the canonical fanout fixture goes in through POST /v1/runs, the
 // production dispatcher drains its outbox rows, two builtin-registry
-// workers (llm/tool/retrieve running as dev stubs) execute it, and GET
-// /v1/runs/{id} — the same endpoint ctl watch polls — reports succeeded
-// with the full attempt history.
+// workers execute it on the production executors (llm on the mock, tool
+// json_transform, retrieve pg_fulltext), and GET /v1/runs/{id} — the same
+// endpoint ctl watch polls — reports succeeded with the full attempt
+// history.
 func TestSubmitFanoutRunsToCompletion(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -350,8 +353,14 @@ func TestSubmitFanoutRunsToCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tools.NewBuiltins: %v", err)
 	}
+	// fanout.json's search_docs is a pg_fulltext retrieve step; against the
+	// empty corpus it returns no results and succeeds (ticket 8.8).
+	retrievers, err := retrieval.NewRegistry(pgfts.New(s))
+	if err != nil {
+		t.Fatalf("retrieval.NewRegistry: %v", err)
+	}
 	for _, name := range []string{"worker-a", "worker-b"} {
-		eng, err := engine.New(s, exec.Builtins(providers, toolReg), name, engine.WithDispatchNudge(d.Nudge))
+		eng, err := engine.New(s, exec.Builtins(providers, toolReg, retrievers), name, engine.WithDispatchNudge(d.Nudge))
 		if err != nil {
 			t.Fatalf("engine.New: %v", err)
 		}
@@ -402,18 +411,23 @@ func TestSubmitFanoutRunsToCompletion(t *testing.T) {
 			t.Errorf("edge %s->%s resolution = %q, want fired", e.From, e.To, e.Resolution)
 		}
 	}
-	// The retrieve step still runs as a dev stub (8.8) — visible in its
-	// output.
+	// search_docs runs the production pg_fulltext retrieve executor
+	// (ticket 8.8) against an empty corpus: it succeeds with the documented
+	// output shape and an empty results array (never null).
 	{
 		var out struct {
-			Stub bool `json:"stub"`
+			Retriever string            `json:"retriever"`
+			Results   []json.RawMessage `json:"results"`
 		}
 		step, ok := stepFrom(run, "search_docs")
 		if !ok {
 			t.Fatalf("step search_docs missing from response")
 		}
-		if err := json.Unmarshal(step.Output, &out); err != nil || !out.Stub {
-			t.Errorf("step search_docs output = %s, want a stub-marked payload (err=%v)", step.Output, err)
+		if err := json.Unmarshal(step.Output, &out); err != nil {
+			t.Fatalf("step search_docs output = %s: %v", step.Output, err)
+		}
+		if out.Retriever != "pg_fulltext" || out.Results == nil || len(out.Results) != 0 {
+			t.Errorf("step search_docs output = %s, want pg_fulltext with an empty results array", step.Output)
 		}
 	}
 	// fetch_news runs the production json_transform tool (ticket 8.7): its

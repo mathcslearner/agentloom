@@ -38,6 +38,8 @@ import (
 	"github.com/mathcslearner/agentloom/internal/obs/metrics"
 	"github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/queue"
+	"github.com/mathcslearner/agentloom/internal/retrieval"
+	"github.com/mathcslearner/agentloom/internal/retrieval/pgfts"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/tools"
 	"github.com/mathcslearner/agentloom/internal/version"
@@ -153,18 +155,28 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	if err != nil {
 		return fmt.Errorf("configuring tools: %w", err)
 	}
+	// Reference retriever (ticket 8.8, ADR-009): the retrieve executor
+	// queries it by name. pg_fulltext runs over the same Postgres the
+	// engine already depends on — zero new infrastructure, so it is always
+	// wired (no key, no toggle); pgvector/external stores are backlog
+	// plugins registered here the same way.
+	retrievers, err := retrieval.NewRegistry(pgfts.New(st))
+	if err != nil {
+		return fmt.Errorf("configuring retrievers: %w", err)
+	}
 	// Production workers register the core set; the filesystem-writing
 	// test executors (counter, effectful_echo) are opt-in via
 	// AGENTLOOM_WORKER_TEST_EXECUTORS (ticket 6.2) — the compose dev
 	// stack and the crash/chaos suites set it.
-	registry := exec.CoreBuiltins(providers, toolReg)
+	registry := exec.CoreBuiltins(providers, toolReg, retrievers)
 	if cfg.Worker.TestExecutors {
-		registry = exec.Builtins(providers, toolReg)
+		registry = exec.Builtins(providers, toolReg, retrievers)
 	}
 	logger.InfoContext(ctx, "plugin registry built",
 		slog.Int("plugins", len(registry.Manifests())),
 		slog.Int("providers", len(providers.Names())),
 		slog.Int("tools", len(toolReg.Names())),
+		slog.Int("retrievers", len(retrievers.Names())),
 		slog.Bool("test_executors", cfg.Worker.TestExecutors))
 	// Per-step log capture (ticket 7.4): the sink tees every executor's
 	// StepContext.Logger into the step_logs store; its flusher runs on

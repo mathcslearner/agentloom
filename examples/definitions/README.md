@@ -28,8 +28,9 @@ each example's "header comment" is its top-level `description` field.
   with three unconditioned out-edges (all three successors run in
   parallel) converging on a `join` with `mode: all` before a synthesis
   step. Its `llm` steps use the offline mock (`mock/sim-1`, like
-  `mock_pipeline.json`) so the whole fixture runs end-to-end with no API
-  key; its `tool`/`retrieve` steps are still dev stubs (8.7/8.8).
+  `mock_pipeline.json`) and its `tool`/`retrieve` steps are the offline
+  built-ins (`json_transform`, `pg_fulltext` over an empty corpus), so the
+  whole fixture runs end-to-end with no API key.
 - **[conditional_branch.json](conditional_branch.json)** — exclusive
   routing: a classifier feeds a `branch` step whose out-edges fire
   first-match-in-declaration-order — two `when`-conditioned arms plus a
@@ -47,6 +48,19 @@ each example's "header comment" is its top-level `description` field.
   (`get`, `default`, `toJson`, `truncate`). Echo steps output exactly
   their rendered input, so each output is a probe of what rendering
   resolved; the engine integration suite executes this file end-to-end.
+- **[mock_pipeline.json](mock_pipeline.json)** — two chained `llm` steps
+  passing data through templating on the deterministic offline mock
+  provider (ticket 8.6): a draft turns a param into a completion, a refine
+  feeds it back into a second call via `${{ steps.draft.output.text }}`.
+  The workhorse offline `llm` fixture.
+- **[rag_lite.json](rag_lite.json)** — retrieval-augmented generation
+  (ticket 8.8): a `retrieve` step queries the reference `pg_fulltext`
+  retriever for a run param, then an `llm` step (offline mock) answers
+  grounded in the retrieved documents and cites them by id. Proves
+  retrieve → llm data flow — `${{ steps.search.output.results }}` splices
+  the ranked `{id, content, score, metadata}` results into the prompt. The
+  engine integration suite seeds a corpus and executes this file
+  end-to-end.
 - **[kitchen_sink.json](kitchen_sink.json)** — one coherent
   research-and-publish pipeline exercising every construct: all 14 step
   types, both join modes (`any` and `all`), conditioned and unconditioned

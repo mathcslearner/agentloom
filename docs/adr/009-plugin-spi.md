@@ -149,10 +149,11 @@ the plugin:
   M9's cache-hit accounting records counterfactual spend for them.
 
 Flags describe the plugin's **contract, not today's implementation
-shortcut**: the remaining dev stubs (`tool`, `retrieve`) carry the flags
-of the real semantics that will replace them in place (8.7–8.8), so
-middleware written against the flags behaves correctly across that swap
-without a flag migration. (`llm` was the first such swap, landing in 8.6.)
+shortcut**: through 8.6–8.8 the dev stubs (`llm`, then `tool`, then
+`retrieve`) carried the flags of the real semantics that replaced them in
+place, so middleware written against the flags behaved correctly across
+each swap without a flag migration. With 8.8 every builtin ships at a real
+`1.0.0` — no dev stub remains.
 
 The builtin flag table (the conformance baseline):
 
@@ -168,14 +169,17 @@ The builtin flag table (the conformance baseline):
 | `effectful_echo` | 1.0.0 | ✓ | – | – |
 | `llm` | 1.0.0 | – | ✓ | ✓ |
 | `tool` | 1.0.0 | ✓ | – | – |
-| `retrieve` (stub) | 0.1.0-stub | – | ✓ | – |
+| `retrieve` | 1.0.0 | – | ✓ | – |
 
 (`join`/`branch` are pure but not cacheable: they are control flow whose
 meaning is readiness and edge firing — caching them is noise. The `tool`
 *executor* is side-effectful because an unknown tool must be assumed to
 act on the world; individual built-in tools carry their own per-tool
 flags under kind `tool` — `http_request` side_effectful, `json_transform`
-cacheable — see the 8.7 as-built section.)
+cacheable — see the 8.7 as-built section. The `retrieve` executor is
+cacheable: a query is a pure read of the corpus and ranking is
+deterministic given the corpus; the `pg_fulltext` retriever under kind
+`retriever` carries the same flag — see the 8.8 as-built section.)
 
 ### Plugin version strings
 
@@ -388,6 +392,73 @@ construction.
   `json_transform` over the templated topic, keeping the M8 exit-criterion
   workflow fully offline on compose/CI; the non-executed corpus fixtures
   keep realistic `http_request` steps.
+
+### Retrieval SPI & reference backend (as built, 8.8)
+
+`internal/retrieval` is the fifth kind-owning leaf package (imports
+`plugin` + `dag` + stdlib, never `exec`/engine/`store`), giving the
+`retriever` kind the same typed-facade treatment. The reference backend
+lives in a **subpackage**, `internal/retrieval/pgfts`, deliberately split
+out so the SPI stays a leaf: only `pgfts` imports `store`. That split is
+also the point — it is the worked example the "writing a retriever plugin"
+walkthrough (`docs/plugins.md`) points at.
+
+- **Interface.** `Retriever` = `Manifest() plugin.Manifest` +
+  `Ingest(ctx, []Doc) error` + `Query(ctx, q string, k int) ([]ScoredDoc,
+  error)`. `Doc` is `{id, content, metadata}` (id the upsert key, so
+  re-ingesting a corpus is idempotent); `ScoredDoc` embeds `Doc` and adds a
+  `score` — the shape written into step output. `Ingest` is **not** on the
+  step execution path (steps only `Query`); it is corpus-loading code
+  (tests, seeding, a future ingest API — deliberately not an endpoint in
+  v1).
+
+- **No per-retriever config schema.** Unlike tools, retrievers declare a
+  nil `ConfigSchema`: the `retrieve` step's config shape — `retriever`,
+  `query`, `top_k` — is uniform across every retriever, and its schema
+  lives on the `retrieve` executor (generated from `dag.RetrieveConfig`
+  like every executor's). So `retrieval.Registry` is the plain typed facade
+  (register/get/manifests) without the tool registry's schema-compilation
+  step.
+
+- **`exec.RetrieveExecutor`** replaces the last dev stub
+  (`StubRetrieveExecutor`) in place (version `0.1.0-stub` → `1.0.0`, the M9
+  cache-bust trigger; flag unchanged — `cacheable`). It decodes the
+  already-8.2-rendered `RetrieveConfig`, defaults `top_k` to 5 when absent
+  and caps it at 100, resolves the named retriever (unknown → permanent),
+  runs one `Query`, and writes the documented output shape:
+  `{retriever, query, top_k, results}` where `results` is an array of
+  `{id, content, score, metadata}` — **always present** (an empty array on
+  no match, never null) so a downstream `${{ steps.<id>.output.results }}`
+  never misses. A `*retrieval.Error`'s class is honored via
+  `exec.ClassifiedError`; context errors pass through unwrapped; an empty
+  rendered query and a negative `top_k` are deterministic ⇒ permanent.
+
+- **Reference backend.** `pgfts` runs over Postgres full-text search —
+  **zero new infrastructure**, the reason it is the reference: the corpus
+  is one table (`retrieval_docs`, migration 0013) in the same Postgres the
+  engine already depends on. Ranking uses a **functional GIN index** over
+  `to_tsvector('english', content)` (no materialized tsvector column, so
+  the sqlc row type stays scalar), and `Query` ranks by `ts_rank`
+  descending with `websearch_to_tsquery` — which ANDs query terms and never
+  errors on arbitrary input, so an empty/no-match query returns an empty
+  slice, not a failure. `pg_fulltext` is `cacheable`-only (a query is a
+  pure read; ranking is deterministic given the corpus), not
+  side-effectful, not cost-bearing. Fixed `'english'` and a single flat
+  corpus in v1; per-corpus language, namespaces, and the alternate backends
+  (pgvector, external vector stores) are documented backlog plugins on this
+  same SPI.
+
+- **Wiring.** `retrieval.NewRegistry(pgfts.New(st))` is built in both
+  deployables — always (no key, no toggle: it needs only the shared
+  Postgres). `cmd/worker` hands it to the exec registry; `cmd/api` folds
+  its manifest into `GET /v1/plugins`. `exec.Builtins`/`CoreBuiltins` grew a
+  third `*retrieval.Registry` parameter (the 8.6/8.7 precedent; nil valid —
+  a retrieve step then fails permanent at lookup). The new canonical
+  `rag_lite.json` fixture is the RAG-lite proof: a `pg_fulltext` retrieve
+  step feeds its ranked results into a mock-backed `llm` step via
+  `${{ steps.search.output.results }}`, executed end-to-end against a seeded
+  corpus in the engine integration suite; `fanout.json`'s retrieve step is
+  now the real executor against an empty corpus (offline-green).
 
 ## Consequences
 

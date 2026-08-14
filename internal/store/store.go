@@ -34,6 +34,7 @@ type Querier interface {
 	Events() EventRepo
 	Outbox() OutboxRepo
 	APIKeys() APIKeyRepo
+	RetrievalDocs() RetrievalDocRepo
 }
 
 // Store is the pool-backed entry point to the persistence layer.
@@ -95,3 +96,5 @@ func (r repos) StepLogs() StepLogRepo       { return stepLogRepo(r) }
 func (r repos) Events() EventRepo           { return eventRepo(r) }
 func (r repos) Outbox() OutboxRepo          { return outboxRepo(r) }
 func (r repos) APIKeys() APIKeyRepo         { return apiKeyRepo(r) }
+
+func (r repos) RetrievalDocs() RetrievalDocRepo { return retrievalDocRepo(r) }
