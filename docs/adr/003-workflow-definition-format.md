@@ -493,6 +493,74 @@ original text left open; no prior decision is changed.*
   it and recording the failure, and failure classification stays with
   ADR-006 (M5).
 
+### Step input templating (`${{ ... }}`)
+
+*Added 2026-08-14 while implementing ticket 8.2 — makes the template
+syntax the examples always carried informally a real, linted part of the
+contract; no prior decision is changed.*
+
+- **Where templates live.** `${{ ... }}` expressions may appear in JSON
+  **string values inside a step's `config`** — and only there. Envelope
+  fields (`retry`, `timeout`, `max_wall_clock`) are materialized at
+  instantiation, before any output exists, so they take literals only;
+  CEL predicates (`when`/`condition`) have their own variable
+  environment; the `ui` block stays engine-opaque; object keys are never
+  rendered. Rendering happens in the worker, per attempt, just before
+  the executor decodes the config — the stored `run_steps.config` keeps
+  the authored templates, and `StepContext.Config` carries the rendered
+  result.
+- **Reference grammar.** Two roots: `steps.<id>.output[.<path>]` (only a
+  step's *output* is addressable — never its status or config) and
+  `run.params[.<key>[.<path>]]`. Path segments traverse objects by key
+  and arrays by integer index (`steps.a.output.items.0.name`); keys
+  outside `[A-Za-z0-9_-]` are unreachable by bare references (use `get`
+  with a quoted path).
+- **Engine and functions.** Go `text/template` with `${{`/`}}`
+  delimiters — a bare `{{ ... }}` is inert literal text. Expressions are
+  a single pipeline: control structures, variable declarations, and
+  every text/template builtin (`printf`, `index`, `call`, ...) are
+  rejected at parse time, so the function surface is exactly **`get`**
+  (lenient path lookup → nil when absent), **`default`** (fallback for
+  nil/empty, the `get` companion), **`toJson`** (compact JSON string),
+  and **`truncate`** (first N runes). String literals inside expressions
+  may be single-quoted (`get 'steps.a.output.x'`) to avoid `\"` noise in
+  JSON documents; there is deliberately no escape for a literal `${{` in
+  config text (revisit if it ever bites).
+- **Strict by default, lenient by opt-in.** A bare reference that does
+  not resolve — unknown step output, missing key, out-of-range index,
+  undeclared or unsubmitted param — is a typed error, never an empty
+  string; ADR-006 classifies the resulting step failure permanent. The
+  sanctioned opt-out is `${{ get 'path' | default fallback }}`.
+- **Type preservation.** A string that is exactly one expression
+  (whitespace aside) is replaced by the resolved value itself — objects,
+  arrays, numbers, booleans, and null survive as JSON, which is how
+  structured data flows between steps. Mixed literal-and-expression
+  strings render to strings: scalars interpolate naturally (numbers
+  verbatim, `true`/`false`, nil as the empty string), composites as
+  compact JSON. A config containing templates re-encodes canonically
+  when rendered (sorted keys, no HTML escaping); template-free configs
+  pass through byte-identical.
+- **Injection is inert.** Rendering happens exactly once, on the
+  authored definition; values arriving from outputs or params are data
+  and are never re-parsed as templates.
+- **Static lint at validation.** Five codes join the one-pass report:
+  `template_invalid` (syntax, control structures, unknown functions),
+  `template_ref_invalid` (malformed reference or unknown root),
+  `template_ref_unknown_step`, `template_ref_not_upstream` (the
+  referenced step must be a strict normal-edge ancestor — loop-edge-only
+  reachability does not count, and self-references are rejected), and
+  `template_ref_unknown_param`. Quoted `get` paths are exempt from the
+  lint (resolving to nil is their contract) but still count toward the
+  outputs the engine prefetches. One knock-on carve-out: a *templated*
+  sleep `duration` skips the literal parseability check at validation
+  (the executor re-validates the rendered value at runtime).
+- **Runtime data scope.** The engine fetches exactly the referenced
+  steps' rows (plus the run's params) before rendering; only a
+  `succeeded` step contributes an output. Referencing a skipped or
+  still-unfinished step (possible behind a `join any`) is a strict
+  missing-reference failure by design — `get`/`default` is the tool for
+  values that may legitimately be absent.
+
 ### Enforcement points
 
 For conformance, the rules above land in specific tickets: **1.2** — strict
@@ -501,7 +569,8 @@ gate, JSON Schema generation; **1.3** — ID rules, endpoint existence,
 per-type config shape, branch edge rules, limits, multi-error reporting;
 **1.4** — acyclicity-minus-loop-edges, loop-edge ancestry, readiness/skip/join
 semantics; **1.5** — CEL compilation of `when`/`condition`, evaluation-error
-policy.
+policy; **8.2** — template parsing/rendering, the template lint codes, and
+the worker-side render step.
 
 ## Consequences
 

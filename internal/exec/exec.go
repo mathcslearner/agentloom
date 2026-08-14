@@ -40,15 +40,19 @@ type StepContext struct {
 	// It selects the config shape Config decodes into.
 	StepType dag.StepType
 
-	// Config is the step's raw config exactly as materialized into
-	// run_steps.config (ADR-004); nil when the definition had no config
-	// key. Executors decode it with configAs — decoding stays in the
-	// executor, so the worker never needs to know config shapes.
+	// Config is the step's config as materialized into run_steps.config
+	// (ADR-004) with template rendering applied (ticket 8.2): `${{ ... }}`
+	// expressions in string values are resolved against upstream step
+	// outputs and run params before the executor sees them. Nil when the
+	// definition had no config key. Executors decode it with configAs —
+	// decoding stays in the executor, so the worker never needs to know
+	// config shapes.
 	Config json.RawMessage
 
-	// Input is the step's rendered input payload. Template rendering
-	// arrives in M6; until then the engine passes through whatever raw
-	// input the step carries, and executors must tolerate nil.
+	// Input is reserved for a future merged-input payload (e.g. a join
+	// fan-in merge). Ticket 8.2 renders templates in place inside Config
+	// instead, so Input is currently always nil; executors must tolerate
+	// that.
 	Input json.RawMessage
 
 	// Attempt is the 1-based attempt number from the claim's attempt row

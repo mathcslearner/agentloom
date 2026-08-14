@@ -66,6 +66,16 @@ const (
 	CodeLoopEdgeNotAncestor     ValidationCode = "loop_edge_not_ancestor"
 	CodeExprInvalid             ValidationCode = "invalid_expression"
 	CodeExprNotBool             ValidationCode = "expression_not_boolean"
+
+	// Template lint codes (ticket 8.2): `${{ ... }}` expressions in step
+	// config strings must parse, and their references must resolve
+	// statically — the referenced step exists and is upstream via normal
+	// edges, the referenced run parameter is declared.
+	CodeTemplateInvalid         ValidationCode = "template_invalid"
+	CodeTemplateRefInvalid      ValidationCode = "template_ref_invalid"
+	CodeTemplateRefUnknownStep  ValidationCode = "template_ref_unknown_step"
+	CodeTemplateRefNotUpstream  ValidationCode = "template_ref_not_upstream"
+	CodeTemplateRefUnknownParam ValidationCode = "template_ref_unknown_param"
 )
 
 // ValidationIssue is one structural problem in a definition, qualified by
@@ -116,7 +126,10 @@ func Validate(def *Definition) (issues []*ValidationIssue, err error) {
 	v.checkEdges(def, stepIndex)
 	v.checkGraph(def, stepIndex)
 	if !v.has(CodeDuplicateStepID, CodeUnknownEdgeEndpoint) {
-		v.checkGraphSemantics(def)
+		if g, gerr := NewGraph(def); gerr == nil {
+			v.checkGraphSemantics(def, g)
+			v.checkTemplates(def, g)
+		}
 	}
 
 	return v.issues, v.err()
@@ -380,13 +393,20 @@ func (v *validator) checkStepConfig(path string, s Step) {
 	case StepSleep:
 		// Parseability is checked here, not at runtime, for the same reason
 		// CEL predicates compile at validation time: a definition the engine
-		// accepts must not explode mid-run on a malformed literal.
+		// accepts must not explode mid-run on a malformed literal. A
+		// templated duration is the exception (ticket 8.2): the literal
+		// only exists after rendering, so the executor re-validates it at
+		// runtime and the template lint covers the references here.
 		if c := cfg[SleepConfig](s); c.Duration == "" {
 			v.add(CodeConfigFieldRequired, path+".config.duration", "required field is missing")
-		} else if d, err := time.ParseDuration(c.Duration); err != nil {
-			v.add(CodeConfigFieldInvalid, path+".config.duration", "not a Go duration string: %v", err)
-		} else if d <= 0 {
-			v.add(CodeConfigFieldInvalid, path+".config.duration", "must be positive, got %q", c.Duration)
+		} else if !HasTemplate(c.Duration) {
+			// A templated duration skips these literal checks (the literal
+			// only exists after rendering; the executor re-validates it).
+			if d, err := time.ParseDuration(c.Duration); err != nil {
+				v.add(CodeConfigFieldInvalid, path+".config.duration", "not a Go duration string: %v", err)
+			} else if d <= 0 {
+				v.add(CodeConfigFieldInvalid, path+".config.duration", "must be positive, got %q", c.Duration)
+			}
 		}
 	case StepFailNTimes:
 		// Zero means absent (the key cannot be distinguished from an explicit
@@ -510,6 +530,83 @@ func flatten(err error) []error {
 	return []error{err}
 }
 
+// checkTemplates is the ticket 8.2 static lint: every step config's
+// `${{ ... }}` expressions must parse under the template grammar, and
+// their references must be statically resolvable — a referenced step
+// exists and is strictly upstream via normal edges (its output is
+// guaranteed recorded before this step becomes ready; loop-edge-only
+// reachability does not count), and a referenced run parameter is
+// declared. Lenient references (quoted `get` paths) are exempt: resolving
+// to nil at runtime is their contract. Runs only when the graph is
+// well-formed, sharing Validate's gate with checkGraphSemantics.
+func (v *validator) checkTemplates(def *Definition, g *Graph) {
+	for i, s := range def.Steps {
+		if s.Config == nil {
+			continue
+		}
+		raw, err := marshalNoEscape(s.Config)
+		if err != nil {
+			continue // unreachable for registered config structs
+		}
+		if !HasTemplate(string(raw)) {
+			continue
+		}
+		base := fmt.Sprintf("steps[%d].config", i)
+		ct, perr := ParseConfigTemplates(raw)
+		if perr != nil {
+			for _, sub := range flatten(perr) {
+				var re *TemplateRefError
+				var te *TemplateError
+				switch {
+				case errors.As(sub, &re):
+					v.add(CodeTemplateRefInvalid, tmplIssuePath(base, re.Path), "invalid reference %q: %s", re.Ref, re.Msg)
+				case errors.As(sub, &te):
+					v.add(CodeTemplateInvalid, tmplIssuePath(base, te.Path), "%s", te.Msg)
+				default:
+					v.add(CodeTemplateInvalid, base, "%v", sub)
+				}
+			}
+			continue
+		}
+		var ancestors map[string]bool // lazy: one BFS per referencing step
+		for _, r := range ct.Refs() {
+			if r.Lenient {
+				continue
+			}
+			path := tmplIssuePath(base, r.ConfigPath)
+			switch {
+			case r.StepID != "":
+				if _, known := g.index[r.StepID]; !known {
+					v.add(CodeTemplateRefUnknownStep, path, "reference %q names unknown step %q", r.Raw, r.StepID)
+					continue
+				}
+				if ancestors == nil {
+					ancestors, _ = g.Ancestors(s.ID) // s.ID is known: the gate ensured a well-formed graph
+				}
+				switch {
+				case r.StepID == s.ID:
+					v.add(CodeTemplateRefNotUpstream, path, "reference %q: a step cannot reference its own output", r.Raw)
+				case !ancestors[r.StepID]:
+					v.add(CodeTemplateRefNotUpstream, path, "reference %q: step %q is not upstream of %q (no normal-edge path)", r.Raw, r.StepID, s.ID)
+				}
+			case r.ParamKey != "":
+				if _, declared := def.Params[r.ParamKey]; !declared {
+					v.add(CodeTemplateRefUnknownParam, path, "reference %q names undeclared run parameter %q", r.Raw, r.ParamKey)
+				}
+			}
+		}
+	}
+}
+
+// tmplIssuePath qualifies a config-relative template path with the step's
+// issue path prefix.
+func tmplIssuePath(base, rel string) string {
+	if rel == "" {
+		return base
+	}
+	return base + "." + rel
+}
+
 // checkGraph runs the degree-based graph rules: at least one entry step,
 // isolated-step warnings, and the branch out-edge firing-rule shape.
 // Loop edges never count toward readiness degrees (ADR-003), but any edge
@@ -590,12 +687,9 @@ func (v *validator) checkGraph(def *Definition, stepIndex map[string]int) {
 // are the only sanctioned cycles), and each loop edge's `to` must be an
 // ancestor of its `from` in that acyclic graph — the `to`→`from` paths are
 // the loop body M14 clones per iteration. Only called once the graph is
-// well-formed (unique IDs, endpoints resolve), so NewGraph cannot fail.
-func (v *validator) checkGraphSemantics(def *Definition) {
-	g, err := NewGraph(def)
-	if err != nil {
-		return // unreachable given the gate in Validate; stay defensive
-	}
+// well-formed (unique IDs, endpoints resolve), with the Graph built by
+// Validate's gate.
+func (v *validator) checkGraphSemantics(def *Definition, g *Graph) {
 	for _, c := range g.findCycles() {
 		v.add(CodeCycle, fmt.Sprintf("edges[%d]", c.edgeIdx),
 			"edge closes the cycle %s (mark a loop edge instead: only loop edges may form cycles)", c.pathString())

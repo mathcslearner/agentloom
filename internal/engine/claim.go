@@ -196,6 +196,22 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 			slog.Any("error", terr))
 		return e.completeFailure(ctx, step, terr, dag.ClassPermanent, origin.RunTrace)
 	}
+	// Template rendering (ticket 8.2): resolve the config's `${{ ... }}`
+	// references against upstream outputs and run params. Deterministic
+	// failures (missing reference, unparseable template) land a permanent
+	// failure completion — the run's recorded state is immutable, so a
+	// retry would fail identically; transport failures decide nothing and
+	// redeliver.
+	renderedConfig, rcErr := e.renderConfig(ctx, step)
+	if rcErr != nil {
+		var re *renderError
+		if errors.As(rcErr, &re) {
+			logger.ErrorContext(ctx, "step config rendering failed; recording step failure",
+				slog.Any("error", rcErr))
+			return e.completeFailure(ctx, step, rcErr, dag.ClassPermanent, origin.RunTrace)
+		}
+		return rcErr
+	}
 	// The claim always stamps a claim_id; the guard only keeps a corrupt
 	// row from panicking the journal binding (misuse detection catches the
 	// rest downstream).
@@ -224,9 +240,12 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	execCtx, execSpan := e.tracer.Start(watchCtx, "step.executor")
 	out, expired, execErr := runExecutor(execCtx, executor, exec.StepContext{
 		StepType: dag.StepType(step.StepType),
-		Config:   step.Config,
-		Input:    nil, // input rendering is M6; run_steps carries no input yet
-		Attempt:  int(step.AttemptCount),
+		// The rendered config (ticket 8.2): templates resolved, ready for
+		// the executor's strict decode. Input stays nil — rendering happens
+		// in place inside the config, not as a separate payload.
+		Config:  renderedConfig,
+		Input:   nil,
+		Attempt: int(step.AttemptCount),
 		// Stable per (run, step) — the same key on every attempt, retry,
 		// reclaim, and takeover of this step (ticket 5.5).
 		IdempotencyKey: effects.Key(step.RunID, step.StepID),

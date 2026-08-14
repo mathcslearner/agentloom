@@ -200,6 +200,11 @@ type StepRepo interface {
 	CreateBatch(ctx context.Context, args []gen.CreateRunStepsParams) (int64, error)
 	Get(ctx context.Context, runID uuid.UUID, stepID string) (gen.RunStep, error)
 	ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.RunStep, error)
+	// ListByIDs returns the named steps of the run in step_id order — the
+	// template renderer's one-round-trip upstream-output read (ticket
+	// 8.2). Unknown IDs are simply absent from the result, not an error;
+	// the renderer's strict-reference semantics decide what a miss means.
+	ListByIDs(ctx context.Context, runID uuid.UUID, stepIDs []string) ([]gen.RunStep, error)
 	// CreateEdge inserts an edge row. An empty arg.EdgeType becomes
 	// normal; a zero arg.GraphVersion becomes 1.
 	CreateEdge(ctx context.Context, arg gen.CreateRunEdgeParams) (gen.RunEdge, error)
@@ -280,6 +285,11 @@ func (r stepRepo) Get(ctx context.Context, runID uuid.UUID, stepID string) (gen.
 func (r stepRepo) ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.RunStep, error) {
 	steps, err := r.q.ListRunSteps(ctx, runID)
 	return steps, wrapErr("list run steps", err)
+}
+
+func (r stepRepo) ListByIDs(ctx context.Context, runID uuid.UUID, stepIDs []string) ([]gen.RunStep, error) {
+	steps, err := r.q.ListRunStepsByIDs(ctx, gen.ListRunStepsByIDsParams{RunID: runID, StepIds: stepIDs})
+	return steps, wrapErr("list run steps by ids", err)
 }
 
 func (r stepRepo) CreateEdge(ctx context.Context, arg gen.CreateRunEdgeParams) (gen.RunEdge, error) {

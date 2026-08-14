@@ -37,6 +37,14 @@ each example's "header comment" is its top-level `description` field.
   refinement via a marked **loop edge** (`type: loop`, `condition`,
   `max_iterations`) — the only sanctioned kind of cycle, executed by
   unrolling (M14) — plus a conditioned exit edge.
+- **[echo_pipeline.json](echo_pipeline.json)** — step input templating
+  (ticket 8.2): a three-step echo chain where every value flows through
+  `${{ ... }}` expressions — run params (whole objects preserved as
+  JSON), nested output paths, string interpolation, a multi-hop
+  reference two steps upstream, and the full restricted function set
+  (`get`, `default`, `toJson`, `truncate`). Echo steps output exactly
+  their rendered input, so each output is a probe of what rendering
+  resolved; the engine integration suite executes this file end-to-end.
 - **[kitchen_sink.json](kitchen_sink.json)** — one coherent
   research-and-publish pipeline exercising every construct: all 14 step
   types, both join modes (`any` and `all`), conditioned and unconditioned

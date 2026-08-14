@@ -361,3 +361,60 @@ func (q *Queries) ListRunSteps(ctx context.Context, runID uuid.UUID) ([]RunStep,
 	}
 	return items, nil
 }
+
+const listRunStepsByIDs = `-- name: ListRunStepsByIDs :many
+SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span FROM run_steps
+WHERE run_id = $1 AND step_id = ANY($2::text[])
+ORDER BY step_id
+`
+
+type ListRunStepsByIDsParams struct {
+	RunID   uuid.UUID
+	StepIds []string
+}
+
+// The template renderer's upstream-output read (ticket 8.2): the steps a
+// config's `${{ steps.<id>.output... }}` references name, fetched in one
+// round trip before execution. Referenced steps are terminal (their
+// outputs immutable) by the time the referencing step is dispatched, so
+// this read needs no lock.
+func (q *Queries) ListRunStepsByIDs(ctx context.Context, arg ListRunStepsByIDsParams) ([]RunStep, error) {
+	rows, err := q.db.Query(ctx, listRunStepsByIDs, arg.RunID, arg.StepIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RunStep
+	for rows.Next() {
+		var i RunStep
+		if err := rows.Scan(
+			&i.RunID,
+			&i.StepID,
+			&i.StepType,
+			&i.Config,
+			&i.Status,
+			&i.RemainingDeps,
+			&i.FiredDeps,
+			&i.ClaimID,
+			&i.AttemptCount,
+			&i.Output,
+			&i.Error,
+			&i.GraphVersion,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.RetryPolicy,
+			&i.NextAttemptAt,
+			&i.Timeout,
+			&i.TraceSpan,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

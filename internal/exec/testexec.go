@@ -86,9 +86,10 @@ func (NoopExecutor) Execute(context.Context, StepContext) (Output, error) {
 }
 
 // EchoExecutor runs echo steps: return the configured input as output
-// (ADR-003), falling back to the step's rendered input when the config
-// has none — so echo also serves as a pass-through once M6 rendering
-// exists.
+// (ADR-003), falling back to StepContext.Input when the config has none.
+// Since ticket 8.2 the configured input arrives template-rendered, which
+// makes echo the data-flow probe: its output is exactly what rendering
+// resolved.
 type EchoExecutor struct{}
 
 // Type implements Executor.
@@ -174,8 +175,9 @@ func (e *SleepExecutor) Execute(ctx context.Context, sc StepContext) (Output, er
 
 // JoinExecutor runs join steps. A join is a fan-in barrier whose whole
 // meaning is *when* it becomes ready (the engine's counter guard, ADR-004);
-// executing one is a pass-through of its rendered input (nil until M6
-// rendering merges upstream outputs). Mode is readiness semantics, not
+// executing one is a pass-through of StepContext.Input (nil until a
+// merged-input payload exists — downstream steps reference specific
+// parents via templates instead). Mode is readiness semantics, not
 // execution semantics, so the config is not consulted here.
 type JoinExecutor struct{}
 

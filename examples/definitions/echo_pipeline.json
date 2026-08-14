@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "name": "echo-pipeline",
+  "description": "The ticket 8.2 data-flow proof: a three-step echo chain where every value moves between steps through `${{ ... }}` template expressions — run params into the first step (including a whole-object param preserved as JSON), nested-path references and string interpolation in the second, and a multi-hop third step that reaches two hops upstream, passes a whole output object through by reference, and exercises the full restricted function set (get with a lenient path, default, toJson, truncate). Echo steps output exactly their rendered input, so each step's recorded output is a direct probe of what rendering resolved.",
+  "params": {
+    "greeting": {
+      "type": "string",
+      "required": true
+    },
+    "audience": {
+      "type": "object",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "compose",
+      "type": "echo",
+      "config": {
+        "input": {
+          "text": "${{ run.params.greeting }}",
+          "audience": "${{ run.params.audience }}"
+        }
+      }
+    },
+    {
+      "id": "headline",
+      "type": "echo",
+      "config": {
+        "input": "${{ steps.compose.output.text }}, ${{ steps.compose.output.audience.name }}!"
+      }
+    },
+    {
+      "id": "package",
+      "type": "echo",
+      "config": {
+        "input": {
+          "headline": "${{ steps.headline.output }}",
+          "teaser": "${{ steps.headline.output | truncate 10 }}",
+          "bundle": "${{ steps.compose.output }}",
+          "audience_json": "${{ steps.compose.output.audience | toJson }}",
+          "signoff": "${{ get 'steps.compose.output.audience.signoff' | default 'kind regards' }}"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "compose",
+      "to": "headline"
+    },
+    {
+      "from": "headline",
+      "to": "package"
+    }
+  ]
+}

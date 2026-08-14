@@ -27,6 +27,16 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 -- name: GetRunStep :one
 SELECT * FROM run_steps WHERE run_id = $1 AND step_id = $2;
 
+-- The template renderer's upstream-output read (ticket 8.2): the steps a
+-- config's `${{ steps.<id>.output... }}` references name, fetched in one
+-- round trip before execution. Referenced steps are terminal (their
+-- outputs immutable) by the time the referencing step is dispatched, so
+-- this read needs no lock.
+-- name: ListRunStepsByIDs :many
+SELECT * FROM run_steps
+WHERE run_id = $1 AND step_id = ANY(@step_ids::text[])
+ORDER BY step_id;
+
 -- name: ListRunSteps :many
 SELECT * FROM run_steps WHERE run_id = $1 ORDER BY step_id;
 

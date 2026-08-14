@@ -128,8 +128,9 @@ means the dead-letter path (5.4).
 | 12 | Fenced completion — terminal CAS rejected on `claim_id` (`abandonFenced`) | *none recorded by the fenced worker* | abandon without ACK (ADR-005/4.5); the new holder's own completion records the real outcome |
 | 13 | Malformed / unknown-version envelope (consumer decode) | *none* | no ACK; delivery count → poison → DLQ (source `poison`) |
 | 14 | `ResolveEdge` graph-integrity error mid-completion (counter/resolution corruption) | *none* | deliberate redeliver-to-poison (post-M4 audit: bookkeeping corruption is not step content; a `FailStep` over the same corrupt rows is no safer) → DLQ (source `poison`) |
+| 15 | Template rendering failure pre-execution (ticket 8.2: strict reference did not resolve — missing output path, skipped/unfinished referenced step, unsubmitted param — or the stored config's templates no longer parse) (`Engine.renderConfig`) | `permanent` | no retry; DLQ. A run's recorded state is immutable, so a re-render fails identically. Transport failures during the pre-render reads are row 11, not this row: nothing was decided, the delivery redelivers |
 
-Rows 4–7 are the force-classified `permanent` set: they are
+Rows 4–7 and 15 are the force-classified `permanent` set: they are
 deterministic functions of stored state, so re-execution is provably
 futile — 4.x already routes them to a real failure completion instead
 of a redelivery loop, and 5.2 only changes what gets recorded, not the

@@ -3922,3 +3922,113 @@ and ctl.
   enforced by the executable table.
 - The catalog serves whole-and-unfiltered (a few tens of KB); `?kind=`
   filtering waits until a second kind exists to filter by.
+
+### 8.2 — Step input templating & data flow ✅
+
+**Delivered.** The data-flow layer: `${{ ... }}` template expressions in
+step config strings, rendered against upstream outputs and run params in
+the worker just before execution, with a static lint at
+definition-validation time and strict typed errors at runtime.
+
+- **`internal/dag/template.go`** — templating lives in dag beside CEL
+  (same reasoning: it is part of the definition contract and the lint
+  needs `Graph`). `ParseConfigTemplates(config)` decodes the config with
+  `UseNumber` (number fidelity), walks string values (map keys sorted so
+  reported problems and extracted refs are deterministic), and compiles
+  each templated string into a `text/template` with `${{`/`}}`
+  delimiters — plain `{{ }}` is inert literal text. Each action's
+  expression is *rewritten* before parsing: bare references
+  (`steps.<id>.output[.<path>]`, `run.params[.<key>[.<path>]]`) become
+  strict `__ref` lookups; any other dotted identifier is a typed
+  unknown-root error; and bare identifiers outside the allowlist
+  {get, default, toJson, truncate, true, false, nil} are rejected —
+  the mechanism that makes the FuncMap genuinely restricted, since
+  text/template's builtins (`printf`, `index`, `call`, ...) cannot be
+  removed from the engine itself. Control structures, variables, and
+  `:=` are rejected: an expression is a single pipeline. String literals
+  may be single-quoted (`get 'steps.a.output.x'`) and are re-emitted
+  double-quoted, sparing JSON documents `\"` noise; ref-shaped quoted
+  literals are recorded as *lenient* refs — exempt from lint (nil on
+  miss is `get`'s contract) but included in `StepIDs()`, the prefetch
+  set.
+- **Render semantics.** `Render(RenderData{Outputs, Params})` resolves
+  against a `{steps: {<id>: {output: ...}}, run: {params: ...}}` root.
+  Bare refs are strict: any miss is a typed `*MissingRefError` (never an
+  empty string); `get | default` is the sanctioned opt-out. A string
+  that is exactly one expression is **type-preserving** — the resolved
+  value splices in as JSON (via a `__cap` capture func; whole objects
+  and arrays flow between steps), while mixed strings interpolate via
+  `__fmt` (strings verbatim, numbers/bools in JSON spelling, nil → "",
+  composites as compact JSON). Rendering happens exactly once on the
+  authored definition, so template text arriving through outputs or
+  params is inert data (pinned by the injection test). Template-free
+  configs return byte-identical; rendered ones re-encode canonically
+  (sorted keys, no HTML escaping — `marshalNoEscape`).
+- **Static lint** (`checkTemplates`, sharing the well-formed-graph gate
+  with `checkGraphSemantics`, which now takes the Graph instead of
+  rebuilding it): five new codes — `template_invalid`,
+  `template_ref_invalid`, `template_ref_unknown_step`,
+  `template_ref_not_upstream`, `template_ref_unknown_param` — with
+  path-qualified issues (`steps[2].config.input.greeting`). Upstream
+  means strict normal-edge ancestry (`Graph.Ancestors`): loop-edge-only
+  reachability and self-references are rejected (pinned by the
+  writer⇄critic test). One carve-out: a *templated* sleep `duration`
+  skips the literal parseability check (the executor re-validates the
+  rendered value; pinned end-to-end).
+- **Engine wiring** (`internal/engine/render.go`, called from `execute`
+  after the registry/timeout checks, inside a `step.render` span):
+  configs without `${{` pass through with zero reads — the fast path
+  every pre-8.2 workflow takes. Otherwise the run row (params) and one
+  batched `ListRunStepsByIDs` read (new sqlc query + `StepRepo.ListByIDs`,
+  the only store change) supply the data; only `succeeded` steps
+  contribute outputs, so referencing a skipped or unfinished step
+  (possible behind a join-any) is a strict missing-ref failure. The
+  `*renderError` wrapper separates deterministic failures — routed to a
+  permanent failure completion (new ADR-006 taxonomy row 15), with the
+  referenced steps' statuses appended to missing-ref diagnostics — from
+  transport errors, which redeliver undecided. `StepContext.Config` now
+  carries the rendered config (comment updated); `Input` stays nil,
+  documented as reserved.
+- **Fixture & proof.** `examples/definitions/echo_pipeline.json` — a
+  three-hop echo chain moving params (whole objects included), nested
+  paths, interpolation, a two-hops-up reference, and all four functions;
+  corpus-pinned, construct-pinned (`TestExampleEchoPipelineCoversTemplateConstructs`),
+  and executed end-to-end by the engine integration suite off the real
+  file with per-step output assertions. Companion integration tests:
+  lint-clean-but-missing-at-runtime ref → exactly one attempt, outcome
+  `permanent`, one DLQ row source `permanent` carrying the diagnostic,
+  run failed under fail_fast; and a templated sleep duration executing.
+  kitchen_sink gained template-construct pins (its `${{ }}` strings —
+  informal since M1 — now lint for real, and the whole corpus passed
+  unchanged).
+
+**Non-obvious decisions.**
+
+- Rendering happens in place inside `Config`, not as a separate
+  `StepContext.Input` payload — executors decode one thing, and the
+  echo/branch `Input` fallbacks stay dormant. `Input` is kept (churn-free)
+  and documented as reserved for a future merged-input payload.
+- The rendered config is ephemeral — recomputed per attempt, never
+  written back to `run_steps.config` (the integration test pins that the
+  stored config keeps its templates). Deterministic by construction:
+  outputs and params are immutable within a run.
+- Strictness is positional, not global: bare refs error on miss, quoted
+  `get` paths resolve to nil. This satisfies "strict missing-reference
+  errors" while keeping `default` usable — a single strict mode would
+  make `default` unreachable.
+- Type preservation applies only to whole-expression strings — the
+  boundary is syntactic and visible in the definition, not inferred
+  from the resolved value's type.
+
+**Deferred / quirks.**
+
+- No escape sequence for a literal `${{` in config text (a prompt
+  *about* templating cannot be authored verbatim); revisit if it bites.
+- Templates render only in step `config` — envelope fields
+  (retry/timeout/max_wall_clock) are materialized at instantiation and
+  take literals only, even though params exist by then.
+- `run.params` and `steps.<id>.output` resolve as whole values too
+  (bare, without a key/path suffix) — deliberate, the fixture uses it.
+- Rendered inputs are not persisted for observability; if the M18
+  dashboard wants "what did this step actually receive", that becomes a
+  new column then.

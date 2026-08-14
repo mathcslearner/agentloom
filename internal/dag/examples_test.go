@@ -1,6 +1,7 @@
 package dag_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,7 @@ var exampleFiles = []string{
 	"conditional_branch.json",
 	"critic_loop.json",
 	"kitchen_sink.json",
+	"echo_pipeline.json",
 }
 
 // readExample loads one example definition document.
@@ -240,5 +242,72 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	// Ticket 5.6 construct: a run wall-clock deadline.
 	if def.MaxWallClock == "" {
 		t.Error("no max_wall_clock deadline in kitchen_sink.json")
+	}
+
+	// Ticket 8.2 constructs: template expressions referencing a run param
+	// and an upstream step output somewhere in the step configs.
+	var paramRef, stepRef bool
+	for _, s := range def.Steps {
+		if s.Config == nil {
+			continue
+		}
+		raw, err := json.Marshal(s.Config)
+		if err != nil {
+			t.Fatalf("marshaling %s config: %v", s.ID, err)
+		}
+		if strings.Contains(string(raw), "${{ run.params.") {
+			paramRef = true
+		}
+		if strings.Contains(string(raw), "${{ steps.") {
+			stepRef = true
+		}
+	}
+	if !paramRef {
+		t.Error("no ${{ run.params.* }} template reference in kitchen_sink.json")
+	}
+	if !stepRef {
+		t.Error("no ${{ steps.*.output }} template reference in kitchen_sink.json")
+	}
+}
+
+// TestExampleEchoPipelineCoversTemplateConstructs pins echo_pipeline.json
+// (ticket 8.2) to the templating feature set: dropping a construct in an
+// edit fails here, keeping the fixture the canonical data-flow example.
+func TestExampleEchoPipelineCoversTemplateConstructs(t *testing.T) {
+	t.Parallel()
+
+	def, err := dag.Decode(readExample(t, "echo_pipeline.json"))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+
+	var all strings.Builder
+	for _, s := range def.Steps {
+		if s.Config == nil {
+			continue
+		}
+		raw, err := json.Marshal(s.Config)
+		if err != nil {
+			t.Fatalf("marshaling %s config: %v", s.ID, err)
+		}
+		all.Write(raw)
+	}
+	configs := all.String()
+	for construct, marker := range map[string]string{ //nolint:gosec // G101 false positive: template-syntax markers, not credentials
+		"run param reference":            "${{ run.params.",
+		"nested output path":             ".output.audience.name",
+		"whole-output pass-through":      "${{ steps.compose.output }}",
+		"lenient get with default":       "get 'steps.",
+		"default function":               "| default ",
+		"toJson function":                "| toJson",
+		"truncate function":              "| truncate",
+		"multi-hop (two-steps-up) input": "${{ steps.compose.output",
+	} {
+		if !strings.Contains(configs, marker) {
+			t.Errorf("echo_pipeline.json no longer demonstrates %s (marker %q missing)", construct, marker)
+		}
+	}
+	if len(def.Params) < 2 {
+		t.Errorf("echo_pipeline.json declares %d params, want at least 2 (a scalar and an object)", len(def.Params))
 	}
 }
