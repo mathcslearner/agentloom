@@ -21,6 +21,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/api"
 	"github.com/mathcslearner/agentloom/internal/config"
 	"github.com/mathcslearner/agentloom/internal/exec"
+	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/storetest"
@@ -141,6 +142,70 @@ func TestListPluginsCoreSet(t *testing.T) {
 		if p.Name == "counter" || p.Name == "effectful_echo" {
 			t.Errorf("core catalog lists opt-in test executor %q", p.Name)
 		}
+	}
+}
+
+// TestListPluginsWithProviders pins ticket 8.4's catalog wiring: model
+// providers appended to the executor catalog (the way cmd/api folds in
+// llm.NewRegistryFromKeys) surface on GET /v1/plugins with kind
+// model_provider and their capability flags, sorted into (kind, name)
+// order alongside the executors.
+func TestListPluginsWithProviders(t *testing.T) {
+	t.Parallel()
+	rootKey := mintTestKey(t)
+
+	// Both provider keys present → both providers in the catalog. Keys are
+	// constructed at runtime, never committed (6.1 secret grep).
+	key := "sk-test-" + strings.Repeat("z", 8)
+	providers, err := llm.NewRegistryFromKeys(llm.ProviderKeys{Anthropic: key, OpenAI: key})
+	if err != nil {
+		t.Fatalf("NewRegistryFromKeys: %v", err)
+	}
+	manifests := append(exec.CoreBuiltins().Manifests(), providers.Manifests()...)
+
+	s := store.NewFromPool(storetest.NewDB(t))
+	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
+	h, err := api.New(s, func() time.Time { return testNow }, logger, rootKey, api.RateLimitOptions{},
+		api.WithPlugins(manifests))
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	var resp api.ListPluginsResponse
+	if res := doAuth(t, srv, http.MethodGet, "/v1/plugins", rootKey, nil, &resp); res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/plugins = %d, want 200", res.StatusCode)
+	}
+	byKind := map[string][]api.PluginInfo{}
+	for _, p := range resp.Plugins {
+		byKind[p.Kind] = append(byKind[p.Kind], p)
+	}
+	provs := byKind["model_provider"]
+	if len(provs) != 2 {
+		t.Fatalf("catalog has %d model providers, want 2", len(provs))
+	}
+	for _, p := range provs {
+		if !p.Capabilities.Cacheable || !p.Capabilities.CostBearing || p.Capabilities.SideEffectful {
+			t.Errorf("%s capabilities = %+v — want cacheable + cost_bearing", p.Name, p.Capabilities)
+		}
+		if p.Version == "" {
+			t.Errorf("%s: empty version", p.Name)
+		}
+	}
+	if provs[0].Name != "anthropic" || provs[1].Name != "openai" {
+		t.Errorf("provider order = [%s %s], want [anthropic openai]", provs[0].Name, provs[1].Name)
+	}
+	// The full catalog stays sorted by (kind, name): executors precede
+	// model_provider in the documentation order.
+	if !sort.SliceIsSorted(resp.Plugins, func(i, j int) bool {
+		a, b := resp.Plugins[i], resp.Plugins[j]
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		return a.Name < b.Name
+	}) {
+		t.Error("combined catalog is not sorted by (kind, name)")
 	}
 }
 

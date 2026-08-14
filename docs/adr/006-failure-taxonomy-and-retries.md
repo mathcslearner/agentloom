@@ -612,6 +612,16 @@ The 8.6 llm executor translates `*llm.Error` into the row-2 mechanism
 (`exec.ClassifiedError` with the carried class); until then nothing in
 the engine consumes the type.
 
+**OpenAI (8.4)** maps through the *identical* status classifier and the
+same `*llm.Error` shape — the taxonomy is provider-agnostic by design.
+Two OpenAI-specific notes: it also honors a millisecond-precision
+`retry-after-ms` header (preferred over whole-second `Retry-After` when
+both are present; still clock-free, an integer count only), and
+`insufficient_quota` arrives as a 429 and therefore classifies
+`transient` by status. The latter is an accepted v1 quirk — a depleted
+quota will exhaust its retry budget and dead-letter rather than fail
+fast; refining quota exhaustion to permanent is deferred until it hurts.
+
 ### Enforcement points
 
 **5.1** (this ticket) — the schema: `retry` on steps, `on_failure`

@@ -46,7 +46,7 @@ We define a closed vocabulary of five plugin kinds:
 | `executor` | `exec.Executor` (`internal/exec`) | M4 (refactored here) |
 | `tool` | tool SPI (`internal/tools`) | 8.7 |
 | `retriever` | retriever SPI (`internal/…`, 8.8) | 8.8 |
-| `model_provider` | provider interface (`internal/llm`) | 8.3 |
+| `model_provider` | provider interface (`internal/llm`) | 8.3 (interface), 8.4 (registry + routing) |
 | `validator` | validator SPI (`internal/validate`) | M11 |
 
 A plugin's identity is the pair **(kind, name)**. Names are
@@ -226,6 +226,48 @@ change has a trigger.
 
 `ctl plugins list` renders the listing as a table (kind, name, version,
 capability flags).
+
+### Model-provider registry & routing (as built, 8.4)
+
+The `model_provider` kind gets the same typed-facade treatment the
+executor kind got in 8.1: `llm.Registry` wraps `plugin.Registry`
+(kind `model_provider`, name = provider name), with `Register`
+identity-checking the manifest's kind, `Get(name)`, `Manifests()`, and
+`Names()`. Registration failures (nil provider, wrong kind, duplicate
+name) fail boot, exactly like executors.
+
+Providers are the one kind whose **listing is configuration-gated, not
+just build-gated**. An executor is compiled in unconditionally; a
+provider can only be constructed with an API key, and a worker running
+no llm steps boots keyless (8.3). So `llm.NewRegistryFromKeys` — the one
+constructor both deployables call — builds Anthropic iff its key is
+present, OpenAI iff its key is present, and an empty registry is valid.
+This directly satisfies 8.4's "either provider absent without breaking
+startup": the *catalog* a deployment lists matches the *keys* it holds.
+`internal/llm` stays a leaf (imports `dag`, `plugin`, stdlib): the
+constructor takes a plain `ProviderKeys` struct, so `internal/config`
+never enters llm's import graph.
+
+**Routing.** `Registry.Resolve(explicitProvider, model)` is the entry
+point the 8.6 llm executor calls; it returns the provider and the
+canonical model the provider should receive, applying three rules in
+priority order:
+
+1. an explicit `provider` step-config field wins (unknown name →
+   `*ProviderUnavailableError`);
+2. a `"<provider>/<model>"` namespace prefix routes by the named
+   provider and strips the prefix (this is the form 8.5's mock provider
+   uses, `mock/...`, so it is reserved now);
+3. a bare model matches the longest vendor prefix in a small static
+   table (`claude`→anthropic; `gpt-`/`chatgpt-`/`o1`/`o3`/`o4`→openai).
+
+Two typed errors are deliberately distinct: `*UnknownModelError` (no
+rule matched — the ticket's required typed error) versus
+`*ProviderUnavailableError` (a rule resolved to a provider that isn't
+configured, i.e. its key is absent). The split makes a misconfiguration
+diagnosable — "no provider knows this model" needs a different fix than
+"you didn't configure this provider" — and both are deterministic, so
+8.6 maps them to permanent failures.
 
 ## Consequences
 

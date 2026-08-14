@@ -371,14 +371,35 @@ func TestLoadLLMOverrides(t *testing.T) {
 	if cfg.LLM.AnthropicAPIKey != "" {
 		t.Errorf("default Anthropic key = %q, want empty", cfg.LLM.AnthropicAPIKey)
 	}
+	if cfg.LLM.OpenAIAPIKey != "" {
+		t.Errorf("default OpenAI key = %q, want empty", cfg.LLM.OpenAIAPIKey)
+	}
 
-	key := "sk-ant-" + strings.Repeat("x", 8) // constructed, never a literal (6.1 secret grep)
-	cfg, err = config.Load(lookupFrom(map[string]string{config.EnvAnthropicAPIKey: key}))
+	// Each provider key overrides independently (8.4: either provider may
+	// be configured without the other).
+	anthKey := "sk-ant-" + strings.Repeat("x", 8) // constructed, never a literal (6.1 secret grep)
+	oaiKey := "sk-" + strings.Repeat("y", 8)      // constructed, never a literal (6.1 secret grep)
+	cfg, err = config.Load(lookupFrom(map[string]string{
+		config.EnvAnthropicAPIKey: anthKey,
+		config.EnvOpenAIAPIKey:    oaiKey,
+	}))
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
 	}
-	if cfg.LLM.AnthropicAPIKey != key {
-		t.Errorf("Anthropic key = %q, want %q", cfg.LLM.AnthropicAPIKey, key)
+	if cfg.LLM.AnthropicAPIKey != anthKey {
+		t.Errorf("Anthropic key = %q, want %q", cfg.LLM.AnthropicAPIKey, anthKey)
+	}
+	if cfg.LLM.OpenAIAPIKey != oaiKey {
+		t.Errorf("OpenAI key = %q, want %q", cfg.LLM.OpenAIAPIKey, oaiKey)
+	}
+
+	// OpenAI alone, Anthropic absent.
+	cfg, err = config.Load(lookupFrom(map[string]string{config.EnvOpenAIAPIKey: oaiKey}))
+	if err != nil {
+		t.Fatalf("Load OpenAI-only: unexpected error: %v", err)
+	}
+	if cfg.LLM.AnthropicAPIKey != "" || cfg.LLM.OpenAIAPIKey != oaiKey {
+		t.Errorf("OpenAI-only load = {anthropic %q, openai %q}", cfg.LLM.AnthropicAPIKey, cfg.LLM.OpenAIAPIKey)
 	}
 }
 

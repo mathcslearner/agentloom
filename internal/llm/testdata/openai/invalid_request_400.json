@@ -1,0 +1,8 @@
+{
+  "error": {
+    "message": "max_completion_tokens: MARKER_PROVIDER_MESSAGE range error",
+    "type": "invalid_request_error",
+    "param": "max_completion_tokens",
+    "code": null
+  }
+}

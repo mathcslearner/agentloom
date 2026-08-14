@@ -113,6 +113,11 @@ services:
       # test-executor knob so GET /v1/plugins lists what the fleet
       # actually executes.
       AGENTLOOM_API_TEST_EXECUTORS: ${AGENTLOOM_WORKER_TEST_EXECUTORS:-true}
+      # Model provider keys (ticket 8.4, ADR-009). Empty by default =
+      # provider unconfigured (boots fine). Set alike on api and worker so
+      # GET /v1/plugins lists exactly the providers the fleet can route to.
+      AGENTLOOM_ANTHROPIC_API_KEY: ${AGENTLOOM_ANTHROPIC_API_KEY:-}
+      AGENTLOOM_OPENAI_API_KEY: ${AGENTLOOM_OPENAI_API_KEY:-}
     ports:
       # Loopback by default (ticket 6.2, ADR-007): every /v1 route now
       # requires a scoped key, but a dev stack carrying a bootstrap
@@ -148,6 +153,11 @@ services:
       # filesystem-writing test executors (counter, effectful_echo) stay
       # registered here — the binary's default is off (ticket 6.2).
       AGENTLOOM_WORKER_TEST_EXECUTORS: ${AGENTLOOM_WORKER_TEST_EXECUTORS:-true}
+      # Model provider keys (ticket 8.4, ADR-009) — see the api service's
+      # note. Consumed by the llm step executor from 8.6; empty = provider
+      # unconfigured. Keep in sync with the api service's values.
+      AGENTLOOM_ANTHROPIC_API_KEY: ${AGENTLOOM_ANTHROPIC_API_KEY:-}
+      AGENTLOOM_OPENAI_API_KEY: ${AGENTLOOM_OPENAI_API_KEY:-}
       # Telemetry (ticket 7.1, ADR-008) — see the api service's note. The
       # two replicas each bind :9090 inside their own container; Prometheus
       # finds both via DNS service discovery on the service name.

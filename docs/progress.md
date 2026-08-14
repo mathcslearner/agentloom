@@ -4147,3 +4147,121 @@ Anthropic Messages API, non-streaming v1.
 - The 32 MiB response cap and 10-minute backstop timeout are
   constants, not config — promote to `LLMConfig` knobs if a real
   deployment ever needs to tune them.
+
+### 8.4 — OpenAI provider & model routing ✅
+
+**Delivered.** The second provider behind the 8.3 interface, the typed
+`llm.Registry` facade + routing table (both deferred here from 8.3), and
+the plugin-listing wiring that surfaces configured providers on
+`GET /v1/plugins`.
+
+- **OpenAI provider** (`internal/llm/openai.go`) — mirrors the Anthropic
+  provider structurally: hand-rolled `net/http` (no SDK), one call per
+  `Chat`, no internal retries, no logging, no clock; injectable
+  `BaseURL`/`HTTPClient`; 32 MiB body cap; the shared 10-minute backstop
+  timeout; `NewOpenAI` rejects a missing key at construction. Targets the
+  **Chat Completions API** (`POST /v1/chat/completions`), deliberately
+  not the newer Responses API — Chat Completions is the stable shape and
+  carries tools + usage in the non-streaming form this milestone needs
+  (Responses API → backlog).
+- **The unified↔wire mapping** handles the two structural mismatches
+  between the unified (Anthropic-shaped) content model and OpenAI's
+  message model: (1) the system prompt becomes a leading `system`
+  message; (2) a user turn's `tool_result` blocks fan out into standalone
+  `tool`-role messages (OpenAI has no per-block roles). `MaxTokens` maps
+  to `max_completion_tokens` (the deprecated `max_tokens` is rejected by
+  o-series reasoning models); `tool_use` → `tool_calls` with
+  JSON-**string** `arguments`; auth via `Authorization: Bearer`. The
+  response decodes `choices[0]` (zero choices → malformed-200), surfaces
+  a non-empty `refusal` as a text block (it *is* the completion),
+  decodes `tool_calls` (unknown call type → malformed, never silently
+  dropped), and **normalizes `finish_reason` onto the Anthropic
+  stop-reason vocabulary** the unified `ChatResponse` documents
+  (`stop`→`end_turn`, `length`→`max_tokens`, `tool_calls`/`function_call`
+  →`tool_use`; unknown reasons like `content_filter` pass through
+  verbatim) so the 8.6 executor branches on one vocabulary. Usage is
+  mandatory on success (missing → malformed-200), exactly as 8.3.
+- **Error taxonomy is provider-agnostic** — OpenAI reuses 8.3's
+  `classifyStatus` and `parseRetryAfter` unchanged; the taxonomy table
+  is identical by design. Two OpenAI specifics: a new clock-free
+  `parseRetryAfterMillis` reads the millisecond `retry-after-ms` header
+  (preferred over whole-second `Retry-After`), and `Error.Code` prefers
+  OpenAI's specific `code` (e.g. `context_length_exceeded`) over the
+  coarse `type`, falling back to `type` when `code` is null. Request id
+  from `x-request-id`; context errors still pass through unclassified.
+  Secret hygiene remains structural (the error type has no field for
+  headers/payload) and is pinned by the same every-error-path assertion
+  with positive controls.
+- **Registry & routing** (`internal/llm/registry.go`) — `llm.Registry`
+  is the typed facade over `plugin.Registry` (kind model_provider), same
+  pattern `exec.Registry` set: `Register` identity-checks the kind,
+  duplicate/invalid → boot error; `Get`/`Manifests`/`Names`.
+  `Resolve(explicitProvider, model)` returns the provider **and the
+  canonical model the provider should see** via three priority rules:
+  (1) explicit provider field wins; (2) `"<provider>/<model>"` namespace
+  form routes by the named provider and strips the prefix (reserved now
+  for 8.5's `mock/...`); (3) a longest-vendor-prefix table for bare
+  models (`claude`→anthropic; `gpt-`/`chatgpt-`/`o1`/`o3`/`o4`→openai).
+  Two deliberately distinct typed errors: `*UnknownModelError` (no rule
+  matched — the ticket's required error) vs. `*ProviderUnavailableError`
+  (routed provider not registered, i.e. key absent) — the split makes a
+  misconfiguration diagnosable, and both are deterministic so 8.6 maps
+  them permanent.
+- **Independent configurability** — `llm.NewRegistryFromKeys(
+  ProviderKeys{Anthropic, OpenAI})` is the *one* constructor both
+  deployables call: each provider is built iff its key is present, an
+  empty registry is valid, and construction never errors on an absent
+  key. This is the third done-when, realized as a single shared function
+  so the plugin catalog and the routable set can't drift between api and
+  worker. `config.LLMConfig` gained `OpenAIAPIKey` /
+  `AGENTLOOM_OPENAI_API_KEY` with the same "empty = unconfigured, not a
+  load error" semantics as the Anthropic key.
+- **Plugin listing** — `cmd/api` folds the configured providers'
+  manifests into the slice handed to `api.WithPlugins` (which re-sorts
+  into canonical (kind, name) order), so `GET /v1/plugins` lists exactly
+  the providers a matching worker fleet could route to. `ctl plugins
+  list` needed zero changes (kind-generic since 8.1). Compose and
+  `.env.example` pass `AGENTLOOM_ANTHROPIC_API_KEY` /
+  `AGENTLOOM_OPENAI_API_KEY` through to both services, empty by default.
+- **Tests** — recorded-fixture suite under `testdata/openai/` mirroring
+  8.3 one-for-one (golden wire requests both ways pinning the
+  system-fold + tool-role fan-out + `max_completion_tokens`; the full
+  taxonomy matrix incl. `retry-after-ms` precedence; finish-reason
+  normalization incl. unknown-passthrough; malformed-200 matrix incl.
+  no-choices; transport/context/validation with a zero-calls assertion;
+  the secret-hygiene walk with positive controls; manifest conformance).
+  `registry_test.go` covers the routing matrix, both typed errors, the
+  registration discipline (duplicate/wrong-kind/nil), and the
+  `NewRegistryFromKeys` neither/either/both-keys matrix. The API plugins
+  integration suite gained `TestListPluginsWithProviders` (providers
+  appear with kind model_provider + capability flags, catalog stays
+  sorted). OpenAI live smoke added behind `LIVE_LLM_TESTS=1`, in no CI
+  job.
+
+**Non-obvious decisions.**
+
+- **Chat Completions, not Responses API.** The stable, tool-and-usage
+  complete non-streaming shape; the Responses API is a backlog item, not
+  a v1 requirement.
+- **`internal/llm` stays a config-free leaf.** `NewRegistryFromKeys`
+  takes a plain `ProviderKeys` struct (not `config.LLMConfig`), so config
+  never enters llm's import graph — preserving 8.3's "leaf like
+  ratelimit" property. The two deployables translate their `cfg.LLM`
+  fields at the call site.
+- **The `"<provider>/<model>"` namespace form is built now though 8.5
+  needs it**, because it's the addressing scheme the mock provider's
+  `model: "mock/..."` requires and it belongs in the routing table, not
+  bolted on later.
+
+**Deferred / quirks.**
+
+- `insufficient_quota` arrives as a 429 and thus classifies transient by
+  status — an accepted v1 quirk (the retry budget bounds it and it
+  dead-letters); refine to permanent if it ever hurts. Recorded in
+  ADR-006.
+- OpenAI's `tool_result.is_error` flag has no Chat-Completions
+  equivalent, so it is dropped in the wire mapping — the tool message's
+  content still carries the result text the model reads.
+- The vendor-prefix routing table is a small static slice; it grows as
+  providers land (8.5's mock registers by name and is addressed via the
+  namespace form, needing no prefix entry).

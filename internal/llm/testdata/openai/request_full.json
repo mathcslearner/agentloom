@@ -1,0 +1,44 @@
+{
+  "model": "gpt-4o",
+  "max_completion_tokens": 1024,
+  "messages": [
+    {"role": "system", "content": "Answer concisely."},
+    {"role": "user", "content": "Weather in Paris?"},
+    {
+      "role": "assistant",
+      "content": "I'll check the weather for you.",
+      "tool_calls": [
+        {
+          "id": "toolu_01A09q90qw90lq917835lq9",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"location\": \"Paris\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "18C, clear",
+      "tool_call_id": "toolu_01A09q90qw90lq917835lq9"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather for a location.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {"type": "string"}
+          },
+          "required": ["location"]
+        }
+      }
+    }
+  ],
+  "temperature": 0.2
+}

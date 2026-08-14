@@ -1,0 +1,32 @@
+{
+  "id": "chatcmpl-9xY3Kq2toolDEF",
+  "object": "chat.completion",
+  "created": 1712345680,
+  "model": "gpt-4o-2024-08-06",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "I'll check the weather for you.",
+        "refusal": null,
+        "tool_calls": [
+          {
+            "id": "call_abc123",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 302,
+    "completion_tokens": 57,
+    "total_tokens": 359
+  }
+}

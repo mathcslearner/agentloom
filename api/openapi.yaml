@@ -679,7 +679,10 @@ paths:
         model_provider, validator) then name. Under the in-process
         compilation model the catalog is a build-time property, so the
         listing describes the fleet as long as API and workers ship from
-        the same build with matching test-executor knobs.
+        the same build with matching test-executor knobs. Model providers
+        (ticket 8.4) additionally require an API key to be constructed, so
+        the catalog lists exactly the providers the deployment has
+        configured — set the same provider keys on API and workers.
       responses:
         "200":
           description: The full catalog — one page, no pagination.

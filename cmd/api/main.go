@@ -38,6 +38,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/api"
 	"github.com/mathcslearner/agentloom/internal/config"
 	"github.com/mathcslearner/agentloom/internal/exec"
+	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/obs/metrics"
 	"github.com/mathcslearner/agentloom/internal/obs/trace"
@@ -150,6 +151,19 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 	}
 	plugins := pluginRegistry.Manifests()
 
+	// Model providers (ticket 8.4, ADR-009): only the providers whose key
+	// is configured are constructed, so GET /v1/plugins lists exactly the
+	// providers a matching worker fleet could route to. An absent key
+	// leaves the provider out of the catalog, never a boot error.
+	providers, err := llm.NewRegistryFromKeys(llm.ProviderKeys{
+		Anthropic: cfg.LLM.AnthropicAPIKey,
+		OpenAI:    cfg.LLM.OpenAIAPIKey,
+	})
+	if err != nil {
+		return fmt.Errorf("configuring model providers: %w", err)
+	}
+	plugins = append(plugins, providers.Manifests()...)
+
 	apiHandler, err := api.New(st, time.Now, logger, cfg.API.RootKey, rl,
 		api.WithRequestMetrics(apiMetrics), api.WithPlugins(plugins))
 	if err != nil {
@@ -188,6 +202,7 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 		slog.String("metrics_addr", cfg.Obs.MetricsAddr),
 		slog.Bool("otel_enabled", cfg.Obs.OTelEnabled),
 		slog.Int("plugins", len(plugins)),
+		slog.Any("providers", providers.Names()),
 		slog.Bool("test_executors", cfg.API.TestExecutors))
 	defer logger.InfoContext(ctx, "api stopped")
 	if ready != nil {

@@ -106,3 +106,17 @@ func parseRetryAfter(header string) time.Duration {
 	}
 	return time.Duration(secs) * time.Second
 }
+
+// parseRetryAfterMillis parses a millisecond retry hint (OpenAI's
+// x-ratelimit / retry-after-ms shape). Like parseRetryAfter it stays
+// clock-free: it accepts only an integer count of milliseconds.
+func parseRetryAfterMillis(header string) (time.Duration, bool) {
+	if header == "" {
+		return 0, false
+	}
+	ms, err := strconv.ParseInt(header, 10, 64)
+	if err != nil || ms < 0 {
+		return 0, false
+	}
+	return time.Duration(ms) * time.Millisecond, true
+}
