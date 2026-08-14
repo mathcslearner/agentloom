@@ -26,10 +26,12 @@
       "id": "fetch_news",
       "type": "tool",
       "config": {
-        "tool": "http_request",
+        "tool": "json_transform",
         "input": {
-          "method": "GET",
-          "url": "https://news.example.com/api/search?q=${{ run.params.topic }}"
+          "expr": "{ query: .topic, source: \"news\" }",
+          "input": {
+            "topic": "${{ run.params.topic }}"
+          }
         }
       }
     },

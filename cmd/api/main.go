@@ -44,6 +44,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/ratelimit"
 	"github.com/mathcslearner/agentloom/internal/store"
+	"github.com/mathcslearner/agentloom/internal/tools"
 	"github.com/mathcslearner/agentloom/internal/version"
 )
 
@@ -147,11 +148,21 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 	// listing matches what the fleet executes. The API never executes
 	// steps (ADR-002), so the llm executor's provider registry is nil
 	// here — its self-described manifest is identical either way.
-	pluginRegistry := exec.CoreBuiltins(nil)
+	pluginRegistry := exec.CoreBuiltins(nil, nil)
 	if cfg.API.TestExecutors {
-		pluginRegistry = exec.Builtins(nil)
+		pluginRegistry = exec.Builtins(nil, nil)
 	}
 	plugins := pluginRegistry.Manifests()
+
+	// Built-in tools (ticket 8.7, ADR-009): the tool-kind plugins the tool
+	// executor invokes. Their manifests are config-independent (the
+	// allowlist governs execution, not the listing), so the API folds them
+	// in verbatim so operators and UI forms see the tools the fleet runs.
+	toolReg, err := tools.NewBuiltins(tools.HTTPOptions{})
+	if err != nil {
+		return fmt.Errorf("configuring tools: %w", err)
+	}
+	plugins = append(plugins, toolReg.Manifests()...)
 
 	// Model providers (ticket 8.4/8.5, ADR-009): only the providers whose
 	// key is configured (or, for the mock, enabled) are constructed, so

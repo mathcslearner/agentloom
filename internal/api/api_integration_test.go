@@ -23,6 +23,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 	"github.com/mathcslearner/agentloom/internal/store/storetest"
+	"github.com/mathcslearner/agentloom/internal/tools"
 )
 
 // Ticket 4.6's integration suite: the ingest API over a real store, and —
@@ -343,8 +344,14 @@ func TestSubmitFanoutRunsToCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistryFromKeys: %v", err)
 	}
+	// fanout.json's fetch_news is a json_transform tool step (offline,
+	// config-free), so the fleet needs the built-in tool registry too.
+	toolReg, err := tools.NewBuiltins(tools.HTTPOptions{})
+	if err != nil {
+		t.Fatalf("tools.NewBuiltins: %v", err)
+	}
 	for _, name := range []string{"worker-a", "worker-b"} {
-		eng, err := engine.New(s, exec.Builtins(providers), name, engine.WithDispatchNudge(d.Nudge))
+		eng, err := engine.New(s, exec.Builtins(providers, toolReg), name, engine.WithDispatchNudge(d.Nudge))
 		if err != nil {
 			t.Fatalf("engine.New: %v", err)
 		}
@@ -395,18 +402,36 @@ func TestSubmitFanoutRunsToCompletion(t *testing.T) {
 			t.Errorf("edge %s->%s resolution = %q, want fired", e.From, e.To, e.Resolution)
 		}
 	}
-	// The tool and retrieve steps still run as dev stubs (8.7/8.8) —
-	// visible in their outputs.
-	for _, id := range []string{"search_docs", "fetch_news"} {
+	// The retrieve step still runs as a dev stub (8.8) — visible in its
+	// output.
+	{
 		var out struct {
 			Stub bool `json:"stub"`
 		}
-		step, ok := stepFrom(run, id)
+		step, ok := stepFrom(run, "search_docs")
 		if !ok {
-			t.Fatalf("step %s missing from response", id)
+			t.Fatalf("step search_docs missing from response")
 		}
 		if err := json.Unmarshal(step.Output, &out); err != nil || !out.Stub {
-			t.Errorf("step %s output = %s, want a stub-marked payload (err=%v)", id, step.Output, err)
+			t.Errorf("step search_docs output = %s, want a stub-marked payload (err=%v)", step.Output, err)
+		}
+	}
+	// fetch_news runs the production json_transform tool (ticket 8.7): its
+	// gojq program builds {query, source} from the templated topic input.
+	{
+		var out struct {
+			Query  string `json:"query"`
+			Source string `json:"source"`
+		}
+		step, ok := stepFrom(run, "fetch_news")
+		if !ok {
+			t.Fatalf("step fetch_news missing from response")
+		}
+		if err := json.Unmarshal(step.Output, &out); err != nil {
+			t.Fatalf("step fetch_news output = %s: %v", step.Output, err)
+		}
+		if out.Query != "durable execution" || out.Source != "news" {
+			t.Errorf("step fetch_news output = %s, want {query:durable execution, source:news}", step.Output)
 		}
 	}
 	// The llm steps ran the production executor against the mock provider:

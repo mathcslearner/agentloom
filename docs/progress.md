@@ -4481,3 +4481,128 @@ one retry event, backoff honored, usage only on the successful attempt.
   made when a consumer requires it. Routing today is by model id alone.
 - Tool-use *output* is persisted (`tool_calls`) but no fixture chains a
   tool call back into the model yet — the multi-turn tool loop is 8.7+.
+
+### 8.7 — Tool SPI & built-in tools ✅
+
+**Delivered.** The tool SPI (`internal/tools`), a real `tool` step
+executor replacing the dev stub in place, and two built-in tools —
+`http_request` (allowlist/SSRF guard, timeout, automatic `Idempotency-Key`
+from 5.5 on non-GET) and `json_transform` (gojq). No migration — the
+ticket touches no schema.
+
+- **The SPI** (`internal/tools`, the fourth kind-owning leaf package —
+  imports `plugin`+`dag`+stdlib+gojq+jsonschema/v6, never exec/engine).
+  `Tool` = `Manifest() plugin.Manifest` + `Invoke(ctx, Invocation)
+  (json.RawMessage, error)`. The ticket's literal `Invoke(ctx, args)` grew
+  to an `Invocation` struct so `http_request` can read the step's stable
+  idempotency key (5.5) and a logger without a later signature churn (the
+  `StepContext` precedent). Every tool **must** declare its args JSON
+  Schema in `Manifest().ConfigSchema` — generated from the tool's Go arg
+  struct with the same invopop reflector settings `dag.StepConfigSchema`
+  uses (`argsSchema`), so a served schema can never drift from what the
+  tool decodes. A `json.RawMessage` arg field reflects to the permissive
+  `true` schema, which is how `http_request`'s `body` accepts arbitrary
+  JSON.
+
+- **The registry validates args, generically** (`tools.Registry`, the
+  typed facade over `plugin.Registry` kind tool). Unlike executor config
+  (validated only by strict struct decode), tool args are validated
+  against the declared schema at dispatch by a real 2020-12 validator
+  (`santhosh-tekuri/jsonschema/v6`, compiled once per tool at registration
+  — an uncompilable schema, a missing schema, wrong kind, nil, or a
+  duplicate name all fail boot). `ValidateArgs` is the framework gate the
+  executor calls **before** `Invoke`, so "bad args → permanent failure, no
+  call" is a framework guarantee every tool inherits, not a per-tool
+  discipline. A violation is a typed `*ArgsValidationError` (permanent);
+  an unknown tool is `*UnknownToolError`. Validation detail is collapsed
+  to a single structure-only line (field names, not values).
+
+- **`exec.ToolExecutor`** (`internal/exec/toolexec.go`) replaces
+  `StubToolExecutor` in place — version `0.1.0-stub` → `1.0.0` (the M9
+  cache-bust trigger), flags unchanged (`side_effectful` — an unknown tool
+  must be assumed to act on the world; individual tools carry their own
+  per-tool flags under kind tool). It decodes the already-8.2-rendered
+  `ToolConfig`, validates args, looks the tool up, invokes once (no retry —
+  the M5 engine owns retry), and persists the tool result **verbatim** (no
+  `{tool, result}` envelope — the tool name already lives in the step
+  config, and downstream templating reads `${{ steps.x.output.<field> }}`
+  directly). A `*tools.Error`'s class is honored via `ClassifiedError`, a
+  `*HostNotAllowedError` maps permanent, and context errors pass through
+  unwrapped (engine judges timeout/cancelled). A nil registry is valid — a
+  tool step then fails permanent at lookup (the 8.6 keyless-worker
+  pattern).
+
+- **`http_request`** (side_effectful): one outbound call guarded by a host
+  **allowlist** (`hostSet`; each entry a hostname — any port — or
+  host:port; case-insensitive; **empty allowlist denies every host**, the
+  safe default so the tool is inert until a deployment names hosts). A
+  blocked host is the typed `*HostNotAllowedError` (permanent) surfaced
+  *before any connection*, and `CheckRedirect` re-validates every redirect
+  hop against the same allowlist on a cloned client (closing the
+  redirect-to-forbidden-host bypass). Bounded by a timeout (per-request
+  `timeout` arg overrides the configured default) and a response-size cap
+  (oversize → permanent). Automatic `Idempotency-Key` header on non-GET
+  from `Invocation.IdempotencyKey` — it wins over any user-supplied header
+  (stability is the guarantee), and GET carries none. Outcome: 429/5xx →
+  transient, other non-2xx → permanent, transport → transient; a
+  self-imposed timeout tripping while the engine ctx is alive → transient,
+  distinguished from engine cancellation (passthrough). Output is
+  `{status, body}` with the body embedded as JSON when it parses, else a
+  JSON string. Secret hygiene is structural (the error type holds no
+  header/body field) and pinned by a positive-control test.
+
+- **`json_transform`** (cacheable — the first pure built-in tool):
+  evaluates a gojq (jq-syntax) program over a JSON input under `ctx`
+  (`RunWithContext`, so a pathological program is bounded by the step
+  timeout). One emitted value returns that value; zero-or-many returns a
+  JSON array (empty → `[]`). Compile and runtime (jq) errors are
+  deterministic → permanent; a ctx error passes through unwrapped.
+
+- **Wiring.** `tools.NewBuiltins(HTTPOptions)` is the one constructor both
+  deployables call. `config.ToolsConfig` reads
+  `AGENTLOOM_TOOLS_HTTP_ALLOWLIST` (comma-separated, empty-default
+  deny-all), `_TIMEOUT` (30s), `_MAX_RESPONSE_BYTES` (1 MiB). `cmd/worker`
+  builds the registry from config and hands it to the exec registry;
+  `cmd/api` folds the tools' config-independent manifests into
+  `GET /v1/plugins` (the OpenAPI `kind` enum already carried `tool` from
+  8.1). `exec.Builtins`/`CoreBuiltins` gained a `*tools.Registry`
+  parameter (the 8.6 `*llm.Registry` precedent; ~20 call sites, most
+  passing nil). Compose + `.env.example` pass the three tool env vars to
+  the worker with an empty allowlist by default.
+
+- **Fixture.** `fanout.json` (the one *executed* canonical fixture) moved
+  its `fetch_news` tool step from `http_request` (which the empty compose
+  allowlist would block) to an offline `json_transform` over the templated
+  topic — the same offline-conversion move 8.6 made for the llm models —
+  so the M8 exit-criterion workflow stays fully offline on compose/CI. The
+  non-executed corpus fixtures (`linear`, `conditional_branch`,
+  `kitchen_sink`) keep realistic `http_request` steps.
+
+**Non-obvious decisions.**
+
+- **A real JSON Schema validator, not strict struct decode.** The ticket
+  frames validation as "against the tool schema," and the SPI's point
+  (ADR-009) is that one generated schema drives validation *and* the UI.
+  Making `ValidateArgs` a framework service on the compiled schema means
+  the acceptance guarantee holds for every future third-party tool without
+  it re-implementing shape checks. `santhosh-tekuri/jsonschema/v6` was
+  already in the module cache; `gojq` was the only network fetch.
+- **`Invocation` struct over the literal `Invoke(ctx, args)`.**
+  `http_request` needs the idempotency key; a struct also leaves room for
+  future context (the exact reasoning that grew `StepContext`).
+- **Verbatim tool output, no envelope.** Downstream steps template
+  `output.status`/`output.body` directly; wrapping in `{tool, result}`
+  would force `output.result.status` for no gain.
+- **Empty allowlist = deny all.** A permissive default would make
+  `http_request` an open SSRF vector the moment the tool ships; a
+  deployment opts hosts in.
+
+**Deferred / quirks.**
+
+- IPv6-literal allowlist entries are out of scope (`splitHostPort` splits
+  on the last colon); no fixture or deployment needs them yet.
+- DNS-rebinding-grade SSRF defenses (re-resolving and pinning the IP
+  between check and connect) are out of scope — the allowlist guards the
+  hostname and every redirect hop, which is the ticket's SSRF bar.
+- The multi-turn tool loop (model → tool_call → tool → model) is still
+  unbuilt; 8.7 ships the `tool` step, not the agentic tool-use loop.

@@ -346,6 +346,68 @@ func TestLoadObsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestLoadToolsOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(lookupFrom(map[string]string{
+		config.EnvToolsHTTPAllowlist:        " api.example.com , news.example.com:8443 ,",
+		config.EnvToolsHTTPTimeout:          "10s",
+		config.EnvToolsHTTPMaxResponseBytes: "2048",
+	}))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	// Allowlist splits on commas, trims whitespace, and drops blanks.
+	wantHosts := []string{"api.example.com", "news.example.com:8443"}
+	if len(cfg.Tools.HTTPAllowlist) != len(wantHosts) {
+		t.Fatalf("allowlist = %v, want %v", cfg.Tools.HTTPAllowlist, wantHosts)
+	}
+	for i, h := range wantHosts {
+		if cfg.Tools.HTTPAllowlist[i] != h {
+			t.Errorf("allowlist[%d] = %q, want %q", i, cfg.Tools.HTTPAllowlist[i], h)
+		}
+	}
+	if cfg.Tools.HTTPTimeout != 10*time.Second {
+		t.Errorf("timeout = %s, want 10s", cfg.Tools.HTTPTimeout)
+	}
+	if cfg.Tools.HTTPMaxResponseBytes != 2048 {
+		t.Errorf("max response bytes = %d, want 2048", cfg.Tools.HTTPMaxResponseBytes)
+	}
+}
+
+func TestLoadToolsDefaultsDenyAll(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(lookupFrom(map[string]string{}))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	if cfg.Tools.HTTPAllowlist != nil {
+		t.Errorf("default allowlist = %v, want nil (deny all)", cfg.Tools.HTTPAllowlist)
+	}
+	if cfg.Tools.HTTPTimeout != 30*time.Second {
+		t.Errorf("default timeout = %s, want 30s", cfg.Tools.HTTPTimeout)
+	}
+}
+
+func TestLoadToolsInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	bad := map[string]string{
+		config.EnvToolsHTTPTimeout:          "nope",
+		config.EnvToolsHTTPMaxResponseBytes: "-5",
+	}
+	_, err := config.Load(lookupFrom(bad))
+	if err == nil {
+		t.Fatal("Load with invalid tools values: want error, got nil")
+	}
+	for env := range bad {
+		if !strings.Contains(err.Error(), env) {
+			t.Errorf("error %q does not mention %s", err, env)
+		}
+	}
+}
+
 func TestLoadRedisAddrOverride(t *testing.T) {
 	t.Parallel()
 

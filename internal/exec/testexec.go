@@ -11,6 +11,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/plugin"
+	"github.com/mathcslearner/agentloom/internal/tools"
 )
 
 // builtinManifest is the shared shape of the builtins' self-descriptions
@@ -32,19 +33,21 @@ func builtinManifest(st dag.StepType, version, description string, caps plugin.C
 // effectful_echo), the two control-flow types (join, branch), whose real
 // semantics live in the engine — readiness counters and the edge-firing
 // rule — so their executors are trivial by design, the production llm
-// executor (ticket 8.6, backed by the given provider registry), and the
-// two remaining dev stubs (tool, retrieve; devstub.go) that make the
-// canonical example definitions runnable until their real executors
-// arrive (tickets 8.7–8.8).
+// executor (ticket 8.6, backed by the given provider registry), the
+// production tool executor (ticket 8.7, backed by the given tool
+// registry), and the last dev stub (retrieve; devstub.go) that makes the
+// canonical example definitions runnable until its real executor arrives
+// (ticket 8.8).
 //
-// providers routes llm-step models to providers; a nil registry is valid
-// (any llm step then fails permanent at resolve time), which suits the
+// providers routes llm-step models to providers and toolReg backs the
+// tool executor; a nil registry is valid for either — a step of that type
+// then fails permanent at resolve/lookup time — which suits the
 // non-executing call sites (manifest and registry-shape tests). This is
 // the registry for tests and dev/demo deployments. Production workers
 // default to CoreBuiltins — see the AGENTLOOM_WORKER_TEST_EXECUTORS knob
 // (ticket 6.2).
-func Builtins(providers *llm.Registry) *Registry {
-	r := CoreBuiltins(providers)
+func Builtins(providers *llm.Registry, toolReg *tools.Registry) *Registry {
+	r := CoreBuiltins(providers, toolReg)
 	for _, e := range []Executor{CounterExecutor{}, EffectfulEchoExecutor{}} {
 		if err := r.Register(e); err != nil {
 			panic(err) // unreachable: a fixed set of distinct, non-empty types
@@ -61,11 +64,11 @@ func Builtins(providers *llm.Registry) *Registry {
 // of an unregistered type still validates (the dag catalog is definition
 // shape, not fleet capability) and then dead-letters permanent at claim
 // time via the registry miss — the established 5.4 path. providers backs
-// the llm executor (see Builtins).
-func CoreBuiltins(providers *llm.Registry) *Registry {
+// the llm executor and toolReg the tool executor (see Builtins).
+func CoreBuiltins(providers *llm.Registry, toolReg *tools.Registry) *Registry {
 	r, err := NewRegistry(NoopExecutor{}, EchoExecutor{}, NewSleep(), FailNTimesExecutor{},
 		JoinExecutor{}, BranchExecutor{},
-		NewLLMExecutor(providers), StubToolExecutor{}, StubRetrieveExecutor{})
+		NewLLMExecutor(providers), NewToolExecutor(toolReg), StubRetrieveExecutor{})
 	if err != nil {
 		panic(err) // unreachable: a fixed set of distinct, non-empty types
 	}

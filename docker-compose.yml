@@ -166,6 +166,13 @@ services:
       # default so llm steps run offline on the mock; the 8.6 executor
       # consumes it. Keep in sync with the api service's value.
       AGENTLOOM_LLM_MOCK_ENABLED: ${AGENTLOOM_LLM_MOCK_ENABLED:-true}
+      # Built-in tools (ticket 8.7, ADR-009). http_request's allowlist is
+      # the SSRF guard — empty (the default) denies every host, so
+      # http_request is inert until hosts are opted in. json_transform is
+      # config-free. Only the worker executes tools.
+      AGENTLOOM_TOOLS_HTTP_ALLOWLIST: ${AGENTLOOM_TOOLS_HTTP_ALLOWLIST:-}
+      AGENTLOOM_TOOLS_HTTP_TIMEOUT: ${AGENTLOOM_TOOLS_HTTP_TIMEOUT:-30s}
+      AGENTLOOM_TOOLS_HTTP_MAX_RESPONSE_BYTES: ${AGENTLOOM_TOOLS_HTTP_MAX_RESPONSE_BYTES:-1048576}
       # Telemetry (ticket 7.1, ADR-008) — see the api service's note. The
       # two replicas each bind :9090 inside their own container; Prometheus
       # finds both via DNS service discovery on the service name.

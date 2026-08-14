@@ -636,6 +636,34 @@ fast; refining quota exhaustion to permanent is deferred until it hurts.
 cancelled by ctx passes through unclassified — so retry-policy tests
 built on the mock exercise the identical taxonomy the real providers do.
 
+### Tool error taxonomy (as built, 8.7)
+
+The `tool` step's errors classify on the same two-class provider-agnostic
+model. `internal/tools` carries a small `*tools.Error{Class, ...}` (the
+`*llm.Error` shape minus HTTP-specific fields; secret hygiene is likewise
+structural — no field can hold a header value or a request/response body)
+plus the ticket-mandated typed `*tools.HostNotAllowedError` (its own type,
+`Class() == permanent`). The `tool` executor wraps a classified tool error
+into `exec.ClassifiedError` and lets context errors pass through unwrapped,
+exactly like the llm executor.
+
+- **Args-schema validation failures** (`*ArgsValidationError`) and an
+  **unknown tool** (`*UnknownToolError`) are **permanent** and happen
+  *before* `Invoke` — the same rendered args fail identically on retry, so
+  no call is made (the acceptance guarantee).
+- **`http_request`** reuses the HTTP status split: **429 and 5xx →
+  transient**, other non-2xx → **permanent**, transport failures →
+  **transient**; a **blocked host** (`*HostNotAllowedError`) is
+  **permanent** and fires no request (SSRF guard); an oversize response is
+  **permanent**. A **self-imposed per-request timeout** that trips while
+  the engine's context is still alive is **transient** (the retry may
+  clear it), distinguished from engine cancellation/deadline, which passes
+  through unwrapped so the engine keeps the timeout/cancelled judgment
+  (rows 3/8) — the 5.3 pattern applied at the tool boundary.
+- **`json_transform`** compile and runtime (jq) errors are deterministic
+  functions of (expr, input) → **permanent**; a ctx error from a
+  cancelled evaluation passes through unwrapped.
+
 ### Enforcement points
 
 **5.1** (this ticket) — the schema: `retry` on steps, `on_failure`

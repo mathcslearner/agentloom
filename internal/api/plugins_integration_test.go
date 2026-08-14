@@ -25,6 +25,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/storetest"
+	"github.com/mathcslearner/agentloom/internal/tools"
 )
 
 // pluginsServer boots the API with the full builtin catalog wired, the
@@ -34,7 +35,7 @@ func pluginsServer(t *testing.T, rootKey string) *httptest.Server {
 	s := store.NewFromPool(storetest.NewDB(t))
 	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
 	h, err := api.New(s, func() time.Time { return testNow }, logger, rootKey, api.RateLimitOptions{},
-		api.WithPlugins(exec.Builtins(nil).Manifests()))
+		api.WithPlugins(exec.Builtins(nil, nil).Manifests()))
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestListPluginsCoreSet(t *testing.T) {
 	s := store.NewFromPool(storetest.NewDB(t))
 	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
 	h, err := api.New(s, func() time.Time { return testNow }, logger, rootKey, api.RateLimitOptions{},
-		api.WithPlugins(exec.CoreBuiltins(nil).Manifests()))
+		api.WithPlugins(exec.CoreBuiltins(nil, nil).Manifests()))
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestListPluginsWithProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistryFromKeys: %v", err)
 	}
-	manifests := append(exec.CoreBuiltins(nil).Manifests(), providers.Manifests()...)
+	manifests := append(exec.CoreBuiltins(nil, nil).Manifests(), providers.Manifests()...)
 
 	s := store.NewFromPool(storetest.NewDB(t))
 	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
@@ -221,7 +222,7 @@ func TestListPluginsWithMockProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistryFromKeys: %v", err)
 	}
-	manifests := append(exec.CoreBuiltins(nil).Manifests(), providers.Manifests()...)
+	manifests := append(exec.CoreBuiltins(nil, nil).Manifests(), providers.Manifests()...)
 
 	s := store.NewFromPool(storetest.NewDB(t))
 	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
@@ -248,6 +249,61 @@ func TestListPluginsWithMockProvider(t *testing.T) {
 	}
 	if !mock.Capabilities.Cacheable || mock.Capabilities.CostBearing || mock.Capabilities.SideEffectful {
 		t.Errorf("mock capabilities = %+v — want cacheable only (free, offline)", mock.Capabilities)
+	}
+}
+
+// TestListPluginsWithTools pins ticket 8.7's catalog wiring: the built-in
+// tools (the way cmd/api folds in tools.NewBuiltins) surface on
+// GET /v1/plugins with kind tool, their distinct capability flags, and an
+// args JSON Schema — the schema UI forms (M17.4) render for tool config.
+func TestListPluginsWithTools(t *testing.T) {
+	t.Parallel()
+	rootKey := mintTestKey(t)
+
+	toolReg, err := tools.NewBuiltins(tools.HTTPOptions{})
+	if err != nil {
+		t.Fatalf("tools.NewBuiltins: %v", err)
+	}
+	manifests := append(exec.CoreBuiltins(nil, nil).Manifests(), toolReg.Manifests()...)
+
+	s := store.NewFromPool(storetest.NewDB(t))
+	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
+	h, err := api.New(s, func() time.Time { return testNow }, logger, rootKey, api.RateLimitOptions{},
+		api.WithPlugins(manifests))
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	var resp api.ListPluginsResponse
+	if res := doAuth(t, srv, http.MethodGet, "/v1/plugins", rootKey, nil, &resp); res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/plugins = %d, want 200", res.StatusCode)
+	}
+	byName := map[string]api.PluginInfo{}
+	for _, p := range resp.Plugins {
+		if p.Kind == "tool" {
+			byName[p.Name] = p
+		}
+	}
+	if len(byName) != 2 {
+		t.Fatalf("catalog has %d tools, want 2 (http_request, json_transform)", len(byName))
+	}
+	if p := byName["http_request"]; !p.Capabilities.SideEffectful || p.Capabilities.Cacheable {
+		t.Errorf("http_request capabilities = %+v — want side_effectful only", p.Capabilities)
+	}
+	if p := byName["json_transform"]; !p.Capabilities.Cacheable || p.Capabilities.SideEffectful || p.Capabilities.CostBearing {
+		t.Errorf("json_transform capabilities = %+v — want cacheable only", p.Capabilities)
+	}
+	// Each tool carries a machine-usable args schema naming its fields.
+	var httpSchema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(byName["http_request"].ConfigSchema, &httpSchema); err != nil {
+		t.Fatalf("unmarshaling http_request schema: %v", err)
+	}
+	if _, ok := httpSchema.Properties["url"]; !ok {
+		t.Error("http_request args schema does not declare the url property")
 	}
 }
 

@@ -18,57 +18,21 @@ import (
 // cache entries keyed on the stub's outputs).
 const stubVersion = "0.1.0-stub"
 
-// Dev-stub executors for the AI-native step types (tool, retrieve).
+// Dev-stub executor for the retrieve step type.
 //
 // Ticket 4.6's acceptance runs the canonical example definitions
 // end-to-end on the compose stack, but the real executors arrive with
-// the tool/retrieval SPIs (tickets 8.7–8.8). Until then these stubs make
-// the fixtures executable: each one succeeds immediately with a
-// deterministic output derived only from the step's config, so runs are
-// reproducible and no network or external state is ever touched. The
-// `"stub": true` marker makes a stubbed output unmistakable in run state
-// and demos. (The llm stub was replaced in place by the production
-// executor in ticket 8.6 — see llmexec.go.)
+// the tool/retrieval SPIs (tickets 8.7–8.8). The tool stub was replaced
+// in place by the production executor in ticket 8.7 (see toolexec.go);
+// the llm stub in 8.6 (llmexec.go). This retrieve stub remains until 8.8:
+// it succeeds immediately with a deterministic output derived only from
+// the step's config, so runs are reproducible and no external state is
+// ever touched. The `"stub": true` marker makes a stubbed output
+// unmistakable in run state and demos.
 //
-// They are wired into Builtins() and will be replaced there — same types,
-// real semantics — when their milestones land; nothing else may grow
-// behavior on top of the stub outputs.
-
-// StubToolExecutor runs tool steps as a dev stub: succeed with the
-// configured input echoed back untouched.
-type StubToolExecutor struct{}
-
-// Type implements Executor.
-func (StubToolExecutor) Type() string { return string(dag.StepTool) }
-
-// PluginManifest implements SelfDescribing (ticket 8.1). Side-effectful:
-// an unknown tool must be assumed to act on the world (specific built-in
-// tools may declare otherwise in 8.7).
-func (StubToolExecutor) PluginManifest() plugin.Manifest {
-	return builtinManifest(dag.StepTool, stubVersion,
-		"One invocation through the tool SPI (dev stub until 8.7).",
-		plugin.Capabilities{SideEffectful: true})
-}
-
-// Execute implements Executor.
-func (StubToolExecutor) Execute(_ context.Context, sc StepContext) (Output, error) {
-	c, err := configAs[*dag.ToolConfig](sc)
-	if err != nil {
-		return Output{}, err
-	}
-	if c == nil || c.Tool == "" {
-		return Output{}, &InvalidConfigError{StepType: string(sc.StepType), cause: fmt.Errorf("missing required field %q", "tool")}
-	}
-	input := c.Input
-	if len(input) == 0 {
-		input = json.RawMessage("null")
-	}
-	return marshalOutput(struct {
-		Stub  bool            `json:"stub"`
-		Tool  string          `json:"tool"`
-		Input json.RawMessage `json:"input"`
-	}{true, c.Tool, input})
-}
+// It is wired into Builtins() and will be replaced there — same type,
+// real semantics — when 8.8 lands; nothing else may grow behavior on top
+// of the stub output.
 
 // StubRetrieveExecutor runs retrieve steps as a dev stub: succeed with an
 // empty result list for the configured query.

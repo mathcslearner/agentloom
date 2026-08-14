@@ -167,13 +167,15 @@ The builtin flag table (the conformance baseline):
 | `counter` | 1.0.0 | ✓ | – | – |
 | `effectful_echo` | 1.0.0 | ✓ | – | – |
 | `llm` | 1.0.0 | – | ✓ | ✓ |
-| `tool` (stub) | 0.1.0-stub | ✓ | – | – |
+| `tool` | 1.0.0 | ✓ | – | – |
 | `retrieve` (stub) | 0.1.0-stub | – | ✓ | – |
 
 (`join`/`branch` are pure but not cacheable: they are control flow whose
-meaning is readiness and edge firing — caching them is noise. `tool` is
-side-effectful because an unknown tool must be assumed to act on the
-world; specific built-in tools may declare otherwise in 8.7.)
+meaning is readiness and edge firing — caching them is noise. The `tool`
+*executor* is side-effectful because an unknown tool must be assumed to
+act on the world; individual built-in tools carry their own per-tool
+flags under kind `tool` — `http_request` side_effectful, `json_transform`
+cacheable — see the 8.7 as-built section.)
 
 ### Plugin version strings
 
@@ -186,8 +188,8 @@ change should invalidate previously cached outputs*. Real builtins start
 at `1.0.0`; the dev stubs carry `0.1.0-stub` so a stubbed plugin is
 unmistakable in any listing, and their replacement by real executors is
 itself the kind of behavior change that mandates the bump to `1.0.0` —
-as `llm` did in 8.6 (the real executor's non-deterministic completion
-must never read a cache entry keyed on the stub's echo).
+as `llm` did in 8.6 and `tool` did in 8.7 (the real executor's live
+outputs must never read a cache entry keyed on the stub's echo).
 
 ### Config schemas
 
@@ -320,6 +322,72 @@ construction.
   of two `llm` steps passing data via 8.2 templating — is the reused e2e
   fixture, executed end-to-end against the mock in the engine integration
   suite.
+
+### Tool SPI & built-in tools (as built, 8.7)
+
+`internal/tools` is the fourth kind-owning leaf package (imports `plugin`
++ `dag` + stdlib + gojq + jsonschema/v6, never `exec`/engine), giving the
+`tool` kind the same typed-facade treatment executors and providers got.
+
+- **Interface.** `Tool` = `Manifest() plugin.Manifest` +
+  `Invoke(ctx, Invocation) (json.RawMessage, error)`. The ticket's literal
+  `Invoke(ctx, args)` grew to an `Invocation` struct so `http_request` can
+  read the step's stable idempotency key (5.5) and a logger without a
+  future signature churn — the `StepContext` precedent. Every tool
+  **must** declare its args JSON Schema in `Manifest().ConfigSchema` (nil
+  is a registration error; a no-arg tool declares `{"type":"object"}`),
+  generated from the tool's Go arg struct with the same invopop reflector
+  settings `dag.StepConfigSchema` uses — the ADR-003 "structs are the
+  source of truth" invariant, extended to tool args.
+
+- **The registry validates args, generically.** Unlike executor config
+  (validated only by strict struct decode), tool args are validated
+  against the declared schema at dispatch by a real 2020-12 validator
+  (`santhosh-tekuri/jsonschema/v6`, compiled once per tool at
+  registration — an uncompilable schema fails boot). `Registry.ValidateArgs`
+  is the framework gate the `tool` executor calls **before** `Invoke`, so
+  the acceptance "bad args → permanent failure, no call" is a framework
+  guarantee every tool (including future third-party ones) inherits, not a
+  per-tool discipline. A violation is a typed `*ArgsValidationError`
+  (permanent); an unknown tool is `*UnknownToolError`.
+
+- **`exec.ToolExecutor`** replaces `StubToolExecutor` in place (version
+  bumped `0.1.0-stub` → `1.0.0`, the M9 cache-bust trigger; flags
+  unchanged — `side_effectful`, since an unknown tool must be assumed to
+  act on the world). It decodes the already-8.2-rendered `ToolConfig`,
+  looks the tool up, validates args, invokes once (no retry — the M5
+  engine owns retry), and persists the tool's result **verbatim** (no
+  envelope — the tool name already lives in the step config, and
+  downstream templating reads `${{ steps.x.output.<field> }}` directly).
+  A `*tools.Error`'s class is honored via `exec.ClassifiedError`; context
+  errors pass through unwrapped (engine judges timeout/cancelled).
+
+- **Built-ins.** `http_request` (side_effectful) makes one outbound call
+  guarded by a host **allowlist** (the SSRF guard: an empty allowlist
+  denies every host — the safe default — and a blocked host is the typed
+  `*HostNotAllowedError`, permanent, provably before any connection;
+  `CheckRedirect` re-validates every redirect hop, closing the
+  redirect-to-forbidden-host bypass), bounded by a timeout and a
+  response-size cap, and stamped with an automatic `Idempotency-Key`
+  header on non-GET calls from the 5.5 key (the header wins over any
+  user-supplied one — key stability is the guarantee). `json_transform`
+  (cacheable — the first pure built-in tool) evaluates a gojq program
+  under `ctx` (a pathological program is bounded by the step timeout);
+  one emitted value returns that value, zero-or-many returns an array.
+
+- **Wiring.** `tools.NewBuiltins(HTTPOptions)` is the one constructor both
+  deployables call. `cmd/worker` builds it from `config.ToolsConfig`
+  (`AGENTLOOM_TOOLS_HTTP_ALLOWLIST` empty-default deny-all, `_TIMEOUT`,
+  `_MAX_RESPONSE_BYTES`) and hands it to the exec registry; `cmd/api`
+  folds the tools' (config-independent) manifests into `GET /v1/plugins`
+  beside the providers'. `exec.Builtins`/`CoreBuiltins` grew a
+  `*tools.Registry` parameter (the 8.6 `*llm.Registry` precedent; nil is
+  valid — a tool step then fails permanent at lookup). The canonical
+  `fanout.json`'s one executed tool step moved from an `http_request`
+  (which the empty compose allowlist would block) to an offline
+  `json_transform` over the templated topic, keeping the M8 exit-criterion
+  workflow fully offline on compose/CI; the non-executed corpus fixtures
+  keep realistic `http_request` steps.
 
 ## Consequences
 
