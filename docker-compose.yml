@@ -109,6 +109,10 @@ services:
       AGENTLOOM_OBS_METRICS_ADDR: :9090
       AGENTLOOM_OBS_OTEL_ENABLED: ${AGENTLOOM_OBS_OTEL_ENABLED:-false}
       AGENTLOOM_OBS_OTEL_ENDPOINT: jaeger:4317
+      # Plugin catalog (ticket 8.1, ADR-009): mirror the worker's
+      # test-executor knob so GET /v1/plugins lists what the fleet
+      # actually executes.
+      AGENTLOOM_API_TEST_EXECUTORS: ${AGENTLOOM_WORKER_TEST_EXECUTORS:-true}
     ports:
       # Loopback by default (ticket 6.2, ADR-007): every /v1 route now
       # requires a scoped key, but a dev stack carrying a bootstrap

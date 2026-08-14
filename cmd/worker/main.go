@@ -133,6 +133,9 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	if cfg.Worker.TestExecutors {
 		registry = exec.Builtins()
 	}
+	logger.InfoContext(ctx, "plugin registry built",
+		slog.Int("plugins", len(registry.Manifests())),
+		slog.Bool("test_executors", cfg.Worker.TestExecutors))
 	// Per-step log capture (ticket 7.4): the sink tees every executor's
 	// StepContext.Logger into the step_logs store; its flusher runs on
 	// loopCtx below so lines from steps finishing during the consumer's

@@ -3838,3 +3838,87 @@ enforcement machinery, all provisioned as code.
   home).
 - API-side cancel finalizations still don't record `engine_run_duration_
   seconds` (the known 7.2 gap); the run-completions panel inherits it.
+
+## Milestone 8 — Plugin SPI & LLM/tool execution
+
+### 8.1 — ADR-009 & plugin registry refactor ✅
+
+**Delivered.** The plugin SPI as architecture (ADR-009), M4's executor
+registry refactored onto it, and the catalog surfaced through the API
+and ctl.
+
+- **ADR-009** — the five plugin kinds (executor, tool, retriever,
+  model_provider, validator) with identity = (kind, name), names in
+  step-type spelling (`^[a-z][a-z0-9_]*$`, ≤ 64); the in-process
+  compilation model (plugins are Go packages compiled into the binaries,
+  boot-time registration into instance registries, invalid/duplicate
+  registration fails startup; out-of-process/WASM explicitly backlog);
+  capability-flag semantics — `side_effectful` (must journal, never
+  cache), `cacheable` (deliberately stronger than "deterministic": sleep
+  is pure but a cache hit would skip the wait, while non-deterministic
+  LLM calls ARE cacheable — that reuse is M9's whole point),
+  `cost_bearing` (M10 metering) — with the builtin flag table; semver
+  version strings whose bump rule is behavioral (bump when cached
+  outputs should invalidate — they feed M9 cache keys), dev stubs on
+  `0.1.0-stub` so a stubbed plugin is unmistakable; config schemas
+  generated from the same Go structs the decoders use, never
+  hand-written.
+- **`internal/plugin`** — a new leaf package (deliberate layout addendum,
+  recorded in the ADR: kind-owning packages import it, it imports none
+  of them) holding `Kind`, `Capabilities`, `Manifest` (+`Validate`), and
+  the generic `Registry` keyed (kind, name) with typed
+  `*InvalidManifestError`/`*DuplicateError` and sorted
+  `Manifests()`/`ManifestsByKind()` listings.
+- **exec refactor** — `exec.Registry` is now a typed facade over
+  `plugin.Registry` with the 4.1 surface unchanged (`NewRegistry`,
+  `Register`, `Get` → `*UnknownTypeError`, `Types`), so no engine code
+  and none of the ~15 existing test call sites changed. Production
+  executors self-describe via the optional `SelfDescribing`
+  (`PluginManifest()`), identity-checked (a manifest may not claim
+  another name/kind); bare executors get a synthesized conservative
+  manifest (version `0.0.0`, `side_effectful: true`, `cacheable:
+  false`) — the test-double escape hatch, with
+  `TestBuiltinManifestConformance` pinning that everything in the
+  shipped sets self-describes and that the flags match the ADR table
+  executable-style. All 11 builtins carry manifests.
+- **`dag.StepConfigSchema`** — standalone per-step-type config schema
+  (invopop reflector, `ExpandedStruct` so fields inline at the root,
+  `additionalProperties: false` mirroring `DisallowUnknownFields`);
+  the exec registry attaches it automatically at registration since
+  executor name = step type, so manifests never hand-carry schemas.
+- **`GET /v1/plugins`** — read scope/class, the catalog compiled into
+  the API binary (ADR-009's single-build assumption), precomputed at
+  construction via the new `api.WithPlugins` option, schemas embedded
+  verbatim; empty catalog serves `{"plugins":[]}`. Wired through the
+  route→scope, route→class, auth-matrix, and OpenAPI coverage tables;
+  spec still lints 100/100. `cmd/api` builds the catalog gated by new
+  `AGENTLOOM_API_TEST_EXECUTORS` (mirror of the worker knob; compose
+  ties them to the same value so the listing matches the fleet), and
+  both deployables log the plugin count at boot.
+- **`ctl plugins list`** — kind/name/version/capability-flags table
+  (schemas deliberately not rendered — they're machine food).
+
+**Non-obvious decisions.**
+
+- The dev stubs' capability flags describe the REAL executors that
+  replace them in place (llm: cacheable + cost_bearing; tool:
+  side_effectful; retrieve: cacheable), so M9/M10 middleware written
+  against the flags survives the swap; the swap itself is the mandatory
+  version bump to 1.0.0.
+- No worker→Postgres plugin registration: under the in-process model the
+  catalog is a build-time property, so the API serves its own compiled
+  set. The mixed-fleet inaccuracy is accepted and recorded in ADR-009
+  with dynamic introspection as the deferred trigger.
+- Synthesized manifests default `side_effectful: true` / `cacheable:
+  false` — the safe assumptions when nothing is known (never skip
+  journaling, never serve from cache).
+- Version format is a regex, not a semver parser — nothing orders
+  versions yet (M9 needs equality only).
+
+**Deferred / quirks.**
+
+- `join`/`branch`/`sleep`/`fail_n_times` are flagless by design
+  (control flow / attempt-dependent); flag changes are ADR amendments,
+  enforced by the executable table.
+- The catalog serves whole-and-unfiltered (a few tens of KB); `?kind=`
+  filtering waits until a second kind exists to filter by.

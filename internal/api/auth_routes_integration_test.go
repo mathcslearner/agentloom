@@ -148,6 +148,7 @@ func TestV1AuthMatrix(t *testing.T) {
 		{http.MethodGet, "/v1/definitions/{id}", static("/v1/definitions/" + fixtureDef.ID), api.ScopeRead, nil, http.StatusOK},
 		{http.MethodGet, "/v1/definitions/{name}/versions", static("/v1/definitions/auth-probe-fixture/versions"), api.ScopeRead, nil, http.StatusOK},
 		{http.MethodPost, "/v1/definitions/{name}/versions", static("/v1/definitions/auth-probe-fixture/versions"), api.ScopeSubmit, func() []byte { return defDoc("auth-probe-fixture") }, http.StatusCreated},
+		{http.MethodGet, "/v1/plugins", static("/v1/plugins"), api.ScopeRead, nil, http.StatusOK},
 		{http.MethodPost, "/v1/keys", static("/v1/keys"), api.ScopeAdmin, keyBody, http.StatusCreated},
 		{http.MethodGet, "/v1/keys", static("/v1/keys"), api.ScopeAdmin, nil, http.StatusOK},
 		{http.MethodDelete, "/v1/keys/{id}", static("/v1/keys/" + victim.ID), api.ScopeAdmin, nil, http.StatusNoContent},

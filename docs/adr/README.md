@@ -24,3 +24,4 @@ are reserved and appear here once the ADR is written.
 | [006](006-failure-taxonomy-and-retries.md) | Failure taxonomy & retry semantics | Accepted | 2026-08-11 |
 | [007](007-authn-authz-and-api-rate-limiting.md) | Authentication, authorization & API rate limiting | Accepted | 2026-08-12 |
 | [008](008-observability-conventions.md) | Observability conventions | Accepted | 2026-08-12 |
+| [009](009-plugin-spi.md) | Plugin SPI — kinds, registration, config schemas, capability flags | Accepted | 2026-08-14 |

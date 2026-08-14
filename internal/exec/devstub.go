@@ -6,15 +6,25 @@ import (
 	"fmt"
 
 	"github.com/mathcslearner/agentloom/internal/dag"
+	"github.com/mathcslearner/agentloom/internal/plugin"
 )
+
+// stubVersion marks the dev stubs' manifests (ticket 8.1, ADR-009): a
+// 0.x pre-release so a stubbed plugin is unmistakable in any listing.
+// The capability flags, by contrast, describe the REAL semantics that
+// replace each stub in place (8.3–8.8) — middleware written against the
+// flags must behave correctly across that swap. The swap itself is the
+// behavior change that mandates the bump to 1.0.0 (it must bust any M9
+// cache entries keyed on the stub's outputs).
+const stubVersion = "0.1.0-stub"
 
 // Dev-stub executors for the AI-native step types (llm, tool, retrieve).
 //
 // Ticket 4.6's acceptance runs the canonical example definitions —
 // fanout.json carries llm, tool, and retrieve steps — end-to-end on the
-// compose stack, but the real executors arrive with the provider interface
-// (M9) and the tool/retrieval SPIs (M8/M16). Until then these stubs make
-// the fixtures executable: each one succeeds immediately with a
+// compose stack, but the real executors arrive with the provider layer
+// and the tool/retrieval SPIs (tickets 8.3–8.8). Until then these stubs
+// make the fixtures executable: each one succeeds immediately with a
 // deterministic output derived only from the step's config, so runs are
 // reproducible and no network, provider key, or external state is ever
 // touched. The `"stub": true` marker makes a stubbed output unmistakable
@@ -31,6 +41,16 @@ type StubLLMExecutor struct{}
 
 // Type implements Executor.
 func (StubLLMExecutor) Type() string { return string(dag.StepLLM) }
+
+// PluginManifest implements SelfDescribing (ticket 8.1). Cacheable and
+// cost-bearing per the real llm executor's semantics: non-deterministic
+// outputs are exactly what M9's response cache reuses, and provider
+// calls are what M10 meters.
+func (StubLLMExecutor) PluginManifest() plugin.Manifest {
+	return builtinManifest(dag.StepLLM, stubVersion,
+		"One model call through the provider interface (dev stub until 8.6).",
+		plugin.Capabilities{Cacheable: true, CostBearing: true})
+}
 
 // Execute implements Executor.
 func (StubLLMExecutor) Execute(_ context.Context, sc StepContext) (Output, error) {
@@ -62,6 +82,15 @@ type StubToolExecutor struct{}
 // Type implements Executor.
 func (StubToolExecutor) Type() string { return string(dag.StepTool) }
 
+// PluginManifest implements SelfDescribing (ticket 8.1). Side-effectful:
+// an unknown tool must be assumed to act on the world (specific built-in
+// tools may declare otherwise in 8.7).
+func (StubToolExecutor) PluginManifest() plugin.Manifest {
+	return builtinManifest(dag.StepTool, stubVersion,
+		"One invocation through the tool SPI (dev stub until 8.7).",
+		plugin.Capabilities{SideEffectful: true})
+}
+
 // Execute implements Executor.
 func (StubToolExecutor) Execute(_ context.Context, sc StepContext) (Output, error) {
 	c, err := configAs[*dag.ToolConfig](sc)
@@ -88,6 +117,13 @@ type StubRetrieveExecutor struct{}
 
 // Type implements Executor.
 func (StubRetrieveExecutor) Type() string { return string(dag.StepRetrieve) }
+
+// PluginManifest implements SelfDescribing (ticket 8.1).
+func (StubRetrieveExecutor) PluginManifest() plugin.Manifest {
+	return builtinManifest(dag.StepRetrieve, stubVersion,
+		"A retrieval query through the retriever SPI (dev stub until 8.8).",
+		plugin.Capabilities{Cacheable: true})
+}
 
 // Execute implements Executor.
 func (StubRetrieveExecutor) Execute(_ context.Context, sc StepContext) (Output, error) {

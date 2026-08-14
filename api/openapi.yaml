@@ -72,6 +72,8 @@ tags:
     description: Submit, inspect, and steer workflow runs.
   - name: Definitions
     description: The stored, versioned workflow-definition registry.
+  - name: Plugins
+    description: The plugin catalog — manifests and config schemas (ADR-009).
   - name: Keys
     description: API key administration (admin scope).
   - name: Health
@@ -657,6 +659,38 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/plugins:
+    get:
+      operationId: listPlugins
+      tags: [Plugins]
+      summary: List plugins
+      description: |
+        Scope `read`, rate-limit class `read`. The plugin catalog
+        compiled into the API binary (ticket 8.1, ADR-009): every
+        registered plugin's manifest — kind, name, semver version,
+        capability flags — with its generated config JSON Schema embedded
+        verbatim (`config_schema`), the machine-usable form UI config
+        panels consume. Sorted by kind (executor, tool, retriever,
+        model_provider, validator) then name. Under the in-process
+        compilation model the catalog is a build-time property, so the
+        listing describes the fleet as long as API and workers ship from
+        the same build with matching test-executor knobs.
+      responses:
+        "200":
+          description: The full catalog — one page, no pagination.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListPluginsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1584,3 +1618,70 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/KeyView"
+
+    # --- Plugins (ticket 8.1, ADR-009). ---
+    PluginKind:
+      type: string
+      description: The plugin kind (ADR-009's closed vocabulary).
+      enum: [executor, tool, retriever, model_provider, validator]
+    PluginCapabilities:
+      type: object
+      description: >
+        ADR-009's capability flags. All three are always present — a
+        flag's absence and its falseness are the same statement.
+      required: [side_effectful, cacheable, cost_bearing]
+      properties:
+        side_effectful:
+          type: boolean
+          description: >
+            The plugin performs externally observable side effects; its
+            executions journal, and its outputs are never cached.
+        cacheable:
+          type: boolean
+          description: >
+            The output is a function of (config, input) and caching is
+            semantically sound — M9's response-cache eligibility.
+        cost_bearing:
+          type: boolean
+          description: Executing the plugin spends money; M10 meters it.
+    PluginInfo:
+      type: object
+      description: One plugin's manifest, as registered at boot.
+      required: [kind, name, version, capabilities]
+      properties:
+        kind:
+          $ref: "#/components/schemas/PluginKind"
+        name:
+          type: string
+          description: >
+            The plugin's name within its kind (for executors, the step
+            type). Lowercase snake_case, at most 64 characters.
+          pattern: "^[a-z][a-z0-9_]*$"
+          maxLength: 64
+        version:
+          type: string
+          description: >
+            Semver version string. Feeds M9's cache keys, so it bumps on
+            any behavior change that should invalidate cached outputs;
+            dev stubs carry a 0.x `-stub` pre-release.
+        description:
+          type: string
+          description: Optional one-line human description.
+        capabilities:
+          $ref: "#/components/schemas/PluginCapabilities"
+        config_schema:
+          type: object
+          description: >
+            The plugin's generated config JSON Schema (draft 2020-12),
+            embedded verbatim — generated from the same Go structs the
+            engine decodes with, so it cannot drift. Absent when the
+            plugin takes no config.
+    ListPluginsResponse:
+      type: object
+      description: The plugin catalog, sorted by kind then name.
+      required: [plugins]
+      properties:
+        plugins:
+          type: array
+          items:
+            $ref: "#/components/schemas/PluginInfo"

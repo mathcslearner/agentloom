@@ -9,7 +9,22 @@ import (
 
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
+	"github.com/mathcslearner/agentloom/internal/plugin"
 )
+
+// builtinManifest is the shared shape of the builtins' self-descriptions
+// (ticket 8.1, ADR-009): kind executor, name = step type, the flag table
+// from ADR-009. The registry fills ConfigSchema from the dag catalog at
+// registration, so manifests here never carry one.
+func builtinManifest(st dag.StepType, version, description string, caps plugin.Capabilities) plugin.Manifest {
+	return plugin.Manifest{
+		Kind:         plugin.KindExecutor,
+		Name:         string(st),
+		Version:      version,
+		Description:  description,
+		Capabilities: caps,
+	}
+}
 
 // Builtins returns a registry holding the M4/M5 executors: the six test
 // executors (noop, echo, sleep, fail_n_times, counter, and — since 5.5 —
@@ -58,6 +73,13 @@ type NoopExecutor struct{}
 // Type implements Executor.
 func (NoopExecutor) Type() string { return string(dag.StepNoop) }
 
+// PluginManifest implements SelfDescribing (ticket 8.1).
+func (NoopExecutor) PluginManifest() plugin.Manifest {
+	return builtinManifest(dag.StepNoop, "1.0.0",
+		"Succeed immediately with no output.",
+		plugin.Capabilities{Cacheable: true})
+}
+
 // Execute implements Executor.
 func (NoopExecutor) Execute(context.Context, StepContext) (Output, error) {
 	return Output{}, nil
@@ -71,6 +93,13 @@ type EchoExecutor struct{}
 
 // Type implements Executor.
 func (EchoExecutor) Type() string { return string(dag.StepEcho) }
+
+// PluginManifest implements SelfDescribing (ticket 8.1).
+func (EchoExecutor) PluginManifest() plugin.Manifest {
+	return builtinManifest(dag.StepEcho, "1.0.0",
+		"Return the configured input (or the rendered input) as output.",
+		plugin.Capabilities{Cacheable: true})
+}
 
 // Execute implements Executor.
 func (EchoExecutor) Execute(_ context.Context, sc StepContext) (Output, error) {
@@ -112,6 +141,15 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 // Type implements Executor.
 func (*SleepExecutor) Type() string { return string(dag.StepSleep) }
 
+// PluginManifest implements SelfDescribing (ticket 8.1). Sleep is pure
+// but deliberately not cacheable: a cache hit would skip the wait, which
+// is the step's whole meaning (ADR-009).
+func (*SleepExecutor) PluginManifest() plugin.Manifest {
+	return builtinManifest(dag.StepSleep, "1.0.0",
+		"Wait for the configured duration, then succeed.",
+		plugin.Capabilities{})
+}
+
 // Execute implements Executor.
 func (e *SleepExecutor) Execute(ctx context.Context, sc StepContext) (Output, error) {
 	c, err := configAs[*dag.SleepConfig](sc)
@@ -144,6 +182,14 @@ type JoinExecutor struct{}
 // Type implements Executor.
 func (JoinExecutor) Type() string { return string(dag.StepJoin) }
 
+// PluginManifest implements SelfDescribing (ticket 8.1). Control flow:
+// pure, but caching it is noise, so no flags (ADR-009).
+func (JoinExecutor) PluginManifest() plugin.Manifest {
+	return builtinManifest(dag.StepJoin, "1.0.0",
+		"Fan-in barrier; readiness semantics live in the engine.",
+		plugin.Capabilities{})
+}
+
 // Execute implements Executor.
 func (JoinExecutor) Execute(_ context.Context, sc StepContext) (Output, error) {
 	return Output{Data: sc.Input}, nil
@@ -158,6 +204,13 @@ type BranchExecutor struct{}
 
 // Type implements Executor.
 func (BranchExecutor) Type() string { return string(dag.StepBranch) }
+
+// PluginManifest implements SelfDescribing (ticket 8.1).
+func (BranchExecutor) PluginManifest() plugin.Manifest {
+	return builtinManifest(dag.StepBranch, "1.0.0",
+		"Pass-through whose output feeds the exclusive edge-firing rule.",
+		plugin.Capabilities{})
+}
 
 // Execute implements Executor.
 func (BranchExecutor) Execute(_ context.Context, sc StepContext) (Output, error) {
@@ -183,6 +236,13 @@ type CounterExecutor struct{}
 
 // Type implements Executor.
 func (CounterExecutor) Type() string { return string(dag.StepCounter) }
+
+// PluginManifest implements SelfDescribing (ticket 8.1).
+func (CounterExecutor) PluginManifest() plugin.Manifest {
+	return builtinManifest(dag.StepCounter, "1.0.0",
+		"Append one attempt-stamped line to a file (unjournaled test effect).",
+		plugin.Capabilities{SideEffectful: true})
+}
 
 // Execute implements Executor.
 func (CounterExecutor) Execute(_ context.Context, sc StepContext) (Output, error) {
@@ -225,6 +285,13 @@ type EffectfulEchoExecutor struct{}
 
 // Type implements Executor.
 func (EffectfulEchoExecutor) Type() string { return string(dag.StepEffectfulEcho) }
+
+// PluginManifest implements SelfDescribing (ticket 8.1).
+func (EffectfulEchoExecutor) PluginManifest() plugin.Manifest {
+	return builtinManifest(dag.StepEffectfulEcho, "1.0.0",
+		"Journal one file-append effect, then echo the input.",
+		plugin.Capabilities{SideEffectful: true})
+}
 
 // Execute implements Executor.
 func (EffectfulEchoExecutor) Execute(ctx context.Context, sc StepContext) (Output, error) {
@@ -278,6 +345,14 @@ type FailNTimesExecutor struct{}
 
 // Type implements Executor.
 func (FailNTimesExecutor) Type() string { return string(dag.StepFailNTimes) }
+
+// PluginManifest implements SelfDescribing (ticket 8.1). Not cacheable:
+// the output branches on the durable attempt number (ADR-009).
+func (FailNTimesExecutor) PluginManifest() plugin.Manifest {
+	return builtinManifest(dag.StepFailNTimes, "1.0.0",
+		"Fail attempts 1..n, succeed from attempt n+1 on.",
+		plugin.Capabilities{})
+}
 
 // Execute implements Executor.
 func (FailNTimesExecutor) Execute(_ context.Context, sc StepContext) (Output, error) {

@@ -1,6 +1,7 @@
 // Command api is agentloom's ingest/inspection deployable (ADR-001,
 // ticket 4.6). It serves internal/api's routes: POST /v1/runs,
-// GET /v1/runs/{id}, the /v1/keys key management, and GET /healthz.
+// GET /v1/runs/{id}, the /v1/keys key management, the /v1/plugins
+// catalog (ticket 8.1), and GET /healthz.
 // Every /v1 route requires a scoped bearer key (tickets 6.1/6.2,
 // ADR-007); only the health probe is anonymous. Durable state lives only
 // in Postgres — run submission writes the transactional outbox, and the
@@ -36,6 +37,7 @@ import (
 
 	"github.com/mathcslearner/agentloom/internal/api"
 	"github.com/mathcslearner/agentloom/internal/config"
+	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/obs/metrics"
 	"github.com/mathcslearner/agentloom/internal/obs/trace"
@@ -138,8 +140,18 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 		}
 	}
 
+	// Plugin catalog for GET /v1/plugins (ticket 8.1, ADR-009): the
+	// builtin registry this binary compiles in, gated by the API-side
+	// test-executor knob mirroring the worker's — set both alike so the
+	// listing matches what the fleet executes.
+	pluginRegistry := exec.CoreBuiltins()
+	if cfg.API.TestExecutors {
+		pluginRegistry = exec.Builtins()
+	}
+	plugins := pluginRegistry.Manifests()
+
 	apiHandler, err := api.New(st, time.Now, logger, cfg.API.RootKey, rl,
-		api.WithRequestMetrics(apiMetrics))
+		api.WithRequestMetrics(apiMetrics), api.WithPlugins(plugins))
 	if err != nil {
 		return err
 	}
@@ -174,7 +186,9 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 		slog.String("version", version.Version),
 		slog.String("addr", ln.Addr().String()),
 		slog.String("metrics_addr", cfg.Obs.MetricsAddr),
-		slog.Bool("otel_enabled", cfg.Obs.OTelEnabled))
+		slog.Bool("otel_enabled", cfg.Obs.OTelEnabled),
+		slog.Int("plugins", len(plugins)),
+		slog.Bool("test_executors", cfg.API.TestExecutors))
 	defer logger.InfoContext(ctx, "api stopped")
 	if ready != nil {
 		ready <- ln.Addr().String()

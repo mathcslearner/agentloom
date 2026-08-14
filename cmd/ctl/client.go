@@ -151,6 +151,13 @@ func (c *client) requeueStep(ctx context.Context, runID, stepID string) (api.Req
 	return resp, err
 }
 
+// listPlugins GETs the plugin catalog (ticket 8.1).
+func (c *client) listPlugins(ctx context.Context) (api.ListPluginsResponse, error) {
+	var resp api.ListPluginsResponse
+	err := c.do(ctx, http.MethodGet, "/v1/plugins", nil, &resp)
+	return resp, err
+}
+
 // do runs one request, decoding 2xx into out and anything else into an
 // *apiError. Each mod, if any, edits the request before it is sent (e.g.
 // extra headers).

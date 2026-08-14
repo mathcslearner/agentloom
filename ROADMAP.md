@@ -607,13 +607,13 @@ Provisioned-as-code dashboards: **Engine** (throughput, queue/PEL/delayed depth,
 
 **Exit criteria:** a real workflow (retrieve → LLM → tool) runs end-to-end on compose with the mock provider in CI and live providers behind an env flag; `GET /v1/plugins` serves self-describing schemas.
 
-#### 8.1 — ADR-009 & plugin registry refactor
+#### 8.1 — ADR-009 & plugin registry refactor ✅
 **Depends on:** 4.1, 6.6
 **ADR-009:** plugin kinds (executor, tool, retriever, model provider, validator), registration API, per-plugin JSON Schema for config (generated, served via API), capability flags (`side_effectful`, `cacheable`, `cost_bearing`), plugin version strings (feed cache keys in M9), in-process compilation model (out-of-process/WASM explicitly deferred to backlog). Refactor M4's registry to the SPI; `GET /v1/plugins` lists plugins + schemas; `ctl plugins list`.
 **Done when:**
-- [ ] Existing executors migrated; registry rejects duplicate/invalid registrations
-- [ ] `GET /v1/plugins` returns machine-usable schemas (consumed later by UI forms)
-- [ ] Capability flags stored and queryable per plugin
+- [x] Existing executors migrated; registry rejects duplicate/invalid registrations
+- [x] `GET /v1/plugins` returns machine-usable schemas (consumed later by UI forms)
+- [x] Capability flags stored and queryable per plugin
 
 #### 8.2 — Step input templating & data flow
 **Depends on:** 8.1, 1.5

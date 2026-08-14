@@ -15,6 +15,7 @@ const (
 	EnvAPIIdleTimeout     = "AGENTLOOM_API_IDLE_TIMEOUT"
 	EnvAPIShutdownTimeout = "AGENTLOOM_API_SHUTDOWN_TIMEOUT"
 	EnvAPIRootKey         = "AGENTLOOM_API_ROOT_KEY"
+	EnvAPITestExecutors   = "AGENTLOOM_API_TEST_EXECUTORS"
 )
 
 // Environment variables read by APIRateLimitConfig (ticket 6.4, ADR-007).
@@ -86,6 +87,12 @@ type APIConfig struct {
 	RootKey string
 	// RateLimit configures per-client API rate limiting (ticket 6.4).
 	RateLimit APIRateLimitConfig
+	// TestExecutors lists the full exec.Builtins catalog on
+	// GET /v1/plugins instead of exec.CoreBuiltins (ticket 8.1, ADR-009)
+	// — the API-side mirror of AGENTLOOM_WORKER_TEST_EXECUTORS, so a
+	// deployment sets both knobs alike and the plugin listing matches
+	// what the worker fleet executes. Default false, like the worker's.
+	TestExecutors bool
 }
 
 // APIRateLimitClass is one token bucket's parameters: Capacity is the burst
@@ -154,6 +161,7 @@ func (c *APIConfig) applyEnv(fn LookupFunc) []error {
 		// which knows the key format and is careful never to echo the value.
 		c.RootKey = raw
 	}
+	errs = applyBool(errs, fn, EnvAPITestExecutors, &c.TestExecutors)
 	errs = applyBool(errs, fn, EnvAPIRateLimitEnabled, &c.RateLimit.Enabled)
 	applyString(fn, EnvAPIRateLimitKeyPrefix, &c.RateLimit.KeyPrefix)
 	errs = applyPositiveInt64(errs, fn, EnvAPIRateLimitSubmitCapacity, &c.RateLimit.Submit.Capacity)

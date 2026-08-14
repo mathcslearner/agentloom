@@ -25,6 +25,7 @@
 //	GET    /v1/definitions/{id}                     read    read    one stored definition, spec included
 //	GET    /v1/definitions/{name}/versions          read    read    every version of one name
 //	POST   /v1/definitions/{name}/versions          submit  submit  append the next version of an existing name
+//	GET    /v1/plugins                              read    read    plugin catalog: manifests + config schemas (ticket 8.1)
 //	POST   /v1/keys                                 admin   admin   mint an API key (plaintext shown once)
 //	GET    /v1/keys                                 admin   admin   list API keys (prefixes only)
 //	DELETE /v1/keys/{id}                            admin   admin   revoke an API key (soft, idempotent)
@@ -104,6 +105,9 @@ type Handler struct {
 	// metrics receives per-request observations (ticket 7.2). Never nil
 	// after New — the default is the no-op recorder.
 	metrics RequestMetrics
+	// plugins is the precomputed GET /v1/plugins listing (ticket 8.1),
+	// set by WithPlugins; nil serves as an empty catalog.
+	plugins []PluginInfo
 }
 
 // RequestMetrics is the API's per-request observability seam (ticket 7.2,
@@ -219,6 +223,8 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/definitions/{defID}", h.handleGetDefinition)
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/definitions/{name}/versions", h.handleListDefinitionVersions)
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/definitions/{name}/versions", h.handleCreateDefinitionVersion)
+		// Plugin catalog (ticket 8.1, ADR-009).
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/plugins", h.handleListPlugins)
 		r.Route("/keys", func(r chi.Router) {
 			r.Use(h.requireScope(ScopeAdmin))
 			r.Use(h.rateLimit(classAdmin))

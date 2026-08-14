@@ -320,3 +320,40 @@ type CreateKeyResponse struct {
 type ListKeysResponse struct {
 	Keys []KeyView `json:"keys"`
 }
+
+// PluginCapabilities are ADR-009's capability flags on the wire (ticket
+// 8.1). All three are always present — a flag's absence and its falseness
+// are the same statement.
+type PluginCapabilities struct {
+	SideEffectful bool `json:"side_effectful"`
+	Cacheable     bool `json:"cacheable"`
+	CostBearing   bool `json:"cost_bearing"`
+}
+
+// PluginInfo is one plugin's listing entry on GET /v1/plugins: the
+// manifest the plugin registered at boot (ADR-009), config schema
+// embedded verbatim as the JSON Schema document UI forms consume (M17.4).
+type PluginInfo struct {
+	// Kind is the plugin kind: executor | tool | retriever |
+	// model_provider | validator.
+	Kind string `json:"kind"`
+	// Name identifies the plugin within its kind; for executors it is the
+	// step type.
+	Name string `json:"name"`
+	// Version is the plugin's semver version string (feeds M9 cache keys).
+	Version string `json:"version"`
+	// Description is the optional one-line human description.
+	Description string `json:"description,omitempty"`
+	// Capabilities are the ADR-009 capability flags.
+	Capabilities PluginCapabilities `json:"capabilities"`
+	// ConfigSchema is the plugin's generated config JSON Schema (2020-12),
+	// embedded verbatim; absent when the plugin takes no config.
+	ConfigSchema json.RawMessage `json:"config_schema,omitempty"`
+}
+
+// ListPluginsResponse answers GET /v1/plugins: the catalog compiled into
+// the API binary (ADR-009's in-process model — API and workers ship from
+// one build), sorted by kind then name.
+type ListPluginsResponse struct {
+	Plugins []PluginInfo `json:"plugins"`
+}

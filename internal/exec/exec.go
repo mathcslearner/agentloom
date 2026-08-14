@@ -4,14 +4,15 @@
 // executors M4/M5's fixtures and chaos suites are built from (noop, echo,
 // sleep, fail_n_times, and — since 4.7 — counter).
 //
-// This is deliberately minimal — no middleware chain, no side-effect
-// journal, no config schemas. The full plugin SPI arrives in M8 and will
-// grow this package rather than replace it: Output is a struct so success
-// payloads can gain fields (usage, artifacts), the Registry is an instance
-// (not a package global) so M8 can construct it from plugin discovery, and
+// Since ticket 8.1 the executors are plugins (ADR-009): the Registry is
+// a typed facade over internal/plugin's generic registry (kind executor,
+// name = step type), production executors self-describe via
+// SelfDescribing — version, capability flags, a config schema generated
+// from the dag package's registered config structs — and Manifests()
+// feeds GET /v1/plugins. The execution surface is unchanged: Output is a
+// struct so success payloads can gain fields (usage, artifacts), and
 // executors decode their own config from raw JSON via the dag package's
-// registered config types, which is exactly where per-plugin config
-// schemas will slot in.
+// registered config types. The middleware chain arrives in M9.
 package exec
 
 import (

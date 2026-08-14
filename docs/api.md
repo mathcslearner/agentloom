@@ -319,6 +319,49 @@ execution. When lines were lost, the response says so:
 `seq` gaps mark the same thing line-by-line: every captured line
 consumed a sequence number, stored or not.
 
+## The plugin catalog
+
+`GET /v1/plugins` (read scope) lists every plugin compiled into the
+deployment (ADR-009): kind, name, semver version, capability flags, and
+each plugin's generated config JSON Schema — the machine-usable form the
+UI's config panels consume. In 8.1 the catalog is the executor set; tool,
+retriever, model-provider, and validator plugins join it as their
+tickets land.
+
+```bash
+curl -s http://127.0.0.1:8080/v1/plugins \
+  -H "Authorization: Bearer $API_KEY" | jq '.plugins[] | {kind, name, version, capabilities}'
+```
+
+```json
+{
+  "kind": "executor",
+  "name": "llm",
+  "version": "0.1.0-stub",
+  "capabilities": {
+    "side_effectful": false,
+    "cacheable": true,
+    "cost_bearing": true
+  }
+}
+```
+
+A `-stub` pre-release version marks a dev-stub implementation (the real
+executor replaces it in place with a bump to `1.0.0`). Each entry's
+`config_schema` is a JSON Schema 2020-12 document generated from the
+same Go structs the engine decodes with:
+
+```bash
+curl -s http://127.0.0.1:8080/v1/plugins \
+  -H "Authorization: Bearer $API_KEY" | jq '.plugins[] | select(.name == "llm").config_schema'
+```
+
+The same listing renders as a table with `ctl plugins list`. Note the
+catalog describes what the API binary compiles in — the compose stack
+sets `AGENTLOOM_API_TEST_EXECUTORS` to mirror the worker's
+`AGENTLOOM_WORKER_TEST_EXECUTORS`, so the listing matches what the fleet
+executes.
+
 ## Errors and rate limits
 
 Every non-2xx response carries one envelope:

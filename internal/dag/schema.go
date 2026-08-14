@@ -101,6 +101,31 @@ func configTypeName(st StepType) string {
 	return reflect.TypeOf(stepConfigTypes[st]()).Elem().Name()
 }
 
+// StepConfigSchema renders one step type's config struct as a standalone
+// JSON Schema document (ticket 8.1, ADR-009): the plugin SPI's
+// per-plugin config schema, attached to executor manifests by
+// exec.Registry and served on GET /v1/plugins for UI forms (M17.4). The
+// struct's fields are inlined at the document root (nested types land in
+// $defs), from the same structs the decoder uses — the schema cannot
+// drift from what the engine accepts. Like the definition schema, it is
+// documentation-grade: which fields are required per type stays
+// validation's job (ADR-003).
+func StepConfigSchema(st StepType) (json.RawMessage, error) {
+	mk, ok := stepConfigTypes[st]
+	if !ok {
+		return nil, fmt.Errorf("dag: no config type registered for step type %q", st)
+	}
+	r := &jsonschema.Reflector{Anonymous: true, ExpandedStruct: true}
+	schema := r.Reflect(mk())
+	schema.Version = jsonschema.Version
+	schema.Title = fmt.Sprintf("%s step config", st)
+	data, err := json.Marshal(schema)
+	if err != nil {
+		return nil, fmt.Errorf("dag: marshaling %s config schema: %w", st, err)
+	}
+	return data, nil
+}
+
 // enumAny renders an enum value list for jsonschema.
 func enumAny[T ~string](vals []T) []any {
 	out := make([]any, len(vals))
