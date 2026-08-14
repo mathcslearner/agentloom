@@ -401,6 +401,26 @@ func TestLoadLLMOverrides(t *testing.T) {
 	if cfg.LLM.AnthropicAPIKey != "" || cfg.LLM.OpenAIAPIKey != oaiKey {
 		t.Errorf("OpenAI-only load = {anthropic %q, openai %q}", cfg.LLM.AnthropicAPIKey, cfg.LLM.OpenAIAPIKey)
 	}
+
+	// Mock toggle (ticket 8.5): off by default, on with a boolean env, and
+	// a non-boolean value is a load error.
+	cfg, err = config.Load(lookupFrom(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LLM.MockEnabled {
+		t.Error("mock enabled by default, want off")
+	}
+	cfg, err = config.Load(lookupFrom(map[string]string{config.EnvLLMMockEnabled: "true"}))
+	if err != nil {
+		t.Fatalf("Load with mock enabled: %v", err)
+	}
+	if !cfg.LLM.MockEnabled {
+		t.Error("AGENTLOOM_LLM_MOCK_ENABLED=true did not enable the mock")
+	}
+	if _, err := config.Load(lookupFrom(map[string]string{config.EnvLLMMockEnabled: "maybe"})); err == nil {
+		t.Error("non-boolean mock toggle: want a load error, got nil")
+	}
 }
 
 func TestLoadPostgresDSNOverride(t *testing.T) {

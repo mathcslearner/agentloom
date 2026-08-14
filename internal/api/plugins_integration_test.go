@@ -209,6 +209,48 @@ func TestListPluginsWithProviders(t *testing.T) {
 	}
 }
 
+// TestListPluginsWithMockProvider pins ticket 8.5's catalog wiring: the
+// mock provider (enabled by config, no key) surfaces on GET /v1/plugins
+// with kind model_provider and its distinctive flags — cacheable but
+// deliberately NOT cost_bearing (a free, offline provider).
+func TestListPluginsWithMockProvider(t *testing.T) {
+	t.Parallel()
+	rootKey := mintTestKey(t)
+
+	providers, err := llm.NewRegistryFromKeys(llm.ProviderKeys{Mock: &llm.MockConfig{}})
+	if err != nil {
+		t.Fatalf("NewRegistryFromKeys: %v", err)
+	}
+	manifests := append(exec.CoreBuiltins().Manifests(), providers.Manifests()...)
+
+	s := store.NewFromPool(storetest.NewDB(t))
+	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
+	h, err := api.New(s, func() time.Time { return testNow }, logger, rootKey, api.RateLimitOptions{},
+		api.WithPlugins(manifests))
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	var resp api.ListPluginsResponse
+	if res := doAuth(t, srv, http.MethodGet, "/v1/plugins", rootKey, nil, &resp); res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/plugins = %d, want 200", res.StatusCode)
+	}
+	var mock *api.PluginInfo
+	for i := range resp.Plugins {
+		if resp.Plugins[i].Kind == "model_provider" && resp.Plugins[i].Name == "mock" {
+			mock = &resp.Plugins[i]
+		}
+	}
+	if mock == nil {
+		t.Fatalf("mock provider missing from catalog: %+v", resp.Plugins)
+	}
+	if !mock.Capabilities.Cacheable || mock.Capabilities.CostBearing || mock.Capabilities.SideEffectful {
+		t.Errorf("mock capabilities = %+v — want cacheable only (free, offline)", mock.Capabilities)
+	}
+}
+
 // TestListPluginsEmptyCatalog pins the default: a handler with no
 // WithPlugins serves an empty list, not null and not an error.
 func TestListPluginsEmptyCatalog(t *testing.T) {

@@ -151,14 +151,19 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 	}
 	plugins := pluginRegistry.Manifests()
 
-	// Model providers (ticket 8.4, ADR-009): only the providers whose key
-	// is configured are constructed, so GET /v1/plugins lists exactly the
-	// providers a matching worker fleet could route to. An absent key
-	// leaves the provider out of the catalog, never a boot error.
-	providers, err := llm.NewRegistryFromKeys(llm.ProviderKeys{
+	// Model providers (ticket 8.4/8.5, ADR-009): only the providers whose
+	// key is configured (or, for the mock, enabled) are constructed, so
+	// GET /v1/plugins lists exactly the providers a matching worker fleet
+	// could route to. An absent key leaves the provider out of the
+	// catalog, never a boot error.
+	keys := llm.ProviderKeys{
 		Anthropic: cfg.LLM.AnthropicAPIKey,
 		OpenAI:    cfg.LLM.OpenAIAPIKey,
-	})
+	}
+	if cfg.LLM.MockEnabled {
+		keys.Mock = &llm.MockConfig{}
+	}
+	providers, err := llm.NewRegistryFromKeys(keys)
 	if err != nil {
 		return fmt.Errorf("configuring model providers: %w", err)
 	}

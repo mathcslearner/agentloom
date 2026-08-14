@@ -198,6 +198,8 @@ func TestNewRegistryFromKeys(t *testing.T) {
 		{"anthropic only", llm.ProviderKeys{Anthropic: key}, []string{llm.ProviderAnthropic}},
 		{"openai only", llm.ProviderKeys{OpenAI: key}, []string{llm.ProviderOpenAI}},
 		{"both", llm.ProviderKeys{Anthropic: key, OpenAI: key}, []string{llm.ProviderAnthropic, llm.ProviderOpenAI}},
+		{"mock only", llm.ProviderKeys{Mock: &llm.MockConfig{}}, []string{llm.ProviderMock}},
+		{"mock plus anthropic", llm.ProviderKeys{Anthropic: key, Mock: &llm.MockConfig{}}, []string{llm.ProviderAnthropic, llm.ProviderMock}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -210,6 +212,38 @@ func TestNewRegistryFromKeys(t *testing.T) {
 				t.Errorf("Names() = %v, want %v", got, tc.wantNames)
 			}
 		})
+	}
+}
+
+// TestMockNamespaceRouting pins ticket 8.5's "registered like any
+// provider (model: mock/...)": the reserved namespace form routes to the
+// mock and hands it the model with the "mock/" prefix stripped.
+func TestMockNamespaceRouting(t *testing.T) {
+	t.Parallel()
+	r, err := llm.NewRegistryFromKeys(llm.ProviderKeys{Mock: &llm.MockConfig{}})
+	if err != nil {
+		t.Fatalf("NewRegistryFromKeys: %v", err)
+	}
+	p, model, err := r.Resolve("", "mock/sim-1")
+	if err != nil {
+		t.Fatalf("Resolve(mock/sim-1): %v", err)
+	}
+	if model != "sim-1" {
+		t.Errorf("canonical model = %q, want sim-1 (prefix stripped)", model)
+	}
+	if p.Manifest().Name != llm.ProviderMock {
+		t.Errorf("routed to %q, want mock", p.Manifest().Name)
+	}
+
+	// Without the mock configured, the same address is an unavailable
+	// provider, not an unknown model — the fix is "enable the mock".
+	empty, err := llm.NewRegistryFromKeys(llm.ProviderKeys{})
+	if err != nil {
+		t.Fatalf("NewRegistryFromKeys(empty): %v", err)
+	}
+	var unavail *llm.ProviderUnavailableError
+	if _, _, err := empty.Resolve("", "mock/sim-1"); !errors.As(err, &unavail) {
+		t.Errorf("Resolve(mock/sim-1) with no mock = %v, want *ProviderUnavailableError", err)
 	}
 }
 

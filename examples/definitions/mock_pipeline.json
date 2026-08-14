@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "name": "mock-pipeline",
+  "description": "The ticket 8.5 proof that two chained `llm` steps pass data between them through templating, running entirely on the deterministic offline mock provider (model `mock/sim-1`). A converted linear M4 chain: a draft step turns a run param into a completion, a refine step feeds that completion back into a second model call via `${{ steps.draft.output.text }}`, and a record step captures the final text. On the mock the outputs are reproducible with no API key and no network, so this is the workhorse fixture for CI and load; swapping the model id to a real provider makes it a live workflow unchanged.",
+  "params": {
+    "topic": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "draft",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Draft a note about ${{ run.params.topic }}.",
+        "max_tokens": 128
+      }
+    },
+    {
+      "id": "refine",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Improve this draft: ${{ steps.draft.output.text }}",
+        "max_tokens": 128
+      }
+    },
+    {
+      "id": "record",
+      "type": "echo",
+      "config": {
+        "input": {
+          "final": "${{ steps.refine.output.text }}"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "draft",
+      "to": "refine"
+    },
+    {
+      "from": "refine",
+      "to": "record"
+    }
+  ]
+}

@@ -4265,3 +4265,119 @@ the plugin-listing wiring that surfaces configured providers on
 - The vendor-prefix routing table is a small static slice; it grows as
   providers land (8.5's mock registers by name and is addressed via the
   namespace form, needing no prefix entry).
+
+### 8.5 — Mock/simulation provider ✅
+
+**Delivered.** A third model provider behind the 8.3 interface — a
+deterministic, offline `Mock` for tests and load (the M19 workhorse) —
+plus its config/deployable wiring and the reused e2e fixture.
+
+- **Mock provider** (`internal/llm/mock.go`) — implements `Provider`
+  (`Chat` + `Manifest`) with no HTTP client, no network, and no clock of
+  its own. Registered under name `mock` and addressed purely through the
+  8.4 registry's namespace form (`model: "mock/<model>"`, prefix
+  stripped by `Resolve`), so it needed **zero** routing-code changes.
+  `NewMock(MockConfig)` rejects a malformed script at construction (bad
+  regex, injection rates outside [0,1], `min > max` / negative latency, a
+  rule with no responses) — the analogue of the HTTP providers' boot-time
+  key check.
+- **Scripting.** Ordered `MockRule`s match on prompt **substring**,
+  **regex**, or the 1-based global **call ordinal** (`OnCall`); clauses
+  are ANDed and the first matching rule wins. Each rule's `Respond`
+  sequence returns its entries in order with the last entry **sticky**
+  (the queuetest `Script` shape). A `MockOutcome` is either a success
+  (single `Text`, or full `Blocks` for tool_use scripting, with explicit
+  or estimated `Usage`) or — when `Status != 0` — a scripted `*llm.Error`
+  classified through the **same** provider-agnostic `classifyStatus` the
+  HTTP providers use. `MockInjection` adds global per-call 429/500 rates
+  (429 evaluated before 500). A `Hang` outcome blocks on ctx until
+  cancelled and returns the context error **unclassified**, exactly like
+  the real providers (ADR-006 rows 3/8).
+- **Default echo.** With no rules the mock deterministically echoes the
+  last user text (`[mock] …`) with estimated usage. This zero-config
+  behavior is what lets two chained `llm` steps pass real data through
+  8.2 templating with no scripting at all — the shape the reused e2e
+  fixture exploits.
+- **Determinism & offline.** One seeded PCG PRNG (`math/rand/v2`) guarded
+  by a mutex; the whole per-call draw sequence (call counter → injection
+  lottery → latency sample → per-rule cursor) advances under the lock, so
+  a given seed and a given *sequential* call order produce a
+  byte-identical transcript (responses, errors, latency draws). The
+  latency wait itself happens outside the lock (concurrent callers aren't
+  serialized), and time is injectable through a `Sleep` seam — the only
+  clock the mock touches. Offline is asserted both **structurally** (the
+  struct has no field that can hold a transport or a secret) and
+  **dynamically** (the full scripting/injection/latency matrix runs with
+  `http.DefaultTransport` swapped for a tripwire `RoundTripper` that fails
+  the test on any use).
+- **Usage.** Present on every success (the mandatory-usage contract):
+  explicit override when the outcome sets one, else a deterministic
+  ~4-chars-per-token estimator over request and response text, so load
+  tests get plausible accounting without a tokenizer.
+- **Wiring.** `ProviderKeys` gains `Mock *MockConfig` (nil = absent,
+  never a boot error — it carries no key, so it is scripted, not
+  authenticated), constructed by the one shared `NewRegistryFromKeys`.
+  `config.LLMConfig.MockEnabled` / `AGENTLOOM_LLM_MOCK_ENABLED` toggles it
+  (binary default **off**; `docker-compose.yml` and `.env.example`
+  default it **on** so the M8 exit-criterion workflow runs on the mock in
+  CI with no key). `cmd/api` folds the mock's manifest into
+  `GET /v1/plugins`; `internal/config` stays a non-importer of `llm` (the
+  toggle→`MockConfig` translation is inlined at the call site, preserving
+  llm's config-free-leaf property). Manifest is (`model_provider`,
+  `mock`, `1.0.0`, `cacheable` only) — the first provider that is
+  cacheable but **not** cost-bearing (the point is a free provider) and
+  not side-effectful.
+- **Reused e2e fixture.** New canonical
+  `examples/definitions/mock_pipeline.json` — a converted linear M4 chain
+  of two `llm` steps (`draft` → `refine`) that pass data via
+  `${{ steps.draft.output.text }}`, then an echo `record` step —
+  pinned in the examples corpus and golden-tested by `internal/dag`. The
+  engine integration suite (`mock_llm_integration_test.go`) runs it
+  end-to-end on the production claim/complete pipeline through a minimal
+  in-test `llm` executor (resolve model → `Chat` → `{model, text,
+  usage}`), asserting the deterministic echoed chain and positive usage
+  on each llm step.
+- **Tests.** `mock_test.go` covers the full scripting matrix (fixed,
+  sequence-sticky, substring/regex conditionals, `OnCall` ordinal,
+  scripted 429/400 with class + retry-after, latency draws via an
+  injected recording sleep, hang→unclassified-cancel), determinism under
+  identical seed with a different-seed positive control, injection
+  reproducibility, the zero-external-calls tripwire, validation-before-
+  any-draw, the `NewMock` config-error matrix, and manifest conformance.
+  `registry_test.go` adds the `mock/` namespace-routing case and the
+  `NewRegistryFromKeys` mock matrix; `config_test.go` the toggle
+  (default-off / on / non-boolean → error); the API plugins integration
+  suite gained `TestListPluginsWithMockProvider` (cacheable-not-cost-
+  bearing flags on the catalog).
+
+**Non-obvious decisions.**
+
+- **Version `1.0.0`, not a stub version.** Unlike the dev-stub executors
+  (`0.1.0-stub`, replaced in place), the mock is a permanent fixture of
+  the system — it is never swapped out — so it carries a real version
+  from the start.
+- **In-test `llm` executor for the e2e, not the real one.** The
+  production `llm` step executor is 8.6's ticket (templated messages,
+  usage-on-attempt persistence, retry-class mapping). 8.5's e2e uses a
+  ~30-line stand-in that does the provider call and nothing else, purely
+  to prove the mock is registered-like-any-provider and deterministic
+  end-to-end; 8.6 deletes it and supersedes this test with its compose
+  e2e. This is the only honest way to satisfy "reused to convert one M4
+  e2e fixture" this ticket without front-running 8.6.
+- **Mock defaults on in compose but off in the binaries.** Mirrors the
+  `AGENTLOOM_WORKER_TEST_EXECUTORS` precedent: the dev/CI stack wants the
+  free offline provider available so llm steps run without a key, while a
+  real deployment opts in explicitly.
+- **Determinism is defined for sequential call order.** Concurrent
+  callers still draw from the same seeded stream under the lock (a
+  deterministic *set* of draws), but which call gets which draw depends
+  on scheduling; the byte-identical-transcript guarantee is scoped to a
+  sequential order and documented as such.
+
+**Deferred / quirks.**
+
+- Tool_use scripting is representable (`MockOutcome.Blocks`) but has no
+  dedicated fixture yet — 8.7's tool executor will exercise it.
+- The latency estimator and token estimator are intentionally crude
+  (uniform draw; ~4 chars/token); M19 can refine the distributions if
+  load-test fidelity ever demands it.

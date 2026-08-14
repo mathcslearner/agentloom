@@ -4,6 +4,7 @@ package config
 const (
 	EnvAnthropicAPIKey = "AGENTLOOM_ANTHROPIC_API_KEY" //nolint:gosec // G101 false positive: the variable's NAME, not a credential
 	EnvOpenAIAPIKey    = "AGENTLOOM_OPENAI_API_KEY"    //nolint:gosec // G101 false positive: the variable's NAME, not a credential
+	EnvLLMMockEnabled  = "AGENTLOOM_LLM_MOCK_ENABLED"
 )
 
 // LLMConfig configures the model providers (tickets 8.3/8.4,
@@ -23,18 +24,24 @@ type LLMConfig struct {
 	// OpenAIAPIKey is the OpenAI API key; empty leaves the OpenAI
 	// provider unconfigured.
 	OpenAIAPIKey string
+	// MockEnabled registers the deterministic offline mock provider
+	// (ticket 8.5) under name "mock", addressed as model "mock/...". It
+	// needs no key — it makes no external call — so it is a plain toggle,
+	// off by default in the binaries. Compose defaults it on so the M8
+	// exit-criterion workflow runs on the mock in CI. A deployment enables
+	// it to run llm/planner/agent steps offline against scripted or echo
+	// responses.
+	MockEnabled bool
 }
 
 func defaultLLMConfig() LLMConfig {
 	return LLMConfig{}
 }
 
-// applyEnv overrides fields from the environment. The key is passed
-// through opaquely — a malformed key surfaces as a provider 401, where
-// the error names the real problem — so today this never fails; the
-// signature matches the other sub-configs.
-//
-//nolint:unparam // see above: uniform sub-config signature
+// applyEnv overrides fields from the environment. Keys are passed through
+// opaquely — a malformed key surfaces as a provider 401, where the error
+// names the real problem — so the only failure this can report is a
+// non-boolean mock toggle.
 func (c *LLMConfig) applyEnv(fn LookupFunc) []error {
 	if raw, ok := lookup(fn, EnvAnthropicAPIKey); ok {
 		c.AnthropicAPIKey = raw
@@ -42,5 +49,5 @@ func (c *LLMConfig) applyEnv(fn LookupFunc) []error {
 	if raw, ok := lookup(fn, EnvOpenAIAPIKey); ok {
 		c.OpenAIAPIKey = raw
 	}
-	return nil
+	return applyBool(nil, fn, EnvLLMMockEnabled, &c.MockEnabled)
 }

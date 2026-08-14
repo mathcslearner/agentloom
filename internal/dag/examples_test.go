@@ -25,6 +25,7 @@ var exampleFiles = []string{
 	"critic_loop.json",
 	"kitchen_sink.json",
 	"echo_pipeline.json",
+	"mock_pipeline.json",
 }
 
 // readExample loads one example definition document.

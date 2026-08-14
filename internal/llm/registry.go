@@ -215,6 +215,11 @@ func providerForModel(model string) (string, bool) {
 type ProviderKeys struct {
 	Anthropic string
 	OpenAI    string
+	// Mock, when non-nil, registers the deterministic offline mock
+	// provider (ticket 8.5) under name "mock". It carries no key — the
+	// point is a free, keyless provider — so it is scripted by config, not
+	// authenticated. Nil leaves the mock out, exactly like an absent key.
+	Mock *MockConfig
 }
 
 // NewRegistryFromKeys assembles the registry both deployables share:
@@ -236,6 +241,13 @@ func NewRegistryFromKeys(keys ProviderKeys) (*Registry, error) {
 		p, err := NewOpenAI(OpenAIConfig{APIKey: keys.OpenAI})
 		if err != nil {
 			return nil, fmt.Errorf("llm: configuring openai: %w", err)
+		}
+		providers = append(providers, p)
+	}
+	if keys.Mock != nil {
+		p, err := NewMock(*keys.Mock)
+		if err != nil {
+			return nil, fmt.Errorf("llm: configuring mock: %w", err)
 		}
 		providers = append(providers, p)
 	}

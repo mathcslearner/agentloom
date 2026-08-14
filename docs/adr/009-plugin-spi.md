@@ -256,8 +256,8 @@ priority order:
 1. an explicit `provider` step-config field wins (unknown name →
    `*ProviderUnavailableError`);
 2. a `"<provider>/<model>"` namespace prefix routes by the named
-   provider and strips the prefix (this is the form 8.5's mock provider
-   uses, `mock/...`, so it is reserved now);
+   provider and strips the prefix (this is the form the 8.5 mock provider
+   uses, `mock/...` — now live, see the 8.5 section below);
 3. a bare model matches the longest vendor prefix in a small static
    table (`claude`→anthropic; `gpt-`/`chatgpt-`/`o1`/`o3`/`o4`→openai).
 
@@ -268,6 +268,56 @@ configured, i.e. its key is absent). The split makes a misconfiguration
 diagnosable — "no provider knows this model" needs a different fix than
 "you didn't configure this provider" — and both are deterministic, so
 8.6 maps them to permanent failures.
+
+### Mock/simulation provider (as built, 8.5)
+
+`internal/llm/mock.go` adds a third provider behind the same interface: a
+deterministic, offline `Mock` registered under name `mock` and addressed
+through routing rule 2 (`model: "mock/<model>"`), so it needs **no**
+vendor-prefix entry and no code change in `Resolve`. It is the workhorse
+of the test and load suites (M19) — cheap, reproducible, and offline by
+construction.
+
+- **Manifest.** Kind `model_provider`, name `mock`, version `1.0.0`
+  (deliberately not a `0.x-stub` version — the mock is a permanent
+  fixture of the system, never replaced in place like the dev stubs).
+  Capability flags are `{cacheable: true}` only: its output is a pure
+  function of (config, request) so M9 caching is sound, but it is
+  **not** `cost_bearing` (the whole point is a free provider) and not
+  `side_effectful`. This is the first provider whose flags differ from
+  the HTTP providers' `cacheable + cost_bearing`, and the API catalog
+  test pins the difference.
+- **Determinism contract.** A `Seed` drives one seeded PCG PRNG
+  (`math/rand/v2`) guarded by a mutex; the whole draw sequence per call —
+  call counter, injection lottery, latency sample, per-rule sequence
+  cursor — advances under that lock, so a given seed and a given
+  *sequential* call order produce a byte-identical transcript
+  (responses, errors, and latency draws). The latency wait itself happens
+  outside the lock so concurrent callers aren't serialized; determinism
+  is defined for a sequential order and documented as such. Time is
+  injectable through a `Sleep` seam (nil → a real ctx-aware timer, the
+  only clock the mock touches), honoring the injectable-time invariant.
+- **Scripting.** `MockRule`s match on prompt substring, regex, or the
+  1-based global call ordinal (`OnCall`), first match wins; each rule
+  carries a `Respond` sequence whose last entry is sticky (the queuetest
+  `Script` shape). Each `MockOutcome` is either a success (text or full
+  `Blocks`, with explicit or estimated `Usage`) or, when `Status` is
+  non-zero, a scripted `*Error` classified through the *same*
+  provider-agnostic `classifyStatus` the HTTP providers use — so injected
+  429/500s map onto the ADR-006 taxonomy identically. `MockInjection`
+  adds global per-call 429/500 failure rates; a `Hang` outcome blocks on
+  ctx until cancelled (timeout/cancel test fuel), returning the context
+  error unclassified exactly like the real providers.
+- **Wiring.** `ProviderKeys` gains `Mock *MockConfig` (nil = absent,
+  never a boot error — it carries no key, so it is scripted, not
+  authenticated), constructed by the one shared `NewRegistryFromKeys`.
+  `config.LLMConfig.MockEnabled` / `AGENTLOOM_LLM_MOCK_ENABLED` toggles
+  it (binary default off; compose defaults on so the M8 exit-criterion
+  workflow runs on the mock in CI without any key). The canonical
+  `examples/definitions/mock_pipeline.json` — a converted linear M4 chain
+  of two `llm` steps passing data via 8.2 templating — is the reused e2e
+  fixture, executed end-to-end against the mock in the engine integration
+  suite.
 
 ## Consequences
 

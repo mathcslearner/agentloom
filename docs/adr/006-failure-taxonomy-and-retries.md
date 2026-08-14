@@ -622,6 +622,12 @@ both are present; still clock-free, an integer count only), and
 quota will exhaust its retry budget and dead-letter rather than fail
 fast; refining quota exhaustion to permanent is deferred until it hurts.
 
+**Mock provider (8.5)** injects and scripts failures through the same
+`classifyStatus`: an injected or scripted 429/500 becomes a `transient`
+`*llm.Error`, a scripted 4xx a `permanent` one, and a `Hang` outcome
+cancelled by ctx passes through unclassified — so retry-policy tests
+built on the mock exercise the identical taxonomy the real providers do.
+
 ### Enforcement points
 
 **5.1** (this ticket) — the schema: `retry` on steps, `on_failure`

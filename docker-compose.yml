@@ -118,6 +118,10 @@ services:
       # GET /v1/plugins lists exactly the providers the fleet can route to.
       AGENTLOOM_ANTHROPIC_API_KEY: ${AGENTLOOM_ANTHROPIC_API_KEY:-}
       AGENTLOOM_OPENAI_API_KEY: ${AGENTLOOM_OPENAI_API_KEY:-}
+      # Mock provider (ticket 8.5): a deterministic offline provider,
+      # addressed as model "mock/...". On by default so the M8
+      # exit-criterion workflow runs on the mock in CI without any key.
+      AGENTLOOM_LLM_MOCK_ENABLED: ${AGENTLOOM_LLM_MOCK_ENABLED:-true}
     ports:
       # Loopback by default (ticket 6.2, ADR-007): every /v1 route now
       # requires a scoped key, but a dev stack carrying a bootstrap
@@ -158,6 +162,10 @@ services:
       # unconfigured. Keep in sync with the api service's values.
       AGENTLOOM_ANTHROPIC_API_KEY: ${AGENTLOOM_ANTHROPIC_API_KEY:-}
       AGENTLOOM_OPENAI_API_KEY: ${AGENTLOOM_OPENAI_API_KEY:-}
+      # Mock provider (ticket 8.5) — see the api service's note. On by
+      # default so llm steps run offline on the mock; the 8.6 executor
+      # consumes it. Keep in sync with the api service's value.
+      AGENTLOOM_LLM_MOCK_ENABLED: ${AGENTLOOM_LLM_MOCK_ENABLED:-true}
       # Telemetry (ticket 7.1, ADR-008) — see the api service's note. The
       # two replicas each bind :9090 inside their own container; Prometheus
       # finds both via DNS service discovery on the service name.
