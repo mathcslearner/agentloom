@@ -4032,3 +4032,118 @@ definition-validation time and strict typed errors at runtime.
 - Rendered inputs are not persisted for observability; if the M18
   dashboard wants "what did this step actually receive", that becomes a
   new column then.
+
+### 8.3 — Model provider interface & Anthropic provider ✅
+
+**Delivered.** `internal/llm` — the unified model-provider interface
+(ADR-009 kind `model_provider`) and its first implementation, the
+Anthropic Messages API, non-streaming v1.
+
+- **The contract** — `Provider` is one method deep:
+  `Chat(ctx, ChatRequest) (ChatResponse, error)` plus the ADR-009
+  `Manifest()`. `ChatRequest` carries model, optional system prompt,
+  messages (role + content blocks), tool definitions, required positive
+  `MaxTokens` (Anthropic requires it, and a mandatory bound keeps M10
+  budgets estimable pre-call), and optional `Temperature` (nil = provider
+  default; range checking is deliberately the provider API's — vendors
+  disagree on ranges). Content is the Anthropic block model — `text`,
+  `tool_use`, `tool_result`, discriminated and shape-validated — which
+  OpenAI's message/tool_calls model maps onto in 8.4. `ChatResponse`
+  returns model, verbatim stop reason, blocks, and `Usage`
+  (input/output tokens) — **mandatory on every success**: a 200 without
+  usage decodes as a malformed response (transient), never a lenient
+  zero, because M10's ledger meters it. Convenience accessors `Text()`
+  / `ToolUses()` serve the 8.6 executor.
+- **Package boundaries** — a leaf package like ratelimit: imports `dag`
+  for the ADR-006 class vocabulary (where `ErrorClass` lives;
+  `exec.ErrorClass` is just an alias) and `plugin` for the manifest,
+  never exec/engine. No SDK dependency — a hand-rolled `net/http`
+  client (~100 lines of wire mapping) with injectable `BaseURL` and
+  `HTTPClient` keeps fixtures hermetic and the error surface fully
+  owned. Providers make **exactly one call per Chat** (retry policy is
+  the M5 engine's, informed by the classes providers attach) and never
+  log (the caller owns observability). No clock anywhere in the
+  package.
+- **Error taxonomy** — typed `*llm.Error` with provider name, ADR-006
+  class, HTTP status, provider error code, `RetryAfter`, request id,
+  message, and wrapped cause. Classification by status: transport
+  failures and 408/429/5xx (500 `api_error`, 529 `overloaded_error`,
+  unknowns) → transient; other 4xx (400/401/403/404/413) and
+  client-side validation (caught before any round-trip, zero HTTP
+  calls) → permanent; malformed 200s (undecodable body, missing usage,
+  unrepresentable content block) → transient per ADR-006's unclassified
+  default. **Context errors pass through unclassified** — a ctx-aborted
+  call returns the wrapped context error, never an `*llm.Error`, so the
+  engine keeps the timeout/cancelled judgment (ADR-006 rows 3/8), pinned
+  by a test asserting `errors.As` fails. `RetryAfter` parses only the
+  Retry-After delta-seconds form: the HTTP-date form needs a wall clock
+  (injectable-time invariant) for a shape no LLM provider sends, and
+  zero means "no suggestion" — advisory in M5, consumed by M9's
+  backpressure. ADR-006 gained the as-built "Provider error taxonomy"
+  section.
+- **Secret hygiene, structurally** — the error type has no field that
+  can hold request headers or the outgoing payload; constructors ingest
+  only the response body's error type/message and the
+  request-id/retry-after headers, so the key cannot reach an error by
+  construction (and the key travels in `x-api-key`, so a `url.Error`
+  can't carry it either). The assertion test walks every error path's
+  full unwrap chain under `Error()`/`%+v`/`%#v` asserting the
+  runtime-built key (and any fragment of it) never appears, with two
+  positive controls (the 400 fixture's marker message and the request
+  id do flow through) proving the assertion has teeth. Keys in tests
+  are constructed at runtime per the 6.1 discipline.
+- **Anthropic specifics** — `POST {base}/v1/messages`, pinned
+  `anthropic-version: 2023-06-01` (bumping it is a behavior change that
+  must ride a manifest version bump), `NewAnthropic` rejects a missing
+  key at construction so a mis-wired deployment fails at boot, response
+  bodies capped at 32 MiB, a 10-minute backstop client timeout when the
+  caller injects neither client nor deadline (LLM calls are
+  legitimately slow; the step timeout is M5.3's, delivered via ctx).
+  Unknown response block types are an error, not silently dropped —
+  dropping content this build can't represent would corrupt the
+  completion. `Manifest()`: kind `model_provider`, name `anthropic`,
+  `1.0.0`, cacheable + cost-bearing (the llm-stub flag rationale).
+- **Config** — `config.LLMConfig` with `AGENTLOOM_ANTHROPIC_API_KEY`;
+  empty = provider unconfigured, deliberately not a load error (a
+  worker running no llm steps must boot keyless, and 8.4 requires
+  either provider to be absent without breaking startup — presence is
+  enforced where a provider is constructed, i.e. 8.6's executor
+  wiring). Nothing consumes it until 8.6.
+- **Tests** — recorded-fixture suite under `testdata/anthropic/`
+  (success, tool-use success, 429/529/500/400/401/404 error envelopes)
+  driven through httptest: the taxonomy matrix pins class, code, status,
+  retry-after (including unparseable-header → 0), and request id per
+  shape; **golden request fixtures pin the outgoing wire shape both
+  ways** (headers + structural JSON comparison of the encoded body for
+  the basic and full shapes — the contract 8.4/8.6 build on);
+  malformed-200 matrix; transport-error and context-cancellation paths;
+  client-side validation with a zero-calls assertion; `ChatRequest`
+  validation table; manifest conformance. Optional live smoke behind
+  `LIVE_LLM_TESTS=1` + a key env var (one tiny haiku call asserting
+  text + positive usage), in no CI job.
+
+**Non-obvious decisions.**
+
+- The typed `llm.Registry` facade and the `GET /v1/plugins` listing of
+  model providers are deferred to 8.4 with the routing table — 8.3
+  defines `Manifest()` so 8.4 only wires, but a registry with one
+  hardcoded member would just be churn.
+- `*llm.Error` carries `dag.ErrorClass` directly rather than wrapping
+  `exec.ClassifiedError`: llm must not import exec (the executor SPI is
+  a consumer of providers, not a dependency), so the 8.6 executor does
+  the one-line translation at its boundary.
+- 401/403 map permanent even though a key rotation could heal them:
+  within one attempt's lifetime the key is fixed, and burning a retry
+  budget on a misconfigured credential hides the misconfiguration.
+
+**Deferred / quirks.**
+
+- Streaming, provider-side cache-token usage fields, and the HTTP-date
+  Retry-After form are all explicitly out (backlog / M10 / never
+  observed in the wild, respectively).
+- `System` is a plain string; Anthropic's array-of-blocks system form
+  (needed for provider-side prompt caching) waits for the milestone
+  that wants it.
+- The 32 MiB response cap and 10-minute backstop timeout are
+  constants, not config — promote to `LLMConfig` knobs if a real
+  deployment ever needs to tune them.

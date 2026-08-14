@@ -359,6 +359,29 @@ func TestLoadRedisAddrOverride(t *testing.T) {
 	}
 }
 
+func TestLoadLLMOverrides(t *testing.T) {
+	t.Parallel()
+
+	// Empty env: the provider is unconfigured, not a load error (a
+	// worker running no llm steps boots keyless).
+	cfg, err := config.Load(lookupFrom(nil))
+	if err != nil {
+		t.Fatalf("Load with empty env: unexpected error: %v", err)
+	}
+	if cfg.LLM.AnthropicAPIKey != "" {
+		t.Errorf("default Anthropic key = %q, want empty", cfg.LLM.AnthropicAPIKey)
+	}
+
+	key := "sk-ant-" + strings.Repeat("x", 8) // constructed, never a literal (6.1 secret grep)
+	cfg, err = config.Load(lookupFrom(map[string]string{config.EnvAnthropicAPIKey: key}))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	if cfg.LLM.AnthropicAPIKey != key {
+		t.Errorf("Anthropic key = %q, want %q", cfg.LLM.AnthropicAPIKey, key)
+	}
+}
+
 func TestLoadPostgresDSNOverride(t *testing.T) {
 	t.Parallel()
 

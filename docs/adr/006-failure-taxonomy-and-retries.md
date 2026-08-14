@@ -574,6 +574,44 @@ status).
 sweep with reason `deadline_exceeded`. Parked runs are eligible — the
 wall clock does not pause with dispatch.
 
+### Provider error taxonomy (as built, 8.3)
+
+Ticket 8.3's model-provider interface (`internal/llm`) is the first
+external-service client, and its failures land in this taxonomy through
+a typed `*llm.Error` carrying the class, the HTTP status, the
+provider's error code, the provider-suggested `retry_after` (parsed
+from the Retry-After header's delta-seconds form; the HTTP-date form is
+unsupported — parsing it needs a wall clock, and zero simply means "no
+suggestion, the retry engine's own backoff applies"), and the
+provider's request id. Providers make exactly one call per invocation —
+retries are this ADR's machinery, never the client's — and classify by
+status:
+
+| Condition | Class |
+|---|---|
+| Transport failure (dial, TLS, reset — no response) | `transient` |
+| 408, 429 (`rate_limit_error`, carries `retry_after`) | `transient` |
+| 5xx — 500 `api_error`, 529 `overloaded_error`, unknown 5xx | `transient` |
+| Other 4xx — 400 `invalid_request_error`, 401, 403, 404, 413 | `permanent` |
+| Client-side request validation (caught before any call) | `permanent` |
+| Malformed success body (undecodable, missing usage, unrepresentable content block) | `transient` (the unclassified default) |
+
+Two boundary rules:
+
+- **Context errors pass through unclassified.** A provider call aborted
+  by context cancellation or deadline returns the wrapped `ctx` error,
+  never a classed `*llm.Error` — the engine assigns `timeout` vs.
+  `cancelled` from context state (rows 3/8), and a provider-side class
+  would preempt that judgment.
+- **`retry_after` is advisory in M5.** The retry engine's backoff
+  ignores it today; it becomes an input to M9's rate-limit backpressure
+  (delayed requeue at `retry_after` + jitter) and rides the error for
+  the llm executor (8.6) to surface.
+
+The 8.6 llm executor translates `*llm.Error` into the row-2 mechanism
+(`exec.ClassifiedError` with the carried class); until then nothing in
+the engine consumes the type.
+
 ### Enforcement points
 
 **5.1** (this ticket) — the schema: `retry` on steps, `on_failure`

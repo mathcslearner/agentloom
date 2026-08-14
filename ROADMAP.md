@@ -623,13 +623,13 @@ Render step config/inputs with references to upstream outputs and run params —
 - [x] Validation flags references to non-existent or non-upstream steps
 - [x] `echo` pipeline fixture proves multi-hop data flow end-to-end
 
-#### 8.3 — Model provider interface & Anthropic provider
+#### 8.3 — Model provider interface & Anthropic provider ✅
 **Depends on:** 8.1
-`internal/llm`: unified `ChatRequest`/`ChatResponse` (messages, system, tool definitions, `max_tokens`, `temperature`), usage extraction (input/output tokens), provider error taxonomy mapped onto M5 retry classes (429/overloaded → transient with `retry_after`; invalid request → permanent). Anthropic implementation (Messages API); API keys via config/env only. Recorded-fixture tests; optional live smoke test behind `LIVE_LLM_TESTS=1`. Non-streaming v1 (streaming → backlog).
+`internal/llm`: unified `ChatRequest`/`ChatResponse` (messages, system, tool definitions, `max_tokens`, `temperature`), usage extraction (input/output tokens), provider error taxonomy mapped onto M5 retry classes (429/overloaded → transient with `retry_after`; invalid request → permanent). Anthropic implementation (Messages API); API keys via config/env only. Recorded-fixture tests; optional live smoke test behind `LIVE_LLM_TESTS=1`. Non-streaming v1 (streaming → backlog). *(As built: `internal/llm` is a leaf package like ratelimit — imports `dag` for the ADR-006 class vocabulary and `plugin` for the manifest, never exec/engine; no SDK dependency (hand-rolled `net/http` client, injectable base URL + HTTP client); providers make exactly one call per `Chat` (no internal retries, no logging) and self-describe via `Manifest()` (kind `model_provider`, name `anthropic`, cacheable + cost-bearing), with the typed `llm.Registry` facade and `GET /v1/plugins` listing deferred to 8.4's routing ticket. Failures surface as `*llm.Error` (class, status, provider code, `retry_after` from delta-seconds Retry-After only — the HTTP-date form would need a wall clock — and request id); context cancellation/deadline passes through unclassified so the engine keeps the timeout/cancelled judgment (ADR-006 rows 3/8); a 200 without usage is a malformed response, not a lenient zero; secret hygiene is structural (the error type has no field that can hold request headers or the payload) and pinned by an every-error-path assertion test with a positive control. `config.LLMConfig` (`AGENTLOOM_ANTHROPIC_API_KEY`) parses the key with empty = provider unconfigured — not a load error, since a worker running no llm steps must boot keyless; nothing consumes it until 8.6. Golden request fixtures pin the outgoing wire shape both ways. ADR-006 gained the "Provider error taxonomy" as-built section.)*
 **Done when:**
-- [ ] Fixture-based tests cover success, rate-limit, overload, invalid-request mappings
-- [ ] Usage (tokens in/out) extracted and returned on every success
-- [ ] No API key material ever appears in logs/errors (assertion test)
+- [x] Fixture-based tests cover success, rate-limit, overload, invalid-request mappings
+- [x] Usage (tokens in/out) extracted and returned on every success
+- [x] No API key material ever appears in logs/errors (assertion test)
 
 #### 8.4 — OpenAI provider & model routing
 **Depends on:** 8.3

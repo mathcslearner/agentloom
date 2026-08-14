@@ -1,0 +1,24 @@
+{
+  "id": "msg_015nWZqJPmSJ5nGkeYYLoW9y",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-5",
+  "content": [
+    {
+      "type": "text",
+      "text": "I'll check the weather for you."
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_01A09q90qw90lq917835lq9",
+      "name": "get_weather",
+      "input": {"location": "Paris", "unit": "celsius"}
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 302,
+    "output_tokens": 57
+  }
+}

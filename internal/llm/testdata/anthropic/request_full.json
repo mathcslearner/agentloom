@@ -1,0 +1,50 @@
+{
+  "model": "claude-sonnet-5",
+  "max_tokens": 1024,
+  "system": "Answer concisely.",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "Weather in Paris?"}
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {"type": "text", "text": "I'll check the weather for you."},
+        {
+          "type": "tool_use",
+          "id": "toolu_01A09q90qw90lq917835lq9",
+          "name": "get_weather",
+          "input": {"location": "Paris"}
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01A09q90qw90lq917835lq9",
+          "content": "18C, clear",
+          "is_error": true
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get the current weather for a location.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {"type": "string"}
+        },
+        "required": ["location"]
+      }
+    }
+  ],
+  "temperature": 0.2
+}
