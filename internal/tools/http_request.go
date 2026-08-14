@@ -225,7 +225,7 @@ func (t *HTTPRequest) Invoke(ctx context.Context, inv Invocation) (json.RawMessa
 	if err != nil {
 		return nil, t.doError(ctx, reqCtx, method, u.Host, err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // read-side close; nothing left to read
 
 	raw, truncated, rerr := readAllLimited(resp.Body, t.maxBytes)
 	if rerr != nil {

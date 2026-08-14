@@ -41,7 +41,8 @@ func TestHTTPRequestSuccess(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"echo":%q}`, r.URL.Query().Get("q"))
+		body, _ := json.Marshal(map[string]string{"echo": r.URL.Query().Get("q")})
+		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
 
@@ -70,8 +71,8 @@ func TestHTTPRequestSuccess(t *testing.T) {
 func TestHTTPRequestNonJSONBodyIsString(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("plain text"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("plain text"))
 	}))
 	defer srv.Close()
 
@@ -83,7 +84,9 @@ func TestHTTPRequestNonJSONBodyIsString(t *testing.T) {
 	var out struct {
 		Body json.RawMessage `json:"body"`
 	}
-	json.Unmarshal(raw, &out)
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("output %s: %v", raw, err)
+	}
 	if string(out.Body) != `"plain text"` {
 		t.Errorf("body = %s, want a JSON string", out.Body)
 	}
@@ -96,7 +99,7 @@ func TestHTTPRequestIdempotencyKey(t *testing.T) {
 	seenKey.Store("")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenKey.Store(r.Header.Get(idempotencyHeader))
-		w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
 
@@ -197,7 +200,7 @@ func TestHTTPRequestRedirectRevalidated(t *testing.T) {
 	t.Parallel()
 
 	blocked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`{"reached":true}`))
+		_, _ = w.Write([]byte(`{"reached":true}`))
 	}))
 	defer blocked.Close()
 	entry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -225,7 +228,7 @@ func TestHTTPRequestSizeCapPermanent(t *testing.T) {
 	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write(make([]byte, 4096))
+		_, _ = w.Write(make([]byte, 4096))
 	}))
 	defer srv.Close()
 	tool := NewHTTPRequest(HTTPOptions{Allowlist: []string{hostOf(t, srv.URL)}, MaxResponseBytes: 1024})
@@ -241,7 +244,7 @@ func TestHTTPRequestTimeoutTransient(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(200 * time.Millisecond)
-		w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
 	tool := NewHTTPRequest(HTTPOptions{Allowlist: []string{hostOf(t, srv.URL)}})
@@ -257,7 +260,7 @@ func TestHTTPRequestContextCancelPassthrough(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(200 * time.Millisecond)
-		w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
 	tool := NewHTTPRequest(HTTPOptions{Allowlist: []string{hostOf(t, srv.URL)}})

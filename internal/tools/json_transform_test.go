@@ -10,7 +10,7 @@ import (
 )
 
 // invokeJSONTransform is a helper building the args payload and invoking.
-func invokeJSONTransform(t *testing.T, ctx context.Context, expr string, input string) (json.RawMessage, error) {
+func invokeJSONTransform(ctx context.Context, t *testing.T, expr string, input string) (json.RawMessage, error) {
 	t.Helper()
 	args := map[string]json.RawMessage{"expr": mustJSON(t, expr)}
 	if input != "" {
@@ -52,7 +52,7 @@ func TestJSONTransformSuccess(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := invokeJSONTransform(t, context.Background(), tc.expr, tc.input)
+			got, err := invokeJSONTransform(context.Background(), t, tc.expr, tc.input)
 			if err != nil {
 				t.Fatalf("Invoke: %v", err)
 			}
@@ -78,7 +78,7 @@ func TestJSONTransformPermanentErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := invokeJSONTransform(t, context.Background(), tc.expr, tc.input)
+			_, err := invokeJSONTransform(context.Background(), t, tc.expr, tc.input)
 			assertPermanent(t, err)
 		})
 	}
@@ -100,7 +100,7 @@ func TestJSONTransformContextCancelPassthrough(t *testing.T) {
 	cancel()
 	// A large range under a cancelled ctx surfaces the context error, which
 	// must pass through unwrapped (the engine judges cancelled/timeout).
-	_, err := invokeJSONTransform(t, ctx, "range(100000000) | . + 1", "")
+	_, err := invokeJSONTransform(ctx, t, "range(100000000) | . + 1", "")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled to pass through", err)
 	}

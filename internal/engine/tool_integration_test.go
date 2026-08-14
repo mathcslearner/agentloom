@@ -50,7 +50,7 @@ func TestHTTPToolIdempotencyKeyAcrossRetries(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError) // first attempt fails transient
 			return
 		}
-		w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer srv.Close()
 

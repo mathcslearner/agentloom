@@ -45,7 +45,12 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.cause }
 
-// transientf builds a transient *Error for tool tool.
+// transientf builds a transient *Error for tool tool. The tool parameter
+// mirrors permanentf's (which several tools call with distinct names); it
+// stays for that symmetry and for future non-http tools that return
+// transient errors, even though http_request is its only caller today.
+//
+//nolint:unparam // tool is part of the helper's contract; symmetric with permanentf
 func transientf(tool, format string, args ...any) *Error {
 	return &Error{Tool: tool, Class: dag.ClassTransient, Message: fmt.Sprintf(format, args...)}
 }
