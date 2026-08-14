@@ -4381,3 +4381,103 @@ plus its config/deployable wiring and the reused e2e fixture.
 - The latency estimator and token estimator are intentionally crude
   (uniform draw; ~4 chars/token); M19 can refine the distributions if
   load-test fidelity ever demands it.
+
+### 8.6 — LLM step executor ✅
+
+**Delivered.** The production `llm` step executor, replacing the dev stub
+in place: it renders messages (via 8.2 templating, already applied by the
+time the executor runs), routes the model to a provider, makes one `Chat`
+call, persists the completion and the provider's token usage, and maps
+provider failures onto the M5 retry classes. Usage gains a durable home on
+the attempt row and surfaces in the run-status API.
+
+- **The executor** (`internal/exec/llmexec.go`) — `exec.LLMExecutor`
+  (constructed with a `*llm.Registry`; nil is valid — a keyless worker
+  boots and any `llm` step then fails permanent at resolve time). Version
+  `1.0.0`, cacheable + cost-bearing (ADR-009). `Execute` strict-decodes
+  the already-rendered `*dag.LLMConfig`, builds a unified `ChatRequest`
+  (prompt → one `UserText` message; `messages[]` mapped onto the two
+  conversational roles; `max_tokens` default 1024 when absent — the
+  provider interface requires a positive bound; `temperature` passed
+  through by pointer), routes via `Registry.Resolve("", model)`, calls
+  `Chat` exactly once (no retries — the M5 engine owns retry), and
+  persists `{model, stop_reason, text, tool_calls?, usage}`. `text` is
+  always present (empty when the completion had no text blocks) so a
+  downstream `${{ steps.x.output.text }}` never misses; `tool_calls`
+  appears only when the model called tools.
+- **Error mapping** — `classifyProviderError`: a `*llm.Error` wraps into
+  `exec.ClassifiedError` carrying the provider's ADR-006 class (429 →
+  transient, 4xx → permanent), the `*llm.Error` still reachable via
+  `errors.As`; the engine's `classifyFailure` then honors it as declared.
+  Routing failures (`*UnknownModelError`, `*ProviderUnavailableError`) and
+  a nil registry are deterministic ⇒ force-classified permanent. Context
+  cancellation/deadline pass through **unwrapped** so the engine keeps the
+  timeout/cancelled judgment (ADR-006 rows 3/8).
+- **Usage persistence** — `exec.Output` gained `Usage *exec.Usage`;
+  migration 0012 adds nullable `step_attempts.usage` JSONB. The store's
+  `finishAttempt`/`SucceedStepArgs` thread it through, and the engine's
+  `completeSuccess` marshals `out.Usage` into the success completion tx (a
+  marshal failure logs and stores NULL rather than failing a succeeded
+  step). `AttemptView.Usage` surfaces it in `GET /v1/runs/{id}` (+
+  openapi.yaml, still lint 100/100). NULL for every non-`llm` step, every
+  failed provider call, and all pre-0012 rows.
+- **Wiring** — `Builtins`/`CoreBuiltins` now take a `*llm.Registry`;
+  `cmd/worker` builds it from `cfg.LLM` (Anthropic/OpenAI keys + mock
+  toggle) the way `cmd/api` already did, and `cmd/api` passes nil (it
+  never executes steps — the manifest is identical either way). The dev
+  `StubLLMExecutor` is deleted; `manifest_test`'s stub set shrinks to
+  `{tool, retrieve}`.
+- **Validation** — `checkLLMConfig` now also validates each `messages[]`
+  entry's role ∈ {user, assistant} and non-empty content at submit time,
+  so a bad role fails validation rather than mid-run (all corpus fixtures
+  use `user`, unaffected).
+
+**Tests.** `llmexec_test.go` (offline, a recording provider + the mock):
+request mapping (prompt/messages/roles), max_tokens default, temperature
+passthrough, tool-call output, always-present text, the provider-error
+class matrix (429→transient / 4xx→permanent, `*llm.Error` still
+reachable), context-error passthrough, routing failures permanent (and
+never reaching the provider), nil-registry permanent, missing-model
+invalid-config. `mock_llm_integration_test.go` rewritten to drive the
+**production** executor over `mock_pipeline.json` (8.5's shim deleted),
+asserting the templated data flow **and** usage on each `llm` attempt row
+(with a non-`llm` step recording none). `llm_retry_integration_test.go` —
+the injected-429 acceptance on the 5.2 fake clock: a scripted
+`[429, success]` mock, attempt history exactly `[transient, succeeded]`,
+one retry event, backoff honored, usage only on the successful attempt.
+`api_integration_test.go`'s fanout-to-completion test now asserts
+`brainstorm`/`synthesize` output text + `attempts[].usage` through the API
+(criterion 2). Migration round-trip test bumped to version 12.
+
+**Non-obvious decisions.**
+
+- **`fanout.json`'s llm models moved to `mock/sim-1`.** Post-8.6 the `llm`
+  steps actually call a provider, and the only offline provider on
+  compose/CI/smoke is the mock (no API key). fanout.json is executed to
+  `succeeded` by the API completion test, the metrics/dashboard smoke
+  scripts, and the M4.6 compose acceptance — all keyless — so its llm
+  models had to point at the mock or every one of those would break. Its
+  tool/retrieve steps are already stubs, so it was already a demo-shape
+  fixture; `linear.json` (validation/instantiation-only, never executed)
+  stays realistic (`anthropic/…`).
+- **`cmd/api` passes a nil provider registry to `Builtins`.** The API
+  never executes steps (ADR-002), and the llm executor's *manifest* (what
+  the API serves at `/v1/plugins`) is self-described independent of the
+  registry — so nil is correct and avoids reordering the api's provider
+  block. Only `cmd/worker` builds the real routable registry.
+- **Usage in JSONB, not two columns.** Mirrors the existing `error` JSONB
+  and stays extensible for M10's provider-cache token counts (a 8.3
+  omission) without another migration.
+- **No side-effect journal for llm calls.** An LLM call is exactly what
+  the idempotency-key / retry model treats as safely re-executable, and
+  M9's response cache is the dedup layer; journaling it would add a
+  durable write per call for no correctness gain.
+
+**Deferred / quirks.**
+
+- `provider` (explicit) and `system` config fields are not added to
+  `LLMConfig` — no 8.6 criterion needs them, and each is a versioned-
+  contract change (schema regen, canonical encoding, corpora pins) better
+  made when a consumer requires it. Routing today is by model id alone.
+- Tool-use *output* is persisted (`tool_calls`) but no fixture chains a
+  tool call back into the model yet — the multi-turn tool loop is 8.7+.

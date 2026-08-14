@@ -34,7 +34,7 @@ func pluginsServer(t *testing.T, rootKey string) *httptest.Server {
 	s := store.NewFromPool(storetest.NewDB(t))
 	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
 	h, err := api.New(s, func() time.Time { return testNow }, logger, rootKey, api.RateLimitOptions{},
-		api.WithPlugins(exec.Builtins().Manifests()))
+		api.WithPlugins(exec.Builtins(nil).Manifests()))
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestListPluginsCoreSet(t *testing.T) {
 	s := store.NewFromPool(storetest.NewDB(t))
 	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
 	h, err := api.New(s, func() time.Time { return testNow }, logger, rootKey, api.RateLimitOptions{},
-		api.WithPlugins(exec.CoreBuiltins().Manifests()))
+		api.WithPlugins(exec.CoreBuiltins(nil).Manifests()))
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestListPluginsWithProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistryFromKeys: %v", err)
 	}
-	manifests := append(exec.CoreBuiltins().Manifests(), providers.Manifests()...)
+	manifests := append(exec.CoreBuiltins(nil).Manifests(), providers.Manifests()...)
 
 	s := store.NewFromPool(storetest.NewDB(t))
 	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
@@ -221,7 +221,7 @@ func TestListPluginsWithMockProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistryFromKeys: %v", err)
 	}
-	manifests := append(exec.CoreBuiltins().Manifests(), providers.Manifests()...)
+	manifests := append(exec.CoreBuiltins(nil).Manifests(), providers.Manifests()...)
 
 	s := store.NewFromPool(storetest.NewDB(t))
 	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})

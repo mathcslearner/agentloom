@@ -266,6 +266,21 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		return e.completeFailure(ctx, step, err, dag.ClassPermanent, store.TraceFromRun(run))
 	}
 
+	// The attempt's token usage (ticket 8.6), set only by metered
+	// executors (the llm step); marshaled here so it lands on the attempt
+	// row inside the completion transaction for M10's cost ledger. A
+	// marshal failure on this fixed two-int struct is not worth failing a
+	// succeeded step over — log it and store NULL.
+	var usage json.RawMessage
+	if out.Usage != nil {
+		if u, merr := json.Marshal(out.Usage); merr != nil {
+			logger.WarnContext(ctx, "marshaling attempt usage failed; recording no usage",
+				slog.Any("error", merr))
+		} else {
+			usage = u
+		}
+	}
+
 	now := e.now()
 	var fanned fanOutResult
 	var fenced *store.TransitionError
@@ -286,7 +301,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		cancelling = status == store.RunStatusCancelling
 		if _, err := store.SucceedStep(ctx, q, store.SucceedStepArgs{
 			RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
-			Output: out.Data, Now: now,
+			Output: out.Data, Usage: usage, Now: now,
 		}); err != nil {
 			// A typed conflict on the terminal CAS is the fence firing:
 			// this worker's claim is no longer current (zombie write,

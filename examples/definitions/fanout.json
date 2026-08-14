@@ -37,7 +37,7 @@
       "id": "brainstorm",
       "type": "llm",
       "config": {
-        "model": "anthropic/claude-sonnet-5",
+        "model": "mock/sim-1",
         "prompt": "List five distinct angles for covering this topic: ${{ run.params.topic }}",
         "max_tokens": 512
       }
@@ -53,7 +53,7 @@
       "id": "synthesize",
       "type": "llm",
       "config": {
-        "model": "anthropic/claude-sonnet-5",
+        "model": "mock/sim-1",
         "prompt": "Combine the retrieved documents, news results, and brainstormed angles into a single research brief on ${{ run.params.topic }}.",
         "max_tokens": 1024
       }

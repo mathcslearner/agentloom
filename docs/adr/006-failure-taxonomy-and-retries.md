@@ -608,9 +608,17 @@ Two boundary rules:
   (delayed requeue at `retry_after` + jitter) and rides the error for
   the llm executor (8.6) to surface.
 
-The 8.6 llm executor translates `*llm.Error` into the row-2 mechanism
-(`exec.ClassifiedError` with the carried class); until then nothing in
-the engine consumes the type.
+The 8.6 llm executor (`exec.LLMExecutor`) is the consumer: it translates
+`*llm.Error` into the row-2 mechanism (`exec.ClassifiedError` carrying the
+provider's class, the `*llm.Error` still reachable via `errors.As`), so a
+provider 429 rides the M5 retry router as a `transient` failure and a 4xx
+dead-letters `permanent` — proven by the injected-429 integration test
+(attempt history `[transient, succeeded]`). Model-routing failures
+(`*UnknownModelError`, `*ProviderUnavailableError`) are deterministic
+functions of stored config and worker configuration, so the executor
+force-classifies them `permanent` (no retry conjures a provider). Context
+errors pass through unwrapped, preserving the engine's timeout/cancelled
+judgment (rows 3/8).
 
 **OpenAI (8.4)** maps through the *identical* status classifier and the
 same `*llm.Error` shape — the taxonomy is provider-agnostic by design.

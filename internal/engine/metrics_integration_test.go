@@ -78,7 +78,7 @@ func newMeteredEngine(t *testing.T, s *store.Store, clock func() time.Time) (*en
 	t.Helper()
 	reg := prometheus.NewRegistry()
 	wm := metrics.NewWorkerMetrics(reg)
-	e, err := engine.New(s, exec.Builtins(), "metered-worker",
+	e, err := engine.New(s, exec.Builtins(nil), "metered-worker",
 		engine.WithClock(clock),
 		engine.WithMetrics(wm))
 	if err != nil {

@@ -402,6 +402,7 @@ func buildRunResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge, att
 			Attempt:    int(a.AttemptNo),
 			ClaimID:    a.ClaimID.String(),
 			Error:      a.Error,
+			Usage:      a.Usage,
 			StartedAt:  a.StartedAt,
 			FinishedAt: a.FinishedAt,
 		}

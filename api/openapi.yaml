@@ -1285,6 +1285,19 @@ components:
           $ref: "#/components/schemas/AttemptOutcome"
         error:
           description: The attempt's failure document. Any JSON value.
+        usage:
+          type: object
+          description: >
+            Token accounting for a successful llm attempt (ticket 8.6);
+            absent for every other step type and outcome. Feeds M10's
+            cost ledger.
+          properties:
+            input_tokens:
+              type: integer
+              format: int64
+            output_tokens:
+              type: integer
+              format: int64
         started_at:
           type: string
           format: date-time

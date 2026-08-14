@@ -1,0 +1,11 @@
+-- Token usage per execution attempt (ticket 8.6). The llm step executor
+-- records the provider's reported token counts on the attempt row so
+-- M10's cost ledger can meter spend after the fact — the attempt is the
+-- durable unit a retry re-creates, so usage lives here, not on the step.
+--
+-- One JSON object {"input_tokens", "output_tokens"} rather than two
+-- columns: it mirrors the existing error JSONB shape and stays extensible
+-- for M10's provider-cache token counts (a deliberate 8.3 omission)
+-- without another migration. NULL means no usage was recorded — every
+-- non-llm step, any failed provider call, and all pre-0012 rows.
+ALTER TABLE step_attempts ADD COLUMN usage JSONB;

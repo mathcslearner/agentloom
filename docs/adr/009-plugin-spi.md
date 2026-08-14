@@ -149,10 +149,10 @@ the plugin:
   M9's cache-hit accounting records counterfactual spend for them.
 
 Flags describe the plugin's **contract, not today's implementation
-shortcut**: the three dev stubs (`llm`, `tool`, `retrieve`) carry the
-flags of the real semantics that will replace them in place (8.3–8.8),
-so middleware written against the flags behaves correctly across that
-swap without a flag migration.
+shortcut**: the remaining dev stubs (`tool`, `retrieve`) carry the flags
+of the real semantics that will replace them in place (8.7–8.8), so
+middleware written against the flags behaves correctly across that swap
+without a flag migration. (`llm` was the first such swap, landing in 8.6.)
 
 The builtin flag table (the conformance baseline):
 
@@ -166,7 +166,7 @@ The builtin flag table (the conformance baseline):
 | `branch` | 1.0.0 | – | – | – |
 | `counter` | 1.0.0 | ✓ | – | – |
 | `effectful_echo` | 1.0.0 | ✓ | – | – |
-| `llm` (stub) | 0.1.0-stub | – | ✓ | ✓ |
+| `llm` | 1.0.0 | – | ✓ | ✓ |
 | `tool` (stub) | 0.1.0-stub | ✓ | – | – |
 | `retrieve` (stub) | 0.1.0-stub | – | ✓ | – |
 
@@ -185,7 +185,9 @@ the bump rule is behavioral, not cosmetic: *bump the version whenever a
 change should invalidate previously cached outputs*. Real builtins start
 at `1.0.0`; the dev stubs carry `0.1.0-stub` so a stubbed plugin is
 unmistakable in any listing, and their replacement by real executors is
-itself the kind of behavior change that mandates the bump to `1.0.0`.
+itself the kind of behavior change that mandates the bump to `1.0.0` —
+as `llm` did in 8.6 (the real executor's non-deterministic completion
+must never read a cache entry keyed on the stub's echo).
 
 ### Config schemas
 

@@ -48,7 +48,7 @@ func workerConfig() queue.ConsumerConfig {
 // newWorker builds an engine over the full builtin registry.
 func newWorker(t *testing.T, s *store.Store, workerID string, opts ...engine.Option) *engine.Engine {
 	t.Helper()
-	e, err := engine.New(s, exec.Builtins(), workerID, opts...)
+	e, err := engine.New(s, exec.Builtins(nil), workerID, opts...)
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
 	}

@@ -647,13 +647,13 @@ Deterministic provider for tests and load: scripted responses (match on prompt s
 - [x] Deterministic under seed; zero external calls (asserted)
 - [x] Reused to convert one M4 e2e fixture into an `llm`-step fixture
 
-#### 8.6 — LLM step executor
+#### 8.6 — LLM step executor ✅
 **Depends on:** 8.5, 8.2, 5.5
-The `llm` step: render messages via templating, call the provider through the interface, persist structured output (text and/or tool-call payload), record usage on the attempt row (feeds M10 cost), honor `max_tokens`/`temperature` config, map provider errors to retry classes. Registered with full config schema.
+The `llm` step: render messages via templating, call the provider through the interface, persist structured output (text and/or tool-call payload), record usage on the attempt row (feeds M10 cost), honor `max_tokens`/`temperature` config, map provider errors to retry classes. Registered with full config schema. *(As built: `internal/exec/llmexec.go` — `exec.LLMExecutor` (version `1.0.0`, cacheable + cost-bearing) replaces the dev stub in place, decoding the already-8.2-rendered `LLMConfig`, routing the model through `llm.Registry.Resolve` (routing failures — unknown model / unconfigured provider — are deterministic ⇒ permanent), building a unified `ChatRequest` (prompt → one user message; `messages[]` mapped onto the two conversational roles; `max_tokens` default 1024 when absent; `temperature` passed through), making exactly one `Chat` call (no retries — the M5 engine owns retry), and persisting `{model, stop_reason, text, tool_calls?, usage}` — `text` always present so `${{ …output.text }}` never misses. Provider `*llm.Error`s wrap into `exec.ClassifiedError` honoring the provider's ADR-006 class (429 → transient, 4xx → permanent); context errors pass through unclassified (engine judges timeout/cancelled). Usage rides `exec.Output.Usage` onto the new nullable `step_attempts.usage` JSONB (migration 0012) inside the success completion tx, surfaced as `attempts[].usage` in `GET /v1/runs/{id}`. Submit-time validation now also checks message role ∈ {user, assistant} + non-empty content. `Builtins`/`CoreBuiltins` take a `*llm.Registry`; `cmd/worker` builds it from `cfg.LLM` (Anthropic/OpenAI/Mock), `cmd/api` passes nil (never executes). The canonical `fanout.json` moved its two llm models to `mock/sim-1` so it stays fully offline-runnable on compose/CI/smoke (its tool/retrieve steps are already stubs). 8.5's in-test executor shim is deleted; its e2e now drives the production executor.)*
 **Done when:**
-- [ ] E2E: two chained `llm` steps (mock) pass data via templating on compose
-- [ ] Usage persisted per attempt; visible in run status API
-- [ ] Provider transient errors retry per M5 policy (integration test with injected 429)
+- [x] E2E: two chained `llm` steps (mock) pass data via templating on compose
+- [x] Usage persisted per attempt; visible in run status API
+- [x] Provider transient errors retry per M5 policy (integration test with injected 429)
 
 #### 8.7 — Tool SPI & built-in tools
 **Depends on:** 8.1, 5.5

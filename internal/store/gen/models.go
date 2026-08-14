@@ -131,6 +131,7 @@ type StepAttempt struct {
 	Error      json.RawMessage
 	StartedAt  *time.Time
 	FinishedAt *time.Time
+	Usage      json.RawMessage
 }
 
 type StepLog struct {

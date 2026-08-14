@@ -144,10 +144,12 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 	// Plugin catalog for GET /v1/plugins (ticket 8.1, ADR-009): the
 	// builtin registry this binary compiles in, gated by the API-side
 	// test-executor knob mirroring the worker's — set both alike so the
-	// listing matches what the fleet executes.
-	pluginRegistry := exec.CoreBuiltins()
+	// listing matches what the fleet executes. The API never executes
+	// steps (ADR-002), so the llm executor's provider registry is nil
+	// here — its self-described manifest is identical either way.
+	pluginRegistry := exec.CoreBuiltins(nil)
 	if cfg.API.TestExecutors {
-		pluginRegistry = exec.Builtins()
+		pluginRegistry = exec.Builtins(nil)
 	}
 	plugins := pluginRegistry.Manifests()
 

@@ -41,7 +41,7 @@ func columnExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table, 
 // latestVersion is the highest migration in internal/store/migrations —
 // bump when adding a migration (the round-trip test below walks every
 // down migration regardless, so forgetting only fails the version check).
-const latestVersion = 11
+const latestVersion = 12
 
 func TestMigrateUpDownRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -84,16 +84,20 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 	}
 
 	// Down rolls back one step: the newest migration's additions are gone,
-	// earlier ones untouched — 0011's step_logs table disappears while
-	// 0010's trace columns, 0009's fingerprint column, 0008's api_keys
-	// table, 0007's run-control columns, 0006's side_effects table,
-	// 0005's dead_letters table and runs columns, 0004's timeout column,
-	// 0003's retry columns, and the 0002 tables survive.
+	// earlier ones untouched — 0012's step_attempts.usage column disappears
+	// while 0011's step_logs table, 0010's trace columns, 0009's
+	// fingerprint column, 0008's api_keys table, 0007's run-control
+	// columns, 0006's side_effects table, 0005's dead_letters table and
+	// runs columns, 0004's timeout column, 0003's retry columns, and the
+	// 0002 tables survive.
 	if err := mg.Down(); err != nil {
 		t.Fatalf("Down: %v", err)
 	}
-	if tableExists(ctx, t, pool, "step_logs") {
-		t.Fatal("after one Down: step_logs still exists")
+	if columnExists(ctx, t, pool, "step_attempts", "usage") {
+		t.Fatal("after one Down: step_attempts.usage still exists")
+	}
+	if !tableExists(ctx, t, pool, "step_logs") {
+		t.Fatal("after one Down: step_logs was dropped by the wrong migration")
 	}
 	for table, column := range map[string]string{
 		"runs": "trace_parent", "task_outbox": "trace_parent", "run_steps": "trace_span",

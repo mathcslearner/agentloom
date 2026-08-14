@@ -244,7 +244,7 @@ func TakeoverStep(ctx context.Context, q Querier, args TakeoverStepArgs) (gen.Ru
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeLost, nil, args.Now); err != nil {
+	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeLost, nil, nil, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
 	if err := appendEvent(ctx, gq, op, args.RunID, EventStepReclaimed, stepClaimedPayload{
@@ -268,6 +268,10 @@ type SucceedStepArgs struct {
 	ClaimID uuid.UUID
 	// Output is the step's result; nil stores NULL.
 	Output json.RawMessage
+	// Usage is the attempt's token accounting on a successful llm call
+	// (ticket 8.6), stored on the attempt row for M10's cost ledger; nil
+	// (the common case — every non-llm step) stores NULL.
+	Usage json.RawMessage
 	// Now is the injected current time. Required.
 	Now time.Time
 }
@@ -298,7 +302,7 @@ func SucceedStep(ctx context.Context, q Querier, args SucceedStepArgs) (gen.RunS
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := finishAttempt(ctx, gq, op, step, StepStatusSucceeded, nil, args.Now); err != nil {
+	if err := finishAttempt(ctx, gq, op, step, StepStatusSucceeded, nil, args.Usage, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DSucceeded: 1}); err != nil {
@@ -373,7 +377,7 @@ func DeadLetterStep(ctx context.Context, q Querier, args DeadLetterStepArgs) (ge
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := finishAttempt(ctx, gq, op, step, args.Outcome, args.Error, args.Now); err != nil {
+	if err := finishAttempt(ctx, gq, op, step, args.Outcome, args.Error, nil, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DFailed: 1}); err != nil {
@@ -457,7 +461,7 @@ func PoisonDeadLetterStep(ctx context.Context, q Querier, args PoisonDeadLetterS
 		return gen.RunStep{}, wrapErr(op, err)
 	}
 	if wasRunning {
-		if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeLost, args.Error, args.Now); err != nil {
+		if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeLost, args.Error, nil, args.Now); err != nil {
 			return gen.RunStep{}, err
 		}
 	}
@@ -604,7 +608,7 @@ func CancelRunningStep(ctx context.Context, q Querier, args CancelRunningStepArg
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeCancelled, args.Error, args.Now); err != nil {
+	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeCancelled, args.Error, nil, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DCancelled: 1}); err != nil {
@@ -778,7 +782,7 @@ func RetryStep(ctx context.Context, q Querier, args RetryStepArgs) (gen.RunStep,
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := finishAttempt(ctx, gq, op, step, args.Outcome, args.Error, args.Now); err != nil {
+	if err := finishAttempt(ctx, gq, op, step, args.Outcome, args.Error, nil, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
 	if err := appendEvent(ctx, gq, op, args.RunID, EventStepRetryScheduled, stepRetryPayload{
@@ -1360,11 +1364,13 @@ func appendEvent(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUI
 
 // finishAttempt closes the step's current attempt row with its outcome.
 // The attempt must exist — ClaimStep created it — so zero rows is a
-// data-integrity error, not a race.
-func finishAttempt(ctx context.Context, gq *gen.Queries, op string, step gen.RunStep, outcome string, errPayload json.RawMessage, now time.Time) error {
+// data-integrity error, not a race. usage is the provider's token
+// accounting on a successful llm attempt (ticket 8.6); nil for every
+// other outcome and step type.
+func finishAttempt(ctx context.Context, gq *gen.Queries, op string, step gen.RunStep, outcome string, errPayload, usage json.RawMessage, now time.Time) error {
 	rows, err := gq.FinishStepAttempt(ctx, gen.FinishStepAttemptParams{
 		RunID: step.RunID, StepID: step.StepID, AttemptNo: step.AttemptCount,
-		Outcome: &outcome, Error: errPayload, FinishedAt: now,
+		Outcome: &outcome, Error: errPayload, Usage: usage, FinishedAt: now,
 	})
 	if err != nil {
 		return wrapErr(op+": finish attempt", err)

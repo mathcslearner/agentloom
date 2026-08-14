@@ -30,6 +30,20 @@ import (
 // output (persisted as JSON null).
 type Output struct {
 	Data json.RawMessage
+	// Usage is the attempt's token accounting, set by executors that call
+	// a metered provider (the llm executor, ticket 8.6); nil for every
+	// other step type. The engine persists it on the attempt row for
+	// M10's cost ledger — output payloads carry it too, but the attempt
+	// row is the durable per-try record a retry re-creates.
+	Usage *Usage
+}
+
+// Usage is one attempt's token accounting, mirroring llm.Usage but kept
+// in exec so the executor SPI does not force every caller to import the
+// provider package. Executors that meter no tokens leave Output.Usage nil.
+type Usage struct {
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
 }
 
 // StepContext is everything an executor may see about the step it is

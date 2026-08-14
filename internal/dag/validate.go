@@ -354,10 +354,10 @@ func (v *validator) checkStepConfig(path string, s Step) {
 	switch s.Type {
 	case StepLLM:
 		c := cfg[LLMConfig](s)
-		v.checkLLMConfig(path, c.Model, c.Prompt, len(c.Messages))
+		v.checkLLMConfig(path, c.Model, c.Prompt, c.Messages)
 	case StepPlanner:
 		c := cfg[PlannerConfig](s)
-		v.checkLLMConfig(path, c.Model, c.Prompt, len(c.Messages))
+		v.checkLLMConfig(path, c.Model, c.Prompt, c.Messages)
 	case StepTool:
 		if cfg[ToolConfig](s).Tool == "" {
 			v.add(CodeConfigFieldRequired, path+".config.tool", "required field is missing")
@@ -434,17 +434,29 @@ func (v *validator) checkStepConfig(path string, s Step) {
 }
 
 // checkLLMConfig enforces the shared llm/planner requirement: model plus
-// exactly one of prompt or messages.
-func (v *validator) checkLLMConfig(path, model, prompt string, nMessages int) {
+// exactly one of prompt or messages, and — when messages are given — a
+// valid role and non-empty content per entry, so a definition the engine
+// accepts never explodes mid-run when the llm executor (8.6) maps the
+// messages onto provider roles.
+func (v *validator) checkLLMConfig(path, model, prompt string, messages []LLMMessage) {
 	if model == "" {
 		v.add(CodeConfigFieldRequired, path+".config.model", "required field is missing")
 	}
-	hasPrompt, hasMessages := prompt != "", nMessages > 0
+	hasPrompt, hasMessages := prompt != "", len(messages) > 0
 	switch {
 	case hasPrompt && hasMessages:
 		v.add(CodeConfigFieldConflict, path+".config", `"prompt" and "messages" are mutually exclusive`)
 	case !hasPrompt && !hasMessages:
 		v.add(CodeConfigFieldRequired, path+".config", `exactly one of "prompt" or "messages" is required`)
+	}
+	for i, m := range messages {
+		mp := fmt.Sprintf("%s.config.messages[%d]", path, i)
+		if m.Role != "user" && m.Role != "assistant" {
+			v.add(CodeConfigFieldInvalid, mp+".role", `must be "user" or "assistant", got %q`, m.Role)
+		}
+		if m.Content == "" {
+			v.add(CodeConfigFieldRequired, mp+".content", "required field is missing")
+		}
 	}
 }
 

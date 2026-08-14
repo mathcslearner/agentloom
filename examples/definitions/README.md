@@ -27,7 +27,9 @@ each example's "header comment" is its top-level `description` field.
 - **[fanout.json](fanout.json)** — parallel fan-out/fan-in: one entry step
   with three unconditioned out-edges (all three successors run in
   parallel) converging on a `join` with `mode: all` before a synthesis
-  step.
+  step. Its `llm` steps use the offline mock (`mock/sim-1`, like
+  `mock_pipeline.json`) so the whole fixture runs end-to-end with no API
+  key; its `tool`/`retrieve` steps are still dev stubs (8.7/8.8).
 - **[conditional_branch.json](conditional_branch.json)** — exclusive
   routing: a classifier feeds a `branch` step whose out-edges fire
   first-match-in-declaration-order — two `when`-conditioned arms plus a

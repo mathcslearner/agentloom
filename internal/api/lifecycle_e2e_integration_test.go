@@ -58,7 +58,7 @@ func newFleet(t *testing.T) fleet {
 	t.Cleanup(func() { cancel(); <-done })
 	go func() { defer close(done); d.Run(dctx) }()
 	for _, name := range []string{"worker-a", "worker-b"} {
-		eng, err := engine.New(s, exec.Builtins(), name,
+		eng, err := engine.New(s, exec.Builtins(nil), name,
 			engine.WithDispatchNudge(d.Nudge),
 			engine.WithRetryScheduler(h.Delayed()),
 			engine.WithCancelPollInterval(50*time.Millisecond))

@@ -326,7 +326,11 @@ closure, deliberately outside the taxonomy and outside the retry budget);
 the pre-M5 bare `failed` was backfilled to `permanent` by migration 0003
 (under pre-M5 semantics every failure was terminal). `validation_failed`
 joins the CHECK when M11 unlocks it. Also `error` (JSONB), `started_at`,
-`finished_at`.
+`finished_at`, and — since 8.6 (migration 0012) — `usage` (nullable
+JSONB `{input_tokens, output_tokens}`): the provider's token accounting on
+a successful `llm` attempt, written inside the success completion tx and
+metered by M10's cost ledger. NULL for every non-`llm` step, every failed
+provider call, and all pre-0012 rows.
 
 **`dead_letters`** (since 5.4) — the DLQ (ADR-006 "Dead-letter model":
 Postgres is the DLQ, not a Redis stream). One row per dead-lettering,

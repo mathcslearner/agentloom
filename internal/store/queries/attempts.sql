@@ -7,10 +7,12 @@ VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- FinishStepAttempt closes an attempt with its outcome; called by the
--- completion transitions in the same transaction as the step CAS.
+-- completion transitions in the same transaction as the step CAS. Usage
+-- is the provider's token accounting on a successful llm call (ticket
+-- 8.6); NULL for every other outcome and step type.
 -- name: FinishStepAttempt :execrows
 UPDATE step_attempts
-SET outcome = @outcome, error = @error, finished_at = @finished_at::timestamptz
+SET outcome = @outcome, error = @error, usage = @usage, finished_at = @finished_at::timestamptz
 WHERE run_id = @run_id AND step_id = @step_id AND attempt_no = @attempt_no;
 
 -- name: ListStepAttempts :many

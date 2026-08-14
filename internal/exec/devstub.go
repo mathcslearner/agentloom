@@ -18,62 +18,21 @@ import (
 // cache entries keyed on the stub's outputs).
 const stubVersion = "0.1.0-stub"
 
-// Dev-stub executors for the AI-native step types (llm, tool, retrieve).
+// Dev-stub executors for the AI-native step types (tool, retrieve).
 //
-// Ticket 4.6's acceptance runs the canonical example definitions —
-// fanout.json carries llm, tool, and retrieve steps — end-to-end on the
-// compose stack, but the real executors arrive with the provider layer
-// and the tool/retrieval SPIs (tickets 8.3–8.8). Until then these stubs
-// make the fixtures executable: each one succeeds immediately with a
+// Ticket 4.6's acceptance runs the canonical example definitions
+// end-to-end on the compose stack, but the real executors arrive with
+// the tool/retrieval SPIs (tickets 8.7–8.8). Until then these stubs make
+// the fixtures executable: each one succeeds immediately with a
 // deterministic output derived only from the step's config, so runs are
-// reproducible and no network, provider key, or external state is ever
-// touched. The `"stub": true` marker makes a stubbed output unmistakable
-// in run state and demos.
+// reproducible and no network or external state is ever touched. The
+// `"stub": true` marker makes a stubbed output unmistakable in run state
+// and demos. (The llm stub was replaced in place by the production
+// executor in ticket 8.6 — see llmexec.go.)
 //
 // They are wired into Builtins() and will be replaced there — same types,
 // real semantics — when their milestones land; nothing else may grow
 // behavior on top of the stub outputs.
-
-// StubLLMExecutor runs llm steps as a dev stub: echo the resolved prompt
-// back as the completion text. Requires model and one of prompt/messages,
-// mirroring validation (1.3) so hand-built configs fail loudly.
-type StubLLMExecutor struct{}
-
-// Type implements Executor.
-func (StubLLMExecutor) Type() string { return string(dag.StepLLM) }
-
-// PluginManifest implements SelfDescribing (ticket 8.1). Cacheable and
-// cost-bearing per the real llm executor's semantics: non-deterministic
-// outputs are exactly what M9's response cache reuses, and provider
-// calls are what M10 meters.
-func (StubLLMExecutor) PluginManifest() plugin.Manifest {
-	return builtinManifest(dag.StepLLM, stubVersion,
-		"One model call through the provider interface (dev stub until 8.6).",
-		plugin.Capabilities{Cacheable: true, CostBearing: true})
-}
-
-// Execute implements Executor.
-func (StubLLMExecutor) Execute(_ context.Context, sc StepContext) (Output, error) {
-	c, err := configAs[*dag.LLMConfig](sc)
-	if err != nil {
-		return Output{}, err
-	}
-	if c == nil || c.Model == "" {
-		return Output{}, &InvalidConfigError{StepType: string(sc.StepType), cause: fmt.Errorf("missing required field %q", "model")}
-	}
-	prompt := c.Prompt
-	if prompt == "" {
-		if len(c.Messages) == 0 {
-			return Output{}, &InvalidConfigError{StepType: string(sc.StepType), cause: fmt.Errorf("requires one of %q or %q", "prompt", "messages")}
-		}
-		prompt = c.Messages[len(c.Messages)-1].Content
-	}
-	return marshalOutput(struct {
-		Stub  bool   `json:"stub"`
-		Model string `json:"model"`
-		Text  string `json:"text"`
-	}{true, c.Model, "[stub llm output] " + prompt})
-}
 
 // StubToolExecutor runs tool steps as a dev stub: succeed with the
 // configured input echoed back untouched.

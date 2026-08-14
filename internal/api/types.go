@@ -147,10 +147,14 @@ type StepView struct {
 
 // AttemptView is one execution try of a step.
 type AttemptView struct {
-	Attempt    int             `json:"attempt"`
-	ClaimID    string          `json:"claim_id"`
-	Outcome    string          `json:"outcome,omitempty"`
-	Error      json.RawMessage `json:"error,omitempty"`
+	Attempt int             `json:"attempt"`
+	ClaimID string          `json:"claim_id"`
+	Outcome string          `json:"outcome,omitempty"`
+	Error   json.RawMessage `json:"error,omitempty"`
+	// Usage is the attempt's token accounting, present only on a
+	// successful llm attempt (ticket 8.6): {input_tokens, output_tokens}.
+	// Absent for every other step type and outcome.
+	Usage      json.RawMessage `json:"usage,omitempty"`
 	StartedAt  *time.Time      `json:"started_at,omitempty"`
 	FinishedAt *time.Time      `json:"finished_at,omitempty"`
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/api"
 	"github.com/mathcslearner/agentloom/internal/engine"
 	"github.com/mathcslearner/agentloom/internal/exec"
+	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/queue"
 	"github.com/mathcslearner/agentloom/internal/queue/queuetest"
 	"github.com/mathcslearner/agentloom/internal/store"
@@ -335,8 +336,15 @@ func TestSubmitFanoutRunsToCompletion(t *testing.T) {
 	done := make(chan struct{})
 	t.Cleanup(func() { cancel(); <-done })
 	go func() { defer close(done); d.Run(dctx) }()
+	// fanout.json's llm steps route to the offline mock provider
+	// (model mock/sim-1), so the fleet needs a mock-backed registry to
+	// run them — the same wiring cmd/worker does from AGENTLOOM_LLM_MOCK_ENABLED.
+	providers, err := llm.NewRegistryFromKeys(llm.ProviderKeys{Mock: &llm.MockConfig{}})
+	if err != nil {
+		t.Fatalf("NewRegistryFromKeys: %v", err)
+	}
 	for _, name := range []string{"worker-a", "worker-b"} {
-		eng, err := engine.New(s, exec.Builtins(), name, engine.WithDispatchNudge(d.Nudge))
+		eng, err := engine.New(s, exec.Builtins(providers), name, engine.WithDispatchNudge(d.Nudge))
 		if err != nil {
 			t.Fatalf("engine.New: %v", err)
 		}
@@ -387,8 +395,9 @@ func TestSubmitFanoutRunsToCompletion(t *testing.T) {
 			t.Errorf("edge %s->%s resolution = %q, want fired", e.From, e.To, e.Resolution)
 		}
 	}
-	// The AI-native steps ran as dev stubs — visible in their outputs.
-	for _, id := range []string{"search_docs", "fetch_news", "brainstorm", "synthesize"} {
+	// The tool and retrieve steps still run as dev stubs (8.7/8.8) —
+	// visible in their outputs.
+	for _, id := range []string{"search_docs", "fetch_news"} {
 		var out struct {
 			Stub bool `json:"stub"`
 		}
@@ -398,6 +407,40 @@ func TestSubmitFanoutRunsToCompletion(t *testing.T) {
 		}
 		if err := json.Unmarshal(step.Output, &out); err != nil || !out.Stub {
 			t.Errorf("step %s output = %s, want a stub-marked payload (err=%v)", id, step.Output, err)
+		}
+	}
+	// The llm steps ran the production executor against the mock provider:
+	// their outputs carry completion text, and the attempt row reports
+	// usage through the API (ticket 8.6, criterion 2 — usage visible in the
+	// run-status API).
+	for _, id := range []string{"brainstorm", "synthesize"} {
+		step, ok := stepFrom(run, id)
+		if !ok {
+			t.Fatalf("step %s missing from response", id)
+		}
+		var out struct {
+			Text  string `json:"text"`
+			Usage struct {
+				InputTokens  int64 `json:"input_tokens"`
+				OutputTokens int64 `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(step.Output, &out); err != nil {
+			t.Fatalf("step %s output %s: %v", id, step.Output, err)
+		}
+		if out.Text == "" {
+			t.Errorf("step %s output has no completion text: %s", id, step.Output)
+		}
+		var au struct {
+			InputTokens  int64 `json:"input_tokens"`
+			OutputTokens int64 `json:"output_tokens"`
+		}
+		if len(step.Attempts[0].Usage) == 0 {
+			t.Errorf("step %s attempt has no usage in the API response", id)
+		} else if err := json.Unmarshal(step.Attempts[0].Usage, &au); err != nil {
+			t.Fatalf("step %s attempt usage %s: %v", id, step.Attempts[0].Usage, err)
+		} else if au.InputTokens <= 0 || au.OutputTokens <= 0 {
+			t.Errorf("step %s attempt usage = %+v, want positive token counts", id, au)
 		}
 	}
 

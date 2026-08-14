@@ -33,6 +33,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/engine"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/exec/steplog"
+	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/obs/metrics"
 	"github.com/mathcslearner/agentloom/internal/obs/trace"
@@ -125,16 +126,32 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	if err != nil {
 		return err
 	}
+	// Model providers (tickets 8.4/8.5/8.6, ADR-009): the llm executor
+	// routes step models to whichever providers this worker configured —
+	// each built iff its key is present (or, for the mock, enabled), an
+	// empty registry valid so a worker running no llm steps boots keyless.
+	providerKeys := llm.ProviderKeys{
+		Anthropic: cfg.LLM.AnthropicAPIKey,
+		OpenAI:    cfg.LLM.OpenAIAPIKey,
+	}
+	if cfg.LLM.MockEnabled {
+		providerKeys.Mock = &llm.MockConfig{}
+	}
+	providers, err := llm.NewRegistryFromKeys(providerKeys)
+	if err != nil {
+		return fmt.Errorf("configuring model providers: %w", err)
+	}
 	// Production workers register the core set; the filesystem-writing
 	// test executors (counter, effectful_echo) are opt-in via
 	// AGENTLOOM_WORKER_TEST_EXECUTORS (ticket 6.2) — the compose dev
 	// stack and the crash/chaos suites set it.
-	registry := exec.CoreBuiltins()
+	registry := exec.CoreBuiltins(providers)
 	if cfg.Worker.TestExecutors {
-		registry = exec.Builtins()
+		registry = exec.Builtins(providers)
 	}
 	logger.InfoContext(ctx, "plugin registry built",
 		slog.Int("plugins", len(registry.Manifests())),
+		slog.Int("providers", len(providers.Names())),
 		slog.Bool("test_executors", cfg.Worker.TestExecutors))
 	// Per-step log capture (ticket 7.4): the sink tees every executor's
 	// StepContext.Logger into the step_logs store; its flusher runs on
