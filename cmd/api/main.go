@@ -36,6 +36,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/mathcslearner/agentloom/internal/api"
+	"github.com/mathcslearner/agentloom/internal/cache/redisstore"
 	"github.com/mathcslearner/agentloom/internal/config"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/llm"
@@ -116,21 +117,30 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 	}
 	defer st.Close()
 
-	// Rate limiting (ticket 6.4): a Redis client for the token buckets,
-	// opened without a hard boot-time dependency — go-redis dials lazily
-	// and the middleware fails open (ADR-007), so a down Redis degrades
-	// rate limiting instead of preventing the API from serving. The ping
-	// is advisory: it surfaces a misconfigured address in the boot logs.
-	var rl api.RateLimitOptions
-	if cfg.API.RateLimit.Enabled {
-		rdb := redis.NewClient(&redis.Options{Addr: cfg.Redis.Addr})
+	// Redis client, opened without a hard boot-time dependency — go-redis
+	// dials lazily and both consumers below fail soft, so a down Redis
+	// degrades rate limiting and the cache ops surface instead of preventing
+	// the API from serving (ADR-002 — Postgres stays the only hard
+	// dependency). One client serves two opt-in uses: the 6.4 rate-limit
+	// token buckets and the 9.6 cache ops surface. Built only when at least
+	// one is enabled; the advisory ping surfaces a misconfigured address in
+	// the boot logs.
+	var rdb *redis.Client
+	if cfg.API.RateLimit.Enabled || cfg.Cache.Enabled {
+		rdb = redis.NewClient(&redis.Options{Addr: cfg.Redis.Addr})
 		defer rdb.Close() //nolint:errcheck // best-effort close on shutdown
 		pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		if err := rdb.Ping(pingCtx).Err(); err != nil {
-			logger.WarnContext(ctx, "api: redis unreachable at boot — rate limiting fails open until it recovers",
+			logger.WarnContext(ctx, "api: redis unreachable at boot — rate limiting and cache ops fail soft until it recovers",
 				slog.String("addr", cfg.Redis.Addr), slog.Any("error", err))
 		}
 		cancel()
+	}
+
+	// Rate limiting (ticket 6.4): the per-client token buckets over the
+	// shared Redis client. The middleware fails open on a Redis error.
+	var rl api.RateLimitOptions
+	if cfg.API.RateLimit.Enabled {
 		rl = api.RateLimitOptions{
 			Acquirer:  ratelimit.New(rdb),
 			KeyPrefix: cfg.API.RateLimit.KeyPrefix,
@@ -195,8 +205,22 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 	}
 	plugins = append(plugins, retrievers.Manifests()...)
 
-	apiHandler, err := api.New(st, time.Now, logger, cfg.API.RootKey, rl,
-		api.WithRequestMetrics(apiMetrics), api.WithPlugins(plugins))
+	// Response-cache ops surface (ticket 9.6, ADR-011): the admin bust/stats
+	// endpoints operate over a redisstore built on the shared client, the
+	// same layout the worker fleet writes (cache.RedisKey prefix/namespacing,
+	// value cap). Wired only when caching is enabled; otherwise the
+	// /v1/cache/* routes answer 503. The API never reads a cached result —
+	// this is an ops surface, ADR-002 intact.
+	apiOpts := []api.Option{api.WithRequestMetrics(apiMetrics), api.WithPlugins(plugins)}
+	if cfg.Cache.Enabled && rdb != nil {
+		cacheStore, err := redisstore.New(rdb, cfg.Cache.KeyPrefix, cfg.Cache.MaxValueBytes)
+		if err != nil {
+			return fmt.Errorf("configuring cache ops: %w", err)
+		}
+		apiOpts = append(apiOpts, api.WithCacheOps(cacheStore))
+	}
+
+	apiHandler, err := api.New(st, time.Now, logger, cfg.API.RootKey, rl, apiOpts...)
 	if err != nil {
 		return err
 	}

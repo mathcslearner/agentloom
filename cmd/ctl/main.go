@@ -10,6 +10,7 @@
 //	ctl requeue <run-id> <step>  requeue a dead-lettered step (ticket 6.5)
 //	ctl keys …                   manage API keys (create/list/revoke; ticket 6.1)
 //	ctl plugins list             list the plugin catalog (ticket 8.1)
+//	ctl cache bust|stats         invalidate cache entries / show hit rates (ticket 9.6)
 //
 // The API base URL comes from --api or AGENTLOOM_API_URL (default
 // http://localhost:8080); the bearer credential from --key or
@@ -52,6 +53,6 @@ func newRootCmd(lookup func(string) (string, bool)) *cobra.Command {
 	root.PersistentFlags().String("key", defaultKey, "bearer API key (default AGENTLOOM_API_KEY)")
 	root.AddCommand(newValidateCmd(), newSubmitCmd(), newWatchCmd(), newRunsCmd(),
 		newCancelCmd(), newParkCmd(), newUnparkCmd(), newRequeueCmd(), newKeysCmd(),
-		newPluginsCmd())
+		newPluginsCmd(), newCacheCmd())
 	return root
 }

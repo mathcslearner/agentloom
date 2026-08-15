@@ -109,6 +109,8 @@ those tickets implement against a decided model):
 | `POST /v1/runs/{id}/cancel`, `…/park`, `…/unpark`, `…/steps/{sid}/requeue` | `submit` | 6.5 |
 | `POST /v1/definitions`, new-version | `submit` | 6.5 |
 | `GET /v1/definitions*` | `read` | 6.5 |
+| `GET /v1/plugins` | `read` | 8.1 |
+| `POST /v1/cache/bust`, `GET /v1/cache/stats` | `admin` | 9.6 |
 | M15 approval resolution | `approve` | M15 |
 
 ### Lifecycle

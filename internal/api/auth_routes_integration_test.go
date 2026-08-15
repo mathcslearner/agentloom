@@ -149,6 +149,12 @@ func TestV1AuthMatrix(t *testing.T) {
 		{http.MethodGet, "/v1/definitions/{name}/versions", static("/v1/definitions/auth-probe-fixture/versions"), api.ScopeRead, nil, http.StatusOK},
 		{http.MethodPost, "/v1/definitions/{name}/versions", static("/v1/definitions/auth-probe-fixture/versions"), api.ScopeSubmit, func() []byte { return defDoc("auth-probe-fixture") }, http.StatusCreated},
 		{http.MethodGet, "/v1/plugins", static("/v1/plugins"), api.ScopeRead, nil, http.StatusOK},
+		// The cache ops server here wires no CacheOps, so auth passing
+		// surfaces as the handler's 503 cache_unavailable — still past the
+		// gate (the requeue-409 precedent). The behavioral suite in
+		// cache_integration_test.go wires a real ops surface.
+		{http.MethodPost, "/v1/cache/bust", static("/v1/cache/bust"), api.ScopeAdmin, func() []byte { return []byte(`{}`) }, http.StatusServiceUnavailable},
+		{http.MethodGet, "/v1/cache/stats", static("/v1/cache/stats"), api.ScopeAdmin, nil, http.StatusServiceUnavailable},
 		{http.MethodPost, "/v1/keys", static("/v1/keys"), api.ScopeAdmin, keyBody, http.StatusCreated},
 		{http.MethodGet, "/v1/keys", static("/v1/keys"), api.ScopeAdmin, nil, http.StatusOK},
 		{http.MethodDelete, "/v1/keys/{id}", static("/v1/keys/" + victim.ID), api.ScopeAdmin, nil, http.StatusNoContent},

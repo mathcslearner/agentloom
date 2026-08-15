@@ -296,6 +296,63 @@ Ticket 9.5 implemented the runtime against the 9.4 key builder and policy:
   unlabeled `fail_opens` counter (read/write Redis errors). 9.6's stats
   endpoint reconciles against these.
 
+### Invalidation & ops surface (as built, 9.6)
+
+Ticket 9.6 added the operator-facing half of the invalidation strategy — the
+admin bust, the stats endpoint, and the `ctl cache` commands — on the 9.5
+store and the `cache.RedisKey` namespacing, with **no migration, no engine
+change, and no new config var**.
+
+- **Durable stats live in Redis, in the store.** The engine's `engine_cache_*`
+  Prometheus counters are per-worker and per-process, so the API (which never
+  runs a step) cannot read them. The store therefore keeps its own per-plugin
+  counters: `redisstore.Get` increments `hits` or `misses`, `Set` increments
+  `stores`, in a hash `<prefix>:stats:<kind>:<name>` (one pipelined
+  `HINCRBY` + `PEXPIRE` re-arming a 30-day TTL so idle plugins self-clean).
+  The increments are **best-effort** — a failed counter update is swallowed and
+  never touches the read, the write, or the step. They mirror the Prometheus
+  counters on the normal path (one store op ⇒ one engine count), which is what
+  lets the stats endpoint reconcile against them; the one documented
+  divergence is a *corrupt stored value*, which the store counts as a hit
+  (a value was present) but the engine counts as a fail-open (it couldn't
+  decode it) — operator-tampering/version-skew territory. `bypass` and
+  `fail_opens` stay Prometheus-only (they never reach the store).
+
+- **Bust is SCAN + UNLINK by namespace.** `redisstore.Bust(BustMatch)` builds a
+  Redis glob from `cache.BustPattern` — `<prefix>:v*:*` (all), `…:<kind>:*`
+  (one kind), or `…:<kind>:<name>:*` (one concrete plugin) — and `SCAN`s in
+  batches (`COUNT 512`), `UNLINK`ing each batch so both the scan and the delete
+  are non-blocking. It returns the deleted count. Semantics are point-in-time:
+  an entry a live worker writes after the scan passed its slot survives (a
+  bust is a best-effort reclaim, not a barrier). The pattern matches `v*` so a
+  bust also sweeps entries stranded behind an earlier `KeySchemaVersion`, and
+  the `stats:` namespace is excluded by construction (it does not begin with
+  `v`), so counters survive a bust. **A single run's entries cannot be busted**
+  — a run-scoped entry mixes the run id into the *hash*, not the key — so its
+  only bound is the TTL; this is documented, not a gap.
+
+- **The API surface.** Two new **admin-scoped** routes (route→scope and
+  route→class tables extended, OpenAPI still lints 100/100):
+  `POST /v1/cache/bust` (namespace selector `{plugin_kind?, plugin_name?}`;
+  a name without a kind, or a non-cacheable kind, is a 400) returns
+  `{deleted}` and emits a structured **audit log line** carrying the actor
+  `key_id` (ADR-007), the namespace, and the count; `GET /v1/cache/stats`
+  returns per-plugin `{hits, misses, stores, hit_rate}`. Both answer **503
+  `cache_unavailable`** when the cache is not wired.
+
+- **The API's Redis use, revisited.** ADR-002 said the API holds no Redis
+  client for dispatch; 6.4 already carved out an opt-in, fail-soft client for
+  rate-limit buckets. 9.6 reuses that one client for the cache ops surface
+  (`cmd/api` builds a `redisstore` over it when `AGENTLOOM_CACHE_ENABLED`).
+  The API still never reads a cached *result* or dispatches — this is an ops
+  surface only, fail-soft, and Postgres stays the API's sole hard dependency.
+
+- **`ctl cache bust|stats`.** `bust --kind/--name` (no flags = bust all) prints
+  the count; `stats` renders the per-plugin table with hit rates. The
+  ops-runbook (`docs/ops-runbook.md`) documents when to reach for each
+  invalidation mechanism (prefer a plugin version bump for behavioral changes;
+  bust for corpus re-ingest or emergencies; TTL for everything else).
+
 ## Consequences
 
 - **Repeat deterministic work becomes a lookup.** The headline win: identical

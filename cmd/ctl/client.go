@@ -158,6 +158,24 @@ func (c *client) listPlugins(ctx context.Context) (api.ListPluginsResponse, erro
 	return resp, err
 }
 
+// bustCache POSTs a response-cache bust by namespace (ticket 9.6, admin).
+func (c *client) bustCache(ctx context.Context, req api.CacheBustRequest) (api.CacheBustResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return api.CacheBustResponse{}, fmt.Errorf("encoding request: %w", err)
+	}
+	var resp api.CacheBustResponse
+	err = c.do(ctx, http.MethodPost, "/v1/cache/bust", body, &resp)
+	return resp, err
+}
+
+// cacheStats GETs the per-plugin cache counters (ticket 9.6, admin).
+func (c *client) cacheStats(ctx context.Context) (api.CacheStatsResponse, error) {
+	var resp api.CacheStatsResponse
+	err := c.do(ctx, http.MethodGet, "/v1/cache/stats", nil, &resp)
+	return resp, err
+}
+
 // do runs one request, decoding 2xx into out and anything else into an
 // *apiError. Each mod, if any, edits the request before it is sent (e.g.
 // extra headers).

@@ -36,6 +36,8 @@ var routeClasses = map[string]routeClass{
 	"GET /v1/definitions/{name}/versions":          classRead,
 	"POST /v1/definitions/{name}/versions":         classSubmit,
 	"GET /v1/plugins":                              classRead,
+	"POST /v1/cache/bust":                          classAdmin,
+	"GET /v1/cache/stats":                          classAdmin,
 	"POST /v1/keys":                                classAdmin,
 	"GET /v1/keys":                                 classAdmin,
 	"DELETE /v1/keys/{keyID}":                      classAdmin,

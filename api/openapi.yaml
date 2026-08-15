@@ -74,6 +74,8 @@ tags:
     description: The stored, versioned workflow-definition registry.
   - name: Plugins
     description: The plugin catalog — manifests and config schemas (ADR-009).
+  - name: Cache
+    description: Response-cache invalidation and statistics (admin scope, ADR-011).
   - name: Keys
     description: API key administration (admin scope).
   - name: Health
@@ -699,6 +701,86 @@ paths:
         "500":
           $ref: "#/components/responses/Internal"
 
+  /v1/cache/bust:
+    post:
+      operationId: bustCache
+      tags: [Cache]
+      summary: Bust response-cache entries
+      description: |
+        Scope `admin`, rate-limit class `admin`. Removes response-cache
+        entries (ticket 9.6, ADR-011) by namespace: an empty body busts
+        every entry, `plugin_kind` alone busts one kind (all model
+        providers, all tools, or all retrievers), and `plugin_kind` with
+        `plugin_name` busts one concrete plugin. Deletion is `SCAN`-batched
+        and non-blocking (`UNLINK`); the response reports how many keys were
+        removed. Semantics are point-in-time — an entry a live worker writes
+        after the scan passed its slot survives. A single run's entries
+        cannot be busted (run scope mixes the run id into the entry hash, not
+        the key; its only bound is the TTL). The action is audit-logged with
+        the actor key id. Returns `503` when the cache is not enabled on this
+        API (the cache is an opt-in extra, never a boot dependency).
+      requestBody:
+        required: false
+        description: The namespace selector; omit the body to bust everything.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CacheBustRequest"
+            example:
+              plugin_kind: model_provider
+              plugin_name: mock
+      responses:
+        "200":
+          description: The bust completed; `deleted` is the entry count removed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CacheBustResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "503":
+          $ref: "#/components/responses/CacheUnavailable"
+
+  /v1/cache/stats:
+    get:
+      operationId: cacheStats
+      tags: [Cache]
+      summary: Response-cache statistics
+      description: |
+        Scope `admin`, rate-limit class `admin`. Per-plugin cumulative cache
+        counters (ticket 9.6, ADR-011): hits, misses, stores, and the
+        derived hit rate for each concrete plugin the fleet has cached
+        against. The counters are kept in Redis by the worker fleet's cache
+        store, so the API serves them without a worker (ADR-002); they
+        reconcile against the fleet's `engine_cache_*` Prometheus counters on
+        the normal path. Returns `503` when the cache is not enabled on this
+        API.
+      responses:
+        "200":
+          description: Per-plugin counters, sorted by kind then name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CacheStatsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "503":
+          $ref: "#/components/responses/CacheUnavailable"
+
   /v1/keys:
     post:
       operationId: createKey
@@ -1016,6 +1098,18 @@ components:
             $ref: "#/components/schemas/Error"
           example:
             error: { code: internal, message: creating run failed }
+    CacheUnavailable:
+      description: >
+        The response-cache ops surface is not enabled on this API (code
+        `cache_unavailable`) — caching is disabled or the API was built
+        without the cache store. The cache is an opt-in extra, never a boot
+        dependency (ADR-002); enable it to use bust/stats.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: { code: cache_unavailable, message: response cache is not enabled on this API }
 
   schemas:
     # --- The workflow definition contract (generated; do not inline). ---
@@ -1072,6 +1166,7 @@ components:
         - not_found
         - method_not_allowed
         - internal
+        - cache_unavailable
     Issue:
       type: object
       description: One path-qualified definition problem.
@@ -1712,3 +1807,64 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PluginInfo"
+
+    # --- Response-cache ops (ticket 9.6, ADR-011). ---
+    CacheBustRequest:
+      type: object
+      description: >
+        The namespace selector for a cache bust. Omit both fields to bust
+        every entry; `plugin_kind` alone busts one kind; `plugin_kind` with
+        `plugin_name` busts one concrete plugin. `plugin_name` without
+        `plugin_kind` is a 400.
+      additionalProperties: false
+      properties:
+        plugin_kind:
+          type: string
+          description: The cacheable plugin kind to bust.
+          enum: [model_provider, tool, retriever]
+        plugin_name:
+          type: string
+          description: The concrete plugin within the kind; requires plugin_kind.
+    CacheBustResponse:
+      type: object
+      description: The outcome of a bust.
+      required: [deleted]
+      properties:
+        deleted:
+          type: integer
+          format: int64
+          description: >
+            Number of cache entries removed. Point-in-time — entries written
+            concurrently after the scan passed their slot are not counted.
+    CacheStatsResponse:
+      type: object
+      description: Per-plugin cumulative cache counters, sorted by kind then name.
+      required: [plugins]
+      properties:
+        plugins:
+          type: array
+          items:
+            $ref: "#/components/schemas/CachePluginStat"
+    CachePluginStat:
+      type: object
+      description: One concrete plugin's cache counters with the derived hit rate.
+      required: [kind, name, hits, misses, stores, hit_rate]
+      properties:
+        kind:
+          type: string
+          enum: [model_provider, tool, retriever]
+        name:
+          type: string
+        hits:
+          type: integer
+          format: int64
+        misses:
+          type: integer
+          format: int64
+        stores:
+          type: integer
+          format: int64
+        hit_rate:
+          type: number
+          format: double
+          description: hits / (hits + misses); 0 when there were no lookups.

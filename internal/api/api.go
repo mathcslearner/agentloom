@@ -26,6 +26,8 @@
 //	GET    /v1/definitions/{name}/versions          read    read    every version of one name
 //	POST   /v1/definitions/{name}/versions          submit  submit  append the next version of an existing name
 //	GET    /v1/plugins                              read    read    plugin catalog: manifests + config schemas (ticket 8.1)
+//	POST   /v1/cache/bust                           admin   admin   bust response-cache entries by namespace (ticket 9.6)
+//	GET    /v1/cache/stats                          admin   admin   per-plugin cache hit/miss/store counters (ticket 9.6)
 //	POST   /v1/keys                                 admin   admin   mint an API key (plaintext shown once)
 //	GET    /v1/keys                                 admin   admin   list API keys (prefixes only)
 //	DELETE /v1/keys/{id}                            admin   admin   revoke an API key (soft, idempotent)
@@ -71,6 +73,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/mathcslearner/agentloom/internal/cache"
 	"github.com/mathcslearner/agentloom/internal/engine"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	obstrace "github.com/mathcslearner/agentloom/internal/obs/trace"
@@ -108,6 +111,24 @@ type Handler struct {
 	// plugins is the precomputed GET /v1/plugins listing (ticket 8.1),
 	// set by WithPlugins; nil serves as an empty catalog.
 	plugins []PluginInfo
+	// cacheOps is the response-cache ops surface (ticket 9.6): bust and
+	// stats over the Redis cache store, set by WithCacheOps. Nil means the
+	// cache is not wired here (caching disabled, or an API built without
+	// it) — the /v1/cache/* routes then answer 503 cache_unavailable, and
+	// ADR-002's Redis independence is untouched (the API never reads the
+	// cache for dispatch; this is an opt-in ops extra like rate limiting).
+	cacheOps CacheOps
+}
+
+// CacheOps is the API's seam onto the response-cache store (ticket 9.6,
+// ADR-011) — satisfied by *cache/redisstore.Store. It carries only the two
+// admin operations the ops surface needs; the api package imports only the
+// internal/cache leaf (BustMatch, PluginStats), never go-redis, keeping the
+// store's Redis client out of this layer. Nil disables the /v1/cache/*
+// routes (503).
+type CacheOps interface {
+	Bust(ctx context.Context, match cache.BustMatch) (int64, error)
+	Stats(ctx context.Context) ([]cache.PluginStats, error)
 }
 
 // RequestMetrics is the API's per-request observability seam (ticket 7.2,
@@ -146,6 +167,14 @@ func WithRequestMetrics(m RequestMetrics) Option {
 		}
 		h.metrics = m
 	}
+}
+
+// WithCacheOps wires the response-cache ops surface (ticket 9.6): the
+// /v1/cache/bust and /v1/cache/stats admin routes operate over it. Nil (the
+// default) leaves those routes answering 503 cache_unavailable. cmd/api
+// passes a *cache/redisstore.Store when caching is enabled.
+func WithCacheOps(ops CacheOps) Option {
+	return func(h *Handler) { h.cacheOps = ops }
 }
 
 // New builds the Handler. now is the injected clock (project invariant —
@@ -225,6 +254,11 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/definitions/{name}/versions", h.handleCreateDefinitionVersion)
 		// Plugin catalog (ticket 8.1, ADR-009).
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/plugins", h.handleListPlugins)
+		// Response-cache ops (ticket 9.6, ADR-011): bust-by-namespace and
+		// per-plugin stats. Admin scope — invalidation is an operator
+		// action, audit-logged with the actor key id.
+		r.With(h.requireScope(ScopeAdmin), h.rateLimit(classAdmin)).Post("/cache/bust", h.handleCacheBust)
+		r.With(h.requireScope(ScopeAdmin), h.rateLimit(classAdmin)).Get("/cache/stats", h.handleCacheStats)
 		r.Route("/keys", func(r chi.Router) {
 			r.Use(h.requireScope(ScopeAdmin))
 			r.Use(h.rateLimit(classAdmin))

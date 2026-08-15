@@ -52,6 +52,12 @@ const (
 	ErrCodeMethodNotAllowed = "method_not_allowed"
 	// ErrCodeInternal: the request was fine, the server was not.
 	ErrCodeInternal = "internal"
+	// ErrCodeCacheUnavailable: the response-cache ops surface (bust/stats,
+	// ticket 9.6) is not wired on this API — either caching is disabled or
+	// the API was built without the cache store (503). ADR-002's Redis
+	// independence means the cache ops are an opt-in extra, never a boot
+	// dependency; an operator who wants them enables the cache.
+	ErrCodeCacheUnavailable = "cache_unavailable"
 )
 
 // ErrorBody is the envelope every non-2xx response carries.
@@ -360,4 +366,46 @@ type PluginInfo struct {
 // one build), sorted by kind then name.
 type ListPluginsResponse struct {
 	Plugins []PluginInfo `json:"plugins"`
+}
+
+// CacheBustRequest is the body of POST /v1/cache/bust (ticket 9.6, ADR-011):
+// the namespace selector for an admin cache invalidation. Both fields
+// omitted busts every entry; plugin_kind alone busts one kind (all model
+// providers, all tools, all retrievers); plugin_kind + plugin_name busts one
+// concrete plugin. A plugin_name without a plugin_kind is a 400 (names are
+// unique only within a kind). The busting granularity is the RedisKey
+// namespace — a single run's entries cannot be busted (their bound is TTL).
+type CacheBustRequest struct {
+	// PluginKind is one of the cacheable plugin kinds: model_provider, tool,
+	// retriever. Empty (with an empty name) means every kind.
+	PluginKind string `json:"plugin_kind,omitempty"`
+	// PluginName is the concrete plugin within the kind; requires PluginKind.
+	PluginName string `json:"plugin_name,omitempty"`
+}
+
+// CacheBustResponse reports the outcome of a bust: how many Redis keys were
+// removed. Point-in-time — entries written concurrently by a live worker
+// after the scan passed their slot are not counted (ADR-011).
+type CacheBustResponse struct {
+	Deleted int64 `json:"deleted"`
+}
+
+// CacheStatsResponse answers GET /v1/cache/stats: per-plugin cumulative
+// hit/miss/store counters (ticket 9.6). The numbers reconcile against the
+// worker fleet's engine_cache_* Prometheus counters on the normal path
+// (ADR-011); they are durable in Redis so the API can serve them without a
+// worker (ADR-002).
+type CacheStatsResponse struct {
+	Plugins []CachePluginStat `json:"plugins"`
+}
+
+// CachePluginStat is one concrete plugin's cache counters with the derived
+// hit rate (hits/(hits+misses), 0 when there were no lookups).
+type CachePluginStat struct {
+	Kind    string  `json:"kind"`
+	Name    string  `json:"name"`
+	Hits    int64   `json:"hits"`
+	Misses  int64   `json:"misses"`
+	Stores  int64   `json:"stores"`
+	HitRate float64 `json:"hit_rate"`
 }

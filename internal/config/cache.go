@@ -34,11 +34,14 @@ const (
 
 // CacheConfig configures the response cache (ticket 9.5, internal/cache +
 // internal/cache/redisstore). The worker builds a redisstore over the same
-// Redis client the queue uses (the shared coordination Redis, ADR-002 — the
-// API never reads the cache, so its Redis independence is untouched) and
-// wires it into the engine's cache middleware. Enabled by default: the
-// worker already requires Redis, and a default-on cache is what makes
-// identical deterministic steps hit with zero configuration.
+// Redis client the queue uses (the shared coordination Redis) and wires it
+// into the engine's cache middleware. Since ticket 9.6 the API also builds a
+// redisstore over this config — but solely for the admin ops surface
+// (bust/stats), never for dispatch or for reading a cached result, and it
+// fails soft when Redis is down, so ADR-002's rule that Postgres is the
+// API's only hard dependency holds. Enabled by default: the worker already
+// requires Redis, and a default-on cache is what makes identical
+// deterministic steps hit with zero configuration.
 type CacheConfig struct {
 	// Enabled turns the response cache on. Default true; set
 	// AGENTLOOM_CACHE_ENABLED=false to run every step uncached.

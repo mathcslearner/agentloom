@@ -13,12 +13,22 @@
 // or a corrupt value is a cache miss, never a run failure — the failure
 // stance lives in the engine middleware (fail-open), and this package simply
 // surfaces Redis errors and the oversized-value signal for it to route.
+//
+// Ticket 9.6 adds the ops surface on top of the same store: Get/Set keep
+// per-plugin hit/miss/store counters in Redis (a hash beside the entries,
+// best-effort — a counter update that fails never touches the step) so the
+// admin stats endpoint has a durable, cross-process source that reconciles
+// against the engine's Prometheus counters; Bust SCAN-batches a non-blocking
+// UNLINK by the RedisKey namespace (all / one kind / one concrete plugin);
+// Stats reads the counters back. The engine middleware is unchanged — the
+// stats ride inside the store the worker already wires.
 package redisstore
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -38,6 +48,18 @@ const DefaultKeyPrefix = "cache"
 // no chunking, no Postgres spill), so a pathological giant output cannot
 // evict thousands of useful small ones.
 const DefaultMaxValueBytes = int64(1 << 20) // 1 MiB
+
+// scanCount is the SCAN COUNT hint for Bust and Stats: a batch size that
+// keeps each server-side scan step short (non-blocking, ADR-011) while
+// bounding the number of round-trips over a large keyspace.
+const scanCount = int64(512)
+
+// statsTTL bounds the per-plugin counter hashes. It is re-armed on every
+// update, so an actively-used plugin's counters never expire; a plugin no
+// longer invoked lets its stale counters self-evict after this window
+// (mirroring the ratelimit buckets' self-cleaning TTL, ticket 6.3). Long
+// enough that a lull between runs never drops live counters.
+const statsTTL = 30 * 24 * time.Hour
 
 // ErrValueTooLarge re-exports the store contract's oversized-value signal
 // (defined in the cache leaf so the engine can match it without importing
@@ -78,11 +100,16 @@ func New(client redis.Cmdable, keyPrefix string, maxValueBytes int64) (*Store, e
 func (s *Store) Get(ctx context.Context, plugin cache.PluginRef, key string) ([]byte, bool, error) {
 	val, err := s.client.Get(ctx, cache.RedisKey(s.keyPrefix, plugin, key)).Bytes()
 	if errors.Is(err, redis.Nil) {
+		s.bumpStat(ctx, plugin, cache.StatsFieldMisses)
 		return nil, false, nil
 	}
 	if err != nil {
+		// A Redis error increments nothing (the op never reached the server);
+		// the engine records this as a fail-open, so store and engine counters
+		// stay aligned.
 		return nil, false, fmt.Errorf("redisstore: get: %w", err)
 	}
+	s.bumpStat(ctx, plugin, cache.StatsFieldHits)
 	return val, true, nil
 }
 
@@ -101,5 +128,118 @@ func (s *Store) Set(ctx context.Context, plugin cache.PluginRef, key string, val
 	if err := s.client.Set(ctx, cache.RedisKey(s.keyPrefix, plugin, key), val, ttl).Err(); err != nil {
 		return fmt.Errorf("redisstore: set: %w", err)
 	}
+	s.bumpStat(ctx, plugin, cache.StatsFieldStores)
 	return nil
+}
+
+// bumpStat increments one counter in a plugin's stats hash and re-arms the
+// hash TTL, in a single pipelined round-trip. It is best-effort by design:
+// a failure is swallowed, never propagated, because the stats are pure
+// observability (ticket 9.6) and must never affect a cache read, a write, or
+// the step behind them. The counters mirror the engine's Prometheus cache
+// counters on the normal path — one HINCRBY here per Redis op the engine
+// would count — which is what lets the stats endpoint reconcile against
+// them (the one documented divergence: a corrupt stored value is a store
+// hit here but an engine fail-open there, ADR-011).
+func (s *Store) bumpStat(ctx context.Context, plugin cache.PluginRef, field string) {
+	statsKey := cache.StatsRedisKey(s.keyPrefix, plugin)
+	pipe := s.client.Pipeline()
+	pipe.HIncrBy(ctx, statsKey, field, 1)
+	pipe.PExpire(ctx, statsKey, statsTTL)
+	_, _ = pipe.Exec(ctx) //nolint:errcheck // best-effort: stats never gate a step
+}
+
+// Bust deletes every cache entry matching the namespace selector, SCAN-batched
+// so it never blocks Redis, and returns the number of keys removed (ticket
+// 9.6, ADR-011). Deletion uses UNLINK, so the memory reclaim is asynchronous
+// on the server too. The stats counters live outside every bust pattern, so
+// a bust reclaims entries without erasing history. Semantics are point-in-time:
+// an entry written concurrently by a live worker after this scan passed its
+// slot survives — a bust is a best-effort reclaim, not a barrier.
+func (s *Store) Bust(ctx context.Context, match cache.BustMatch) (int64, error) {
+	pattern, err := cache.BustPattern(s.keyPrefix, match)
+	if err != nil {
+		return 0, err
+	}
+	var (
+		deleted int64
+		cursor  uint64
+	)
+	for {
+		keys, next, err := s.client.Scan(ctx, cursor, pattern, scanCount).Result()
+		if err != nil {
+			return deleted, fmt.Errorf("redisstore: bust scan: %w", err)
+		}
+		if len(keys) > 0 {
+			// UNLINK is idempotent: a key another scan pass already removed
+			// counts 0, so a SCAN duplicate never inflates the total.
+			n, err := s.client.Unlink(ctx, keys...).Result()
+			if err != nil {
+				return deleted, fmt.Errorf("redisstore: bust unlink: %w", err)
+			}
+			deleted += n
+		}
+		cursor = next
+		if cursor == 0 {
+			return deleted, nil
+		}
+	}
+}
+
+// Stats reads back every plugin's cumulative cache counters (ticket 9.6),
+// SCAN-batched over the stats namespace. The result is sorted by (kind,
+// name) for a stable listing. A malformed counter value is surfaced as an
+// error (worth reporting, unlike a corrupt entry); a stray key that does not
+// parse as a stats key is skipped.
+func (s *Store) Stats(ctx context.Context) ([]cache.PluginStats, error) {
+	pattern := cache.StatsPattern(s.keyPrefix)
+	// Dedupe across SCAN passes: the same key can appear in more than one
+	// batch, and a plugin must be reported exactly once.
+	seen := make(map[string]struct{})
+	var cursor uint64
+	for {
+		keys, next, err := s.client.Scan(ctx, cursor, pattern, scanCount).Result()
+		if err != nil {
+			return nil, fmt.Errorf("redisstore: stats scan: %w", err)
+		}
+		for _, k := range keys {
+			seen[k] = struct{}{}
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+
+	out := make([]cache.PluginStats, 0, len(seen))
+	for k := range seen {
+		ref, ok := cache.ParseStatsKey(s.keyPrefix, k)
+		if !ok {
+			continue
+		}
+		fields, err := s.client.HGetAll(ctx, k).Result()
+		if err != nil {
+			return nil, fmt.Errorf("redisstore: stats hgetall %s: %w", k, err)
+		}
+		hits, err := cache.ParseCounter(fields[cache.StatsFieldHits])
+		if err != nil {
+			return nil, err
+		}
+		misses, err := cache.ParseCounter(fields[cache.StatsFieldMisses])
+		if err != nil {
+			return nil, err
+		}
+		stores, err := cache.ParseCounter(fields[cache.StatsFieldStores])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, cache.NewPluginStats(ref, hits, misses, stores))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
 }

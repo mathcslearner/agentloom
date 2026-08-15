@@ -362,6 +362,39 @@ sets `AGENTLOOM_API_TEST_EXECUTORS` to mirror the worker's
 `AGENTLOOM_WORKER_TEST_EXECUTORS`, so the listing matches what the fleet
 executes.
 
+## Response cache ops
+
+Two admin-scoped endpoints operate the response cache (ADR-011). They are
+available when the cache is enabled (`AGENTLOOM_CACHE_ENABLED`, on by
+default); otherwise they answer `503 cache_unavailable`. The runbook
+([`docs/ops-runbook.md`](ops-runbook.md)) covers when to bust versus bump a
+plugin version versus let a TTL expire.
+
+`GET /v1/cache/stats` reports per-plugin cumulative hit/miss/store counters
+and the derived hit rate. The numbers reconcile against the worker fleet's
+`engine_cache_*` Prometheus counters:
+
+```bash
+curl -s http://127.0.0.1:8080/v1/cache/stats \
+  -H "Authorization: Bearer $ADMIN_KEY" | jq '.plugins'
+# [{"kind":"model_provider","name":"mock","hits":412,"misses":88,"stores":88,"hit_rate":0.824}]
+```
+
+`POST /v1/cache/bust` removes entries by namespace: an empty body busts
+everything, `plugin_kind` alone busts one kind, `plugin_kind` + `plugin_name`
+busts one concrete plugin. Deletion is `SCAN`-batched and non-blocking, and
+the action is audit-logged with the actor's key id:
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/v1/cache/bust \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"plugin_kind":"retriever","plugin_name":"pg_fulltext"}'
+# {"deleted": 128}
+```
+
+Both render through `ctl cache stats` and `ctl cache bust [--kind K] [--name N]`.
+
 ## Errors and rate limits
 
 Every non-2xx response carries one envelope:

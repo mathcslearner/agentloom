@@ -5338,3 +5338,115 @@ integration suites green against the compose stack. `storetest.NewDB` applies
 all embedded migrations per test, so the integration suites needed no manual
 `make migrate-up`; a live `make up-app` deployment does (0015 is new). Deferred
 to 9.6: bust-by-prefix + stats endpoints, `ctl cache`, the ops runbook.
+
+### 9.6 — Cache invalidation & ops surface ✅
+
+9.6 closes M9 with the operator-facing half of ADR-011's invalidation strategy:
+the admin bust, the stats endpoint, and `ctl cache`, built entirely on 9.5's
+Redis store and the `cache.RedisKey` namespacing. **No migration, no engine
+change, no new config var** — the invalidation levers were designed into the
+key layout in 9.4, and the store's counters ride inside the store the worker
+already wires.
+
+**The `internal/cache` leaf (`bust.go`).** `BustMatch{Kind, Name}` with three
+valid shapes (all / one kind / one concrete plugin; a name without a kind is an
+error) projects through `BustPattern` onto a Redis glob mirroring `RedisKey`:
+`<prefix>:v*[:<kind>[:<name>]]:*`. Two deliberate properties: it matches `v*`
+across every `KeySchemaVersion` (so a bust also reclaims entries stranded behind
+an earlier key format, which would otherwise only TTL out), and every literal
+segment (the operator-supplied prefix, the plugin name) is glob-escaped so a
+metacharacter can't widen the match. The stats namespace (`<prefix>:stats:…`)
+is excluded by construction — it doesn't begin with `v` — so no bust can erase
+the counters. Stats helpers round out the file: `StatsRedisKey`/`StatsPattern`/
+`ParseStatsKey` (kind is the first tail segment; the rest is the name, recovered
+verbatim), `NewPluginStats` (computes the hit rate, 0 when no lookups), and
+`ParseCounter` (empty → 0, malformed → error). A unit `globMatch` proves the
+stats-exclusion property without a Redis round-trip.
+
+**The store (`redisstore`).** Two responsibilities added to the thin KV:
+- **Durable per-plugin counters.** `Get` best-effort-increments `hits` or
+  `misses`, `Set` increments `stores`, in a `<prefix>:stats:<kind>:<name>` hash
+  via one pipelined `HINCRBY` + `PEXPIRE` (a 30-day TTL re-armed on every
+  update, so an active plugin's counters never expire and an idle plugin's
+  self-clean, mirroring the 6.3 bucket TTL). The increments are swallowed on
+  error — stats are pure observability and must never gate a read, a write, or
+  a step. **They exist because the engine's `engine_cache_*` Prometheus counters
+  are per-worker and per-process**, so the API (which never runs a step) cannot
+  read them; the store is the cross-process source. They match the Prometheus
+  counters one-for-one on the normal path (a store op ⇒ an engine count), which
+  is what makes reconciliation exact. The one documented divergence: a corrupt
+  stored value is a store-hit (a value was present) but an engine fail-open
+  (couldn't decode it). `bypass`/`fail_opens` stay Prometheus-only.
+- **`Bust` and `Stats`.** `Bust(BustMatch)` runs `SCAN COUNT 512` + batched
+  non-blocking `UNLINK`, returning the deleted count (`UNLINK` is idempotent, so
+  a SCAN duplicate never inflates it); semantics are point-in-time — an entry a
+  live worker writes after the scan passed its slot survives. `Stats()` SCANs
+  the stats namespace, dedups keys across passes, `HGETALL`s each, and returns
+  `[]PluginStats` sorted by (kind, name).
+
+**The API.** A `CacheOps` seam (`Bust`/`Stats`, satisfied by `*redisstore.Store`;
+the api package imports only the `cache` leaf, never go-redis) + `WithCacheOps`,
+nil → the routes answer **503 `cache_unavailable`** (new error code). Two
+**admin-scoped, admin-rate-limit-class** routes: `POST /v1/cache/bust`
+(strict-decoded `{plugin_kind?, plugin_name?}`, kind validated to the three
+cacheable kinds — model_provider/tool/retriever — a name-without-kind or a
+non-cacheable kind is a 400 that never reaches the store; response `{deleted}`;
+a structured **audit line** `msg="cache bust"` carrying `action`, the namespace,
+`deleted`, and the actor `key_id` from the 6.2 auth stamp) and
+`GET /v1/cache/stats` (`{plugins:[{kind,name,hits,misses,stores,hit_rate}]}`).
+Route→scope and route→class tables, the `chi.Walk` coverage tests, the auth
+matrix (the cache rows use 503 as the past-the-gate success marker, the
+requeue-409 precedent — `keysServer` wires no CacheOps), and OpenAPI (two paths,
+four schemas, the `CacheUnavailable` response, the error-code enum, a `Cache`
+tag; still lints 100/100) all extended.
+
+**Wiring & CLI.** `cmd/api` now builds **one** Redis client shared by rate
+limiting and the cache ops surface (opened when either is enabled, fail-soft,
+ADR-002 intact — the API never reads a cached *result* or dispatches), passing
+`WithCacheOps` when `AGENTLOOM_CACHE_ENABLED`. `ctl cache bust [--kind K]
+[--name N]` (no flags = bust all) and `ctl cache stats` (tabwriter table with
+hit rates) mirror the endpoints via new client methods.
+
+**Tests.** `internal/cache` pattern/stats-key unit matrix; `redisstore`
+integration for the counters (a hit/miss/store bump their own fields, per-plugin
+isolation, computed hit rate), the three bust granularities (one plugin / one
+kind / all, each leaving non-matching entries + **all stats** intact), and the
+acceptance **under-load** test — 3000 keys per namespace, 8 concurrent Get/Set
+goroutines running throughout, bust one namespace, assert zero errors on the
+live ops, the exact deleted count, and the other namespace fully intact; api
+behavioral suite (namespace→BustMatch mapping, audit-log `key_id`, stats
+projection, the 400 matrix never reaching the store, 503-when-unwired); the
+headline engine-layer e2e **`TestCacheStatsReconcileAndBust`** — a real API
+handler over the same store + cache store as a metered engine: two temperature=0
+runs land `engine_cache_{hits,misses,stores}` at 1/1/1, the stats endpoint's
+numbers **equal the gathered Prometheus counters exactly**, then an admin bust
+forces the third identical run to miss and re-call the provider (calls 1→2), the
+counters surviving the bust (misses/stores 2/2); `ctl` unit tests over httptest.
+
+**Deferred / quirks.**
+- **No per-run bust.** A run-scoped entry mixes the run id into the entry
+  *hash*, not the Redis key, so bust granularity stops at the concrete plugin —
+  a run-scoped entry's only bound is its TTL. Documented in the ADR and runbook,
+  not a gap (a `definition`-wide scope was already deferred in 9.4).
+- **Audit is a log line, not a table.** The events table is run-scoped and no
+  global audit table exists; the acceptance is "audit-logged with actor key ID",
+  and 6.1/6.2 established the captured-slog assertion pattern. A durable audit
+  table is future work if an ops requirement demands it.
+- **Stats counter divergence under tampering.** A corrupt stored value diverges
+  store-hits from engine-hits by 1 (see above) — acceptable, since it only
+  arises from operator tampering or a version skew that the reconciliation test
+  never exercises.
+- **The API's Redis use widened again.** ADR-002's "no Redis for the API" became
+  "no Redis for *dispatch*" in 6.4 (rate-limit buckets); 9.6 reuses that same
+  opt-in fail-soft client for the cache ops surface. The API still never reads a
+  cached result. Recorded in the ADR-011 amendment and the `CacheConfig` doc.
+
+**Verified.** `go build ./...`, `make lint` (0 issues), full `go test ./...`
+green, `make openapi-lint` 100/100; the `internal/cache`, `redisstore`, api, and
+engine cache integration suites green against the compose stack (the shared-Redis
+throttle test `TestFleetRespectsResourceLimit` is an unrelated pre-existing
+parallel-contention flake — passes on isolation and rerun). **M9 complete.** The
+new `docs/ops-runbook.md` is the invalidation decision guide (TTL / version bump
+/ admin bust), linked from `docs/README.md`; ADR-011 gained the "Invalidation &
+ops surface (as built, 9.6)" section, ADR-007 the two route rows, `docs/api.md`
+the walkthroughs.

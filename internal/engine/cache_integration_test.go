@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/mathcslearner/agentloom/internal/cache/redisstore"
@@ -19,6 +20,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/engine"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/llm"
+	"github.com/mathcslearner/agentloom/internal/obs/metrics"
 	"github.com/mathcslearner/agentloom/internal/plugin"
 	"github.com/mathcslearner/agentloom/internal/queue/queuetest"
 	"github.com/mathcslearner/agentloom/internal/ratelimit/resource"
@@ -85,10 +87,14 @@ func newCacheStore(t *testing.T, client *redis.Client) *redisstore.Store {
 // provider, granting limiter, and cache store into one engine, and returns a
 // runner that submits a definition and waits for success.
 type cacheFixture struct {
-	s       *store.Store
-	h       *queuetest.Harness
-	prov    *countingProvider
-	limiter *grantingLimiter
+	s          *store.Store
+	h          *queuetest.Harness
+	prov       *countingProvider
+	limiter    *grantingLimiter
+	cacheStore *redisstore.Store
+	// mreg is the worker Prometheus registry carrying the engine_cache_*
+	// counters — the 9.6 reconciliation source of truth.
+	mreg *prometheus.Registry
 }
 
 func newCacheFixture(t *testing.T) *cacheFixture {
@@ -112,16 +118,22 @@ func newCacheFixture(t *testing.T) *cacheFixture {
 	if err != nil {
 		t.Fatalf("exec.NewRegistry: %v", err)
 	}
+	cacheStore := newCacheStore(t, h.Client())
+	// A real worker metrics registry so the engine records engine_cache_*
+	// counters the 9.6 stats endpoint reconciles against (ticket 9.6).
+	mreg := metrics.NewRegistry(metrics.ServiceWorker)
+	wm := metrics.NewWorkerMetrics(mreg)
 	d := startDispatcher(t, s, h.Queue())
 	eng, err := engine.New(s, reg, "cache-worker",
 		engine.WithDispatchNudge(d.Nudge),
 		engine.WithResourceLimiter(limiter),
-		engine.WithResponseCache(newCacheStore(t, h.Client()), time.Hour))
+		engine.WithMetrics(wm),
+		engine.WithResponseCache(cacheStore, time.Hour))
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
 	}
 	h.Spawn("cache-worker", eng.Handle, queuetest.LeaseConfig(400*time.Millisecond))
-	return &cacheFixture{s: s, h: h, prov: prov, limiter: limiter}
+	return &cacheFixture{s: s, h: h, prov: prov, limiter: limiter, cacheStore: cacheStore, mreg: mreg}
 }
 
 // runToSuccess submits one run of def and waits for it to complete.
