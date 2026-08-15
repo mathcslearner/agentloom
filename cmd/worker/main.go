@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mathcslearner/agentloom/internal/cache/redisstore"
 	"github.com/mathcslearner/agentloom/internal/config"
 	"github.com/mathcslearner/agentloom/internal/engine"
 	"github.com/mathcslearner/agentloom/internal/exec"
@@ -227,6 +228,21 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		engineOpts = append(engineOpts,
 			engine.WithResourceLimiter(resourceLimiter),
 			engine.WithThrottleBackoff(cfg.Resources.ThrottleFloor, cfg.Resources.ThrottleCap, cfg.Resources.ThrottleJitterFrac))
+	}
+	// Response cache (ticket 9.5, ADR-011): the read-through/write-through
+	// middleware ahead of the rate limiter, over the same coordination Redis
+	// the queue uses (the API never reads the cache — ADR-002 untouched).
+	// Enabled by default; a hit skips the limiter and the provider entirely.
+	if cfg.Cache.Enabled {
+		cacheStore, cerr := redisstore.New(client, cfg.Cache.KeyPrefix, cfg.Cache.MaxValueBytes)
+		if cerr != nil {
+			return fmt.Errorf("configuring response cache: %w", cerr)
+		}
+		engineOpts = append(engineOpts, engine.WithResponseCache(cacheStore, cfg.Cache.DefaultTTL))
+		logger.InfoContext(ctx, "response cache enabled",
+			slog.String("key_prefix", cfg.Cache.KeyPrefix),
+			slog.Duration("default_ttl", cfg.Cache.DefaultTTL),
+			slog.Int64("max_value_bytes", cfg.Cache.MaxValueBytes))
 	}
 	var logSinkStep *steplog.Sink
 	if cfg.Worker.StepLogEnabled {

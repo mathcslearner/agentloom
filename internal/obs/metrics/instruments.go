@@ -95,6 +95,12 @@ type WorkerMetrics struct {
 	rateLimitFailOpens prometheus.Counter
 	estimateError      *prometheus.HistogramVec
 	reconcileFailures  prometheus.Counter
+
+	cacheHits      *prometheus.CounterVec
+	cacheMisses    *prometheus.CounterVec
+	cacheBypass    *prometheus.CounterVec
+	cacheStores    *prometheus.CounterVec
+	cacheFailOpens prometheus.Counter
 }
 
 // NewWorkerMetrics registers the worker instrument set on reg (ADR-008:
@@ -229,6 +235,26 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 			Namespace: Namespace, Subsystem: "ratelimit", Name: "reconcile_failures_total",
 			Help: "Token-cost reconciliations that could not be applied (e.g. Redis unreachable); the estimate stays debited and the step proceeds (ADR-010 fail-open).",
 		}),
+		cacheHits: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "cache", Name: "hits_total",
+			Help: "Response-cache hits (ticket 9.5, ADR-011): a step served from cache, skipping the limiter and provider, by plugin (<kind>:<name>).",
+		}, []string{"plugin"}),
+		cacheMisses: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "cache", Name: "misses_total",
+			Help: "Response-cache misses: the read found no entry, by plugin.",
+		}, []string{"plugin"}),
+		cacheBypass: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "cache", Name: "bypass_total",
+			Help: "Steps not consulted against the cache by policy (ineligible plugin, non-deterministic default, mode off, unbuildable key, or an oversized value skipped on write), by plugin.",
+		}, []string{"plugin"}),
+		cacheStores: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "cache", Name: "stores_total",
+			Help: "Write-throughs: a miss's result stored in the cache, by plugin.",
+		}, []string{"plugin"}),
+		cacheFailOpens: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "cache", Name: "fail_opens_total",
+			Help: "Cache store errors (read or write, e.g. Redis unreachable) after which the step proceeded uncached (ADR-011 fail-open).",
+		}),
 	}
 	reg.MustRegister(
 		m.queueReadyDepth, m.queueStreamLength, m.queuePELSize, m.queueDelayedDepth,
@@ -243,6 +269,7 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 		m.stepLogCaptured, m.stepLogDropped, m.stepLogFlushFailures,
 		m.throttled, m.throttleWait, m.rateLimitFailOpens,
 		m.estimateError, m.reconcileFailures,
+		m.cacheHits, m.cacheMisses, m.cacheBypass, m.cacheStores, m.cacheFailOpens,
 	)
 	return m
 }
@@ -328,6 +355,22 @@ func (m *WorkerMetrics) EstimateError(resource string, delta int64) {
 // ReconcileFailure records one reconciliation that could not be applied
 // (fail-open — the estimate stays debited and the step proceeds).
 func (m *WorkerMetrics) ReconcileFailure() { m.reconcileFailures.Inc() }
+
+// CacheHit records one response-cache hit (ticket 9.5).
+func (m *WorkerMetrics) CacheHit(plugin string) { m.cacheHits.WithLabelValues(plugin).Inc() }
+
+// CacheMiss records one response-cache miss.
+func (m *WorkerMetrics) CacheMiss(plugin string) { m.cacheMisses.WithLabelValues(plugin).Inc() }
+
+// CacheBypass records one step not consulted against the cache by policy.
+func (m *WorkerMetrics) CacheBypass(plugin string) { m.cacheBypass.WithLabelValues(plugin).Inc() }
+
+// CacheStore records one write-through.
+func (m *WorkerMetrics) CacheStore(plugin string) { m.cacheStores.WithLabelValues(plugin).Inc() }
+
+// CacheFailOpen records one cache store error after which the step proceeded
+// uncached (ADR-011 fail-open).
+func (m *WorkerMetrics) CacheFailOpen() { m.cacheFailOpens.Inc() }
 
 // The setters below are the cmd/worker sampler's surface — point-in-time
 // gauges sampled from Redis and Postgres on an interval.

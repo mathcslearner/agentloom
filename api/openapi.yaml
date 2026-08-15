@@ -1292,7 +1292,10 @@ components:
           description: >
             Token accounting for a successful llm attempt (ticket 8.6);
             absent for every other step type and outcome. Feeds M10's
-            cost ledger.
+            cost ledger. On a response-cache hit (ticket 9.5) the attempt
+            carries the counterfactual "would-have-cost" usage marked
+            cache_hit=true — the tokens were not spent, so this records the
+            savings rather than real usage.
           properties:
             input_tokens:
               type: integer
@@ -1300,6 +1303,12 @@ components:
             output_tokens:
               type: integer
               format: int64
+            cache_hit:
+              type: boolean
+              description: >
+                True when the attempt was served from the response cache
+                (ticket 9.5); the token counts are counterfactual, not
+                spend. Absent on every real (non-cached) attempt.
         started_at:
           type: string
           format: date-time

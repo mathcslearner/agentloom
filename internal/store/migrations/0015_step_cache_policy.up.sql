@@ -1,0 +1,14 @@
+-- Response-cache policy per run step (ticket 9.5, ADR-011). The step's
+-- authored `cache` block (dag.CachePolicy: mode/ttl/scope) is materialized
+-- at instantiation like config, retry_policy, and timeout — the execution
+-- path (the 9.5 cache middleware) reads the effective policy off the row
+-- and never reparses the definition snapshot, and a worker upgrade cannot
+-- change an in-flight run's cache behavior.
+--
+-- One JSONB object mirroring the retry_policy shape, or NULL when the step
+-- authored no `cache` block — the honest value for every step that lets the
+-- engine's default policy decide, so there is no backfill. When present it
+-- is the validated policy verbatim; the middleware still applies the hard
+-- eligibility gate (a `cache` block on a side-effectful step is a bypass,
+-- not an error).
+ALTER TABLE run_steps ADD COLUMN cache_policy JSONB;

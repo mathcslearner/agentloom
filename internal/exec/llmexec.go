@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/mathcslearner/agentloom/internal/cache"
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/plugin"
@@ -136,6 +137,57 @@ func (e LLMExecutor) ResourceClaim(sc StepContext) (string, int64, error) {
 		return "", 0, fmt.Errorf("resolving model %q: %w", cfg.Model, err)
 	}
 	return provider.Manifest().Name + ":" + model, estimateLLMTokens(cfg), nil
+}
+
+// CacheBinding implements CacheBinder (ADR-011, ticket 9.5): the llm step's
+// cache key is built over the resolved provider identity and the resolved
+// ChatRequest (model, sampling params, rendered messages). The concrete
+// plugin is the model provider, so its manifest supplies the eligibility
+// flags; the determinism signal is temperature==0 (an explicit deterministic
+// 0, distinct from nil — the provider default is non-deterministic). A
+// resolution or config failure returns an error so the middleware skips
+// caching and lets Execute land the permanent failure — the same convention
+// ResourceClaim uses.
+func (e LLMExecutor) CacheBinding(sc StepContext) (*CacheBinding, error) {
+	cfg, err := configAs[*dag.LLMConfig](sc)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil || cfg.Model == "" {
+		return nil, fmt.Errorf("missing required field %q", "model")
+	}
+	if e.providers == nil {
+		return nil, fmt.Errorf("no model providers configured for model %q", cfg.Model)
+	}
+	provider, model, err := e.providers.Resolve("", cfg.Model)
+	if err != nil {
+		return nil, fmt.Errorf("resolving model %q: %w", cfg.Model, err)
+	}
+	req, err := buildChatRequest(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("building chat request: %w", err)
+	}
+	// The rendered conversation, canonicalized into the key by the cache
+	// package's round-trip; a marshal failure is deterministic (corrupt
+	// config), so it routes like any other binding failure.
+	msgs, err := json.Marshal(req.Messages)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling messages: %w", err)
+	}
+	m := provider.Manifest()
+	deterministic := cfg.Temperature != nil && *cfg.Temperature == 0
+	return &CacheBinding{
+		Executor:      cache.PluginRef{Kind: plugin.KindExecutor, Name: string(dag.StepLLM), Version: llmVersion},
+		Plugin:        cache.PluginRef{Kind: m.Kind, Name: m.Name, Version: m.Version},
+		Caps:          m.Capabilities,
+		Deterministic: deterministic,
+		Request: cache.LLMRequest{
+			Model:       model,
+			Temperature: cfg.Temperature,
+			MaxTokens:   req.MaxTokens,
+			Messages:    msgs,
+		},
+	}, nil
 }
 
 // estimateLLMTokens is the ADR-010 pre-call token estimate for an llm step:

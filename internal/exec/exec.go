@@ -21,7 +21,9 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/mathcslearner/agentloom/internal/cache"
 	"github.com/mathcslearner/agentloom/internal/dag"
+	"github.com/mathcslearner/agentloom/internal/plugin"
 )
 
 // Output is what a successful execution produces. Data is the step's
@@ -44,6 +46,14 @@ type Output struct {
 type Usage struct {
 	InputTokens  int64 `json:"input_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
+	// CacheHit marks this attempt's usage as counterfactual: the result was
+	// served from the response cache (ticket 9.5, ADR-011), so the tokens
+	// were NOT spent — they are the "would-have-cost" snapshot the original
+	// miss recorded, kept so M10's cost ledger can meter the savings. Set
+	// only by the engine's cache middleware on a hit; never by an executor
+	// (a fresh execution's usage is real spend). Absent (false) on every
+	// real attempt.
+	CacheHit bool `json:"cache_hit,omitempty"`
 }
 
 // StepContext is everything an executor may see about the step it is
@@ -161,6 +171,57 @@ type Executor interface {
 // limiter duplicating that judgment.
 type ResourceClaimer interface {
 	ResourceClaim(sc StepContext) (resource string, estTokens int64, err error)
+}
+
+// CacheBinder is the optional executor hook the M9 response-cache middleware
+// consults before a step runs (ADR-011, ticket 9.5): it projects the
+// resolved request onto the cache key's inputs and supplies the
+// eligibility/determinism signals the policy needs. An executor that
+// implements it (the llm, tool, and retrieve executors) participates in the
+// response cache; one that does not (noop, echo, sleep, control-flow steps)
+// is never cached — the middleware is a no-op for steps with no binder.
+//
+// The binding carries the two plugin identities that bear on the output (the
+// cacheable executor and the concrete external plugin — provider/tool/
+// retriever), the CONCRETE plugin's capability flags (ADR-011: a pure tool
+// is cacheable even though the tool executor is side-effectful, so the
+// invoked tool's flags decide, not the executor's), an executor-supplied
+// determinism signal (temperature==0 for llm, the tool's cacheable-and-pure
+// flags, false for a corpus-mutable retrieve), and the resolved request body.
+//
+// A nil binding with a nil error means "this step is not cacheable" (a
+// bypass with no error — e.g. the executor has no registry wired). An error
+// means the binding could not be computed (an unresolvable model, a corrupt
+// config): the middleware then skips caching and lets Execute run and land
+// its own classified failure, so the routing judgment lives in one place —
+// the same convention ResourceClaim uses.
+type CacheBinder interface {
+	CacheBinding(sc StepContext) (*CacheBinding, error)
+}
+
+// CacheBinding is what a CacheBinder projects for the cache middleware: the
+// key inputs plus the policy signals. The middleware combines Caps +
+// Deterministic + the step's authored cache policy into a read/write
+// decision (cache.Decide) and, when it decides to read or write, builds the
+// content key from Executor + Plugin + Request (cache.Key).
+type CacheBinding struct {
+	// Executor is the cacheable executor plugin's identity (kind/name/version).
+	Executor cache.PluginRef
+	// Plugin is the concrete external plugin's identity: the model provider,
+	// the invoked tool, or the retriever. It is hashed into the key and
+	// namespaces the Redis entry (bust-by-prefix, 9.6).
+	Plugin cache.PluginRef
+	// Caps are the CONCRETE plugin's ADR-009 capability flags — the hard
+	// eligibility gate (Cacheable && !SideEffectful) reads these, not the
+	// executor's.
+	Caps plugin.Capabilities
+	// Deterministic is the executor's plugin-specific determinism judgment:
+	// it drives the default policy (deterministic → cache read-write; else
+	// bypass unless the step opts in).
+	Deterministic bool
+	// Request is the resolved, rendered request body — one of
+	// cache.LLMRequest / cache.ToolRequest / cache.RetrieveRequest.
+	Request cache.Request
 }
 
 // configAs decodes sc.Config into the typed config struct T registered

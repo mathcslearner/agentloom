@@ -246,6 +246,16 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		Effects:        e.effects.ForStep(step.RunID, step.StepID, int(step.AttemptCount), claimID, logger),
 		Logger:         execLogger,
 	}
+	// Response cache read-through (ticket 9.5, ADR-011): ahead of the rate
+	// limiter, consult the cache. A hit completes the step from the stored
+	// result — no limiter acquire, no provider call — and returns handled.
+	// A miss (or a declined/ineligible policy, or any fail-open) returns a
+	// write binding threaded to the write-through after a successful
+	// execution; steps whose type is not cacheable bypass this entirely.
+	hit, cacheWB, cherr := e.cacheRead(ctx, step, executor, sc)
+	if hit {
+		return cherr
+	}
 	// Fleet-wide rate limiting (ticket 9.2, ADR-010): before a cost-bearing
 	// executor's provider call, acquire the step's resource buckets. A
 	// denial defers the step (throttle → delayed requeue, slot released now,
@@ -327,6 +337,14 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		// declared class is honored, config-decode misses are permanent,
 		// and everything unclassified defaults to transient.
 		return e.completeFailure(ctx, step, execErr, classifyFailure(execErr), origin.RunTrace)
+	}
+	// Response cache write-through (ticket 9.5, ADR-011): a successful miss
+	// whose policy writes stores its result for the next identical request.
+	// cacheWB is non-nil only for a cache-eligible, writing step that missed;
+	// every write failure is swallowed (fail-open / oversize skip), so this
+	// never affects the completion.
+	if cacheWB != nil {
+		e.cacheWrite(ctx, cacheWB, out)
 	}
 	return e.completeSuccess(ctx, step, out)
 }

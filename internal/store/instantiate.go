@@ -315,6 +315,17 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		if step.Timeout != "" {
 			timeout = &step.Timeout
 		}
+		// The authored response-cache policy is materialized the same way
+		// (ticket 9.5, ADR-011): the cache middleware reads it off the row
+		// rather than reparsing the snapshot. NULL when the step authored no
+		// `cache` block — the engine's default policy then decides.
+		var cachePolicy json.RawMessage
+		if step.Cache != nil {
+			cachePolicy, err = json.Marshal(step.Cache)
+			if err != nil {
+				return gen.Run{}, fmt.Errorf("marshaling cache policy of step %q: %w", step.ID, err)
+			}
+		}
 		steps[i] = gen.CreateRunStepsParams{
 			RunID:         run.ID,
 			StepID:        step.ID,
@@ -322,6 +333,7 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 			Config:        config,
 			RetryPolicy:   retryPolicy,
 			Timeout:       timeout,
+			CachePolicy:   cachePolicy,
 			Status:        status,
 			RemainingDeps: p.remaining[step.ID],
 			GraphVersion:  1,

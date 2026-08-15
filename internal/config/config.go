@@ -33,6 +33,7 @@ type Config struct {
 	LLM       LLMConfig
 	Tools     ToolsConfig
 	Resources ResourcesConfig
+	Cache     CacheConfig
 }
 
 // Load builds a Config by applying environment overrides from lookup on top
@@ -50,6 +51,7 @@ func Load(lookup LookupFunc) (Config, error) {
 		LLM:       defaultLLMConfig(),
 		Tools:     defaultToolsConfig(),
 		Resources: defaultResourcesConfig(),
+		Cache:     defaultCacheConfig(),
 	}
 	var errs []error
 	errs = append(errs, cfg.Log.applyEnv(lookup)...)
@@ -62,6 +64,7 @@ func Load(lookup LookupFunc) (Config, error) {
 	errs = append(errs, cfg.LLM.applyEnv(lookup)...)
 	errs = append(errs, cfg.Tools.applyEnv(lookup)...)
 	errs = append(errs, cfg.Resources.applyEnv(lookup)...)
+	errs = append(errs, cfg.Cache.applyEnv(lookup)...)
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration:\n%w", err)
 	}

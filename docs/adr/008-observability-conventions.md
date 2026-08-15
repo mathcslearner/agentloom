@@ -62,7 +62,7 @@ Rules, following Prometheus upstream conventions:
   `api` subsystem (`engine_api_requests_total`), not a second namespace.
 - Subsystem vocabulary (extended only by ADR amendment): `build`,
   `queue`, `outbox`, `dispatch`, `reconcile`, `step`, `steplog` (7.4),
-  `run`, `api`, `worker`, `ratelimit` (9.2).
+  `run`, `api`, `worker`, `ratelimit` (9.2), `cache` (9.5).
 - Base units and suffixes: durations in seconds (`_seconds`), sizes in
   bytes (`_bytes`), token counts in tokens (`_tokens`, 9.3's
   estimate-error histogram), counters end `_total`, gauges carry no suffix
@@ -102,6 +102,7 @@ requires amending this table first, and must be a closed vocabulary.
 | `bucket` | API rate-limit bucket kind (7.2): `per_key`, `global`; fleet rate-limit denying dimension (9.2): `requests`, `tokens`, `both` | ≤ 5 |
 | `decision` | rate-limit decision (7.2): `allowed`, `denied` | 2 |
 | `resource` | fleet-limit resource name (9.2): the resolved config-entry name (`anthropic:*`, `mock:sim-1`, `tool:http_request`) — operator-authored, bounded | ~config size |
+| `plugin` | response-cache concrete plugin (9.5): `<kind>:<name>` of the provider/tool/retriever (`model_provider:anthropic`, `tool:json_transform`, `retriever:pg_fulltext`) — the compiled-in catalog | ~ catalog size |
 
 Worst-case series count per metric is the product of its label bounds;
 any metric whose product exceeds ~1,000 needs an explicit justification
@@ -153,6 +154,11 @@ from the allowlist above.
 | `engine_ratelimit_fail_opens_total` | counter | — | fleet limiter (9.2): acquire errored (e.g. Redis down) and the step proceeded unlimited |
 | `engine_ratelimit_estimate_error_tokens` | histogram | `resource` | reconciliation (9.3): signed token-cost error `actual − estimate` corrected on the token bucket; negative = over-estimate (refund), positive = under-estimate (extra debit) |
 | `engine_ratelimit_reconcile_failures_total` | counter | — | reconciliation (9.3): correction could not be applied (e.g. Redis down); estimate stays debited, step proceeds |
+| `engine_cache_hits_total` | counter | `plugin` | response cache (9.5): step served from cache, skipping the limiter and provider, by concrete plugin |
+| `engine_cache_misses_total` | counter | `plugin` | response cache (9.5): read found no entry |
+| `engine_cache_bypass_total` | counter | `plugin` | response cache (9.5): step not consulted by policy (ineligible, non-deterministic default, mode off, unbuildable key, or oversized value skipped on write) |
+| `engine_cache_stores_total` | counter | `plugin` | response cache (9.5): write-through — a miss's result stored |
+| `engine_cache_fail_opens_total` | counter | — | response cache (9.5): store error (read or write) after which the step proceeded uncached |
 
 Gauges are sampled by a cmd/worker loop every
 `AGENTLOOM_WORKER_METRICS_SAMPLE_INTERVAL` (default 10s, under the 15s

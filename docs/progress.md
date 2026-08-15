@@ -5229,3 +5229,112 @@ marker.
 `go test ./...` green, and `make generate` leaves the committed schema clean. No
 integration-tagged tests — everything in 9.4 is offline. No migration/config
 change, so no `make migrate-up` needed.
+
+### 9.5 — Cache store & middleware ✅
+
+9.5 is the runtime half of the response cache: the read-through/write-through
+executor middleware built against 9.4's key builder and policy. It mirrors how
+9.2/9.3 built the limiter runtime after 9.1's config — the cache reads a hit
+**ahead of** the rate limiter (a hit skips the limiter and the provider
+entirely) and writes a miss through on success.
+
+**Materialization — migration 0015.** `run_steps.cache_policy` (nullable JSONB)
+carries the step's authored `cache` block, materialized at instantiation like
+`retry_policy` (0003) and `timeout` (0004): the middleware reads the effective
+policy off the claimed row and never reparses the definition snapshot, and a
+worker upgrade can't change an in-flight run's cache behavior. NULL means the
+step authored no block (engine default decides). `queries/graph.sql`'s explicit
+insert column lists grew `cache_policy`, sqlc regen carried it onto
+`gen.RunStep`, `instantiate.go` marshals `step.Cache`, and the migrate
+round-trip test bumped 14 → 15 with a `cache_policy`-dropped probe.
+
+**The store — `internal/cache/redisstore`.** A thin byte-oriented Redis
+key/value layer over `cache.RedisKey`: it owns the prefix and namespacing, the
+value size cap, and the TTL on write. It deliberately does *not* know an
+entry's shape — the engine marshals `{output, usage}` and hands opaque bytes,
+which keeps `internal/cache` a true leaf (redisstore is its only go-redis
+importer, the pgfts precedent) and the store free of any exec/engine
+dependency. A Redis error or a corrupt value is a miss, never a failure.
+
+**The executor hook — `exec.CacheBinder`.** Mirroring `ResourceClaimer`: the
+llm, tool, and retrieve executors project the resolved request onto a
+`CacheBinding` (the cacheable-executor identity, the concrete external-plugin
+identity, the concrete plugin's capability flags, the determinism signal, the
+request body). A binder error means "skip caching, let Execute classify" — the
+routing judgment stays in one place. `exec.Usage` gained `CacheHit bool`.
+
+**The middleware — `engine/cache.go`.** `cacheRead` runs in `execute()` ahead
+of `rateLimit`; on a hit it calls `completeSuccess` with the cached output and
+returns handled (no acquire, no executor). On a miss it returns a
+`cacheWriteBinding` threaded to `cacheWrite` after a successful executor
+return. `WithResponseCache(store, defaultTTL)` is the engine option; a nil
+cache disables the middleware.
+
+Non-obvious decisions:
+- **`cache_hit` rides in the attempt's `usage` JSONB — no second migration.**
+  0012 deliberately left `usage` an open object "for M10's provider-cache token
+  counts without another migration." On a hit the engine completes with a usage
+  marked `cache_hit=true` carrying the **counterfactual** counts the original
+  miss recorded; the flag lives inside usage precisely because it marks that
+  usage as not-spent. A non-llm hit records `cache_hit=true` with zero tokens.
+  The API `usage` pass-through and the OpenAPI schema (open, no
+  `additionalProperties: false`) needed only a doc touch-up (lint stays
+  100/100).
+- **The tool binding reports the *invoked tool's* flags, not the tool
+  executor's.** The tool executor is `side_effectful` (worst case across
+  tools), but `json_transform` the tool is cacheable — so the binder reads
+  `tool.Manifest().Capabilities`, the ADR-011 rule made real. Proven in the
+  binder unit test (`json_transform` cacheable/deterministic vs `http_request`
+  neither) and end-to-end.
+- **Write-before-commit.** The write-through happens after a successful
+  executor return but before the completion transaction. Safe by construction:
+  the entry is a pure function of the resolved request, so even a later-fenced
+  completion wrote a *correct* entry. The shutdown-abandon path returns earlier
+  and never writes.
+- **`SchemaVersion` = `dag.CurrentSchemaVersion`.** Submit-time validation pins
+  every stored snapshot to v1 (the only version), so a per-attempt DB read
+  would provably return the constant; a comment flags that a future schema v2
+  must thread the run's real version.
+- **Every error path is fail-safe.** No binder, a declined policy, an
+  unbuildable key, a corrupt materialized policy (unlike a corrupt timeout,
+  which perm-fails — the cache is advisory), a corrupt stored entry, or a Redis
+  read/write error all resolve to "execute uncached." The size-cap sentinel
+  moved to `cache.ErrValueTooLarge` (the leaf) so the engine matches it without
+  importing redisstore; an oversized value is a store-skip bypass.
+
+**Metrics.** A new `cache` subsystem (ADR-008 amended: subsystem vocabulary,
+the `plugin` label row, five inventory rows, the conformance test's allowlists
+widened): `hits`/`misses`/`bypass`/`stores` counters labeled by `plugin`
+(`<kind>:<name>`, the concrete provider/tool/retriever, bounded by the
+compiled-in catalog) plus an unlabeled `fail_opens` counter.
+
+**Config & wiring.** `config.CacheConfig`
+(`AGENTLOOM_CACHE_{ENABLED,KEY_PREFIX,DEFAULT_TTL,MAX_VALUE_BYTES}`, enabled by
+default — the worker already requires Redis and a default-on cache is what
+makes identical deterministic steps hit with zero config; default TTL 24h
+bounded by the 30-day ceiling; 1 MiB value cap). `cmd/worker` builds the
+redisstore over the same coordination Redis the queue uses and wires
+`engine.WithResponseCache`; `cmd/api` is untouched (the API never reads the
+cache — ADR-002's Redis independence holds). `.env.example` documents the four
+vars.
+
+**Tests.** redisstore integration (round-trip, TTL applied via PTTL,
+oversize-skip with the typed error, namespacing/no-collision); `exec`
+binder-unit matrix (resolved model + defaulted max_tokens + nil-vs-0
+temperature, tool-level flags, retrieve non-determinism, error paths mirroring
+`ResourceClaim`); engine pure-helper unit tests (`decodeCachePolicy`,
+`decodeCacheEntry`, `markCacheHit`) + the headline integration suite over a
+temperature=0 mock-llm definition run twice — the second is a hit (exactly 1
+provider Chat call, exactly 1 limiter acquire via a recording granting limiter,
+`cache_hit=true` counterfactual usage on the second attempt matching the
+first's counts, byte-identical served output) — plus temperature>0 default
+bypass (2 calls), the `read_write` opt-in override (1 call, hit), and `mode:
+off` disabling a default-cached step (2 calls).
+
+**Verified.** `go build ./...`, `make lint` (0 issues), full `go test ./...`
+green, `make openapi-lint` 100/100, `make generate` leaves derived artifacts
+clean; the redisstore, engine cache, migrate round-trip, and full engine
+integration suites green against the compose stack. `storetest.NewDB` applies
+all embedded migrations per test, so the integration suites needed no manual
+`make migrate-up`; a live `make up-app` deployment does (0015 is new). Deferred
+to 9.6: bust-by-prefix + stats endpoints, `ctl cache`, the ops runbook.

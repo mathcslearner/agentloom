@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/mathcslearner/agentloom/internal/cache"
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/plugin"
 	"github.com/mathcslearner/agentloom/internal/tools"
@@ -114,6 +115,41 @@ func (ToolExecutor) ResourceClaim(sc StepContext) (string, int64, error) {
 		return "", 0, fmt.Errorf("missing required field %q", "tool")
 	}
 	return "tool:" + cfg.Tool, 0, nil
+}
+
+// CacheBinding implements CacheBinder (ADR-011, ticket 9.5): a tool step's
+// cache key is built over the invoked tool's identity and the rendered
+// arguments. Critically, the eligibility flags come from the INVOKED TOOL's
+// manifest, not the tool executor's — the executor is side_effectful (worst
+// case across tools), but a pure tool like json_transform is cacheable and
+// must be. Determinism follows from the tool's own flags (cacheable and not
+// side-effectful ⇒ a pure function of its args). A corrupt config or unknown
+// tool returns an error so the middleware defers to Execute's permanent
+// failure.
+func (e ToolExecutor) CacheBinding(sc StepContext) (*CacheBinding, error) {
+	cfg, err := configAs[*dag.ToolConfig](sc)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil || cfg.Tool == "" {
+		return nil, fmt.Errorf("missing required field %q", "tool")
+	}
+	if e.tools == nil {
+		return nil, fmt.Errorf("no tools configured for tool %q", cfg.Tool)
+	}
+	tool, err := e.tools.Get(cfg.Tool)
+	if err != nil {
+		return nil, fmt.Errorf("resolving tool %q: %w", cfg.Tool, err)
+	}
+	m := tool.Manifest()
+	deterministic := m.Capabilities.Cacheable && !m.Capabilities.SideEffectful
+	return &CacheBinding{
+		Executor:      cache.PluginRef{Kind: plugin.KindExecutor, Name: string(dag.StepTool), Version: toolVersion},
+		Plugin:        cache.PluginRef{Kind: m.Kind, Name: m.Name, Version: m.Version},
+		Caps:          m.Capabilities,
+		Deterministic: deterministic,
+		Request:       cache.ToolRequest{Input: cfg.Input},
+	}, nil
 }
 
 // classifyToolError maps a tool failure onto the executor's classified

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/mathcslearner/agentloom/internal/cache"
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/plugin"
 	"github.com/mathcslearner/agentloom/internal/retrieval"
@@ -133,6 +134,50 @@ func (e RetrieveExecutor) Execute(ctx context.Context, sc StepContext) (Output, 
 		return Output{}, fmt.Errorf("marshaling retrieve output: %w", err)
 	}
 	return Output{Data: data}, nil
+}
+
+// CacheBinding implements CacheBinder (ADR-011, ticket 9.5): a retrieve
+// step's cache key is built over the retriever's identity and the resolved
+// query + top_k. The retriever's manifest supplies the eligibility flags
+// (pg_fulltext is cacheable), but the determinism signal is deliberately
+// FALSE: a query is a pure read of a *mutable* corpus, so caching a
+// retrieval is a staleness trade the author opts into with a `cache` block
+// and a TTL, never a default (ADR-011). An unknown retriever or corrupt
+// config returns an error so the middleware defers to Execute's permanent
+// failure.
+func (e RetrieveExecutor) CacheBinding(sc StepContext) (*CacheBinding, error) {
+	cfg, err := configAs[*dag.RetrieveConfig](sc)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil || cfg.Retriever == "" {
+		return nil, fmt.Errorf("missing required field %q", "retriever")
+	}
+	if e.retrievers == nil {
+		return nil, fmt.Errorf("no retrievers configured for retriever %q", cfg.Retriever)
+	}
+	r, err := e.retrievers.Get(cfg.Retriever)
+	if err != nil {
+		return nil, fmt.Errorf("resolving retriever %q: %w", cfg.Retriever, err)
+	}
+	// Key on the resolved top_k (default/cap applied), so an absent and an
+	// explicit-default top_k share an entry — the same request the executor
+	// actually runs.
+	topK := cfg.TopK
+	if topK == 0 {
+		topK = defaultTopK
+	}
+	if topK > maxTopK {
+		topK = maxTopK
+	}
+	m := r.Manifest()
+	return &CacheBinding{
+		Executor:      cache.PluginRef{Kind: plugin.KindExecutor, Name: string(dag.StepRetrieve), Version: retrieveVersion},
+		Plugin:        cache.PluginRef{Kind: m.Kind, Name: m.Name, Version: m.Version},
+		Caps:          m.Capabilities,
+		Deterministic: false,
+		Request:       cache.RetrieveRequest{Query: cfg.Query, TopK: topK},
+	}, nil
 }
 
 // classifyRetrievalError maps a retriever failure onto the executor's

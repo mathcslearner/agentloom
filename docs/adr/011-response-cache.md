@@ -226,6 +226,76 @@ counters by plugin, and a stats endpoint (9.6) whose numbers an integration
 test reconciles against the Prometheus counters. Admin bust is an
 `admin`-scoped API action, audit-logged with the actor key id (ADR-007).
 
+### Cache store & middleware (as built, 9.5)
+
+Ticket 9.5 implemented the runtime against the 9.4 key builder and policy:
+
+- **`run_steps.cache_policy` (migration 0015).** The step's authored `cache`
+  block is materialized as a nullable JSONB column at instantiation, exactly
+  like `retry_policy` (0003) and `timeout` (0004): the middleware reads the
+  effective policy off the claimed row and never reparses the definition
+  snapshot, and a worker upgrade cannot change an in-flight run's cache
+  behavior. NULL means the step authored no block (engine default decides).
+
+- **The store — `internal/cache/redisstore`.** A thin byte-oriented Redis
+  key/value layer over `cache.RedisKey`: it owns the prefix and namespacing,
+  the value size cap (returns `cache.ErrValueTooLarge`, the sentinel living in
+  the `cache` leaf so the engine matches it without importing the store), and
+  the TTL on write. It does not know the shape of an entry — the engine
+  marshals its `{output, usage}` value and hands opaque bytes, keeping `cache`
+  a leaf and the store free of any exec/engine dependency (the pgfts
+  precedent). A Redis error or a corrupt value is a miss, never a failure.
+
+- **The executor hook — `exec.CacheBinder`.** Mirroring `ResourceClaimer`:
+  the llm, tool, and retrieve executors project the resolved request onto a
+  `CacheBinding` (the two plugin identities, the concrete plugin's capability
+  flags, the determinism signal, the request body). A binder error means "skip
+  caching, let Execute classify" — the routing judgment lives in one place.
+  The **tool binding reports the invoked tool's flags, not the tool
+  executor's** (the ADR-011 rule made real): `json_transform` is
+  cacheable/deterministic, `http_request` is neither. The retrieve binding's
+  determinism is always false (corpus-mutable, opt-in only).
+
+- **The middleware — `engine/cache.go`.** `cacheRead` runs in `execute()`
+  **ahead of the rate limiter**: a hit completes the step from the stored
+  result with no limiter acquire and no provider call (asserted end-to-end —
+  a granting recording limiter observes zero acquires on the hit); a miss
+  returns a write binding threaded to `cacheWrite` after a successful
+  execution. `SchemaVersion` is `dag.CurrentSchemaVersion` (only v1 exists, so
+  a per-attempt DB read would provably return the constant; a future schema v2
+  must thread the run's real version). Every error path is fail-safe: no
+  binder, a declined policy, an unbuildable key, a corrupt policy, a corrupt
+  entry, or a Redis error all resolve to "execute uncached."
+
+- **`cache_hit` rides in the attempt's `usage` JSONB, no second migration.**
+  0012 deliberately left `usage` an open object; `exec.Usage` gained
+  `CacheHit bool`. On a hit the engine completes with the cached output and a
+  usage marked `cache_hit=true` carrying the **counterfactual** token counts
+  the original miss recorded (for M10's "saved" metric) — the flag lives
+  *inside* usage precisely because it marks that usage as not-spent. A non-llm
+  hit records `cache_hit=true` with zero tokens. The API's `usage` pass-through
+  and the OpenAPI `usage` schema (open, no `additionalProperties: false`)
+  needed no structural change.
+
+- **Write-before-commit.** The write-through happens after a successful
+  executor return but before the completion transaction. This is safe by
+  construction: the entry is a pure function of the resolved request, so even a
+  later-fenced completion wrote a *correct* entry. The shutdown-abandon path
+  returns earlier and never writes.
+
+- **Config & wiring.** `config.CacheConfig`
+  (`AGENTLOOM_CACHE_{ENABLED,KEY_PREFIX,DEFAULT_TTL,MAX_VALUE_BYTES}`, enabled
+  by default, default TTL 24h bounded by the 30-day ceiling, 1 MiB value cap).
+  `cmd/worker` builds the redisstore over the same coordination Redis the queue
+  uses and wires `engine.WithResponseCache`; `cmd/api` is untouched (the API
+  never reads the cache — ADR-002's Redis independence holds).
+
+- **Metrics.** A new `cache` subsystem (ADR-008 amended): `hits`/`misses`/
+  `bypass`/`stores` counters labeled by `plugin` (`<kind>:<name>`, the concrete
+  provider/tool/retriever, bounded by the compiled-in catalog) plus an
+  unlabeled `fail_opens` counter (read/write Redis errors). 9.6's stats
+  endpoint reconciles against these.
+
 ## Consequences
 
 - **Repeat deterministic work becomes a lookup.** The headline win: identical

@@ -110,6 +110,7 @@ type RunStep struct {
 	NextAttemptAt *time.Time
 	Timeout       *string
 	TraceSpan     *string
+	CachePolicy   json.RawMessage
 }
 
 type SchemaBaseline struct {

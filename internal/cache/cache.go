@@ -28,7 +28,19 @@
 //     `cache` block overrides that decision.
 package cache
 
-import "github.com/mathcslearner/agentloom/internal/plugin"
+import (
+	"errors"
+
+	"github.com/mathcslearner/agentloom/internal/plugin"
+)
+
+// ErrValueTooLarge is the store contract's oversized-value signal (ADR-011's
+// size-cap fallback): a value over the configured cap is skipped, not stored
+// — no chunking, no Postgres spill. It lives here in the leaf so both the
+// Redis store (which returns it) and the engine middleware (which routes it
+// to a store-skip bypass metric) can reference it without importing each
+// other.
+var ErrValueTooLarge = errors.New("cache: value exceeds size cap")
 
 // KeySchemaVersion is this key builder's own format version. It is mixed
 // into every key and into the Redis key namespace, so bumping it is the

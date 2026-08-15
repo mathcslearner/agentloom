@@ -148,6 +148,15 @@ type Engine struct {
 	throttleFloor      time.Duration
 	throttleCap        time.Duration
 	throttleJitterFrac float64
+	// cache, when set, is the response-cache store the M9 middleware reads a
+	// hit from (ahead of the limiter) and writes a miss through to (ticket
+	// 9.5, ADR-011). Nil disables caching — every step executes uncached,
+	// the default for every test layer that doesn't opt in.
+	cache ResponseCache
+	// cacheDefaultTTL is the fleet default entry TTL applied when a cached
+	// step opts in without its own `cache.ttl` (ticket 9.5). Only consulted
+	// when cache is non-nil.
+	cacheDefaultTTL time.Duration
 }
 
 // Option customizes an Engine.
@@ -253,6 +262,19 @@ func WithThrottleBackoff(floor, ceiling time.Duration, jitterFrac float64) Optio
 			jitterFrac = 0
 		}
 		e.throttleJitterFrac = jitterFrac
+	}
+}
+
+// WithResponseCache sets the response-cache store the M9 middleware reads a
+// hit from ahead of the limiter and writes a miss through to (ticket 9.5,
+// ADR-011) — cmd/worker wires *cache/redisstore.Store here when caching is
+// enabled. defaultTTL is the fleet default entry TTL for opted-in steps that
+// set no `cache.ttl`; it must be positive when the cache is set. Nil cache
+// (the default) disables caching: every step executes uncached.
+func WithResponseCache(c ResponseCache, defaultTTL time.Duration) Option {
+	return func(e *Engine) {
+		e.cache = c
+		e.cacheDefaultTTL = defaultTTL
 	}
 }
 

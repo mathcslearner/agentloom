@@ -62,6 +62,23 @@ type Metrics interface {
 	// (e.g. Redis unreachable): the estimate stays on the ledger and the step
 	// proceeds — reconciliation is fail-open like the acquire.
 	ReconcileFailure()
+	// CacheHit records one response-cache hit (ticket 9.5, ADR-011): a step
+	// served from cache, skipping the limiter and provider, by plugin
+	// (<kind>:<name>, the concrete provider/tool/retriever).
+	CacheHit(plugin string)
+	// CacheMiss records one response-cache miss: the read found no entry, so
+	// the step executes, by plugin.
+	CacheMiss(plugin string)
+	// CacheBypass records one step not consulted against the cache by policy
+	// (ineligible plugin, non-deterministic default, mode off, unbuildable
+	// key, or an oversized value skipped on write), by plugin.
+	CacheBypass(plugin string)
+	// CacheStore records one write-through: a miss's result stored, by plugin.
+	CacheStore(plugin string)
+	// CacheFailOpen records one cache store error (read or write) after which
+	// the step proceeded uncached (ADR-011 fail-open) — unlabeled, like the
+	// rate-limiter fail-open.
+	CacheFailOpen()
 }
 
 // nopMetrics is the default Metrics: every test layer runs with recording
@@ -83,3 +100,8 @@ func (nopMetrics) ThrottleWait(string, time.Duration)         {}
 func (nopMetrics) RateLimitFailOpen()                         {}
 func (nopMetrics) EstimateError(string, int64)                {}
 func (nopMetrics) ReconcileFailure()                          {}
+func (nopMetrics) CacheHit(string)                            {}
+func (nopMetrics) CacheMiss(string)                           {}
+func (nopMetrics) CacheBypass(string)                         {}
+func (nopMetrics) CacheStore(string)                          {}
+func (nopMetrics) CacheFailOpen()                             {}

@@ -41,7 +41,7 @@ func columnExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table, 
 // latestVersion is the highest migration in internal/store/migrations —
 // bump when adding a migration (the round-trip test below walks every
 // down migration regardless, so forgetting only fails the version check).
-const latestVersion = 14
+const latestVersion = 15
 
 func TestMigrateUpDownRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -84,16 +84,21 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 	}
 
 	// Down rolls back one step: the newest migration's additions are gone,
-	// earlier ones untouched. 0014 only narrows the step_attempts.outcome
-	// CHECK (drops `throttled`) — no table or column to probe — so its revert
-	// is observable by everything below it surviving: 0013's retrieval_docs
-	// table, 0012's step_attempts.usage column, 0011's step_logs table,
-	// 0010's trace columns, 0009's fingerprint column, 0008's api_keys table,
-	// 0007's run-control columns, 0006's side_effects table, 0005's
-	// dead_letters table and runs columns, 0004's timeout column, 0003's
-	// retry columns, and the 0002 tables all persist.
+	// earlier ones untouched. 0015 drops run_steps.cache_policy — its revert
+	// is observable by that column being gone while everything below it
+	// survives: 0013's retrieval_docs table, 0012's step_attempts.usage
+	// column, 0011's step_logs table, 0010's trace columns, 0009's fingerprint
+	// column, 0008's api_keys table, 0007's run-control columns, 0006's
+	// side_effects table, 0005's dead_letters table and runs columns, 0004's
+	// timeout column, 0003's retry columns, and the 0002 tables all persist.
 	if err := mg.Down(); err != nil {
 		t.Fatalf("Down: %v", err)
+	}
+	if columnExists(ctx, t, pool, "run_steps", "cache_policy") {
+		t.Fatal("after one Down: run_steps.cache_policy was not dropped by 0015")
+	}
+	if !columnExists(ctx, t, pool, "run_steps", "timeout") {
+		t.Fatal("after one Down: run_steps.timeout was dropped by the wrong migration")
 	}
 	if !tableExists(ctx, t, pool, "retrieval_docs") {
 		t.Fatal("after one Down: retrieval_docs was dropped by the wrong migration")

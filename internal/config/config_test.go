@@ -740,3 +740,75 @@ func TestLoadReportsAllErrorsAtOnce(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadCacheDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(lookupFrom(nil))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	if !cfg.Cache.Enabled {
+		t.Error("cache should be enabled by default")
+	}
+	if cfg.Cache.KeyPrefix != config.DefaultCacheKeyPrefix {
+		t.Errorf("key prefix = %q, want %q", cfg.Cache.KeyPrefix, config.DefaultCacheKeyPrefix)
+	}
+	if cfg.Cache.DefaultTTL != config.DefaultCacheDefaultTTL {
+		t.Errorf("default ttl = %s, want %s", cfg.Cache.DefaultTTL, config.DefaultCacheDefaultTTL)
+	}
+	if cfg.Cache.MaxValueBytes != config.DefaultCacheMaxValueBytes {
+		t.Errorf("max value bytes = %d, want %d", cfg.Cache.MaxValueBytes, config.DefaultCacheMaxValueBytes)
+	}
+}
+
+func TestLoadCacheOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(lookupFrom(map[string]string{
+		config.EnvCacheEnabled:       "false",
+		config.EnvCacheKeyPrefix:     "cache:test",
+		config.EnvCacheDefaultTTL:    "6h",
+		config.EnvCacheMaxValueBytes: "4096",
+	}))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	if cfg.Cache.Enabled {
+		t.Error("cache should be disabled")
+	}
+	if cfg.Cache.KeyPrefix != "cache:test" {
+		t.Errorf("key prefix = %q, want cache:test", cfg.Cache.KeyPrefix)
+	}
+	if cfg.Cache.DefaultTTL != 6*time.Hour {
+		t.Errorf("default ttl = %s, want 6h", cfg.Cache.DefaultTTL)
+	}
+	if cfg.Cache.MaxValueBytes != 4096 {
+		t.Errorf("max value bytes = %d, want 4096", cfg.Cache.MaxValueBytes)
+	}
+}
+
+func TestLoadCacheInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	// A non-positive TTL, a bad byte count, and a TTL over the ceiling are
+	// each reported.
+	bad := map[string]string{
+		config.EnvCacheDefaultTTL:    "0s",
+		config.EnvCacheMaxValueBytes: "-1",
+	}
+	_, err := config.Load(lookupFrom(bad))
+	if err == nil {
+		t.Fatal("Load with invalid cache values: want error, got nil")
+	}
+	for env := range bad {
+		if !strings.Contains(err.Error(), env) {
+			t.Errorf("error %q does not mention %s", err, env)
+		}
+	}
+
+	_, err = config.Load(lookupFrom(map[string]string{config.EnvCacheDefaultTTL: "9000h"}))
+	if err == nil || !strings.Contains(err.Error(), config.EnvCacheDefaultTTL) {
+		t.Errorf("Load with over-ceiling TTL = %v, want an error mentioning %s", err, config.EnvCacheDefaultTTL)
+	}
+}

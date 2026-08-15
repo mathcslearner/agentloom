@@ -75,10 +75,10 @@ type CreateRunEdgesParams struct {
 const createRunStep = `-- name: CreateRunStep :one
 
 INSERT INTO run_steps (run_id, step_id, step_type, config, retry_policy,
-                       timeout, status, remaining_deps, fired_deps,
+                       timeout, cache_policy, status, remaining_deps, fired_deps,
                        graph_version, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy
 `
 
 type CreateRunStepParams struct {
@@ -88,6 +88,7 @@ type CreateRunStepParams struct {
 	Config        json.RawMessage
 	RetryPolicy   json.RawMessage
 	Timeout       *string
+	CachePolicy   json.RawMessage
 	Status        string
 	RemainingDeps int32
 	FiredDeps     int32
@@ -105,6 +106,9 @@ type CreateRunStepParams struct {
 // instantiation (ticket 5.2, ADR-006) — required on every row.
 // timeout is the step's per-attempt execution timeout, materialized the
 // same way (ticket 5.3); NULL means no timeout.
+// cache_policy is the step's authored response-cache policy, materialized
+// the same way (ticket 9.5, ADR-011); NULL means no `cache` block (engine
+// default policy decides).
 func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (RunStep, error) {
 	row := q.db.QueryRow(ctx, createRunStep,
 		arg.RunID,
@@ -113,6 +117,7 @@ func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (R
 		arg.Config,
 		arg.RetryPolicy,
 		arg.Timeout,
+		arg.CachePolicy,
 		arg.Status,
 		arg.RemainingDeps,
 		arg.FiredDeps,
@@ -141,6 +146,7 @@ func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (R
 		&i.NextAttemptAt,
 		&i.Timeout,
 		&i.TraceSpan,
+		&i.CachePolicy,
 	)
 	return i, err
 }
@@ -152,6 +158,7 @@ type CreateRunStepsParams struct {
 	Config        json.RawMessage
 	RetryPolicy   json.RawMessage
 	Timeout       *string
+	CachePolicy   json.RawMessage
 	Status        string
 	RemainingDeps int32
 	FiredDeps     int32
@@ -160,7 +167,7 @@ type CreateRunStepsParams struct {
 }
 
 const getRunStep = `-- name: GetRunStep :one
-SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span FROM run_steps WHERE run_id = $1 AND step_id = $2
+SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy FROM run_steps WHERE run_id = $1 AND step_id = $2
 `
 
 type GetRunStepParams struct {
@@ -192,6 +199,7 @@ func (q *Queries) GetRunStep(ctx context.Context, arg GetRunStepParams) (RunStep
 		&i.NextAttemptAt,
 		&i.Timeout,
 		&i.TraceSpan,
+		&i.CachePolicy,
 	)
 	return i, err
 }
@@ -318,7 +326,7 @@ func (q *Queries) ListRunEdgesFromStep(ctx context.Context, arg ListRunEdgesFrom
 }
 
 const listRunSteps = `-- name: ListRunSteps :many
-SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span FROM run_steps WHERE run_id = $1 ORDER BY step_id
+SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy FROM run_steps WHERE run_id = $1 ORDER BY step_id
 `
 
 func (q *Queries) ListRunSteps(ctx context.Context, runID uuid.UUID) ([]RunStep, error) {
@@ -351,6 +359,7 @@ func (q *Queries) ListRunSteps(ctx context.Context, runID uuid.UUID) ([]RunStep,
 			&i.NextAttemptAt,
 			&i.Timeout,
 			&i.TraceSpan,
+			&i.CachePolicy,
 		); err != nil {
 			return nil, err
 		}
@@ -363,7 +372,7 @@ func (q *Queries) ListRunSteps(ctx context.Context, runID uuid.UUID) ([]RunStep,
 }
 
 const listRunStepsByIDs = `-- name: ListRunStepsByIDs :many
-SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span FROM run_steps
+SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy FROM run_steps
 WHERE run_id = $1 AND step_id = ANY($2::text[])
 ORDER BY step_id
 `
@@ -408,6 +417,7 @@ func (q *Queries) ListRunStepsByIDs(ctx context.Context, arg ListRunStepsByIDsPa
 			&i.NextAttemptAt,
 			&i.Timeout,
 			&i.TraceSpan,
+			&i.CachePolicy,
 		); err != nil {
 			return nil, err
 		}
