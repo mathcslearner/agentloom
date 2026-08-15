@@ -31,6 +31,7 @@ import (
 
 	"github.com/mathcslearner/agentloom/internal/cache/redisstore"
 	"github.com/mathcslearner/agentloom/internal/config"
+	"github.com/mathcslearner/agentloom/internal/cost"
 	"github.com/mathcslearner/agentloom/internal/engine"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/exec/steplog"
@@ -180,6 +181,24 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	logger.InfoContext(ctx, "resource limits loaded",
 		slog.Int("resources", resourceLimits.Len()),
 		slog.Any("names", resourceLimits.Names()))
+	// Versioned pricing catalog (ticket 10.1, ADR-012): the embedded default
+	// $/1M-token catalog merged with an optional operator override, resolved
+	// to the per-model rates M10's cost ledger will price attempts against.
+	// Loaded and validated here so a malformed override fails boot, not the
+	// first priced attempt. No runtime consumer yet — the 10.2 ledger hands it
+	// to the engine; cmd/api never prices (it reads ledger rows from
+	// Postgres). The unknown-model policy string is validated by config; 10.3
+	// maps it onto cost's typed enum at the claim-time budget check.
+	pricing, err := cost.Load(cfg.Cost.Inline, cfg.Cost.File)
+	if err != nil {
+		return fmt.Errorf("loading pricing catalog: %w", err)
+	}
+	logger.InfoContext(ctx, "pricing catalog loaded",
+		slog.Int("models", pricing.ModelCount()),
+		slog.Int("tools", pricing.ToolCount()),
+		slog.String("override_source", pricingOverrideSource(cfg.Cost)),
+		slog.String("unknown_model_policy", cfg.Cost.UnknownModelPolicy))
+	_ = pricing // consumed by the 10.2 ledger; loaded here to fail boot early.
 	// The fleet-wide rate limiter (ticket 9.2, ADR-010): built over the same
 	// Redis client the queue uses (the shared coordination Redis, ADR-002 —
 	// Postgres stays the API's only hard dependency, but the worker already
@@ -380,6 +399,19 @@ func activeIdleMax(cfg config.QueueConfig) time.Duration {
 		block = queue.DefaultConsumerBlock
 	}
 	return 3 * block
+}
+
+// pricingOverrideSource reports how the pricing catalog was overridden, for
+// the boot log: an inline document, a file path, or the embedded defaults.
+func pricingOverrideSource(cfg config.CostConfig) string {
+	switch {
+	case cfg.Inline != "":
+		return "inline"
+	case cfg.File != "":
+		return cfg.File
+	default:
+		return "defaults"
+	}
 }
 
 // sampleLoop periodically samples the depth gauges (ticket 7.2): queue

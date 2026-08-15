@@ -5450,3 +5450,116 @@ new `docs/ops-runbook.md` is the invalidation decision guide (TTL / version bump
 / admin bust), linked from `docs/README.md`; ADR-011 gained the "Invalidation &
 ops surface (as built, 9.6)" section, ADR-007 the two route rows, `docs/api.md`
 the walkthroughs.
+
+## Milestone 10 — Cost tracking & budget enforcement
+
+### 10.1 — ADR-012 & pricing catalog ✅
+
+M10's differentiator is a real-time cost ledger that sits *inside* the scheduler
+path (checked at claim time), not a reporting afterthought. 10.1 is the
+**contract half** — the ADR plus the `internal/cost` leaf and `config.CostConfig`
+— exactly as 9.1 shipped `internal/limits` before 9.2's limiter and 9.4 shipped
+the cache key builder before 9.5's middleware. **No migration, no store change,
+no engine/executor runtime change**; the `cost_ledger`, the attempt-completion
+pricing, the claim-time budget check, downgrade chains, the physical event
+append, and the cost metrics are all 10.2–10.5.
+
+**ADR-012 (`docs/adr/012-cost-model.md`).** Records the whole cost model: the
+representation decision (integer **nano-USD**), the pricing-catalog format and
+resolution, the attribution rules with worked examples, the estimation approach,
+the unknown-model policy, and the budget-semantics vocabulary. Index row added
+to `docs/adr/README.md`.
+
+**Money is integer nano-USD.** Every computed/stored cost is an `int64` count of
+nano-USD (1 USD = 1e9, `cost.NanoPerUSD`), rounded half-away-from-zero per
+component. The reason is 10.2's requirement that a run aggregate equal the exact
+sum of its ledger rows under concurrent completions: integer addition is
+associative and exact, floating dollars are neither. Catalog rates are *authored*
+as decimal $/1M-token numbers for legibility and converted to nano at pricing
+time; display USD is derived at the API edge. `int64` nano-USD saturates near
+$9.2 × 10⁹, far beyond any real run.
+
+**The pricing catalog keys off the ADR-010 resource name.** A model entry is
+keyed `<resolved-provider>:<model>` — the *same string the limiter uses*, so a
+step's model `mock/sim-1` binds to resource `mock:sim-1` for both rate limiting
+and pricing, and cost attribution needs no new identity plumbing. `internal/cost`
+(stdlib only, imports no other agentloom package — the cache/limits precedent, so
+engine/exec/store can later depend on it without a cycle):
+
+- `catalog.go` — `Catalog`, `Parse` (strict decode + all-errors-joined
+  validation: `schema_version == 1`, resource-name rules with the model/tool
+  namespace split — model names may not carry `tool:`, tool names must — non-
+  negative finite rates, required `effective_from`, duplicate `(name, date)`
+  rejected), `Load(inline, file)` (mutual-exclusion, merge onto embedded
+  defaults), `Merge` (whole-list-per-name replacement + fallback override, copies
+  before overlaying so the shared `Default()` is never mutated), and the `Date`
+  type (day-granularity UTC, `YYYY-MM-DD`).
+- `defaults.json` + `defaults.go` — the embedded default catalog (`//go:embed`,
+  parsed once and cached), illustrative Anthropic/OpenAI list prices plus a
+  `mock:*` wildcard at synthetic rates so the offline M10 exit workflow shows
+  reproducible cost with zero configuration.
+- `lookup.go` — `Lookup`/`PriceModel`/`ToolPrice` with **effective-date
+  selection** (newest entry whose `effective_from ≤ at`; a scheduled reprice is a
+  *second* entry, so old runs keep their rate), exact → `<provider>:*` wildcard →
+  not-found resolution (mirroring `limits.Lookup`), `Source` (exact/wildcard/
+  fallback) recording rate provenance for the 10.2 ledger, and the
+  `UnknownModelPolicy` enum + `*UnknownModelError`.
+- `price.go` — the pure arithmetic: `Cost` (input×rate + output×rate), `Estimate`
+  (the pre-flight upper bound: estimated input + `max_tokens` priced as output),
+  `ToolCost`, all integer nano-USD with half-up rounding and an overflow-bound
+  note.
+- `event.go` — `EventTypeUnknownModel = "cost_unknown_model"` + the
+  `UnknownModelWarning` payload (model + fallback rate); the *physical*
+  `Events().Append` lands in 10.2's attempt-completion tx (no ledger tx to hang a
+  per-run event on yet; `events.type` is free-form TEXT so no migration then
+  either).
+
+**Attribution rules** (enumerated in the ADR with worked examples): LLM attempt
+= `input×input_rate + output×output_rate` at the *actually-served* model; cache
+hit = $0 actual + a counterfactual "saved" figure priced from the
+`Usage.CacheHit` snapshot; priced tool = flat `per_call_usd` (absent entry =
+free, tools not being unknown-model-policy subjects); judge/summarization
+overhead attributed to the serving step, flagged `overhead`; no-usage attempts
+(throttled/`lost`/errored) ledger nothing. Provider-side prompt-cache token
+pricing is explicitly deferred (`llm.Usage` untouched).
+
+**Unknown-model policy** is configurable (`AGENTLOOM_COST_UNKNOWN_MODEL_POLICY`)
+and split by design: `estimate` (default) prices at the catalog `fallback` +
+emits the warning event; `fail` refuses. The subtlety recorded in the ADR and
+enforced by the `PriceModel(name, at, policy)` signature: **fail-closed governs
+pre-flight only** (10.3 blocks an unpriced model *before* spend, permanent to the
+DLQ), while **post-call ledger pricing always succeeds** (10.2 always passes
+`PolicyEstimate` — the money is spent, and refusing to price it would understate
+real spend).
+
+**`config.CostConfig`** — `Inline`/`File` (`AGENTLOOM_PRICING[_FILE]`, mutually
+exclusive, checked at config load *and* in `cost.Load`) + `UnknownModelPolicy`
+(`estimate`|`fail`, default estimate, validated at load). `config` stays a leaf:
+it carries the policy *string* and duplicates the two-value check rather than
+importing `internal/cost`, exactly as it does for `internal/limits`; cmd/worker
+maps the string onto cost's typed enum at the 10.3 claim-time check.
+
+**`cmd/worker`** boot-loads-and-logs the catalog (`cost.Load`, a malformed
+override fails boot) — model/tool counts, override source, policy — with no
+runtime consumer yet (10.2 hands it to the engine). `cmd/api` untouched (it reads
+ledger rows from Postgres in 10.2; it never prices).
+
+**Non-obvious decisions.** (1) Nano-USD integers over Postgres `NUMERIC` — exact
+and native, no decimal dependency, USD is a trivial edge conversion. (2)
+Merge-by-name (whole-list-per-name replacement) over whole-catalog-replace — an
+operator adds one private model without copying the default list, and can't
+accidentally un-price a model by omission (which would let it run at $0). (3)
+Resource-name keying reuses the limiter's string — one convention documents both
+scheduler-path features. (4) The `cost_unknown_model` event's payload contract is
+fixed now; the append is 10.2's, so no migration this ticket.
+
+**Verified.** `go build ./...`, `make lint` (0 issues on the touched packages),
+`go test ./internal/cost/ ./internal/config/ ./cmd/worker/` green, `internal/cost`
+race-clean at 87.6% coverage. Tests: the parse/validate matrix, effective-date
+selection (boundary-inclusive, between-dates, all-future, wildcard's own date),
+merge semantics (replace-by-name, fallback override, base-not-mutated), the
+embedded-defaults sanity guard (parses, has fallback, prices `mock:*`), the
+unknown-model policy matrix (estimate → fallback+warning, fail → typed error,
+no-fallback → typed error), arithmetic goldens incl. a genuine half-up case and
+the exact-sum property, and the `config` env matrix (defaults, overrides, bad
+policy, mutual exclusion).

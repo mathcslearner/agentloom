@@ -498,6 +498,57 @@ func TestLoadResourcesMutualExclusion(t *testing.T) {
 	}
 }
 
+func TestLoadCostDefaultsAndOverrides(t *testing.T) {
+	t.Parallel()
+
+	// Defaults: no override source, estimate policy.
+	cfg, err := config.Load(lookupFrom(nil))
+	if err != nil {
+		t.Fatalf("Load defaults: %v", err)
+	}
+	if cfg.Cost.Inline != "" || cfg.Cost.File != "" {
+		t.Errorf("default Cost sources = %+v, want both empty", cfg.Cost)
+	}
+	if cfg.Cost.UnknownModelPolicy != config.DefaultUnknownModelPolicy {
+		t.Errorf("default Cost policy = %q, want %q", cfg.Cost.UnknownModelPolicy, config.DefaultUnknownModelPolicy)
+	}
+
+	// Overrides.
+	cfg, err = config.Load(lookupFrom(map[string]string{
+		config.EnvPricingFile:         "/etc/agentloom/pricing.json",
+		config.EnvCostUnknownModelPol: config.UnknownModelPolicyFail,
+	}))
+	if err != nil {
+		t.Fatalf("Load overrides: %v", err)
+	}
+	if cfg.Cost.File != "/etc/agentloom/pricing.json" || cfg.Cost.UnknownModelPolicy != config.UnknownModelPolicyFail {
+		t.Errorf("Cost = %+v, want file + fail policy", cfg.Cost)
+	}
+}
+
+func TestLoadCostInvalid(t *testing.T) {
+	t.Parallel()
+
+	// Bad policy value.
+	if _, err := config.Load(lookupFrom(map[string]string{config.EnvCostUnknownModelPol: "guess"})); err == nil {
+		t.Error("Load with bad policy: want error, got nil")
+	}
+
+	// Both override sources set.
+	_, err := config.Load(lookupFrom(map[string]string{
+		config.EnvPricing:     `{"schema_version": 1}`,
+		config.EnvPricingFile: "/etc/agentloom/pricing.json",
+	}))
+	if err == nil {
+		t.Fatal("Load with both pricing sources: want error, got nil")
+	}
+	for _, env := range []string{config.EnvPricing, config.EnvPricingFile} {
+		if !strings.Contains(err.Error(), env) {
+			t.Errorf("error %q does not mention %s", err, env)
+		}
+	}
+}
+
 func TestLoadRedisAddrOverride(t *testing.T) {
 	t.Parallel()
 
