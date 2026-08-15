@@ -194,14 +194,33 @@ func decodeStep(raw json.RawMessage, path string, errs *errList) Step {
 	if timeoutRaw, present := m["timeout"]; present {
 		step.Timeout, _ = decodeString(timeoutRaw, path+".timeout", errs)
 	}
+	if cacheRaw, present := m["cache"]; present {
+		step.Cache = decodeCache(cacheRaw, path+".cache", errs)
+	}
 	for _, k := range sortedKeys(m) {
 		switch k {
-		case "id", "type", "config", "retry", "timeout":
+		case "id", "type", "config", "retry", "timeout", "cache":
 		default:
 			errs.add(path+"."+k, "unknown field")
 		}
 	}
 	return step
+}
+
+// decodeCache decodes a step's response-cache policy (ADR-011). Like
+// decodeRetry, the codec level enforces shape and closed enums — unknown
+// fields, mistyped values, an unknown cache mode or scope; the duration
+// bound and the mode-required rule are structural validation (Validate).
+func decodeCache(raw json.RawMessage, path string, errs *errList) *CachePolicy {
+	var cp CachePolicy
+	strictUnmarshal(raw, &cp, path, errs)
+	if cp.Mode != "" && !slices.Contains(cacheModes, cp.Mode) {
+		errs.add(path+".mode", "unknown cache mode %q (expected one of: %s)", string(cp.Mode), joinEnum(cacheModes))
+	}
+	if cp.Scope != "" && !slices.Contains(cacheScopes, cp.Scope) {
+		errs.add(path+".scope", "unknown cache scope %q (expected one of: %s)", string(cp.Scope), joinEnum(cacheScopes))
+	}
+	return &cp
 }
 
 // decodeRetry decodes a step's retry policy (ADR-006). The codec level

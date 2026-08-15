@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "cache-not-object",
+  "steps": [{"id": "a", "type": "noop", "cache": "read_write"}],
+  "edges": []
+}

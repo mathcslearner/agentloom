@@ -14,9 +14,9 @@
   "steps": [
     {"id": "start", "type": "noop"},
     {"id": "fetch", "type": "tool", "config": {"tool": "http_request", "input": {"method": "GET", "url": "https://example.internal/api?a=1&b=2"}}, "retry": {"max_attempts": 2}, "timeout": "30s"},
-    {"id": "find_similar", "type": "retrieve", "config": {"retriever": "pg_fulltext", "query": "${{ run.params.goal }}", "top_k": 5}},
+    {"id": "find_similar", "type": "retrieve", "config": {"retriever": "pg_fulltext", "query": "${{ run.params.goal }}", "top_k": 5}, "cache": {"mode": "read_write", "ttl": "1h", "scope": "run"}},
     {"id": "plan", "type": "planner", "config": {"model": "anthropic/claude-sonnet-5", "prompt": "Break down: ${{ run.params.goal }}"}},
-    {"id": "draft", "type": "llm", "config": {"model": "anthropic/claude-sonnet-5", "messages": [{"role": "user", "content": "Draft it if x < 3 & y > 2"}], "max_tokens": 1024, "temperature": 0}},
+    {"id": "draft", "type": "llm", "config": {"model": "anthropic/claude-sonnet-5", "messages": [{"role": "user", "content": "Draft it if x < 3 & y > 2"}], "max_tokens": 1024, "temperature": 0}, "cache": {"mode": "off"}},
     {"id": "summarize_each", "type": "map", "config": {"items": "${{ steps.find_similar.output.docs }}", "body": "summarize_one"}},
     {"id": "critique", "type": "agent", "config": {"agent": "critic", "prompt": "Review the draft on the blackboard."}},
     {"id": "route", "type": "branch", "config": {}},

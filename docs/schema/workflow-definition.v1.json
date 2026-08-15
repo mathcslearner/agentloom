@@ -36,6 +36,36 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "CacheMode": {
+      "type": "string",
+      "enum": [
+        "off",
+        "read_write",
+        "read_only"
+      ]
+    },
+    "CachePolicy": {
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/CacheMode"
+        },
+        "ttl": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/CacheScope"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "CacheScope": {
+      "type": "string",
+      "enum": [
+        "global",
+        "run"
+      ]
+    },
     "CounterConfig": {
       "properties": {
         "path": {
@@ -523,6 +553,9 @@
         },
         "timeout": {
           "type": "string"
+        },
+        "cache": {
+          "$ref": "#/$defs/CachePolicy"
         }
       },
       "additionalProperties": false,

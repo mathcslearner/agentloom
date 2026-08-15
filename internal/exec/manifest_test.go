@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/mathcslearner/agentloom/internal/cache"
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/plugin"
 )
@@ -91,6 +93,40 @@ func TestBuiltinManifestConformance(t *testing.T) {
 			t.Errorf("%s: StepConfigSchema: %v", m.Name, err)
 		} else if string(m.ConfigSchema) != string(want) {
 			t.Errorf("%s: manifest schema differs from dag.StepConfigSchema", m.Name)
+		}
+	}
+}
+
+// TestCachePolicyTracksCapabilityFlags cross-checks the ADR-011 policy
+// (ticket 9.4) against the real builtin capability flags: a capability-flag
+// drift must break the encoded cache policy, not just the flag table. The
+// eligibility gate is purely the executor's flags here — for a tool step the
+// *runtime* decision (9.5) consults the invoked tool's manifest, not the tool
+// executor's side_effectful one, so a cacheable tool like json_transform is
+// still cached (covered directly in internal/cache's policy tests).
+func TestCachePolicyTracksCapabilityFlags(t *testing.T) {
+	t.Parallel()
+
+	const ttl = time.Hour
+	for _, m := range Builtins(nil, nil, nil).Manifests() {
+		caps := m.Capabilities
+		eligible := caps.Cacheable && !caps.SideEffectful
+
+		// Deterministic default: caches read-write iff eligible.
+		if d := cache.Decide(caps, true, nil, ttl); d.Read != eligible || d.Write != eligible {
+			t.Errorf("%s: deterministic default read/write = %v/%v, want %v/%v", m.Name, d.Read, d.Write, eligible, eligible)
+		}
+		// Non-deterministic default always bypasses.
+		if d := cache.Decide(caps, false, nil, ttl); d.Read || d.Write {
+			t.Errorf("%s: non-deterministic default should bypass, got read/write = %v/%v", m.Name, d.Read, d.Write)
+		}
+		// read_write opt-in caches iff eligible (never opens the hard gate).
+		if d := cache.Decide(caps, false, &dag.CachePolicy{Mode: dag.CacheReadWrite}, ttl); d.Read != eligible || d.Write != eligible {
+			t.Errorf("%s: read_write opt-in read/write = %v/%v, want %v/%v", m.Name, d.Read, d.Write, eligible, eligible)
+		}
+		// off opt-out always bypasses.
+		if d := cache.Decide(caps, true, &dag.CachePolicy{Mode: dag.CacheOff}, ttl); d.Read || d.Write {
+			t.Errorf("%s: off opt-out should bypass, got read/write = %v/%v", m.Name, d.Read, d.Write)
 		}
 	}
 }

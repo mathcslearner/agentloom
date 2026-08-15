@@ -173,3 +173,13 @@ func (ErrorClass) JSONSchema() *jsonschema.Schema {
 func (JitterMode) JSONSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "string", Enum: enumAny(jitterModes)}
 }
+
+// JSONSchema declares the cache-mode enum in the generated schema (ADR-011).
+func (CacheMode) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny(cacheModes)}
+}
+
+// JSONSchema declares the cache-scope enum in the generated schema (ADR-011).
+func (CacheScope) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny(cacheScopes)}
+}

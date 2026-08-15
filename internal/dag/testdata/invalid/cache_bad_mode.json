@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "cache-bad-mode",
+  "steps": [{"id": "a", "type": "noop", "cache": {"mode": "always"}}],
+  "edges": []
+}

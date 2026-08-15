@@ -52,6 +52,7 @@ func TestGeneratedSchemaContent(t *testing.T) {
 	// resolve.
 	for _, name := range []string{
 		"Definition", "Step", "Edge", "ParamSpec", "RetryPolicy", "BackoffSpec",
+		"CachePolicy", "CacheMode", "CacheScope",
 		"LLMConfig", "ToolConfig", "RetrieveConfig", "MapConfig", "PlannerConfig",
 		"AgentConfig", "HumanApprovalConfig", "JoinConfig", "BranchConfig",
 		"NoopConfig", "EchoConfig", "SleepConfig", "FailNTimesConfig", "CounterConfig",
@@ -71,6 +72,7 @@ func TestGeneratedSchemaContent(t *testing.T) {
 		`"on_failure"`,
 		`"max_attempts"`,
 		`"validation_failed"`,
+		`"read_write"`,
 	} {
 		if !bytes.Contains(data, []byte(marker)) {
 			t.Errorf("generated schema does not contain %q", marker)

@@ -707,13 +707,13 @@ Post-call reconciliation: debit/refund the token bucket by (actual usage − est
 - [x] Sustained load with biased estimator stays within configured tokens/min (integration)
 - [x] Reconciliation metrics exposed (estimate error histogram)
 
-#### 9.4 — ADR-011 & cache key builder
+#### 9.4 — ADR-011 & cache key builder ✅
 **Depends on:** 8.6
-**ADR-011:** cache key = SHA-256 over canonical serialization (sorted keys, normalized numbers) of {schema_version, plugin name+version, model, sampling params, rendered messages/inputs, tool schemas} — *never* assume identical inputs ⇒ identical outputs: **default policy** caches only `temperature==0` LLM calls and `cacheable` pure tools; anything else is opt-in via step-level `cache: {mode: off|read_write|read_only, ttl, scope}`. Invalidation strategy: TTL, version-bump (plugin/prompt-template version in key), and admin bust-by-prefix. Storage: Redis with TTL + value size cap.
+**ADR-011:** cache key = SHA-256 over canonical serialization (sorted keys, normalized numbers) of {schema_version, plugin name+version, model, sampling params, rendered messages/inputs, tool schemas} — *never* assume identical inputs ⇒ identical outputs: **default policy** caches only `temperature==0` LLM calls and `cacheable` pure tools; anything else is opt-in via step-level `cache: {mode: off|read_write|read_only, ttl, scope}`. Invalidation strategy: TTL, version-bump (plugin/prompt-template version in key), and admin bust-by-prefix. Storage: Redis with TTL + value size cap. *(As built: `docs/adr/011-response-cache.md`; the `cache` step-envelope field in `internal/dag` — `CacheMode`/`CacheScope` enums, `CachePolicy{mode,ttl,scope}`, strict decode + `cache_field_required`/`cache_field_invalid` validation with `MaxCacheTTL` 30d, regenerated JSON Schema, kitchen-sink construct pin; new leaf package `internal/cache` — `Key(KeyInput)` = hex SHA-256 over length-prefix-framed components (KeySchemaVersion, definition schema_version, scope+run id, executor + concrete-plugin identity, per-type request body), JSON components canonicalized via round-trip-through-`any`, `temperature` nil-distinct-from-0, `RedisKey` namespaced by concrete plugin for 9.6 bust-by-prefix; `Decide` encoding the two-layer policy — hard eligibility gate (`Cacheable && !SideEffectful`) then determinism-driven default, step-mode override within eligibility. Deferred to 9.5/9.6: the Redis store, the middleware, `config.CacheConfig`, migration materialization, metrics, and the bust/stats ops surface — no migration/config/runtime change in 9.4.)*
 **Done when:**
-- [ ] Key-stability golden tests (reordered JSON keys, float forms → same key; any semantic change → new key)
-- [ ] Policy matrix (step type × determinism × capability flags) documented and encoded
-- [ ] ADR records why write-through Redis (not Postgres) and the size-cap fallback (skip caching oversized)
+- [x] Key-stability golden tests (reordered JSON keys, float forms → same key; any semantic change → new key)
+- [x] Policy matrix (step type × determinism × capability flags) documented and encoded
+- [x] ADR records why write-through Redis (not Postgres) and the size-cap fallback (skip caching oversized)
 
 #### 9.5 — Cache store & middleware
 **Depends on:** 9.4, 9.2

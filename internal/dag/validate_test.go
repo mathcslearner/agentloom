@@ -150,6 +150,12 @@ var structuralCases = map[string][]issueRef{
 		{dag.CodeTimeoutFieldInvalid, "steps[1].timeout"},
 		{dag.CodeTimeoutFieldInvalid, "steps[2].timeout"},
 	},
+	"cache_bad_bounds.json": {
+		{dag.CodeCacheFieldRequired, "steps[0].cache.mode"},
+		{dag.CodeCacheFieldInvalid, "steps[1].cache.ttl"},
+		{dag.CodeCacheFieldInvalid, "steps[2].cache.ttl"},
+		{dag.CodeCacheFieldInvalid, "steps[3].cache.ttl"},
+	},
 	"max_wall_clock_bad_bounds.json": {
 		{dag.CodeMaxWallClockInvalid, "max_wall_clock"},
 	},

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "name": "cache-bad-bounds",
+  "steps": [
+    {"id": "a", "type": "noop", "cache": {"ttl": "1h"}},
+    {"id": "b", "type": "noop", "cache": {"mode": "read_write", "ttl": "nope"}},
+    {"id": "c", "type": "noop", "cache": {"mode": "read_write", "ttl": "-5m"}},
+    {"id": "d", "type": "noop", "cache": {"mode": "read_write", "ttl": "800h"}}
+  ],
+  "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "c"}, {"from": "c", "to": "d"}]
+}

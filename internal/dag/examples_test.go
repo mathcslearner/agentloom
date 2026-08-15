@@ -246,6 +246,17 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 		t.Error("no max_wall_clock deadline in kitchen_sink.json")
 	}
 
+	// Ticket 9.4 construct: an opt-in response-cache policy (ADR-011).
+	var hasCache bool
+	for _, s := range def.Steps {
+		if s.Cache != nil && s.Cache.Mode != "" {
+			hasCache = true
+		}
+	}
+	if !hasCache {
+		t.Error("no step with a cache policy in kitchen_sink.json")
+	}
+
 	// Ticket 8.2 constructs: template expressions referencing a run param
 	// and an upstream step output somewhere in the step configs.
 	var paramRef, stepRef bool

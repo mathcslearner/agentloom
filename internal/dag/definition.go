@@ -119,6 +119,13 @@ type Step struct {
 	// records the `timeout` class and routes through the retry policy.
 	// Uniform across step types, so it lives on the step envelope.
 	Timeout string `json:"timeout,omitempty"`
+
+	// Cache is the step's authored response-cache policy (ADR-011, ticket
+	// 9.4); nil when the source document had no cache key (the engine's
+	// default policy applies — cache deterministic cache-eligible steps,
+	// bypass the rest). Uniform across step types, so it lives on the step
+	// envelope, not in the per-type config.
+	Cache *CachePolicy `json:"cache,omitempty"`
 }
 
 // EdgeType distinguishes normal dependency edges from marked loop edges.

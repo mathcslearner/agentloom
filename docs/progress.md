@@ -5120,3 +5120,112 @@ instruments.
 `-tags integration` green against the compose stack under `-race`
 (`ratelimit`/`resource`/`engine`/`obs`). No migration — 9.3 adds no schema, so
 no `make migrate-up` needed.
+
+### 9.4 — ADR-011 & cache key builder ✅
+
+M9's second mandated feature is a response cache, implemented (like the rate
+limiter) as executor middleware. 9.4 is the **contract half** — the ADR, the
+`cache` step-envelope field, and the key builder + policy — mirroring how 5.1
+shipped `Step.Retry` before 5.2 built the retry engine, and 9.1 shipped
+`internal/limits` before 9.2 built the limiter. **No migration, config, store,
+engine, or exec production change lands in 9.4**; the Redis store, the
+middleware, `config.CacheConfig`, any materialization onto `run_steps`, the
+metrics, and the bust/stats ops surface are deferred to 9.5/9.6, called out as
+forward slots in the ADR.
+
+**ADR-011 (`docs/adr/011-response-cache.md`).** Records the whole design: the
+key over length-prefix-framed components, the two-layer eligibility/default
+policy (with the full step-type × determinism × capability-flags matrix
+table), the three invalidation mechanisms (TTL, version-bump, admin
+bust-by-prefix), and the storage rationale (write-through Redis, not Postgres,
+with an oversized-value skip). The two required "why" items are explicit
+sections: Redis because a cache is disposable derived data whose loss costs a
+re-computation never correctness (so it must not live in the source of truth,
+and the hot claim-path read wants Redis latency), and the size cap skips rather
+than chunks or spills. Index row added to `docs/adr/README.md`; ADR-003's
+templating section gained `cache` in the literals-only envelope-field list
+(the field name was already reserved there for M9).
+
+**The `cache` field (`internal/dag`).** A new `cachepolicy.go` beside
+`retry.go`: `CacheMode` (`off`/`read_write`/`read_only`), `CacheScope`
+(`global`/`run`), `CachePolicy{Mode,TTL,Scope}`, and `MaxCacheTTL` (30d, the
+`MaxRunWallClock` ceiling — a cached AI output kept past a month is a staleness
+hazard). `Step.Cache *CachePolicy` (nil = absent, engine default) after
+`Timeout`, so canonical encoding gets the field for free (struct field order +
+`omitempty`). `decodeCache` mirrors `decodeRetry` — `strictUnmarshal` plus
+closed-enum checks for mode/scope at the codec level, the ttl bound and the
+mode-required rule deferred to Validate. Two new validation codes,
+`cache_field_required` (an empty `cache: {}` or one setting only ttl/scope is
+ambiguous — mode is the field's whole point) and `cache_field_invalid` (ttl
+parseable/positive/≤ MaxCacheTTL); `checkCache` follows `checkTimeout`. Schema:
+`CacheMode`/`CacheScope` `JSONSchema()` enum methods, `CachePolicy`
+auto-reflected into `$defs`, regenerated `docs/schema/workflow-definition.v1.json`.
+
+**The leaf package (`internal/cache`).** Imports `internal/dag` +
+`internal/plugin` + stdlib only — a true leaf (exec will import *it* in 9.5, no
+cycle). `key.go`: `Key(KeyInput) (string, error)` = hex SHA-256 over ordered
+components — `KeySchemaVersion` (the builder's own format version, the
+fleet-wide invalidation lever), the definition `schema_version`, the scope +
+run id, the **executor** plugin identity (llm/tool/retrieve), the **concrete
+external** plugin identity (provider/tool/retriever), then the per-type request
+body (`LLMRequest`/`ToolRequest`/`RetrieveRequest`, a closed `Request`
+interface). `policy.go`: `Decide(caps, deterministic, *dag.CachePolicy,
+defaultTTL) Decision` encoding the matrix — hard eligibility gate
+(`Cacheable && !SideEffectful`, unopenable by any step mode), then a
+determinism-driven default (deterministic → read_write, else bypass), then the
+step `mode` override within eligibility; `Decision{}` (bypass) is the safe
+zero value.
+
+Non-obvious decisions:
+- **Length-prefix framing, not `0x00` separators.** Each component is prefixed
+  with its 8-byte big-endian length before hashing, so no component's bytes can
+  be mistaken for a boundary (`("ab","")` ≠ `("a","b")`) — strictly stronger
+  than the 6.5 idempotency fingerprint's delimiter scheme, chosen because a
+  cache-key collision serves a *wrong output*, higher stakes than a fingerprint
+  mismatch. `TestKeySeparatorUnambiguous` pins it.
+- **`temperature` nil is distinct from `0`.** The `*float64` pointer (which
+  exists in `dag.LLMConfig` precisely to survive canonical encoding) is keyed
+  as the sentinel `"none"` when nil vs `strconv.FormatFloat` otherwise — nil is
+  the provider default (non-deterministic), a genuinely different request than
+  an explicit deterministic `0`. This is also the single most consequential
+  policy edge: the default caches `temperature==0` but *not* nil.
+- **JSON components canonicalized by round-trip through `any`.** Same technique
+  as `store.canonicalJSON` (6.5): sorted keys, normalized number spelling
+  (`1`/`1.0`/`1e0` → `1`), nil/empty → the `"null"` sentinel. Its documented
+  limits (>2^53 int precision, duplicate-key collapse) are accepted — a
+  rendered request that trips them is pathological and the cost is a miss, not
+  a wrong hit.
+- **Two plugin identities in the key.** The cacheable *executor* (its transform
+  config→request→output can change) and the *concrete external plugin* (the
+  provider/tool/retriever that actually serves the call) both bear on the
+  output, so both are hashed; the concrete plugin also namespaces the Redis key
+  (`<prefix>:v1:<kind>:<name>:<hash>`), the granularity 9.6 busts by.
+- **Tool eligibility is the tool's, not the tool executor's.** The `tool`
+  executor is `side_effectful` (worst case across tools), but a pure tool like
+  `json_transform` is cacheable — so 9.5 will feed `Decide` the invoked tool's
+  manifest flags, not the executor's. Documented in the ADR and in the
+  cross-check test's comment.
+
+**Tests.** `internal/cache`: golden-digest pins for llm/tool/retrieve inputs
+(regression guard against format drift), the reordered-keys/renumbered-JSON
+stability property, the semantic-change table (14 mutations each yielding a
+distinct, mutually-non-colliding key incl. nil-vs-0 temperature), run-scope
+isolation, the separator-ambiguity probe, the error matrix, and the RedisKey
+layout; `policy_test.go` is the encoded matrix table. `internal/exec`'s
+`manifest_test.go` gained `TestCachePolicyTracksCapabilityFlags`, feeding every
+real builtin manifest through `cache.Decide` so a capability-flag drift breaks
+the policy, not just the flag table. `internal/dag` corpus trail (the 5.3
+`timeout` template): five `invalid/cache_*` codec fixtures (not-object,
+unknown-field, bad-mode, bad-scope, ttl-wrong-type) + one
+`invalid_structural/cache_bad_bounds.json` (missing mode, unparseable/negative/
+over-ceiling ttl), wired into the decode/validate expectation maps (the
+corpus-coverage tests force both); `TestDecodeCachePolicy` (full/partial/absent
+on the fixture kitchen_sink); the examples `kitchen_sink.json` grew an opt-in
+`cache` block on its retrieve step + the ticket-9.4 construct pin; schema-content
+test pins the `CachePolicy`/`CacheMode`/`CacheScope` defs and a `read_write`
+marker.
+
+**Verified.** `go build ./...`, `make lint` (golangci-lint, 0 issues), full
+`go test ./...` green, and `make generate` leaves the committed schema clean. No
+integration-tagged tests — everything in 9.4 is offline. No migration/config
+change, so no `make migrate-up` needed.

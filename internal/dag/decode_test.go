@@ -53,6 +53,11 @@ var decodeInvalidCases = map[string][]string{
 	"retry_bad_class.json":             {`steps[0].retry.retry_on[1]: unknown error class "flaky"`},
 	"retry_wrong_type.json":            {"steps[0].retry.max_attempts: expected integer, got string"},
 	"timeout_wrong_type.json":          {"steps[0].timeout: expected string, got number"},
+	"cache_not_object.json":            {"steps[0].cache: expected object, got string"},
+	"cache_unknown_field.json":         {"steps[0].cache.expiry: unknown field"},
+	"cache_bad_mode.json":              {`steps[0].cache.mode: unknown cache mode "always"`},
+	"cache_bad_scope.json":             {`steps[0].cache.scope: unknown cache scope "tenant"`},
+	"cache_wrong_type.json":            {"steps[0].cache.ttl: expected string, got number"},
 	"max_wall_clock_wrong_type.json":   {"max_wall_clock: expected string, got number"},
 	"edge_missing_from.json":           {"edges[0].from: required field is missing"},
 	"unknown_edge_field.json":          {"edges[0].whenever: unknown field"},
@@ -269,6 +274,42 @@ func TestDecodeRetryPolicy(t *testing.T) {
 
 	if r := byID["start"].Retry; r != nil {
 		t.Errorf("start (no retry key) retry = %+v, want nil", r)
+	}
+}
+
+// TestDecodeCachePolicy covers the ADR-011 step envelope cache field: a
+// full policy, a mode-only spelling with absent-key empties, and the
+// absent-block nil.
+func TestDecodeCachePolicy(t *testing.T) {
+	t.Parallel()
+
+	def, err := dag.Decode(readFixture(t, "valid", "kitchen_sink.json"))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	byID := make(map[string]dag.Step, len(def.Steps))
+	for _, s := range def.Steps {
+		byID[s.ID] = s
+	}
+
+	full := byID["find_similar"].Cache
+	if full == nil {
+		t.Fatal("find_similar has no decoded cache policy")
+	}
+	if full.Mode != dag.CacheReadWrite || full.TTL != "1h" || full.Scope != dag.CacheRun {
+		t.Errorf("find_similar cache = %+v, want {read_write 1h run}", full)
+	}
+
+	partial := byID["draft"].Cache
+	if partial == nil || partial.Mode != dag.CacheOff {
+		t.Fatalf("draft cache = %+v, want mode off", partial)
+	}
+	if partial.TTL != "" || partial.Scope != "" {
+		t.Errorf("draft cache decoded absent keys as non-zero: %+v", partial)
+	}
+
+	if c := byID["start"].Cache; c != nil {
+		t.Errorf("start (no cache key) cache = %+v, want nil", c)
 	}
 }
 

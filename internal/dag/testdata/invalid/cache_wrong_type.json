@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "cache-wrong-type",
+  "steps": [{"id": "a", "type": "noop", "cache": {"mode": "read_write", "ttl": 30}}],
+  "edges": []
+}

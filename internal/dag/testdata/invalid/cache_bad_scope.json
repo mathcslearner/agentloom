@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "cache-bad-scope",
+  "steps": [{"id": "a", "type": "noop", "cache": {"mode": "off", "scope": "tenant"}}],
+  "edges": []
+}

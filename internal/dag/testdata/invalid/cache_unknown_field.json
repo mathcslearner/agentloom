@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "cache-unknown-field",
+  "steps": [{"id": "a", "type": "noop", "cache": {"mode": "off", "expiry": "1h"}}],
+  "edges": []
+}

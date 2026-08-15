@@ -61,6 +61,8 @@ const (
 	CodeRetryFieldInvalid       ValidationCode = "retry_field_invalid"
 	CodeTimeoutFieldInvalid     ValidationCode = "timeout_field_invalid"
 	CodeMaxWallClockInvalid     ValidationCode = "max_wall_clock_field_invalid"
+	CodeCacheFieldRequired      ValidationCode = "cache_field_required"
+	CodeCacheFieldInvalid       ValidationCode = "cache_field_invalid"
 	CodeLimitExceeded           ValidationCode = "limit_exceeded"
 	CodeCycle                   ValidationCode = "cycle_detected"
 	CodeLoopEdgeNotAncestor     ValidationCode = "loop_edge_not_ancestor"
@@ -219,8 +221,38 @@ func (v *validator) checkSteps(def *Definition) map[string]int {
 		v.checkStepConfig(path, s)
 		v.checkRetry(path, s.Retry)
 		v.checkTimeout(path, s.Timeout)
+		v.checkCache(path, s.Cache)
 	}
 	return index
+}
+
+// checkCache enforces the response-cache policy bounds (ADR-011, ticket
+// 9.4). The codec already rejected unknown fields and unknown mode/scope
+// spellings; here the required mode and the ttl bound. A nil policy means
+// the `cache` key was absent — the engine default, nothing to check.
+func (v *validator) checkCache(path string, cp *CachePolicy) {
+	if cp == nil {
+		return
+	}
+	path += ".cache"
+	if cp.Mode == "" {
+		// An empty `cache: {}` (or one that sets only ttl/scope) is
+		// ambiguous: the whole field exists to override the default
+		// read/write decision, which is exactly what mode carries.
+		v.add(CodeCacheFieldRequired, path+".mode", "mode is required when a cache block is present")
+	}
+	if cp.TTL == "" {
+		return
+	}
+	d, err := time.ParseDuration(cp.TTL)
+	switch {
+	case err != nil:
+		v.add(CodeCacheFieldInvalid, path+".ttl", "not a Go duration string: %v", err)
+	case d <= 0:
+		v.add(CodeCacheFieldInvalid, path+".ttl", "must be positive, got %q", cp.TTL)
+	case d > MaxCacheTTL:
+		v.add(CodeCacheFieldInvalid, path+".ttl", "must be at most %s, got %q", MaxCacheTTL, cp.TTL)
+	}
 }
 
 // checkTimeout enforces the per-attempt execution timeout bounds (ticket

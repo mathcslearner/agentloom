@@ -26,3 +26,4 @@ are reserved and appear here once the ADR is written.
 | [008](008-observability-conventions.md) | Observability conventions | Accepted | 2026-08-12 |
 | [009](009-plugin-spi.md) | Plugin SPI — kinds, registration, config schemas, capability flags | Accepted | 2026-08-14 |
 | [010](010-rate-limiting-and-backpressure.md) | Fleet-wide rate limiting & backpressure | Accepted | 2026-08-14 |
+| [011](011-response-cache.md) | Response cache — key design & invalidation | Accepted | 2026-08-14 |

@@ -501,7 +501,7 @@ contract; no prior decision is changed.*
 
 - **Where templates live.** `${{ ... }}` expressions may appear in JSON
   **string values inside a step's `config`** — and only there. Envelope
-  fields (`retry`, `timeout`, `max_wall_clock`) are materialized at
+  fields (`retry`, `timeout`, `max_wall_clock`, `cache`) are materialized at
   instantiation, before any output exists, so they take literals only;
   CEL predicates (`when`/`condition`) have their own variable
   environment; the `ui` block stays engine-opaque; object keys are never
