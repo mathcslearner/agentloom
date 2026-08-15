@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "name": "validation-too-many",
+  "steps": [
+    {
+      "id": "a",
+      "type": "noop",
+      "validation": {
+        "validators": [
+          {
+            "name": "v0"
+          },
+          {
+            "name": "v1"
+          },
+          {
+            "name": "v2"
+          },
+          {
+            "name": "v3"
+          },
+          {
+            "name": "v4"
+          },
+          {
+            "name": "v5"
+          },
+          {
+            "name": "v6"
+          },
+          {
+            "name": "v7"
+          },
+          {
+            "name": "v8"
+          },
+          {
+            "name": "v9"
+          },
+          {
+            "name": "v10"
+          },
+          {
+            "name": "v11"
+          },
+          {
+            "name": "v12"
+          },
+          {
+            "name": "v13"
+          },
+          {
+            "name": "v14"
+          },
+          {
+            "name": "v15"
+          },
+          {
+            "name": "v16"
+          }
+        ]
+      }
+    }
+  ],
+  "edges": []
+}

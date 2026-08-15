@@ -34,9 +34,13 @@ const (
 	// flow (cancel, park, drain — M5.6/5.7). Never retryable.
 	ClassCancelled ErrorClass = "cancelled"
 
-	// ClassValidationFailed is reserved for M11 (ADR-013): output
-	// validation rejected an otherwise-successful result, feeding the
-	// semantic-retry loop. Rejected everywhere until then.
+	// ClassValidationFailed (M11, ADR-013): output validation rejected an
+	// otherwise-successful result, recorded as the attempt outcome and
+	// feeding the semantic-retry loop (11.4). It is an engine-assigned
+	// class (from a chain verdict, not an executor error) and is
+	// deliberately NOT admissible in a step's retry_on — a validation
+	// failure is a semantic retry under its own policy, not a transport
+	// retry (ADR-013 supersedes ADR-006's "unlock in retry_on" note).
 	ClassValidationFailed ErrorClass = "validation_failed"
 )
 

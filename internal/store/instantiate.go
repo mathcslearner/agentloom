@@ -354,19 +354,31 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 				return gen.Run{}, fmt.Errorf("marshaling budget policy of step %q: %w", step.ID, err)
 			}
 		}
+		// The authored output-validation chain is materialized the same way
+		// (ticket 11.1, ADR-013): the engine's validate stage reads it off the
+		// claimed row rather than reparsing the snapshot. NULL when the step
+		// authored no `validation` block — the output is accepted as produced.
+		var validationPolicy json.RawMessage
+		if step.Validation != nil {
+			validationPolicy, err = json.Marshal(step.Validation)
+			if err != nil {
+				return gen.Run{}, fmt.Errorf("marshaling validation policy of step %q: %w", step.ID, err)
+			}
+		}
 		steps[i] = gen.CreateRunStepsParams{
-			RunID:         run.ID,
-			StepID:        step.ID,
-			StepType:      string(step.Type),
-			Config:        config,
-			RetryPolicy:   retryPolicy,
-			Timeout:       timeout,
-			CachePolicy:   cachePolicy,
-			BudgetPolicy:  budgetPolicy,
-			Status:        status,
-			RemainingDeps: p.remaining[step.ID],
-			GraphVersion:  1,
-			UpdatedAt:     args.Now,
+			RunID:            run.ID,
+			StepID:           step.ID,
+			StepType:         string(step.Type),
+			Config:           config,
+			RetryPolicy:      retryPolicy,
+			Timeout:          timeout,
+			CachePolicy:      cachePolicy,
+			BudgetPolicy:     budgetPolicy,
+			ValidationPolicy: validationPolicy,
+			Status:           status,
+			RemainingDeps:    p.remaining[step.ID],
+			GraphVersion:     1,
+			UpdatedAt:        args.Now,
 		}
 	}
 	if _, err := q.Steps().CreateBatch(ctx, steps); err != nil {

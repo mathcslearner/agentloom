@@ -26,6 +26,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
+	"github.com/mathcslearner/agentloom/internal/validate"
 )
 
 // ResponseCache is the engine's seam onto the Redis response-cache store
@@ -77,7 +78,7 @@ type cacheWriteBinding struct {
 // error, a miss) it returns handled=false with a *cacheWriteBinding when the
 // policy writes (nil otherwise), which execute() threads to the write-through
 // after a successful execution.
-func (e *Engine) cacheRead(ctx context.Context, step gen.RunStep, executor exec.Executor, sc exec.StepContext) (bool, *cacheWriteBinding, error) {
+func (e *Engine) cacheRead(ctx context.Context, step gen.RunStep, executor exec.Executor, sc exec.StepContext, chain *validate.Chain) (bool, *cacheWriteBinding, error) {
 	if e.cache == nil {
 		return false, nil, nil
 	}
@@ -157,13 +158,33 @@ func (e *Engine) cacheRead(ctx context.Context, step gen.RunStep, executor exec.
 					slog.Any("error", derr))
 				return false, wb, nil
 			}
-			e.metrics.CacheHit(plabel)
-			logger.InfoContext(ctx, "response cache hit; skipping rate limiter and provider",
-				slog.String("plugin", plabel))
 			// The served attempt records counterfactual usage marked cache_hit
 			// (M10), never a real debit; a hit never touches the rate limiter.
 			out.Usage = markCacheHit(out.Usage)
-			return true, nil, e.completeSuccess(ctx, step, out)
+			// Re-validate the stored output under the current chain (ticket
+			// 11.1, ADR-013): validity is a property of the output under
+			// today's chain, and the cache key does not cover the validation
+			// envelope — so a stored-but-now-invalid output is re-executed,
+			// not served. A pass (or no chain) serves the hit; a fail or a
+			// validator error falls through to the executor (a fresh output
+			// re-validates and, on a write policy, overwrites the entry).
+			verdict, vErr := e.runChain(ctx, chain, out)
+			if vErr != nil {
+				e.metrics.CacheBypass(plabel)
+				logger.WarnContext(ctx, "cache hit but validation errored; re-executing",
+					slog.String("plugin", plabel), slog.Any("error", vErr))
+				return false, wb, nil
+			}
+			if verdict != nil && !verdict.Passed() {
+				e.metrics.CacheBypass(plabel)
+				logger.InfoContext(ctx, "cache hit failed validation; re-executing",
+					slog.String("plugin", plabel), slog.Int("issue_count", len(verdict.Issues)))
+				return false, wb, nil
+			}
+			e.metrics.CacheHit(plabel)
+			logger.InfoContext(ctx, "response cache hit; skipping rate limiter and provider",
+				slog.String("plugin", plabel))
+			return true, nil, e.completeSuccess(ctx, step, out, verdict)
 		}
 	}
 	e.metrics.CacheMiss(plabel)

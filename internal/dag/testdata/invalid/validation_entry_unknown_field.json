@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "validation-entry-unknown-field",
+  "steps": [{"id": "a", "type": "noop", "validation": {"validators": [{"name": "contains", "weight": 2}]}}],
+  "edges": []
+}

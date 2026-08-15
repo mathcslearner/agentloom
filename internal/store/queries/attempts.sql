@@ -9,10 +9,13 @@ RETURNING *;
 -- FinishStepAttempt closes an attempt with its outcome; called by the
 -- completion transitions in the same transaction as the step CAS. Usage
 -- is the provider's token accounting on a successful llm call (ticket
--- 8.6); NULL for every other outcome and step type.
+-- 8.6); NULL for every other outcome and step type. Verdict is the
+-- output-validation chain verdict (ticket 11.1, ADR-013), present on a
+-- succeeded or validation_failed attempt of a step carrying a validation
+-- chain; NULL otherwise.
 -- name: FinishStepAttempt :execrows
 UPDATE step_attempts
-SET outcome = @outcome, error = @error, usage = @usage, finished_at = @finished_at::timestamptz
+SET outcome = @outcome, error = @error, usage = @usage, verdict = @verdict, finished_at = @finished_at::timestamptz
 WHERE run_id = @run_id AND step_id = @step_id AND attempt_no = @attempt_no;
 
 -- name: ListStepAttempts :many

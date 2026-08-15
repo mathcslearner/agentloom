@@ -460,6 +460,36 @@ walkthrough (`docs/plugins.md`) points at.
   corpus in the engine integration suite; `fanout.json`'s retrieve step is
   now the real executor against an empty corpus (offline-green).
 
+### Validator SPI (as built, 11.1)
+
+The fifth and final kind, `validator` (ADR-013), lands its SPI in
+`internal/validate` — the `internal/tools` structure exactly: a leaf
+package importing `internal/plugin` (manifest vocabulary) and `internal/dag`
+(ADR-006 error classes), never `internal/exec` or the engine. `Validator`
+is `Manifest() + Validate(ctx, Input) (Verdict, error)`; `validate.Registry`
+is the typed facade over `plugin.Registry` (kind validator) that **compiles
+each validator's config JSON Schema once at registration** (nil schema
+rejected — a no-config validator declares the empty object via
+`EmptyConfigSchema`) and exposes `ValidateConfig`, the pre-flight gate the
+engine's validate stage calls before running a validator. Typed errors
+mirror `tools`: `*validate.Error{Validator, Class}` (transient/permanent —
+a *transport* failure of the validation stage, distinct from a fail
+verdict), `*UnknownValidatorError`, `*ConfigValidationError`; secret hygiene
+is structural (no error field holds an output).
+
+Capability flags: a validator is never `side_effectful` (a mutating
+validator would break re-validation on retry and cache hit); the
+deterministic validators (11.2) are `cacheable`, and the `llm_judge` (11.5)
+is `cost_bearing` — which the engine reads to order the chain cheap-first
+and to attribute judge cost as overhead (ADR-012 rule 4). **11.1 ships the
+SPI with no built-in validators** (`validate.NewBuiltins()` is empty), so
+the builtin flag table (§ "Capability flags") gains no validator rows yet;
+11.2 registers `json_schema`, `regex`, `contains`, `cel`, `numeric_range`,
+and 11.5 adds `llm_judge`. `cmd/worker` wires the (empty) registry via
+`engine.WithValidators`; `cmd/api` folds its manifests into `GET /v1/plugins`
+so the kind is listed. The engine's validate stage, verdict persistence, and
+`validation_failed` routing are documented in ADR-013.
+
 ## Consequences
 
 Easier:

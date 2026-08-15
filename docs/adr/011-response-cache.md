@@ -195,6 +195,14 @@ corpus changes"): the corpus is not versioned, so a retrieve opts into caching
 with a short TTL and accepts bounded staleness, or an operator busts
 `retriever:*` after a re-ingest.
 
+**Interplay with output validation (M11, ADR-013):** an output that fails its
+validation chain is **never written to the cache** — the engine's validate
+stage sits between execute and cacheWrite, and a fail verdict skips the write.
+And because the validation chain is **not** a cache-key component (a definition
+can tighten a validator without changing the request), a cache **hit** is
+**re-validated** under the current chain: a stored-but-now-invalid output is
+re-executed, not served. A passing hit still short-circuits the provider call.
+
 ### Storage — write-through Redis, with a size cap
 
 Entries live in **Redis, not Postgres**, written through on a miss (the value

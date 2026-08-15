@@ -184,6 +184,15 @@ const (
 	// against the retry budget (the step was never executed), decided before
 	// the executor runs. Routed running → ready; unpark re-dispatches it.
 	AttemptOutcomeBudgetExceeded = "budget_exceeded"
+	// AttemptOutcomeValidationFailed: the executor succeeded but the output
+	// failed its validation chain (ticket 11.1, ADR-013). Unlike the
+	// administrative outcomes above, this is a *genuine* ADR-006 error class
+	// (dag.ClassValidationFailed) — the attempt ran and spent — but it is
+	// still excluded from the transport retry budget (CountCountedFailures
+	// counts transient/timeout only): a validation failure retries under its
+	// own semantic budget (11.4), not the transport one. In 11.1 it routes
+	// terminal (dead-letter, source retries_exhausted).
+	AttemptOutcomeValidationFailed = "validation_failed"
 )
 
 // Event types written by run instantiation (2.5) and the guarded

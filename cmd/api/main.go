@@ -48,6 +48,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/retrieval/pgfts"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/tools"
+	"github.com/mathcslearner/agentloom/internal/validate"
 	"github.com/mathcslearner/agentloom/internal/version"
 )
 
@@ -204,6 +205,16 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 		return fmt.Errorf("configuring retrievers: %w", err)
 	}
 	plugins = append(plugins, retrievers.Manifests()...)
+
+	// Output validators (ticket 11.1, ADR-013): the validator-kind plugins
+	// the fleet's validate stage runs. Empty in 11.1 (no built-ins ship yet
+	// — 11.2 fills it); the listing shape is present so a client sees the
+	// kind. WithPlugins re-sorts the combined slice into (kind, name) order.
+	validators, err := validate.NewBuiltins()
+	if err != nil {
+		return fmt.Errorf("configuring validators: %w", err)
+	}
+	plugins = append(plugins, validators.Manifests()...)
 
 	// Response-cache ops surface (ticket 9.6, ADR-011): the admin bust/stats
 	// endpoints operate over a redisstore built on the shared client, the

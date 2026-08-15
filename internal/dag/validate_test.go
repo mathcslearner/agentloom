@@ -163,6 +163,14 @@ var structuralCases = map[string][]issueRef{
 	"max_wall_clock_bad_bounds.json": {
 		{dag.CodeMaxWallClockInvalid, "max_wall_clock"},
 	},
+	"validation_bad_chain.json": {
+		{dag.CodeValidationFieldRequired, "steps[0].validation.validators"},
+		{dag.CodeValidationFieldInvalid, "steps[1].validation.validators[0].name"},
+		{dag.CodeValidationFieldInvalid, "steps[2].validation.validators[0].target"},
+	},
+	"validation_too_many.json": {
+		{dag.CodeValidationFieldInvalid, "steps[0].validation.validators"},
+	},
 	"name_too_long.json": {{dag.CodeLimitExceeded, "name"}},
 	"expr_too_long.json": {{dag.CodeLimitExceeded, "edges[0].when"}},
 	"when_syntax_error.json": {

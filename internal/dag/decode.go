@@ -214,14 +214,34 @@ func decodeStep(raw json.RawMessage, path string, errs *errList) Step {
 	if budgetRaw, present := m["budget"]; present {
 		step.Budget = decodeBudget(budgetRaw, path+".budget", errs)
 	}
+	if validationRaw, present := m["validation"]; present {
+		step.Validation = decodeValidation(validationRaw, path+".validation", errs)
+	}
 	for _, k := range sortedKeys(m) {
 		switch k {
-		case "id", "type", "config", "retry", "timeout", "cache", "budget":
+		case "id", "type", "config", "retry", "timeout", "cache", "budget", "validation":
 		default:
 			errs.add(path+"."+k, "unknown field")
 		}
 	}
 	return step
+}
+
+// decodeValidation decodes a step's output-validation chain (ADR-013). Like
+// decodeBudget the codec level enforces shape only — unknown fields
+// (including 11.4's not-yet-admissible max_attempts/feedback keys) and
+// mistyped values; the non-empty-chain rule, the name shape, the target
+// syntax, and the chain-length bound are structural validation (Validate).
+func decodeValidation(raw json.RawMessage, path string, errs *errList) *ValidationPolicy {
+	var vp ValidationPolicy
+	strictUnmarshal(raw, &vp, path, errs)
+	// Each validator's opaque config is compacted so the in-memory value is
+	// canonical and the definition round-trips losslessly (the ToolConfig.
+	// Input precedent — Encode canonicalizes the whole document).
+	for i := range vp.Validators {
+		compactRaw(&vp.Validators[i].Config)
+	}
+	return &vp
 }
 
 // decodeBudget decodes a step's budget caps (ADR-012). Like decodeCache the

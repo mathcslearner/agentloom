@@ -5960,3 +5960,152 @@ store/engine/api integration suites green (cost-bearing runs now carry an extra
 **Deferred:** the `cost_updated` events are durable but have **no read API and
 no pub/sub** — the event-feed endpoint and live publish path are M16 (ADR-018),
 and the run-header cost ticker/meter UI is M18.4.
+
+## Milestone 11 — Output validation & semantic retries
+
+### 11.1 — ADR-013 & validator SPI ✅
+
+M11's differentiator is a validator chain on step outputs plus the semantic
+retry loop that repairs failures with a critique-augmented prompt. 11.1 lays
+the whole foundation: the validator SPI, the verdict model, the
+definition-contract chain config, and — unlike the pure "contract half"
+openers (9.1/9.4/10.1) — the engine `validate` stage that actually persists a
+verdict per attempt and routes a failing verdict to the `validation_failed`
+outcome. It has to ship the stage, because the 11.1 acceptance criterion
+"verdict persistence visible in run status API" requires something to *write* a
+verdict; 11.2 (built-in validators), 11.3 (JSON repair), 11.4 (the semantic
+retry loop), 11.5 (llm_judge), and 11.6 (quality metrics) build on it
+additively. **One migration (0018), no new config var, no new metric.**
+
+**ADR-013 (`docs/adr/013-output-validation-and-semantic-retries.md`).** Records
+the validator SPI, the verdict model, the chain config, the engine stage's
+placement, and the **routing decision table** (the required deliverable):
+transport failure vs throttle vs budget vs validation failure, each decided by
+a different signal, counted against a different budget, and re-dispatched under
+a different reason. The two axes that separate validation from "just another
+retry class": what the re-attempt *sends* (identical for transport/throttle/
+budget; a different, feedback-augmented request for validation) and which
+budget bounds it (transport for retries, none for the administrative outcomes,
+semantic for validation). Cross-amends ADR-006 (the `validation_failed` row and
+its M11 note — the class is added as an outcome but **not** unlocked in
+`retry_on`, revising ADR-006's earlier expectation: validation gets its own
+policy so the transport and semantic budgets stay disjoint), ADR-009 (a
+"Validator SPI (as built, 11.1)" section), ADR-011 (invalid outputs never
+cached; cache hits re-validated), ADR-012 (rule 5 amended — a validation_failed
+attempt *has* usage and ledgers). Index row in `docs/adr/README.md`.
+
+**The leaf package `internal/validate`** — the fifth and final ADR-009
+kind-owning package, structured exactly like `internal/tools` (imports
+`internal/plugin` + `internal/dag` + jsonschema, never exec/engine):
+- `validate.go` — the `Validator` interface (`Manifest() + Validate(ctx,
+  Input) (Verdict, error)`), the `Input` carrying the whole output, the
+  targeted `Value`, the decoded config, the semantic attempt, and a logger;
+  `ConfigSchema` (invopop reflector, the `tools.argsSchema` settings) and
+  `EmptyConfigSchema` (a no-config validator declares `{}` explicitly).
+- `verdict.go` — `Verdict{schema_version, status, score?, issues[],
+  results[]}`, `Issue{validator, code, path, message}`, `ValidatorResult`, the
+  status enum, `PassVerdict`/`FailVerdict`/`Marshal`. The persisted contract.
+- `errors.go` — `*Error{Validator, Class}` (a *transport* failure of the
+  validation stage, transient/permanent — distinct from a fail verdict) +
+  `Transientf`/`Permanentf`, `*UnknownValidatorError`, `*ConfigValidationError`;
+  secret hygiene structural (no payload field), ctx errors unwrapped.
+- `registry.go` — the typed facade over `plugin.Registry` (kind validator);
+  **compiles each config schema once at registration** (nil rejected) and
+  exposes `ValidateConfig` (the pre-flight gate; absent config validates as
+  `{}` so a no-config validator accepts it while a required-field one rejects);
+  `NewBuiltins()` is **empty in 11.1** (11.2 fills it).
+- `chain.go` — `Resolve(reg, policy, stepType) (*Chain, error)` (the pre-flight:
+  unknown validator / bad config → typed permanent errors; computes each
+  entry's effective target — `/text` default for llm-family) and `Chain.Run`
+  (the chain semantics: **all cheap validators run** for a full critique, then
+  cost-bearing ones only if every cheap one passed — cheap-first; chain fails
+  if any fails; score = min; issues concatenated; a validator error aborts the
+  chain). Includes a minimal RFC 6901 JSON-pointer resolver — a target that
+  does not resolve is a **fail verdict** (`code: target_not_found`), never a
+  panic or a transport error.
+
+**The `dag` contract** — `internal/dag/validation.go` (`ValidationPolicy{
+Validators []ValidatorSpec}`, `ValidatorSpec{Name, Config, Target}`,
+`MaxValidators = 16`, `pluginNameRe`, `checkJSONPointer`); `Step.Validation`
+on the envelope; `decodeValidation` (strict decode — rejects 11.4's reserved
+`max_attempts`/`feedback` keys, the ADR-006 reservation discipline — and
+compacts each opaque config so the definition round-trips losslessly);
+`checkValidation` under new codes `validation_field_required`/
+`validation_field_invalid` (≥1 validator, name shape, JSON-pointer syntax,
+chain-length cap); regenerated JSON Schema; both kitchen sinks carry a
+validation chain (an entry with an explicit target) pinned by the extended
+`TestExampleKitchenSinkCoversEveryConstruct`; four decode-corpus fixtures and
+two structural fixtures added. The `retry_on` rejection message for
+`validation_failed` changed from "reserved until M11" to "configure semantic
+retries via the validation policy, not retry_on".
+
+**The store** — migration 0018: `run_steps.validation_policy JSONB` (materialized
+at instantiation like `cache_policy`), `step_attempts.verdict JSONB` (the 0012
+`usage` precedent), and widened `step_attempts.outcome` + `dead_letters.class`
+CHECKs adding `validation_failed`. `finishAttempt` grew a `verdict` param
+threaded through all eight call sites; `SucceedStepArgs.Verdict` and
+`DeadLetterStepArgs.{Usage,Verdict}` (a validation_failed dead-letter carries
+both — the provider billed); `AttemptOutcomeValidationFailed`. `FinishStepAttempt`
++ the `CreateRunStep(s)` inserts gained the columns; sqlc regenerated; the
+migrate round-trip test bumped to 18.
+
+**The engine** — `engine/validate.go`: `resolveChain` (pre-flight, after
+renderConfig and **before cacheRead/any spend** — a corrupt policy / unknown
+validator / bad config is a permanent failure before money is spent);
+`runChain`; `completeValidationFailure` (the terminal route — records the
+`validation_failed` attempt with usage + verdict, meters the spent cost via the
+reused `priceAttempt`/`ApplyAttemptCost`, dead-letters source
+`retries_exhausted`, applies the run's `on_failure` disposition; on a cancelling
+run settles cancelled instead); `validatorErrorClass`. The stage is wired into
+`execute()` (claim.go) **after a successful execute and before cacheWrite** —
+so an invalid output is never cached (ADR-011); a fail verdict →
+`completeValidationFailure`, a validator error → `completeFailure` with the
+carried class, a pass → cacheWrite + `completeSuccess`. `completeSuccess` grew a
+`verdict *validate.Verdict` param (marshaled onto the attempt like usage —
+drop-with-warning on marshal failure, since a passing verdict is informational;
+the failing path treats a marshal failure as a permanent failure, the verdict
+being load-bearing evidence). The **cache-hit path re-validates**: `cacheRead`
+takes the chain and runs it on a hit — a pass serves (short-circuiting the
+provider), a fail or validator error falls through to re-execute (a
+stored-but-now-invalid output is re-executed, not served — the cache key does
+not cover the validation envelope). New `engine.WithValidators` seam (nil = a
+step with no chain runs unchanged, a step that authored one fails permanent at
+resolve). `cmd/worker` wires the (empty) registry; `cmd/api` folds its
+manifests into `GET /v1/plugins`.
+
+**The API** — `AttemptView.Verdict json.RawMessage` (+ the run-view literal in
+`runs.go`); OpenAPI `Verdict`/`VerdictIssue`/`ValidatorResult` components, the
+`AttemptOutcome` enum gained `validation_failed` **and the pre-existing-missing
+`budget_exceeded`** (a 0017 drift, fixed in the same pass); still lints 100/100.
+
+**Non-obvious decisions.** (1) 11.1 ships the engine stage, not just the SPI —
+the "verdict visible in run status API" criterion demands a producer. (2)
+Validation failure is *not* a `retry_on` class — it retries a different
+request under a separate budget, so ADR-013 gives it its own policy instead of
+ADR-006's forecast "unlock in retry_on". (3) A cache hit is re-validated, not
+served-blind — validity depends on the current chain, not the key. (4) A
+missing target is a fail verdict, not an error — a content problem the semantic
+retry can fix. (5) An absent chain-entry config validates as `{}` (a no-config
+validator accepts it; a required-field one rejects) rather than `null` (the
+tools convention), because "no config key" means "empty config" for a
+validator. (6) DLQ source `retries_exhausted` (not a new source) — the semantic
+budget is implicitly one attempt in 11.1, so 11.4's "DLQ for exhausted semantic
+retries" continues the same source unchanged.
+
+**Verified.** `go build ./...`, `make generate` (schema + sqlc, no diff after
+commit), `make lint` (0 issues module-wide), `make openapi-lint` (100/100), the
+full unit suite green (`internal/validate` race-clean), and — against the
+compose DB at schema 18 (`make migrate-up`) — the store, engine, and api
+integration suites green. New integration tests (`internal/engine/
+validate_integration_test.go`, `internal/api/validation_integration_test.go`):
+verdict persisted on pass (+ visible on `GET /v1/runs/{id}`), validation
+failure → `validation_failed` outcome + verdict + usage + DLQ
+(`retries_exhausted`/`validation_failed`), invalid output never cached
+(provider re-called), unknown validator permanent with **zero** provider calls,
+validator error routes as a transport (permanent) failure not a fail verdict,
+and cache-hit re-validation (provider once, validator twice).
+
+**Deferred:** no built-in validators yet (`validate.NewBuiltins()` empty —
+11.2); no semantic-retry loop (a failing verdict dead-letters on the first
+attempt — 11.4); no `llm_judge` / overhead cost (11.5); no quality metrics
+(11.6).

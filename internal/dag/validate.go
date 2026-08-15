@@ -65,6 +65,8 @@ const (
 	CodeCacheFieldInvalid       ValidationCode = "cache_field_invalid"
 	CodeBudgetFieldRequired     ValidationCode = "budget_field_required"
 	CodeBudgetFieldInvalid      ValidationCode = "budget_field_invalid"
+	CodeValidationFieldRequired ValidationCode = "validation_field_required"
+	CodeValidationFieldInvalid  ValidationCode = "validation_field_invalid"
 	CodeLimitExceeded           ValidationCode = "limit_exceeded"
 	CodeCycle                   ValidationCode = "cycle_detected"
 	CodeLoopEdgeNotAncestor     ValidationCode = "loop_edge_not_ancestor"
@@ -227,8 +229,44 @@ func (v *validator) checkSteps(def *Definition) map[string]int {
 		v.checkTimeout(path, s.Timeout)
 		v.checkCache(path, s.Cache)
 		v.checkStepBudget(path, s.Type, s.Budget)
+		v.checkValidation(path, s.Validation)
 	}
 	return index
+}
+
+// checkValidation enforces the output-validation chain bounds (ADR-013,
+// ticket 11.1). The codec already rejected unknown fields (including
+// 11.4's reserved keys) and mistyped values; here the non-empty-chain
+// rule, each validator name's shape, each target's JSON-pointer syntax,
+// and the chain-length bound. The *existence* of a named validator is not
+// checked here — a definition may name validators a given worker build has
+// not registered, resolved at claim (the tool-args precedent). A nil chain
+// means the `validation` key was absent, nothing to check.
+func (v *validator) checkValidation(path string, vp *ValidationPolicy) {
+	if vp == nil {
+		return
+	}
+	path += ".validation"
+	if len(vp.Validators) == 0 {
+		v.add(CodeValidationFieldRequired, path+".validators", "at least one validator is required when a validation block is present")
+		return
+	}
+	if len(vp.Validators) > MaxValidators {
+		v.add(CodeValidationFieldInvalid, path+".validators", "must have at most %d validators, got %d", MaxValidators, len(vp.Validators))
+	}
+	for i, spec := range vp.Validators {
+		entry := fmt.Sprintf("%s.validators[%d]", path, i)
+		if spec.Name == "" {
+			v.add(CodeValidationFieldRequired, entry+".name", "validator name is required")
+		} else if !pluginNameRe.MatchString(spec.Name) {
+			v.add(CodeValidationFieldInvalid, entry+".name", "validator name %q does not match %s", spec.Name, pluginNameRe)
+		}
+		if spec.Target != "" {
+			if err := checkJSONPointer(spec.Target); err != nil {
+				v.add(CodeValidationFieldInvalid, entry+".target", "invalid JSON pointer: %v", err)
+			}
+		}
+	}
 }
 
 // checkRunBudget enforces the run-level budget bounds (ADR-012): a present
@@ -341,9 +379,10 @@ func (v *validator) checkMaxWallClock(val string) {
 // and duration bounds apply, plus which classes `retry_on` may name —
 // only the retryable subset (transient, timeout): permanent and
 // cancelled are never retryable by construction, and validation_failed
-// is reserved until M11 wires the semantic-retry loop. Unknown class
-// strings are re-checked so hand-built definitions (which never pass
-// the codec) report cleanly.
+// is a semantic retry under the step's validation policy (ADR-013), not a
+// transport retry, so it stays rejected here. Unknown class strings are
+// re-checked so hand-built definitions (which never pass the codec)
+// report cleanly.
 func (v *validator) checkRetry(path string, rp *RetryPolicy) {
 	if rp == nil {
 		return
@@ -379,7 +418,7 @@ func (v *validator) checkRetry(path string, rp *RetryPolicy) {
 		switch c {
 		case ClassTransient, ClassTimeout:
 		case ClassValidationFailed:
-			v.add(CodeRetryFieldInvalid, entry, "%q is reserved for semantic retries (M11, ADR-013) and cannot be used yet", string(c))
+			v.add(CodeRetryFieldInvalid, entry, "%q is not a transport retry class — configure semantic retries via the step's validation policy (ADR-013), not retry_on", string(c))
 		case ClassPermanent, ClassCancelled:
 			v.add(CodeRetryFieldInvalid, entry, "%q is never retryable", string(c))
 		default:

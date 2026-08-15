@@ -32,6 +32,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/queue"
 	"github.com/mathcslearner/agentloom/internal/ratelimit/resource"
 	"github.com/mathcslearner/agentloom/internal/store"
+	"github.com/mathcslearner/agentloom/internal/validate"
 )
 
 // Default requeue-math knobs for the throttle backoff (ADR-010): the delay
@@ -173,6 +174,13 @@ type Engine struct {
 	// config.Cost.UnknownModelPolicy here. Post-call ledger pricing always
 	// uses PolicyEstimate regardless (10.2 — never fail a succeeded attempt).
 	unknownModelPolicy cost.UnknownModelPolicy
+	// validators, when set, is the ADR-013 validator registry the output-
+	// validation stage (ticket 11.1) resolves a step's chain against. Nil
+	// means no validation support wired: a step that authored no validation
+	// chain runs unchanged, and a step that DID author one fails permanent at
+	// resolve time (the named validators cannot exist) — the same convention
+	// a nil llm/tool/retrieval registry uses.
+	validators *validate.Registry
 }
 
 // Option customizes an Engine.
@@ -310,6 +318,15 @@ func WithPricing(cat *cost.Catalog) Option {
 // PolicyFail; post-call ledger pricing always estimates (10.2).
 func WithUnknownModelPolicy(p cost.UnknownModelPolicy) Option {
 	return func(e *Engine) { e.unknownModelPolicy = p }
+}
+
+// WithValidators sets the ADR-013 validator registry the output-validation
+// stage resolves a step's chain against (ticket 11.1) — cmd/worker wires the
+// registry it builds here. Nil (the default) disables validation support: a
+// step with no chain runs unchanged, and a step that authored a chain fails
+// permanent at resolve time (its named validators cannot exist).
+func WithValidators(reg *validate.Registry) Option {
+	return func(e *Engine) { e.validators = reg }
 }
 
 // New builds an Engine over the given store and executor registry.

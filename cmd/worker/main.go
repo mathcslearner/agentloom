@@ -46,6 +46,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/retrieval/pgfts"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/tools"
+	"github.com/mathcslearner/agentloom/internal/validate"
 	"github.com/mathcslearner/agentloom/internal/version"
 )
 
@@ -239,6 +240,14 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		slog.Int("tools", len(toolReg.Names())),
 		slog.Int("retrievers", len(retrievers.Names())),
 		slog.Bool("test_executors", cfg.Worker.TestExecutors))
+	// Output validators (ticket 11.1, ADR-013): the validator-kind plugins
+	// the engine's validate stage resolves a step's chain against. Empty in
+	// 11.1 (no built-ins ship yet — 11.2 fills it); a step naming a validator
+	// then fails permanent at resolve time.
+	validators, err := validate.NewBuiltins()
+	if err != nil {
+		return fmt.Errorf("building validator registry: %w", err)
+	}
 	// Per-step log capture (ticket 7.4): the sink tees every executor's
 	// StepContext.Logger into the step_logs store; its flusher runs on
 	// loopCtx below so lines from steps finishing during the consumer's
@@ -257,6 +266,9 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		// catalog prices each cost-bearing step's pre-flight estimate; the
 		// unknown-model policy governs the fail-closed pre-flight gate.
 		engine.WithUnknownModelPolicy(unknownModelPolicy),
+		// Output validation (ticket 11.1, ADR-013): the validate stage
+		// resolves and runs a step's chain against this registry.
+		engine.WithValidators(validators),
 	}
 	if resourceLimiter != nil {
 		engineOpts = append(engineOpts,

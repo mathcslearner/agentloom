@@ -1,0 +1,144 @@
+//go:build integration
+
+package api_test
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/mathcslearner/agentloom/internal/api"
+	"github.com/mathcslearner/agentloom/internal/engine"
+	"github.com/mathcslearner/agentloom/internal/exec"
+	"github.com/mathcslearner/agentloom/internal/llm"
+	"github.com/mathcslearner/agentloom/internal/plugin"
+	"github.com/mathcslearner/agentloom/internal/queue"
+	"github.com/mathcslearner/agentloom/internal/queue/queuetest"
+	"github.com/mathcslearner/agentloom/internal/store"
+	"github.com/mathcslearner/agentloom/internal/store/storetest"
+	"github.com/mathcslearner/agentloom/internal/validate"
+)
+
+// Ticket 11.1 acceptance: verdict persistence is visible in the run status
+// API. A validated llm step runs through the engine on the mock provider; a
+// GET /v1/runs/{id} then carries the passing verdict on the attempt.
+
+// apiPassValidator is a minimal in-test validator that always passes.
+type apiPassValidator struct{}
+
+func (apiPassValidator) Manifest() plugin.Manifest {
+	return plugin.Manifest{
+		Kind: plugin.KindValidator, Name: "api_ok", Version: "1.0.0",
+		Capabilities: plugin.Capabilities{Cacheable: true},
+		ConfigSchema: validate.EmptyConfigSchema(),
+	}
+}
+
+func (apiPassValidator) Validate(context.Context, validate.Input) (validate.Verdict, error) {
+	return validate.PassVerdict(), nil
+}
+
+func TestRunVerdictVisibleInStatusAPI(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	s := store.NewFromPool(storetest.NewDB(t))
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
+	rootKey := mintTestKey(t)
+	handler, err := api.New(s, time.Now, nil, rootKey, api.RateLimitOptions{})
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	d, err := engine.NewDispatcher(s, h.Queue(), engine.DispatcherConfig{
+		Interval: 10 * time.Millisecond, Batch: 16,
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	dctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	t.Cleanup(func() { cancel(); <-done })
+	go func() { defer close(done); d.Run(dctx) }()
+
+	providers, err := llm.NewRegistryFromKeys(llm.ProviderKeys{Mock: &llm.MockConfig{}})
+	if err != nil {
+		t.Fatalf("NewRegistryFromKeys: %v", err)
+	}
+	vreg, err := validate.NewRegistry(apiPassValidator{})
+	if err != nil {
+		t.Fatalf("validate.NewRegistry: %v", err)
+	}
+	reg, err := exec.NewRegistry(exec.NewLLMExecutor(providers))
+	if err != nil {
+		t.Fatalf("exec.NewRegistry: %v", err)
+	}
+	eng, err := engine.New(s, reg, "worker-a",
+		engine.WithDispatchNudge(d.Nudge), engine.WithValidators(vreg))
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	h.Spawn("worker-a", eng.Handle, queue.ConsumerConfig{Block: 500 * time.Millisecond, Batch: 1})
+
+	def := `{
+		"schema_version": 1,
+		"name": "validated-run",
+		"steps": [
+			{"id": "gen", "type": "llm",
+			 "config": {"model": "mock/sim-1", "prompt": "produce output", "max_tokens": 64, "temperature": 0},
+			 "validation": {"validators": [{"name": "api_ok"}]}}
+		],
+		"edges": []
+	}`
+	var sub api.SubmitRunResponse
+	if status := postJSON(t, srv, rootKey, submitBody(t, []byte(def), `{}`), &sub); status != http.StatusCreated {
+		t.Fatalf("POST /v1/runs = %d, want 201", status)
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	var run api.RunResponse
+	for {
+		if getJSON(t, srv, rootKey, "/v1/runs/"+sub.RunID, &run) != http.StatusOK {
+			t.Fatal("GET run failed mid-watch")
+		}
+		if run.Run.Status != store.RunStatusRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run never finished:\n%+v", run)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if run.Run.Status != store.RunStatusSucceeded {
+		t.Fatalf("run status = %q, want succeeded", run.Run.Status)
+	}
+
+	// Find the gen step's single attempt and assert its verdict is present
+	// and a pass — the 11.1 "verdict visible in run status API" criterion.
+	var verdictRaw json.RawMessage
+	for _, st := range run.Steps {
+		if st.ID != "gen" {
+			continue
+		}
+		if len(st.Attempts) != 1 {
+			t.Fatalf("gen attempts = %d, want 1", len(st.Attempts))
+		}
+		verdictRaw = st.Attempts[0].Verdict
+	}
+	if len(verdictRaw) == 0 {
+		t.Fatal("gen attempt carries no verdict on the wire")
+	}
+	var v validate.Verdict
+	if err := json.Unmarshal(verdictRaw, &v); err != nil {
+		t.Fatalf("unmarshaling wire verdict: %v", err)
+	}
+	if !v.Passed() || v.SchemaVersion != validate.VerdictSchemaVersion {
+		t.Fatalf("wire verdict = %+v, want a pass at schema version %d", v, validate.VerdictSchemaVersion)
+	}
+}

@@ -30,6 +30,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/ratelimit/resource"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
+	"github.com/mathcslearner/agentloom/internal/validate"
 )
 
 // Failpoint stages, in transaction order. Test-only: the completion
@@ -234,7 +235,7 @@ func fanOut(ctx context.Context, q store.Querier, runID uuid.UUID, now time.Time
 // the plan reroutes to completeFailure per ADR-003 (a step-level failure,
 // never a false predicate). The returned error follows the Handle/ACK
 // contract: nil = committed, ACK; non-nil = nothing decided, redeliver.
-func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec.Output) error {
+func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec.Output, verdict *validate.Verdict) error {
 	logger := log.From(ctx)
 
 	// The pre-transaction reads: run params and the out-edge rows are
@@ -282,6 +283,22 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		}
 	}
 
+	// The passing validation verdict (ticket 11.1, ADR-013), when the step
+	// carried a chain: persisted on the attempt row so the run-status API
+	// surfaces it and 11.6's metrics can read it. Nil when the step had no
+	// chain. A marshal failure of this fixed struct is not worth failing a
+	// succeeded step over — log and store NULL (unlike the failing path,
+	// where the verdict is the load-bearing evidence).
+	var verdictJSON json.RawMessage
+	if verdict != nil {
+		if vb, merr := verdict.Marshal(); merr != nil {
+			logger.WarnContext(ctx, "marshaling validation verdict failed; recording no verdict",
+				slog.Any("error", merr))
+		} else {
+			verdictJSON = vb
+		}
+	}
+
 	now := e.now()
 	// The attempt's cost row (ticket 10.2, ADR-012), priced before the
 	// transaction — pure, no database reads. Nil when the attempt ledgers
@@ -308,7 +325,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		cancelling = status == store.RunStatusCancelling
 		if _, err := store.SucceedStep(ctx, q, store.SucceedStepArgs{
 			RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
-			Output: out.Data, Usage: usage, Now: now,
+			Output: out.Data, Usage: usage, Verdict: verdictJSON, Now: now,
 		}); err != nil {
 			// A typed conflict on the terminal CAS is the fence firing:
 			// this worker's claim is no longer current (zombie write,

@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "validation-reserved-key",
+  "steps": [{"id": "a", "type": "noop", "validation": {"validators": [{"name": "contains"}], "max_attempts": 3}}],
+  "edges": []
+}

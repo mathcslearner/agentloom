@@ -590,6 +590,9 @@
         },
         "budget": {
           "$ref": "#/$defs/StepBudget"
+        },
+        "validation": {
+          "$ref": "#/$defs/ValidationPolicy"
         }
       },
       "additionalProperties": false,
@@ -640,6 +643,37 @@
       },
       "additionalProperties": false,
       "type": "object"
+    },
+    "ValidationPolicy": {
+      "properties": {
+        "validators": {
+          "items": {
+            "$ref": "#/$defs/ValidatorSpec"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "validators"
+      ]
+    },
+    "ValidatorSpec": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "config": true,
+        "target": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name"
+      ]
     }
   },
   "title": "agentloom workflow definition",

@@ -110,28 +110,29 @@ type RunEdge struct {
 }
 
 type RunStep struct {
-	RunID         uuid.UUID
-	StepID        string
-	StepType      string
-	Config        json.RawMessage
-	Status        string
-	RemainingDeps int32
-	FiredDeps     int32
-	ClaimID       *uuid.UUID
-	AttemptCount  int32
-	Output        json.RawMessage
-	Error         json.RawMessage
-	GraphVersion  int32
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	StartedAt     *time.Time
-	FinishedAt    *time.Time
-	RetryPolicy   json.RawMessage
-	NextAttemptAt *time.Time
-	Timeout       *string
-	TraceSpan     *string
-	CachePolicy   json.RawMessage
-	BudgetPolicy  json.RawMessage
+	RunID            uuid.UUID
+	StepID           string
+	StepType         string
+	Config           json.RawMessage
+	Status           string
+	RemainingDeps    int32
+	FiredDeps        int32
+	ClaimID          *uuid.UUID
+	AttemptCount     int32
+	Output           json.RawMessage
+	Error            json.RawMessage
+	GraphVersion     int32
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	StartedAt        *time.Time
+	FinishedAt       *time.Time
+	RetryPolicy      json.RawMessage
+	NextAttemptAt    *time.Time
+	Timeout          *string
+	TraceSpan        *string
+	CachePolicy      json.RawMessage
+	BudgetPolicy     json.RawMessage
+	ValidationPolicy json.RawMessage
 }
 
 type SchemaBaseline struct {
@@ -162,6 +163,7 @@ type StepAttempt struct {
 	StartedAt  *time.Time
 	FinishedAt *time.Time
 	Usage      json.RawMessage
+	Verdict    json.RawMessage
 }
 
 type StepLog struct {

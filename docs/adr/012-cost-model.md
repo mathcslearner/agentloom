@@ -181,7 +181,12 @@ unless noted:
    administrative outcome (ADR-005), or an errored provider call carries no
    usage and ledgers nothing. This is deliberately conservative in the same
    direction as 9.3's token reconciliation: we never invent spend for a call
-   that did not bill.
+   that did not bill. *Amended by ADR-013 (M11):* a `validation_failed`
+   attempt is the exception in the other direction — the provider call
+   **did** happen and bill even though output validation rejected the
+   result, so a validation_failed attempt keeps its `usage` and ledgers a
+   `cost_ledger` row exactly like a succeeded one (semantic retries are
+   cost-metered). It is not a no-usage outcome.
 
 6. **Provider-side prompt-cache token pricing is deferred.** `llm.Usage` today
    omits provider-reported cache-read/write token counts (a noted omission);

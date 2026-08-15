@@ -1291,12 +1291,16 @@ components:
       type: string
       description: >
         How an attempt ended: `succeeded`; a judged failure class
-        (`transient`, `permanent`, `timeout` — ADR-006); `cancelled` by
-        run-level control flow; or an administrative outcome outside the
-        taxonomy — `lost` (lease-expiry takeover) or `throttled` (a
-        fleet-wide rate-limit denial deferred the attempt, ADR-010) —
-        neither of which is counted against the retry budget.
-      enum: [succeeded, transient, permanent, timeout, cancelled, lost, throttled]
+        (`transient`, `permanent`, `timeout` — ADR-006); `validation_failed`
+        (the executor succeeded but the output failed its validation chain,
+        ADR-013 — a genuine ADR-006 class, still excluded from the transport
+        retry budget); `cancelled` by run-level control flow; or an
+        administrative outcome outside the taxonomy — `lost` (lease-expiry
+        takeover), `throttled` (a fleet-wide rate-limit denial deferred the
+        attempt, ADR-010), or `budget_exceeded` (the claim's projected spend
+        would exceed the run budget and the run parked, ADR-012) — none of
+        which is counted against the retry budget.
+      enum: [succeeded, transient, permanent, timeout, cancelled, lost, throttled, budget_exceeded, validation_failed]
     Scope:
       type: string
       description: >
@@ -1519,12 +1523,83 @@ components:
                 True when the attempt was served from the response cache
                 (ticket 9.5); the token counts are counterfactual, not
                 spend. Absent on every real (non-cached) attempt.
+        verdict:
+          $ref: "#/components/schemas/Verdict"
         started_at:
           type: string
           format: date-time
         finished_at:
           type: string
           format: date-time
+    Verdict:
+      type: object
+      description: >
+        The output-validation chain verdict for an attempt whose step
+        carried a validation chain (ticket 11.1, ADR-013). Present on a
+        succeeded attempt (a passing verdict) and on a validation_failed
+        attempt (a failing verdict with issues). Absent for unvalidated
+        steps.
+      required: [schema_version, status]
+      properties:
+        schema_version:
+          type: integer
+          description: Verdict schema version (1).
+        status:
+          type: string
+          enum: [pass, fail]
+          description: The chain's overall judgment.
+        score:
+          type: number
+          description: >
+            Overall [0,1] score — the minimum of the per-validator reported
+            scores. Absent when no validator reported a score.
+        issues:
+          type: array
+          description: Every failing validator's issues, in chain order.
+          items:
+            $ref: "#/components/schemas/VerdictIssue"
+        results:
+          type: array
+          description: Per-validator breakdown, one entry per configured validator.
+          items:
+            $ref: "#/components/schemas/ValidatorResult"
+    VerdictIssue:
+      type: object
+      description: One problem a validator found with the output.
+      required: [validator, code, message]
+      properties:
+        validator:
+          type: string
+          description: The validator that raised the issue.
+        code:
+          type: string
+          description: Machine-readable issue code (e.g. type_mismatch, target_not_found).
+        path:
+          type: string
+          description: RFC 6901 JSON pointer into the validated value; empty means the whole value.
+        message:
+          type: string
+          description: Human description of the problem — structure only, never instance values.
+    ValidatorResult:
+      type: object
+      description: One validator's contribution to a chain verdict.
+      required: [name, status, issue_count]
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [pass, fail, skipped, error]
+          description: >
+            This validator's judgment. `skipped` = a cost-bearing validator
+            the chain did not run because a cheaper one already failed.
+        score:
+          type: number
+        issue_count:
+          type: integer
+        duration_ms:
+          type: integer
+          format: int64
     EdgeView:
       type: object
       description: One run edge with its resolution — enough to render the graph and see which paths fired.

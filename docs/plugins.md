@@ -14,7 +14,7 @@ The five plugin kinds and their owning packages:
 | `tool` | `internal/tools` | `Tool` — one `tool`-step capability |
 | `retriever` | `internal/retrieval` | `Retriever` — a `retrieve`-step search backend |
 | `model_provider` | `internal/llm` | `Provider` — an LLM chat backend |
-| `validator` | `internal/validate` (M11) | — |
+| `validator` | `internal/validate` | `Validator` — judges a step output (ADR-013) |
 
 Every kind follows the same shape: a leaf interface package that imports
 only `internal/plugin` (the manifest vocabulary) and `internal/dag` (the
@@ -126,3 +126,86 @@ That is the whole SPI: implement the interface, register in the
 deployables, select from a workflow. The `pg_fulltext` backend in
 `internal/retrieval/pgfts` is ~120 lines over Postgres full-text search and
 is the reference to read alongside this guide.
+
+## Writing a validator plugin (walkthrough)
+
+A validator judges a step's output and returns a **verdict** (pass/fail with
+structured issues) — the substrate for M11's semantic retries
+([ADR-013](adr/013-output-validation-and-semantic-retries.md)). The shape
+mirrors a tool: a manifest whose `ConfigSchema` is generated from the
+validator's own Go config struct (compiled once at registration, enforced
+before the validator runs), plus one `Validate` method.
+
+**1. Implement `validate.Validator`.**
+
+```go
+package myvalidator
+
+import (
+	"context"
+
+	"github.com/mathcslearner/agentloom/internal/plugin"
+	"github.com/mathcslearner/agentloom/internal/validate"
+)
+
+// Config is the validator's config struct; its JSON Schema is generated
+// from these tags and enforced by the framework before Validate runs.
+type Config struct {
+	Substring string `json:"substring"`
+}
+
+type Validator struct{}
+
+func (Validator) Manifest() plugin.Manifest {
+	schema, _ := validate.ConfigSchema(&Config{}) // generated, never hand-written
+	return plugin.Manifest{
+		Kind:         plugin.KindValidator,
+		Name:         "my_validator", // ^[a-z][a-z0-9_]*$, unique per kind
+		Version:      "1.0.0",
+		Capabilities: plugin.Capabilities{Cacheable: true}, // never side_effectful
+		ConfigSchema: schema,
+	}
+}
+
+func (Validator) Validate(ctx context.Context, in validate.Input) (validate.Verdict, error) {
+	// in.Value is the sub-tree the chain entry's `target` selected (the
+	// whole output when absent; /text for llm-family steps). in.Config is
+	// already schema-validated. Return:
+	//   - a PASS verdict when the output is acceptable,
+	//   - a FAIL verdict with issues (codes/paths/messages) otherwise —
+	//     a fail verdict is a *successful* validation with a negative result,
+	//   - a non-nil error ONLY when you cannot judge at all: a
+	//     validate.Permanentf/Transientf (a transport failure of the
+	//     validation stage), or the ctx error UNWRAPPED.
+	return validate.PassVerdict(), nil
+}
+```
+
+**2. Register it in the deployables.** Both `cmd/worker` (which runs the
+validate stage) and `cmd/api` (which lists the catalog) build a
+`validate.Registry`; extend `validate.NewBuiltins` or register directly:
+
+```go
+validators, err := validate.NewRegistry(myvalidator.Validator{})
+```
+
+`cmd/worker` hands it to `engine.WithValidators(validators)`; `cmd/api` folds
+`validators.Manifests()` into `GET /v1/plugins`.
+
+**3. Select it from a workflow.** A step's `validation` envelope names a
+chain of validators, each optionally targeting a JSON-pointer sub-tree:
+
+```json
+{ "id": "gen", "type": "llm", "config": { "model": "mock/sim-1", "prompt": "..." },
+  "validation": { "validators": [
+    { "name": "my_validator", "config": { "substring": "Summary" } },
+    { "name": "json_schema",  "config": { "schema": { "type": "object" } }, "target": "/text" }
+  ] } }
+```
+
+A step naming a validator the fleet did not register, or a config that fails
+its schema, dead-letters `permanent` at claim — **before** the executor runs,
+so nothing is spent. A failing verdict records the `validation_failed`
+outcome (the verdict persisted on the attempt, visible on
+`GET /v1/runs/{id}`) and dead-letters the step; M11.4 adds the semantic-retry
+loop that re-attempts with a feedback-augmented prompt before giving up.

@@ -213,6 +213,19 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		}
 		return rcErr
 	}
+	// Output-validation chain resolution (ticket 11.1, ADR-013): resolve the
+	// step's materialized validation chain against the validator registry
+	// before the cache read and any spend. An unknown validator or a config
+	// that does not match its schema (or a corrupt materialized policy) is a
+	// deterministic permanent failure that must fire before money is spent —
+	// the tool-args gate, lifted to the chain. A step with no chain resolves
+	// to nil (zero validation work below).
+	chain, chErr := e.resolveChain(step)
+	if chErr != nil {
+		logger.ErrorContext(ctx, "step validation chain unresolvable; recording step failure",
+			slog.Any("error", chErr))
+		return e.completeFailure(ctx, step, chErr, dag.ClassPermanent, origin.RunTrace)
+	}
 	// The claim always stamps a claim_id; the guard only keeps a corrupt
 	// row from panicking the journal binding (misuse detection catches the
 	// rest downstream).
@@ -252,7 +265,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	// A miss (or a declined/ineligible policy, or any fail-open) returns a
 	// write binding threaded to the write-through after a successful
 	// execution; steps whose type is not cacheable bypass this entirely.
-	hit, cacheWB, cherr := e.cacheRead(ctx, step, executor, sc)
+	hit, cacheWB, cherr := e.cacheRead(ctx, step, executor, sc, chain)
 	if hit {
 		return cherr
 	}
@@ -278,7 +291,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	if downgraded != nil {
 		sc.Config = downgraded
 		var reReadErr error
-		hit, cacheWB, reReadErr = e.cacheRead(ctx, step, executor, sc)
+		hit, cacheWB, reReadErr = e.cacheRead(ctx, step, executor, sc, chain)
 		if hit {
 			return reReadErr
 		}
@@ -365,15 +378,34 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		// and everything unclassified defaults to transient.
 		return e.completeFailure(ctx, step, execErr, classifyFailure(execErr), origin.RunTrace)
 	}
+	// Output validation (ticket 11.1, ADR-013): run the resolved chain over
+	// the executor's output. It sits here — after a successful execute and
+	// before cacheWrite — because an output that fails its chain must never
+	// be cached (ADR-011). A validator's own error is a transport failure of
+	// the validation stage (routes through the ADR-006 taxonomy); a fail
+	// verdict routes to the validation_failed outcome (dead-letter, 11.1); a
+	// pass (or no chain, verdict nil) proceeds to cacheWrite + success.
+	verdict, vErr := e.runChain(ctx, chain, out)
+	if vErr != nil {
+		if ctx.Err() != nil {
+			// Shutdown during validation — abandon like the executor path.
+			return fmt.Errorf("engine: step abandoned during validation: %w", context.Cause(ctx))
+		}
+		return e.completeFailure(ctx, step, vErr, validatorErrorClass(vErr), origin.RunTrace)
+	}
+	if verdict != nil && !verdict.Passed() {
+		// Invalid output: never cached, dead-lettered as validation_failed.
+		return e.completeValidationFailure(ctx, step, out, *verdict, origin.RunTrace)
+	}
 	// Response cache write-through (ticket 9.5, ADR-011): a successful miss
-	// whose policy writes stores its result for the next identical request.
-	// cacheWB is non-nil only for a cache-eligible, writing step that missed;
-	// every write failure is swallowed (fail-open / oversize skip), so this
-	// never affects the completion.
+	// whose policy writes stores its (validated) result for the next
+	// identical request. cacheWB is non-nil only for a cache-eligible,
+	// writing step that missed; every write failure is swallowed (fail-open
+	// / oversize skip), so this never affects the completion.
 	if cacheWB != nil {
 		e.cacheWrite(ctx, cacheWB, out)
 	}
-	return e.completeSuccess(ctx, step, out)
+	return e.completeSuccess(ctx, step, out, verdict)
 }
 
 // reconcileBinding carries what the middleware needs, after a granted

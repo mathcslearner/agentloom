@@ -146,6 +146,12 @@ type Step struct {
 	// applies). Uniform across step types, so it lives on the step envelope,
 	// not in the per-type config.
 	Budget *StepBudget `json:"budget,omitempty"`
+
+	// Validation is the step's authored output-validation chain (ADR-013,
+	// ticket 11.1); nil when the source document had no validation key (the
+	// output is accepted as produced). Uniform across step types, so it
+	// lives on the step envelope, not in the per-type config.
+	Validation *ValidationPolicy `json:"validation,omitempty"`
 }
 
 // EdgeType distinguishes normal dependency edges from marked loop edges.

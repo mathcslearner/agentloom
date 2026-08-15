@@ -179,7 +179,12 @@ type AttemptView struct {
 	// Usage is the attempt's token accounting, present only on a
 	// successful llm attempt (ticket 8.6): {input_tokens, output_tokens}.
 	// Absent for every other step type and outcome.
-	Usage      json.RawMessage `json:"usage,omitempty"`
+	Usage json.RawMessage `json:"usage,omitempty"`
+	// Verdict is the output-validation chain verdict (ticket 11.1, ADR-013),
+	// present on a succeeded or validation_failed attempt of a step carrying
+	// a validation chain: {schema_version, status, score?, issues[],
+	// results[]}. Absent for every unvalidated step.
+	Verdict    json.RawMessage `json:"verdict,omitempty"`
 	StartedAt  *time.Time      `json:"started_at,omitempty"`
 	FinishedAt *time.Time      `json:"finished_at,omitempty"`
 }

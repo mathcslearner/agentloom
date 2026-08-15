@@ -68,7 +68,7 @@ Every recorded attempt failure carries exactly one **error class**:
 | `permanent` | No number of identical re-executions can succeed: unknown executor type, invalid/corrupt config, a deterministic content failure (CEL evaluation error, unparseable stored state), provider 4xx that is not a rate limit. | never |
 | `timeout` | The attempt exceeded its configured execution timeout (M5.3) and was cancelled by the worker's watchdog — the worker is **alive to report it**, which is what distinguishes a timeout from a crash. | yes (default) |
 | `cancelled` | The attempt was cancelled by run-level control flow: run cancel, park, worker drain handing back work (M5.6/5.7). Not a failure of the step's content. | never |
-| `validation_failed` | **Reserved for M11** (ADR-013): the executor succeeded but output validation rejected the result; the semantic-retry loop re-attempts with a critique-augmented prompt. Until M11 this class is rejected everywhere it could be written or referenced. | M11 |
+| `validation_failed` | **As built in M11** (ADR-013): the executor succeeded but output validation rejected the result. A *genuine* error class (unlike the administrative `lost`/`throttled`/`budget_exceeded`), recorded as the attempt outcome with the verdict persisted, but **excluded from the transport retry budget** and **rejected in `retry_on`** — it retries under its own semantic policy (`validation.max_attempts`, 11.4), not `retry`. See the amended note below: ADR-013 gives validation its own policy rather than unlocking it in `retry_on`. | M11 |
 
 Classes are attempt **outcomes**: `step_attempts.outcome` gains the
 vocabulary `succeeded | transient | permanent | timeout | cancelled`
@@ -729,10 +729,18 @@ sweep + in-flight settlement + reconciler heal, park/unpark with reason
 `step_attempts.outcome` CHECK, the limiter middleware records it and
 re-dispatches through the delayed ZSET (reason `throttle`), reusing 5.2's
 `running → retrying` CAS and overdue-retrying reconciler scan unchanged.
-**M11** — unlocks `validation_failed` in `retry_on` and
-as an outcome. ADR-004's transition matrix and ADR-005's reason
-vocabulary are extended by those tickets exactly as both ADRs
-anticipated; no prior decision changes.
+**M11** (ADR-013, as built 11.1) — adds `validation_failed` as an
+outcome (migration 0018 widens the CHECK; a *genuine* error class, not an
+administrative one). It does **not** unlock `validation_failed` in
+`retry_on`, revising this ADR's earlier expectation: a validation failure
+retries a *different* request (a feedback-augmented prompt) under a
+*separate* budget (`validation.max_attempts`), so folding it into
+`retry_on` would share one counter and one backoff with transport retries.
+ADR-013 gives validation its own policy instead; `retry_on` stays rejecting
+it, and `CountCountedFailures` (transient + timeout only) is unchanged, so
+the transport and semantic budgets are disjoint by construction. ADR-004's
+transition matrix and ADR-005's reason vocabulary are otherwise extended as
+anticipated.
 
 ## Consequences
 

@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "validation-not-object",
+  "steps": [{"id": "a", "type": "noop", "validation": "nope"}],
+  "edges": []
+}

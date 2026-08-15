@@ -28,3 +28,4 @@ are reserved and appear here once the ADR is written.
 | [010](010-rate-limiting-and-backpressure.md) | Fleet-wide rate limiting & backpressure | Accepted | 2026-08-14 |
 | [011](011-response-cache.md) | Response cache — key design & invalidation | Accepted | 2026-08-14 |
 | [012](012-cost-model.md) | Cost model — attribution, estimation & the pricing catalog | Accepted | 2026-08-14 |
+| [013](013-output-validation-and-semantic-retries.md) | Output validation & semantic retries | Accepted | 2026-08-15 |

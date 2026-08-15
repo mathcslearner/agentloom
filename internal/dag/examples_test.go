@@ -308,6 +308,28 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	if !stepRef {
 		t.Error("no ${{ steps.*.output }} template reference in kitchen_sink.json")
 	}
+
+	// Ticket 11.1 construct (ADR-013): a step with an output-validation
+	// chain — at least one that carries an explicit target, so a schema
+	// edit that dropped target handling would fail here.
+	var hasValidation, hasValidationTarget bool
+	for _, s := range def.Steps {
+		if s.Validation == nil || len(s.Validation.Validators) == 0 {
+			continue
+		}
+		hasValidation = true
+		for _, spec := range s.Validation.Validators {
+			if spec.Target != "" {
+				hasValidationTarget = true
+			}
+		}
+	}
+	if !hasValidation {
+		t.Error("no step with a validation chain in kitchen_sink.json")
+	}
+	if !hasValidationTarget {
+		t.Error("no validation chain entry with an explicit target in kitchen_sink.json")
+	}
 }
 
 // TestExampleEchoPipelineCoversTemplateConstructs pins echo_pipeline.json

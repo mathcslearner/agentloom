@@ -75,26 +75,27 @@ type CreateRunEdgesParams struct {
 const createRunStep = `-- name: CreateRunStep :one
 
 INSERT INTO run_steps (run_id, step_id, step_type, config, retry_policy,
-                       timeout, cache_policy, budget_policy, status, remaining_deps, fired_deps,
+                       timeout, cache_policy, budget_policy, validation_policy, status, remaining_deps, fired_deps,
                        graph_version, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy
 `
 
 type CreateRunStepParams struct {
-	RunID         uuid.UUID
-	StepID        string
-	StepType      string
-	Config        json.RawMessage
-	RetryPolicy   json.RawMessage
-	Timeout       *string
-	CachePolicy   json.RawMessage
-	BudgetPolicy  json.RawMessage
-	Status        string
-	RemainingDeps int32
-	FiredDeps     int32
-	GraphVersion  int32
-	UpdatedAt     time.Time
+	RunID            uuid.UUID
+	StepID           string
+	StepType         string
+	Config           json.RawMessage
+	RetryPolicy      json.RawMessage
+	Timeout          *string
+	CachePolicy      json.RawMessage
+	BudgetPolicy     json.RawMessage
+	ValidationPolicy json.RawMessage
+	Status           string
+	RemainingDeps    int32
+	FiredDeps        int32
+	GraphVersion     int32
+	UpdatedAt        time.Time
 }
 
 // Per-run graph copy: run_steps (node side) and run_edges (edge side).
@@ -113,6 +114,9 @@ type CreateRunStepParams struct {
 // budget_policy is the step's authored budget caps, materialized the same
 // way (ticket 10.3, ADR-012); NULL means no `budget` block (only the run
 // budget applies).
+// validation_policy is the step's authored output-validation chain,
+// materialized the same way (ticket 11.1, ADR-013); NULL means no
+// `validation` block (the output is accepted as produced).
 func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (RunStep, error) {
 	row := q.db.QueryRow(ctx, createRunStep,
 		arg.RunID,
@@ -123,6 +127,7 @@ func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (R
 		arg.Timeout,
 		arg.CachePolicy,
 		arg.BudgetPolicy,
+		arg.ValidationPolicy,
 		arg.Status,
 		arg.RemainingDeps,
 		arg.FiredDeps,
@@ -153,28 +158,30 @@ func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (R
 		&i.TraceSpan,
 		&i.CachePolicy,
 		&i.BudgetPolicy,
+		&i.ValidationPolicy,
 	)
 	return i, err
 }
 
 type CreateRunStepsParams struct {
-	RunID         uuid.UUID
-	StepID        string
-	StepType      string
-	Config        json.RawMessage
-	RetryPolicy   json.RawMessage
-	Timeout       *string
-	CachePolicy   json.RawMessage
-	BudgetPolicy  json.RawMessage
-	Status        string
-	RemainingDeps int32
-	FiredDeps     int32
-	GraphVersion  int32
-	UpdatedAt     time.Time
+	RunID            uuid.UUID
+	StepID           string
+	StepType         string
+	Config           json.RawMessage
+	RetryPolicy      json.RawMessage
+	Timeout          *string
+	CachePolicy      json.RawMessage
+	BudgetPolicy     json.RawMessage
+	ValidationPolicy json.RawMessage
+	Status           string
+	RemainingDeps    int32
+	FiredDeps        int32
+	GraphVersion     int32
+	UpdatedAt        time.Time
 }
 
 const getRunStep = `-- name: GetRunStep :one
-SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy FROM run_steps WHERE run_id = $1 AND step_id = $2
+SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy FROM run_steps WHERE run_id = $1 AND step_id = $2
 `
 
 type GetRunStepParams struct {
@@ -208,6 +215,7 @@ func (q *Queries) GetRunStep(ctx context.Context, arg GetRunStepParams) (RunStep
 		&i.TraceSpan,
 		&i.CachePolicy,
 		&i.BudgetPolicy,
+		&i.ValidationPolicy,
 	)
 	return i, err
 }
@@ -334,7 +342,7 @@ func (q *Queries) ListRunEdgesFromStep(ctx context.Context, arg ListRunEdgesFrom
 }
 
 const listRunSteps = `-- name: ListRunSteps :many
-SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy FROM run_steps WHERE run_id = $1 ORDER BY step_id
+SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy FROM run_steps WHERE run_id = $1 ORDER BY step_id
 `
 
 func (q *Queries) ListRunSteps(ctx context.Context, runID uuid.UUID) ([]RunStep, error) {
@@ -369,6 +377,7 @@ func (q *Queries) ListRunSteps(ctx context.Context, runID uuid.UUID) ([]RunStep,
 			&i.TraceSpan,
 			&i.CachePolicy,
 			&i.BudgetPolicy,
+			&i.ValidationPolicy,
 		); err != nil {
 			return nil, err
 		}
@@ -381,7 +390,7 @@ func (q *Queries) ListRunSteps(ctx context.Context, runID uuid.UUID) ([]RunStep,
 }
 
 const listRunStepsByIDs = `-- name: ListRunStepsByIDs :many
-SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy FROM run_steps
+SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy FROM run_steps
 WHERE run_id = $1 AND step_id = ANY($2::text[])
 ORDER BY step_id
 `
@@ -428,6 +437,7 @@ func (q *Queries) ListRunStepsByIDs(ctx context.Context, arg ListRunStepsByIDsPa
 			&i.TraceSpan,
 			&i.CachePolicy,
 			&i.BudgetPolicy,
+			&i.ValidationPolicy,
 		); err != nil {
 			return nil, err
 		}

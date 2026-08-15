@@ -161,10 +161,11 @@ func (FailurePolicy) JSONSchema() *jsonschema.Schema {
 }
 
 // JSONSchema declares the error-class enum in the generated schema. The
-// full vocabulary is published; which classes `retry_on` admits today
-// (the retryable subset — validation_failed is reserved for M11) is
-// validation, like the branch edge-firing rule (ADR-003: the schema is
-// documentation-grade, Decode and Validate are the authority).
+// full vocabulary is published; which classes `retry_on` admits (the
+// retryable subset — validation_failed is a semantic retry under the
+// validation policy, not a transport class, ADR-013) is validation, like
+// the branch edge-firing rule (ADR-003: the schema is documentation-grade,
+// Decode and Validate are the authority).
 func (ErrorClass) JSONSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "string", Enum: enumAny(errorClasses)}
 }
