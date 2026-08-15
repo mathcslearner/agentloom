@@ -221,6 +221,16 @@ func TestDecodeTypedConfigs(t *testing.T) {
 	if llm.MaxTokens != 1024 || len(llm.Messages) != 1 {
 		t.Errorf("draft config not fully decoded: %+v", llm)
 	}
+	if len(llm.ModelFallbacks) != 2 {
+		t.Fatalf("draft model_fallbacks = %d, want 2", len(llm.ModelFallbacks))
+	}
+	if llm.ModelFallbacks[0].Model != "anthropic/claude-haiku-4-5" ||
+		llm.ModelFallbacks[0].AtBudgetFraction == nil || *llm.ModelFallbacks[0].AtBudgetFraction != 0.8 {
+		t.Errorf("draft model_fallbacks[0] = %+v, want haiku @0.8", llm.ModelFallbacks[0])
+	}
+	if llm.ModelFallbacks[1].Model != "openai/gpt-5-mini" || llm.ModelFallbacks[1].AtBudgetFraction != nil {
+		t.Errorf("draft model_fallbacks[1] = %+v, want gpt-5-mini with no threshold", llm.ModelFallbacks[1])
+	}
 
 	join, ok := byID["gather"].Config.(*dag.JoinConfig)
 	if !ok || join.Mode != dag.JoinAll {

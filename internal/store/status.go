@@ -258,4 +258,12 @@ const (
 	// spend budget (ticket 10.3). The payload carries the previous and new
 	// budget in nano-USD.
 	EventRunBudgetUpdated = "run_budget_updated"
+	// EventModelDowngraded: the claim-time budget check routed an llm step to
+	// a cheaper model in its model_fallbacks chain (ticket 10.4, ADR-012).
+	// The payload (ModelDowngradedEvent) carries the from/to models and
+	// resources, the trigger, and the spend/budget projection. Appended by
+	// RecordModelDowngrade in its own fenced transaction before the
+	// re-targeted attempt runs; the used model is durable on the attempt's
+	// cost-ledger resource and its output, so no state transition is needed.
+	EventModelDowngraded = "model_downgraded"
 )

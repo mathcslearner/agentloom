@@ -185,3 +185,96 @@ type runBudgetPayload struct {
 	PreviousNanoUSD int64 `json:"previous_nano_usd"`
 	BudgetNanoUSD   int64 `json:"budget_nano_usd"`
 }
+
+// Model-downgrade trigger kinds, recorded on the model_downgraded event's
+// `trigger` field (ticket 10.4, ADR-012).
+const (
+	// DowngradeTriggerThreshold: the run's spend crossed the fallback's
+	// at_budget_fraction soft threshold.
+	DowngradeTriggerThreshold = "budget_threshold"
+	// DowngradeTriggerProjection: the current model's projected spend
+	// (spend + estimate) would exceed a budget, so the claim was routed to a
+	// cheaper model that fits — the hard trigger.
+	DowngradeTriggerProjection = "budget_projection"
+)
+
+// ModelDowngradedEvent is the model_downgraded event payload (ticket 10.4,
+// ADR-012): which models the claim moved between, why, and the projection
+// that made the decision. Money fields are integer nano-USD.
+type ModelDowngradedEvent struct {
+	StepID    string `json:"step_id"`
+	AttemptNo int32  `json:"attempt"`
+	// FromModel/ToModel are the authored model ids (as written in the step
+	// config, e.g. "anthropic/claude-opus-5" → "anthropic/claude-haiku-4-5").
+	FromModel string `json:"from_model"`
+	ToModel   string `json:"to_model"`
+	// FromResource/ToResource are the resolved ADR-010 pricing keys
+	// ("anthropic:...", "mock:cheap") the two models bill to.
+	FromResource string `json:"from_resource"`
+	ToResource   string `json:"to_resource"`
+	// Trigger is why the downgrade fired: budget_threshold | budget_projection.
+	Trigger string `json:"trigger"`
+	// Limit is which budget the projection trigger was measured against
+	// (run | step_usd); empty for a pure threshold trigger.
+	Limit string `json:"limit,omitempty"`
+	// ThresholdFraction is the fallback's at_budget_fraction (threshold
+	// trigger only).
+	ThresholdFraction float64 `json:"threshold_fraction,omitempty"`
+	// SpentNanoUSD / BudgetNanoUSD describe the run's spend and budget at the
+	// decision; FromEstimateNanoUSD / ToEstimateNanoUSD are the priced
+	// pre-flight estimates of the two models.
+	SpentNanoUSD        int64 `json:"spent_nano_usd,omitempty"`
+	BudgetNanoUSD       int64 `json:"budget_nano_usd,omitempty"`
+	FromEstimateNanoUSD int64 `json:"from_estimate_nano_usd,omitempty"`
+	ToEstimateNanoUSD   int64 `json:"to_estimate_nano_usd,omitempty"`
+}
+
+// RecordModelDowngradeArgs are the inputs to RecordModelDowngrade.
+type RecordModelDowngradeArgs struct {
+	RunID  uuid.UUID
+	StepID string
+	// ClaimID is the fencing token ClaimStep issued to this caller; the
+	// record is rejected if the step is no longer running under it (a zombie
+	// must not record a misleading downgrade).
+	ClaimID uuid.UUID
+	// Event is the projection detail recorded on the model_downgraded event.
+	Event ModelDowngradedEvent
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// RecordModelDowngrade appends the model_downgraded event for a claim the
+// budget middleware routed to a cheaper model (ticket 10.4, ADR-012). It is
+// not a state transition — no status changes and the used model becomes
+// durable on the attempt's cost-ledger resource — so this only fences the
+// record on the caller's live claim (the step must still be running under
+// it) and appends the event under the run lock. A fenced caller gets a
+// *TransitionError so the engine abandons like any other fenced write.
+func RecordModelDowngrade(ctx context.Context, q Querier, args RecordModelDowngradeArgs) error {
+	const op = "record model downgrade"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return err
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return err
+	}
+	step, err := gq.GetRunStep(ctx, gen.GetRunStepParams{RunID: args.RunID, StepID: args.StepID})
+	if err != nil {
+		return wrapErr(op, err)
+	}
+	if step.Status != StepStatusRunning || step.ClaimID == nil || *step.ClaimID != args.ClaimID {
+		return stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
+			want: StepStatusRunning, to: StepStatusRunning, claim: &args.ClaimID,
+		})
+	}
+	args.Event.StepID = args.StepID
+	args.Event.AttemptNo = step.AttemptCount
+	if err := appendEvent(ctx, gq, op, args.RunID, EventModelDowngraded, args.Event); err != nil {
+		return err
+	}
+	log.From(ctx).InfoContext(ctx, "model downgraded for budget",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID),
+		log.Attempt(int(step.AttemptCount)))
+	return nil
+}

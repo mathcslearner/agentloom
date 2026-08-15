@@ -229,6 +229,54 @@ func (e LLMExecutor) CostEstimate(sc StepContext) (CostEstimate, error) {
 	}, nil
 }
 
+// ModelFallbacks implements ModelDowngrader (ADR-012, ticket 10.4): the
+// step's current (primary) model and its authored downgrade chain, projected
+// onto the exec-level ModelFallback type so the engine needs no dag import.
+// A config-decode miss routes like the other binding hooks: skip the
+// downgrade, let Execute land the classified failure.
+func (e LLMExecutor) ModelFallbacks(sc StepContext) (string, []ModelFallback, error) {
+	cfg, err := configAs[*dag.LLMConfig](sc)
+	if err != nil {
+		return "", nil, err
+	}
+	if cfg == nil || cfg.Model == "" {
+		return "", nil, fmt.Errorf("missing required field %q", "model")
+	}
+	if len(cfg.ModelFallbacks) == 0 {
+		return cfg.Model, nil, nil
+	}
+	chain := make([]ModelFallback, len(cfg.ModelFallbacks))
+	for i, f := range cfg.ModelFallbacks {
+		chain[i] = ModelFallback{Model: f.Model, AtBudgetFraction: f.AtBudgetFraction}
+	}
+	return cfg.Model, chain, nil
+}
+
+// WithModel implements ModelDowngrader: it rewrites only the rendered
+// config's "model" field, leaving every other value byte-identical (a
+// raw-message re-key, not a struct round-trip), so the re-targeted config
+// the engine feeds back through the pipeline differs from the original by
+// exactly the model — which is what makes the fallback's cache key and
+// resource bucket differ while nothing else does.
+func (e LLMExecutor) WithModel(sc StepContext, model string) (json.RawMessage, error) {
+	fields := map[string]json.RawMessage{}
+	if len(sc.Config) > 0 {
+		if err := json.Unmarshal(sc.Config, &fields); err != nil {
+			return nil, fmt.Errorf("decoding llm config for downgrade: %w", err)
+		}
+	}
+	m, err := json.Marshal(model)
+	if err != nil {
+		return nil, fmt.Errorf("encoding downgrade model: %w", err)
+	}
+	fields["model"] = m
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("re-encoding llm config for downgrade: %w", err)
+	}
+	return out, nil
+}
+
 // estimateLLMInputTokens is the pre-call input-token estimate: roughly four
 // characters per token over the rendered prompt and messages.
 func estimateLLMInputTokens(cfg *dag.LLMConfig) int64 {

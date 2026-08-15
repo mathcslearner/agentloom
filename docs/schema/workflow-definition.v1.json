@@ -269,6 +269,12 @@
         },
         "temperature": {
           "type": "number"
+        },
+        "model_fallbacks": {
+          "items": {
+            "$ref": "#/$defs/ModelFallback"
+          },
+          "type": "array"
         }
       },
       "additionalProperties": false,
@@ -293,6 +299,18 @@
         },
         "body": {
           "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "ModelFallback": {
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "at_budget_fraction": {
+          "type": "number"
         }
       },
       "additionalProperties": false,

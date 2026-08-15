@@ -79,7 +79,10 @@ axis that can change the output. `internal/cache.Key(KeyInput)` builds it from:
      different non-deterministic request) from an explicit `0`. The tool
      schemas component is currently vacuous for `llm` steps (no config field
      feeds provider tools yet) but the slot exists so M13/M14 agent steps
-     need no key-format bump.
+     need no key-format bump. Because the resolved model is a key component,
+     M10.4's budget-driven downgrade to a cheaper model automatically yields a
+     **different cache key** — a downgraded claim never reads (or writes) the
+     primary model's cache entry (asserted in 10.4).
    - **tool** — the rendered tool arguments.
    - **retrieve** — the rendered query and `top_k`.
 

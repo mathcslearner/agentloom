@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "kitchen-sink",
-  "description": "A research-and-publish pipeline that exercises every construct of the definition format: all 15 step types (noop, planner, retrieve, tool, map, join, llm, agent, branch, echo, sleep, fail_n_times, counter, effectful_echo, human_approval), unconditioned parallel fan-out, `when`-conditioned edges with has() guards, a branch with conditioned arms plus a trailing default, both join modes (any and all), a marked loop edge, all five param types, explicit retry policies (a full block and a partial one inheriting engine defaults, ADR-006), a per-step execution timeout (ticket 5.3), a run wall-clock deadline (ticket 5.6), a run spend budget with per-step caps (ticket 10.3, ADR-012), the continue_independent_branches failure policy, a journaled side effect (ticket 5.5), an opt-in response-cache policy (ticket 9.4, ADR-011), and an engine-opaque ui block that round-trips byte-for-byte.",
+  "description": "A research-and-publish pipeline that exercises every construct of the definition format: all 15 step types (noop, planner, retrieve, tool, map, join, llm, agent, branch, echo, sleep, fail_n_times, counter, effectful_echo, human_approval), unconditioned parallel fan-out, `when`-conditioned edges with has() guards, a branch with conditioned arms plus a trailing default, both join modes (any and all), a marked loop edge, all five param types, explicit retry policies (a full block and a partial one inheriting engine defaults, ADR-006), a per-step execution timeout (ticket 5.3), a run wall-clock deadline (ticket 5.6), a run spend budget with per-step caps and an llm model-downgrade chain (ticket 10.3/10.4, ADR-012), the continue_independent_branches failure policy, a journaled side effect (ticket 5.5), an opt-in response-cache policy (ticket 9.4, ADR-011), and an engine-opaque ui block that round-trips byte-for-byte.",
   "on_failure": "continue_independent_branches",
   "max_wall_clock": "2h",
   "budget_usd": 5,
@@ -114,7 +114,16 @@
           }
         ],
         "max_tokens": 2048,
-        "temperature": 0
+        "temperature": 0,
+        "model_fallbacks": [
+          {
+            "model": "anthropic/claude-haiku-4-5",
+            "at_budget_fraction": 0.8
+          },
+          {
+            "model": "openai/gpt-5-mini"
+          }
+        ]
       },
       "budget": {
         "max_usd": 1.5,

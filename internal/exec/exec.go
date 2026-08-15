@@ -222,6 +222,47 @@ type CostEstimate struct {
 	MaxTokens int64
 }
 
+// ModelDowngrader is the optional executor hook the M10.4 budget middleware
+// consults to route a claim to a cheaper model as the run approaches its
+// budget (ADR-012). Only a step with a runtime notion of "model" implements
+// it (the llm executor); the middleware skips downgrade for any other step.
+//
+// ModelFallbacks reports the step's current (primary) model and its ordered
+// downgrade chain. WithModel produces a rendered config identical to the
+// current one except that the model is replaced with the chosen fallback —
+// the middleware feeds that config back through the whole executor pipeline
+// (cache key, resource limiter, cost estimate, and the provider call itself
+// all derive from the model), so one rewrite re-targets every downstream
+// consumer with no other change.
+//
+// Both methods' error convention mirrors ResourceClaim/CostEstimate: a
+// resolution or config failure means the binding could not be computed, so
+// the middleware skips downgrade and lets Execute land the classified
+// failure — the routing judgment lives in one place.
+type ModelDowngrader interface {
+	// ModelFallbacks reports the step's current model and its downgrade
+	// chain. An empty chain (the common case) means the step never
+	// downgrades — the middleware then proceeds to the ordinary budget
+	// routing (park/fail).
+	ModelFallbacks(sc StepContext) (current string, chain []ModelFallback, err error)
+	// WithModel returns sc.Config with its model field replaced by the given
+	// model, leaving every other value byte-identical. The middleware calls
+	// it to build the re-targeted config it feeds back into the pipeline.
+	WithModel(sc StepContext, model string) (json.RawMessage, error)
+}
+
+// ModelFallback is one tier in a step's downgrade chain (ADR-012, ticket
+// 10.4): the cheaper Model to route to and its optional soft trigger.
+type ModelFallback struct {
+	// Model is the fallback model id (routed through the same registry as
+	// the primary).
+	Model string
+	// AtBudgetFraction is the soft trigger: once the run's spend reaches this
+	// fraction of its budget, claims route to this tier (or a deeper one).
+	// nil means this tier is reached only by a hard projection trigger.
+	AtBudgetFraction *float64
+}
+
 // CacheBinder is the optional executor hook the M9 response-cache middleware
 // consults before a step runs (ADR-011, ticket 9.5): it projects the
 // resolved request onto the cache key's inputs and supplies the

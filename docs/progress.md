@@ -5775,3 +5775,104 @@ suites green; golangci-lint + `openapi-lint` clean.
 `budgetDecide`), budget metrics + `cost_updated` events (10.5), a submit-time
 `budget_usd` override on `POST /v1/runs`, and reservation-based exact accounting
 for parallel fan-out (backlog).
+
+### 10.4 — Model downgrade chains ✅
+
+Delivered the last budget-action of the cost model: as a budgeted run approaches
+its cap, a claim of an llm step carrying a fallback chain is routed to a cheaper
+model — priced, cached, and rate-limited correctly at the fallback — instead of
+parking at the primary's price. The decision sits at the same claim-time point
+as 10.3's budget check, so downgrade is a scheduling feature, not a wrapper.
+
+**The contract (`internal/dag`).** `model_fallbacks: [{model, at_budget_fraction?}]`
+on the **llm step config** — an ordered, cheapening chain (`ModelFallback`, an
+`at_budget_fraction *float64` mirroring the `Temperature` pointer). Validation
+under `config_field_invalid`: each `model` non-empty and distinct from the
+primary and from every other fallback; `at_budget_fraction` in `(0, 1)` and
+requiring the definition to carry a `budget_usd` (a fraction of nothing cannot
+fire); thresholds non-decreasing along the chain (cheaper tiers trigger at
+higher spend); and a chain with no budget to trigger against at all (no run
+`budget_usd` and no step `budget.max_usd`) rejected — the project's
+can't-fire-is-an-authoring-mistake stance. `checkModelFallbacks` runs in
+`checkSteps` where both the def (for `budget_usd`) and the step (for
+`budget.max_usd`) are in scope. Regenerated JSON Schema; kitchen-sink coverage
+in both copies (`examples/` and the differently-tuned `testdata/valid/`);
+decode/validate unit tables. **No migration** — the actually-used model is
+already durable on 10.2's `cost_ledger.resource` and the attempt output, so
+"record the used model on the attempt" needs no new column.
+
+**The executor hook (`internal/exec`).** New optional `exec.ModelDowngrader`:
+`ModelFallbacks(sc)` reports the current model and the chain (projected onto an
+exec-level `ModelFallback` so the engine needs no `dag` import), and
+`WithModel(sc, model)` rewrites **only** the rendered config's `model` field via
+a `map[string]json.RawMessage` re-key — every sibling value stays
+byte-identical. Implemented on the llm executor (no other executor has a runtime
+notion of "model"). Because the response-cache key, the resource limiter's
+bucket, the cost estimate, and the provider call all derive from the config's
+model, that one rewrite re-targets the whole pipeline. The
+different-model-different-key property is asserted at the exec layer
+(`TestDowngradeChangesCacheKey`: two bindings identical but for the model
+produce different `cache.Key`s), which is exactly the ADR-011 assertion 10.4
+owed.
+
+**The decision (`engine/budget.go` + `engine/downgrade.go`).** `budgetCheck`
+was restructured: the model-independent `max_tokens` guard runs first (a cheaper
+model can't rescue an oversized request), the step's cumulative cost is read
+**once** (`SumByStep`) and threaded into both the downgrade fits-check and the
+step `max_usd` cap, and — when the executor is a `ModelDowngrader` with a
+non-empty chain — `selectDowngrade` prices the primary and each tier and calls
+the pure `chooseDowngrade`. Two triggers: **soft** (once run spend reaches a
+fallback's `at_budget_fraction`, route to the deepest met tier — even if the
+primary would still fit) and **hard** (the primary's projected `spend + estimate`
+would exceed a budget → route to the least-aggressive fitting tier, avoiding a
+park). A tier is chosen **only if priceable and its projection fits every
+budget**, so the engine never downgrades to a model it would immediately park
+on; when nothing fits the chain is *exhausted* and the check falls through to
+10.3's ordinary park/fail on the primary. The decision is **single-shot** (no
+budget re-entry — it picks the final fitting tier in one pass, so a multi-tier
+threshold jump is one event, and there is no loop that could re-enter with the
+primary lost from the config). `budgetDecide` (reached only when no downgrade
+applied) keeps the 10.3 park/fail/proceed routing but is now IO-free and returns
+no error (the `SumByStep` read moved up). An unpriceable primary (unknown model
+under fail-closed) yields no downgrade — `budgetDecide` lands its permanent
+failure, keeping the fail-closed judgment in one place (rescuing an unknown
+primary via a known fallback was deliberately kept out). `chooseDowngrade` is
+unit-matrix-tested independently: threshold picks the deepest met tier;
+projection routes to the most-expensive fitting tier; a rescue drops past a
+threshold tier that doesn't fit; exhaustion returns no downgrade; an unpriceable
+deepest tier is skipped.
+
+**The event & re-cache (`store` + `engine/claim.go`).** On a downgrade the
+middleware records `model_downgraded` via `store.RecordModelDowngrade` — a
+downgrade is **not** a state transition (no status change; the used model is
+durable on the ledger), so it takes the run lock, reads the step, **fences on
+the caller's live claim** (a zombie cannot record a misleading downgrade → a
+`*store.TransitionError`, so `budgetCheck` abandons like any other fenced write),
+and appends the event with from/to models and resources, the trigger
+(`budget_threshold` | `budget_projection`), the threshold fraction, and the
+spend/budget projection. `budgetCheck` returns the re-targeted config; the claim
+path sets `sc.Config` and **re-reads the response cache on the fallback model**
+(discarding the primary's miss write-binding, since it was keyed on the primary)
+before proceeding — a fallback cache hit still short-circuits the provider call.
+
+**Tests.** Headline engine integration (`downgrade_integration_test.go`, a
+catalog pricing `mock:expensive` 50× `mock:cheap` so the swap is observable): an
+expensive-model chain under a $0.25 budget with a `0.5` threshold runs gen0/gen1
+expensive then downgrades gen2–gen4 to cheap — each attempt ledgered at the
+model that served it (per-step `cost_ledger.resource` and the output `model`
+both asserted), three `model_downgraded` threshold events with the right
+from/to, and the run aggregate equal to the exact ledger sum. Plus a
+projection-trigger test ($0.05 budget < the $0.10 primary estimate → immediate
+downgrade, trigger `budget_projection`, limit `run`) and an exhausted-chain test
+($0.001 budget < even the cheap estimate → park with **zero** downgrade events,
+history `[budget_exceeded]`, then `SetBudget($1)` + `Unpark` → succeeds on the
+primary). Store integration proves the fenced/`ErrNoTx` paths of
+`RecordModelDowngrade`; exec units cover `ModelFallbacks`, the byte-preserving
+`WithModel`, and the cache-key assertion; the `budgetDecide` unit matrix gained
+step-`max_usd` cases now that it takes the threaded prior-cost. Full
+store/engine/exec/dag/api integration suites green; golangci-lint clean
+(`budgetDecide`'s now-always-nil error dropped to satisfy `unparam`).
+
+**Deferred:** downgrade + budget metrics and `cost_updated` events (10.5), and
+rescuing an unpriceable primary via a known fallback (kept out — an unknown
+primary fails closed, crisply).

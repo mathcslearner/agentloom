@@ -264,9 +264,24 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	// resumable) or fails the step permanently, per policy; an oversized
 	// request or an unpriceable model under fail-closed fails before the call.
 	// Steps that estimate no cost bypass this entirely.
-	budgeted, berr := e.budgetCheck(ctx, step, executor, sc, origin)
+	//
+	// Model downgrade (ticket 10.4): as the run approaches its budget, the
+	// check may route the claim to a cheaper model in the step's
+	// model_fallbacks chain instead of parking. It returns the re-targeted
+	// config; because the model is the cache key's input, the primary's miss
+	// binding is discarded and the cache is re-read on the fallback model
+	// before proceeding — a fallback hit still short-circuits the provider call.
+	budgeted, downgraded, berr := e.budgetCheck(ctx, step, executor, sc, origin)
 	if budgeted {
 		return berr
+	}
+	if downgraded != nil {
+		sc.Config = downgraded
+		var reReadErr error
+		hit, cacheWB, reReadErr = e.cacheRead(ctx, step, executor, sc)
+		if hit {
+			return reReadErr
+		}
 	}
 	// Fleet-wide rate limiting (ticket 9.2, ADR-010): before a cost-bearing
 	// executor's provider call, acquire the step's resource buckets. A

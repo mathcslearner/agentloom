@@ -222,6 +222,7 @@ func (v *validator) checkSteps(def *Definition) map[string]int {
 			v.add(CodeUnknownStepType, path+".type", "unknown step type %q", string(s.Type))
 		}
 		v.checkStepConfig(path, s)
+		v.checkModelFallbacks(def, path, s)
 		v.checkRetry(path, s.Retry)
 		v.checkTimeout(path, s.Timeout)
 		v.checkCache(path, s.Cache)
@@ -511,6 +512,69 @@ func (v *validator) checkStepConfig(path string, s Step) {
 		}
 	case StepBranch, StepNoop, StepEcho:
 		// No required config fields.
+	}
+}
+
+// checkModelFallbacks validates an llm step's downgrade chain (ADR-012,
+// ticket 10.4). Only llm steps have a runtime downgrader, so a chain on any
+// other step type can never fire — an authoring mistake. Within the chain:
+// each Model is required and distinct (from the primary and from every
+// other fallback), an at_budget_fraction is in (0, 1) and requires a run
+// budget to be a fraction of, thresholds are non-decreasing along the chain
+// (tiers get cheaper, so they trigger at higher spend), and a chain with no
+// budget to trigger against at all (no run budget_usd and no step max_usd)
+// can never fire.
+func (v *validator) checkModelFallbacks(def *Definition, path string, s Step) {
+	if s.Type != StepLLM {
+		if len(cfg[LLMConfig](s).ModelFallbacks) > 0 {
+			// Defensive: only llm configs carry the field, so a non-llm step
+			// with fallbacks would be an unknown field the decoder already
+			// rejects; this keeps the invariant explicit.
+			v.add(CodeConfigFieldInvalid, path+".config.model_fallbacks",
+				"applies only to llm steps, not %q", string(s.Type))
+		}
+		return
+	}
+	c := cfg[LLMConfig](s)
+	if len(c.ModelFallbacks) == 0 {
+		return
+	}
+	fp := path + ".config.model_fallbacks"
+	hasRunBudget := def.BudgetUSD != nil
+	hasStepUSD := s.Budget != nil && s.Budget.MaxUSD != nil
+	if !hasRunBudget && !hasStepUSD {
+		v.add(CodeConfigFieldInvalid, fp,
+			"has no budget to trigger against: set budget_usd or the step's budget.max_usd")
+	}
+	seen := map[string]bool{c.Model: true}
+	prevFrac, havePrev := 0.0, false
+	for i, f := range c.ModelFallbacks {
+		ep := fmt.Sprintf("%s[%d]", fp, i)
+		switch {
+		case f.Model == "":
+			v.add(CodeConfigFieldRequired, ep+".model", "required field is missing")
+		case seen[f.Model]:
+			v.add(CodeConfigFieldInvalid, ep+".model", "duplicate model %q in the fallback chain", f.Model)
+		default:
+			seen[f.Model] = true
+		}
+		if f.AtBudgetFraction == nil {
+			continue
+		}
+		frac := *f.AtBudgetFraction
+		if frac <= 0 || frac >= 1 {
+			v.add(CodeConfigFieldInvalid, ep+".at_budget_fraction",
+				"must be between 0 and 1 (exclusive), got %g", frac)
+		}
+		if !hasRunBudget {
+			v.add(CodeConfigFieldInvalid, ep+".at_budget_fraction",
+				"requires budget_usd (it is a fraction of the run budget)")
+		}
+		if havePrev && frac < prevFrac {
+			v.add(CodeConfigFieldInvalid, ep+".at_budget_fraction",
+				"must be >= the previous fallback's threshold %g, got %g (cheaper tiers trigger at higher spend)", prevFrac, frac)
+		}
+		prevFrac, havePrev = frac, true
 	}
 }
 

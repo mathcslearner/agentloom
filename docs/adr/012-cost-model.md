@@ -448,6 +448,87 @@ any money is spent.
   events (10.5), a submit-time `budget_usd` override on `POST /v1/runs`, and
   reservation-based exact accounting for parallel fan-out (backlogged).
 
+### As built (10.4)
+
+Model downgrade chains — routing a claim to a cheaper model as the run
+approaches its budget, instead of parking at the primary's price:
+
+- **The contract.** `model_fallbacks: [{model, at_budget_fraction?}]` on the
+  **llm step config** in `internal/dag` (an ordered, cheapening chain;
+  `ModelFallback`). Validation (code `config_field_invalid`): each `model`
+  non-empty and distinct from the primary and from every other fallback;
+  `at_budget_fraction` in `(0, 1)` and requiring the definition to carry a
+  `budget_usd` (a fraction of nothing cannot fire); thresholds non-decreasing
+  along the chain (cheaper tiers trigger at higher spend); and a chain with no
+  budget to trigger against at all (no run budget and no step `max_usd`)
+  rejected. **No migration** — the actually-used model is already durable on
+  10.2's `cost_ledger.resource` and the attempt output, so "record the used
+  model on the attempt" needs no new column.
+
+- **Two triggers, evaluated at claim.** The **soft** trigger: once the run's
+  spend reaches a fallback's `at_budget_fraction`, claims route proactively to
+  that tier — the deepest (cheapest) tier whose threshold is met — even if the
+  primary would still fit, to conserve budget. The **hard** (projection)
+  trigger: if the primary's projected spend (`spend + estimate`) would exceed a
+  budget, route to the least-aggressive fallback that fits, avoiding a park. A
+  tier is chosen only if it is **priceable and its projection fits every
+  budget**, so the engine never downgrades to a model it would immediately have
+  to park on; when no fitting tier exists the chain is *exhausted* and the check
+  falls through to 10.3's ordinary park/fail on the primary. A primary that is
+  itself unpriceable (unknown model under fail-closed) yields no downgrade —
+  `budgetDecide` lands its permanent failure, keeping the fail-closed judgment
+  in one place.
+
+- **The executor hook.** A new optional `exec.ModelDowngrader`: `ModelFallbacks`
+  reports the current model and the chain; `WithModel` rewrites **only** the
+  rendered config's `model` field (a raw-message re-key, leaving every sibling
+  value byte-identical). Because the response-cache key, the resource limiter's
+  bucket, the cost estimate, and the provider call all derive from that model,
+  the one rewrite re-targets the whole executor pipeline — so a downgrade is a
+  **different cache key** by construction (asserted at the exec layer:
+  `TestDowngradeChangesCacheKey`), the fallback bills to its own resource, and
+  the ledger prices the model that actually served.
+
+- **The decision.** `engine/budget.go`'s `budgetCheck` was restructured so the
+  model-independent `max_tokens` guard runs first, the step's cumulative cost is
+  read once and threaded into both the downgrade fits-check and the step
+  `max_usd` cap, and — when the executor is a `ModelDowngrader` with a chain —
+  `selectDowngrade` prices the primary and each tier and calls the pure
+  `chooseDowngrade` (`engine/downgrade.go`, unit-matrix-tested:
+  threshold / projection / rescue-when-the-threshold-tier-doesn't-fit /
+  exhaustion). The decision is **single-shot** (no budget re-entry): it picks
+  the final fitting tier in one pass, so a multi-tier threshold jump is one
+  event. On a downgrade the middleware records a **`model_downgraded`** event
+  and returns the re-targeted config; the claim path re-keys the response cache
+  on the fallback model (a fallback hit still short-circuits the provider call)
+  and proceeds. `budgetDecide` (reached only when no downgrade applied) keeps
+  the 10.3 park/fail/proceed routing, now IO-free.
+
+- **The event.** `store.RecordModelDowngrade` appends `model_downgraded` in its
+  own short `step.downgrade` transaction — a downgrade is **not** a state
+  transition (no status change; the used model is durable on the ledger), so it
+  only **fences on the caller's live claim** (a zombie cannot record a
+  misleading downgrade) and appends the event with the from/to models and
+  resources, the trigger (`budget_threshold` | `budget_projection`), and the
+  spend/budget projection. A fenced caller surfaces a `*store.TransitionError`
+  so `budgetCheck` abandons like any other fenced write; a transport error
+  redelivers.
+
+- **Headline test.** A catalog pricing `mock:expensive` 50× `mock:cheap`: an
+  expensive-model chain under a $0.25 budget with a `0.5` threshold runs the
+  first two steps expensive, then downgrades the rest to cheap — the ledger
+  prices each attempt at the model that served it (asserted per-step resource +
+  output model), three `model_downgraded` threshold events land, and the run
+  aggregate equals the exact ledger sum. Plus a projection-trigger test (budget
+  too tight for the primary → immediate downgrade, `budget_projection` against
+  the run limit) and an exhausted-chain test (even the cheap tier over budget →
+  park with **no** downgrade event, then raise-budget + unpark → completes on
+  the primary).
+
+- **Not in 10.4.** Budget/downgrade metrics and `cost_updated` events (10.5),
+  and rescuing an unpriceable primary via a known fallback (deliberately kept
+  out — an unknown primary fails closed, crisply).
+
 ## Consequences
 
 **Easier.**

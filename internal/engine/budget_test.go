@@ -9,7 +9,6 @@ import (
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/store"
-	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
 
 // i64 returns a pointer to an int64 literal, for the nullable budget columns.
@@ -39,13 +38,15 @@ func TestBudgetDecide(t *testing.T) {
 	modelEst := exec.CostEstimate{Resource: "mock:sim-1", InputTokens: 1000, MaxTokens: 1000}
 
 	cases := []struct {
-		name       string
-		est        exec.CostEstimate
-		stepBudget *dag.StepBudget
-		origin     store.ClaimOrigin
-		policy     cost.UnknownModelPolicy
-		want       budgetAction
-		wantLimit  string
+		name          string
+		est           exec.CostEstimate
+		hasStepCap    bool
+		stepPriorNano int64
+		stepCapNano   int64
+		origin        store.ClaimOrigin
+		policy        cost.UnknownModelPolicy
+		want          budgetAction
+		wantLimit     string
 	}{
 		{
 			name:   "run budget proceed when projection fits",
@@ -68,12 +69,23 @@ func TestBudgetDecide(t *testing.T) {
 			wantLimit: store.BudgetLimitRun,
 		},
 		{
-			name:       "step max_tokens fail on oversized request",
-			est:        modelEst,
-			stepBudget: &dag.StepBudget{MaxTokens: 10},
-			origin:     store.ClaimOrigin{}, // unbudgeted run
-			want:       budgetFail,
-			wantLimit:  store.BudgetLimitStepTokens,
+			name:          "step max_usd fail when cumulative exceeds cap",
+			est:           modelEst,
+			hasStepCap:    true,
+			stepPriorNano: estNano, // one prior attempt already at the estimate
+			stepCapNano:   estNano + 1,
+			origin:        store.ClaimOrigin{}, // unbudgeted run
+			want:          budgetFail,
+			wantLimit:     store.BudgetLimitStepUSD,
+		},
+		{
+			name:          "step max_usd proceed when cumulative fits",
+			est:           modelEst,
+			hasStepCap:    true,
+			stepPriorNano: 0,
+			stepCapNano:   estNano + 1,
+			origin:        store.ClaimOrigin{},
+			want:          budgetProceed,
 		},
 		{
 			name:      "unknown model fail-closed",
@@ -102,10 +114,7 @@ func TestBudgetDecide(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			e := &Engine{pricing: cat, unknownModelPolicy: tc.policy, now: func() time.Time { return now }}
-			dec, err := e.budgetDecide(context.Background(), gen.RunStep{}, tc.est, tc.stepBudget, tc.origin, now)
-			if err != nil {
-				t.Fatalf("budgetDecide: %v", err)
-			}
+			dec := e.budgetDecide(context.Background(), tc.est, tc.origin, tc.hasStepCap, tc.stepPriorNano, tc.stepCapNano, now)
 			if dec.action != tc.want {
 				t.Errorf("action = %d, want %d", dec.action, tc.want)
 			}

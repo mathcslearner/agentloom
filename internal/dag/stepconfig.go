@@ -49,6 +49,32 @@ type LLMConfig struct {
 	// Temperature is a pointer because an explicit 0 (deterministic
 	// sampling) must survive canonical re-encoding; nil means absent.
 	Temperature *float64 `json:"temperature,omitempty"`
+
+	// ModelFallbacks is the ordered cheaper-model chain the M10.4 budget
+	// middleware routes a claim to when the run approaches its budget
+	// (ADR-012). Entries are primary → cheaper → cheapest; the deepest
+	// entry whose soft threshold (at_budget_fraction) is met, or the first
+	// entry whose projected spend fits, wins. Empty (the common case) means
+	// a step never downgrades — the run parks or fails at its cap instead.
+	// A different model is a different cost/cache resource, so a downgrade
+	// re-keys the response cache automatically.
+	ModelFallbacks []ModelFallback `json:"model_fallbacks,omitempty"`
+}
+
+// ModelFallback is one tier in an llm step's downgrade chain (ADR-012,
+// ticket 10.4): a cheaper Model to route to, and an optional soft trigger.
+type ModelFallback struct {
+	// Model is the fallback's model id (routed through the same provider
+	// registry as the primary). Required, and distinct from the primary and
+	// from every other fallback.
+	Model string `json:"model,omitempty"`
+
+	// AtBudgetFraction is the soft downgrade trigger: once the run's spend
+	// reaches this fraction of budget_usd, claims route to this tier (or a
+	// deeper one). In (0, 1); nil means this tier is reached only by the
+	// hard trigger (a projection that would exceed the budget). Requires the
+	// definition to carry a budget_usd (a fraction of nothing cannot fire).
+	AtBudgetFraction *float64 `json:"at_budget_fraction,omitempty"`
 }
 
 // ToolConfig configures a tool step: one invocation through the tool SPI

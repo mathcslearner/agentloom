@@ -67,21 +67,27 @@ type budgetDecision struct {
 }
 
 // budgetCheck enforces the run and step budgets before a cost-bearing step
-// executes (ticket 10.3, ADR-012). It returns handled=true when it took a
-// terminal action (parked the run, or failed the step) and the delivery is
-// done; handled=false means proceed to the rate limiter and the executor.
+// executes (ticket 10.3, ADR-012), and — when the step carries a
+// model_fallbacks chain — routes the claim to a cheaper model as the run
+// approaches its budget (ticket 10.4). It returns:
+//
+//   - handled=true, err: a terminal action was taken (the run parked, or the
+//     step failed) and the delivery is done (err is the Handle/ACK result).
+//   - handled=false, newConfig!=nil: the claim was downgraded to a cheaper
+//     model; the caller re-keys the response cache on newConfig and proceeds.
+//   - handled=false, newConfig=nil: proceed on the current model unchanged.
 //
 // The middleware is a no-op — handled=false, no reads — when pricing is
 // disabled, the executor is not a CostEstimator, or the run is unbudgeted and
 // the step carries no caps. Otherwise it projects the estimate, prices it,
-// and routes.
-func (e *Engine) budgetCheck(ctx context.Context, step gen.RunStep, executor exec.Executor, sc exec.StepContext, origin store.ClaimOrigin) (bool, error) {
+// tries a downgrade, and routes.
+func (e *Engine) budgetCheck(ctx context.Context, step gen.RunStep, executor exec.Executor, sc exec.StepContext, origin store.ClaimOrigin) (bool, json.RawMessage, error) {
 	if e.pricing == nil {
-		return false, nil // budget enforcement needs a catalog to price against
+		return false, nil, nil // budget enforcement needs a catalog to price against
 	}
 	estimator, ok := executor.(exec.CostEstimator)
 	if !ok {
-		return false, nil // not a cost-bearing step
+		return false, nil, nil // not a cost-bearing step
 	}
 	stepBudget, sberr := decodeStepBudget(step.BudgetPolicy)
 	if sberr != nil {
@@ -90,11 +96,11 @@ func (e *Engine) budgetCheck(ctx context.Context, step gen.RunStep, executor exe
 		// than run unbudgeted.
 		log.From(ctx).ErrorContext(ctx, "corrupt materialized budget policy; recording step failure",
 			slog.Any("error", sberr))
-		return true, e.completeFailure(ctx, step,
+		return true, nil, e.completeFailure(ctx, step,
 			exec.Permanentf("corrupt budget policy: %v", sberr), dag.ClassPermanent, origin.RunTrace)
 	}
 	if origin.BudgetNanoUSD == nil && stepBudget == nil {
-		return false, nil // unbudgeted run, uncapped step: nothing to enforce
+		return false, nil, nil // unbudgeted run, uncapped step: nothing to enforce
 	}
 
 	est, err := estimator.CostEstimate(sc)
@@ -105,53 +111,91 @@ func (e *Engine) budgetCheck(ctx context.Context, step gen.RunStep, executor exe
 		// convention).
 		log.From(ctx).DebugContext(ctx, "cost estimate unavailable; skipping budget check",
 			slog.Any("error", err))
-		return false, nil
+		return false, nil, nil
 	}
 	if est.Resource == "" {
-		return false, nil // executor reported no cost-bearing resource
+		return false, nil, nil // executor reported no cost-bearing resource
 	}
 
 	now := e.now()
-	decision, derr := e.budgetDecide(ctx, step, est, stepBudget, origin, now)
-	if derr != nil {
-		return false, derr // a transport error from the step-cost read; redeliver
+
+	// Step-level max_tokens (model-independent): the whole projected request
+	// (input estimate + output ceiling) must fit under the cap, or the
+	// oversized request is never sent. A cheaper model cannot rescue an
+	// oversized request, so this is checked before any downgrade. Validation
+	// restricts this cap to llm steps.
+	projectedTokens := est.InputTokens + est.MaxTokens
+	if stepBudget != nil && stepBudget.MaxTokens > 0 && projectedTokens > int64(stepBudget.MaxTokens) {
+		log.From(ctx).WarnContext(ctx, "step request exceeds max_tokens; recording permanent failure",
+			slog.String("resource", est.Resource))
+		return true, nil, e.completeFailure(ctx, step,
+			exec.Permanentf("budget_exceeded: projected %d tokens exceeds step max_tokens %d", projectedTokens, stepBudget.MaxTokens),
+			dag.ClassPermanent, origin.RunTrace)
 	}
+
+	// Read the step's cumulative cost once (the only IO), shared by the
+	// downgrade fits-check and the step max_usd cap below.
+	hasStepCap := stepBudget != nil && stepBudget.MaxUSD != nil
+	var stepPriorNano, stepCapNano int64
+	if hasStepCap {
+		var rerr error
+		stepPriorNano, rerr = e.store.Ledger().SumByStep(ctx, step.RunID, step.StepID)
+		if rerr != nil {
+			return false, nil, fmt.Errorf("engine: budget check: reading step cost: %w", rerr)
+		}
+		stepCapNano = usdToNano(*stepBudget.MaxUSD)
+	}
+
+	// Model downgrade (ticket 10.4): if the executor supports it and the step
+	// carries a fallback chain, route to a cheaper model that fits before
+	// parking or failing. Only fires when a strictly-cheaper, budget-fitting
+	// tier exists; otherwise falls through to the ordinary park/fail routing.
+	if dg, ok := executor.(exec.ModelDowngrader); ok {
+		newCfg, event, chose := e.selectDowngrade(ctx, dg, estimator, sc, origin, est, hasStepCap, stepPriorNano, stepCapNano, now)
+		if chose {
+			if rerr := e.recordDowngrade(ctx, step, event); rerr != nil {
+				var fenced *store.TransitionError
+				if errors.As(rerr, &fenced) {
+					return true, nil, e.abandonFenced(ctx, step, fenced, rerr)
+				}
+				// A transport error means the downgrade was not recorded and
+				// nothing was decided: redeliver (handled=true carries the
+				// error up so the entry is not acked), rather than silently
+				// proceeding on the primary model.
+				return true, nil, rerr
+			}
+			log.From(ctx).InfoContext(ctx, "model downgraded for budget",
+				slog.String("from_model", event.FromModel),
+				slog.String("to_model", event.ToModel),
+				slog.String("trigger", event.Trigger))
+			return false, newCfg, nil
+		}
+	}
+
+	decision := e.budgetDecide(ctx, est, origin, hasStepCap, stepPriorNano, stepCapNano, now)
 	switch decision.action {
 	case budgetProceed:
-		return false, nil
+		return false, nil, nil
 	case budgetPark:
-		return true, e.completeBudgetPark(ctx, step, decision.event)
+		return true, nil, e.completeBudgetPark(ctx, step, decision.event)
 	case budgetFail:
 		log.From(ctx).WarnContext(ctx, "step exceeds budget; recording permanent failure",
 			slog.String("limit", decision.event.Limit),
 			slog.String("resource", est.Resource))
-		return true, e.completeFailure(ctx, step,
+		return true, nil, e.completeFailure(ctx, step,
 			exec.Permanentf("%s", decision.reason), dag.ClassPermanent, origin.RunTrace)
 	default:
-		return false, nil
+		return false, nil, nil
 	}
 }
 
-// budgetDecide is the pure decision: price the estimate, check the step caps
-// (permanent on violation — a cap the request can never satisfy), then the
-// run budget (park or fail per the run's disposition). The only IO is the
-// step's cumulative-cost read, and only when the step carries a max_usd cap.
-func (e *Engine) budgetDecide(ctx context.Context, step gen.RunStep, est exec.CostEstimate, stepBudget *dag.StepBudget, origin store.ClaimOrigin, now time.Time) (budgetDecision, error) {
-	// Step-level max_tokens: the whole projected request (input estimate +
-	// output ceiling) must fit under the cap, or the oversized request is
-	// never sent. Validation restricts this cap to llm steps.
-	projectedTokens := est.InputTokens + est.MaxTokens
-	if stepBudget != nil && stepBudget.MaxTokens > 0 && projectedTokens > int64(stepBudget.MaxTokens) {
-		return budgetDecision{
-			action: budgetFail,
-			reason: fmt.Sprintf("budget_exceeded: projected %d tokens exceeds step max_tokens %d", projectedTokens, stepBudget.MaxTokens),
-			event: store.BudgetExceededEvent{
-				Resource: est.Resource, Limit: store.BudgetLimitStepTokens,
-				ProjectedTokens: projectedTokens, MaxTokens: int64(stepBudget.MaxTokens),
-			},
-		}, nil
-	}
-
+// budgetDecide is the pure park/fail/proceed decision on the current model
+// (reached only when no downgrade applied): price the estimate, check the
+// step max_usd cap (permanent on violation — a cap the request can never
+// satisfy), then the run budget (park or fail per the run's disposition). The
+// step's cumulative cost was read once by budgetCheck and threaded in, so
+// this does no IO. max_tokens is checked upstream (model-independent).
+func (e *Engine) budgetDecide(ctx context.Context, est exec.CostEstimate, origin store.ClaimOrigin, hasStepCap bool, stepPriorNano, stepCapNano int64, now time.Time) budgetDecision {
 	// Price the estimate. An unpriced tool is free (estimate 0); an unknown
 	// model under fail-closed fails permanent before any spend.
 	estimateNano, perr := e.estimateNanoUSD(est, now)
@@ -164,36 +208,31 @@ func (e *Engine) budgetDecide(ctx context.Context, step gen.RunStep, est exec.Co
 				event: store.BudgetExceededEvent{
 					Resource: est.Resource, Limit: store.BudgetLimitRun,
 				},
-			}, nil
+			}
 		}
 		// Any other pricing error (a pathological catalog with no fallback):
 		// do not fail a step over pricing infrastructure — proceed unbudgeted
 		// for this step, logging the gap.
 		log.From(ctx).WarnContext(ctx, "budget estimate unpriceable; proceeding without a budget check for this step",
 			slog.String("resource", est.Resource), slog.Any("error", perr))
-		return budgetDecision{action: budgetProceed}, nil
+		return budgetDecision{action: budgetProceed}
 	}
 
 	// Step-level max_usd: the step's cumulative cost so far plus this
 	// attempt's estimate must fit under the cap. A step whose retries would
 	// push its own total over the cap fails permanent.
-	if stepBudget != nil && stepBudget.MaxUSD != nil {
-		capNano := usdToNano(*stepBudget.MaxUSD)
-		priorNano, rerr := e.store.Ledger().SumByStep(ctx, step.RunID, step.StepID)
-		if rerr != nil {
-			return budgetDecision{}, fmt.Errorf("engine: budget check: reading step cost: %w", rerr)
-		}
-		projected := priorNano + estimateNano
-		if projected > capNano {
+	if hasStepCap {
+		projected := stepPriorNano + estimateNano
+		if projected > stepCapNano {
 			return budgetDecision{
 				action: budgetFail,
-				reason: fmt.Sprintf("budget_exceeded: step projected spend %s exceeds step max_usd %s", nanoStr(projected), nanoStr(capNano)),
+				reason: fmt.Sprintf("budget_exceeded: step projected spend %s exceeds step max_usd %s", nanoStr(projected), nanoStr(stepCapNano)),
 				event: store.BudgetExceededEvent{
 					Resource: est.Resource, Limit: store.BudgetLimitStepUSD,
-					SpentNanoUSD: priorNano, EstimateNanoUSD: estimateNano,
-					ProjectedNanoUSD: projected, BudgetNanoUSD: capNano,
+					SpentNanoUSD: stepPriorNano, EstimateNanoUSD: estimateNano,
+					ProjectedNanoUSD: projected, BudgetNanoUSD: stepCapNano,
 				},
-			}, nil
+			}
 		}
 	}
 
@@ -213,12 +252,12 @@ func (e *Engine) budgetDecide(ctx context.Context, step gen.RunStep, est exec.Co
 					action: budgetFail,
 					reason: fmt.Sprintf("budget_exceeded: projected run spend %s exceeds budget %s", nanoStr(projected), nanoStr(*origin.BudgetNanoUSD)),
 					event:  event,
-				}, nil
+				}
 			}
-			return budgetDecision{action: budgetPark, event: event}, nil
+			return budgetDecision{action: budgetPark, event: event}
 		}
 	}
-	return budgetDecision{action: budgetProceed}, nil
+	return budgetDecision{action: budgetProceed}
 }
 
 // estimateNanoUSD prices a pre-flight estimate in nano-USD. A tool resource is

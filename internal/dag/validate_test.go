@@ -285,6 +285,26 @@ func TestValidateTableDriven(t *testing.T) {
 			Edges:         []dag.Edge{},
 		}
 	}
+	// llmFallbackDef builds a one-step llm definition carrying a downgrade
+	// chain, an optional run budget, and an optional step max_usd cap — the
+	// two budgets a fallback can trigger against (ticket 10.4).
+	llmFallbackDef := func(runBudget, stepMaxUSD *float64, fb []dag.ModelFallback) *dag.Definition {
+		step := dag.Step{ID: "a", Type: dag.StepLLM, Config: &dag.LLMConfig{
+			Model:          "anthropic/claude-sonnet-5",
+			Messages:       []dag.LLMMessage{{Role: "user", Content: "hi"}},
+			ModelFallbacks: fb,
+		}}
+		if stepMaxUSD != nil {
+			step.Budget = &dag.StepBudget{MaxUSD: stepMaxUSD}
+		}
+		return &dag.Definition{
+			SchemaVersion: dag.CurrentSchemaVersion,
+			Name:          "t",
+			BudgetUSD:     runBudget,
+			Steps:         []dag.Step{step},
+			Edges:         []dag.Edge{},
+		}
+	}
 
 	cases := []struct {
 		name      string
@@ -634,6 +654,71 @@ func TestValidateTableDriven(t *testing.T) {
 				Model:    "anthropic/claude-sonnet-5",
 				Messages: []dag.LLMMessage{{Role: "user", Content: "hi"}},
 			}, Budget: &dag.StepBudget{MaxUSD: f64(1), MaxTokens: 1000}}),
+		},
+		{
+			name: "model_fallbacks valid chain with thresholds",
+			def: llmFallbackDef(f64(5), nil, []dag.ModelFallback{
+				{Model: "anthropic/claude-haiku-4-5", AtBudgetFraction: f64(0.5)},
+				{Model: "openai/gpt-5-mini", AtBudgetFraction: f64(0.8)},
+				{Model: "mock/cheap"},
+			}),
+		},
+		{
+			name: "model_fallbacks trigger off a step max_usd without a run budget",
+			def: llmFallbackDef(nil, f64(2), []dag.ModelFallback{
+				{Model: "mock/cheap"},
+			}),
+		},
+		{
+			name: "model_fallbacks with no budget to trigger against",
+			def: llmFallbackDef(nil, nil, []dag.ModelFallback{
+				{Model: "mock/cheap"},
+			}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.model_fallbacks"}},
+		},
+		{
+			name: "model_fallbacks missing model",
+			def: llmFallbackDef(f64(5), nil, []dag.ModelFallback{
+				{Model: ""},
+			}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldRequired, "steps[0].config.model_fallbacks[0].model"}},
+		},
+		{
+			name: "model_fallbacks duplicate of primary",
+			def: llmFallbackDef(f64(5), nil, []dag.ModelFallback{
+				{Model: "anthropic/claude-sonnet-5"},
+			}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.model_fallbacks[0].model"}},
+		},
+		{
+			name: "model_fallbacks duplicate within chain",
+			def: llmFallbackDef(f64(5), nil, []dag.ModelFallback{
+				{Model: "mock/cheap"},
+				{Model: "mock/cheap"},
+			}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.model_fallbacks[1].model"}},
+		},
+		{
+			name: "model_fallbacks fraction out of range",
+			def: llmFallbackDef(f64(5), nil, []dag.ModelFallback{
+				{Model: "mock/cheap", AtBudgetFraction: f64(1.5)},
+			}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.model_fallbacks[0].at_budget_fraction"}},
+		},
+		{
+			name: "model_fallbacks fraction without a run budget",
+			def: llmFallbackDef(nil, f64(2), []dag.ModelFallback{
+				{Model: "mock/cheap", AtBudgetFraction: f64(0.8)},
+			}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.model_fallbacks[0].at_budget_fraction"}},
+		},
+		{
+			name: "model_fallbacks non-monotonic thresholds",
+			def: llmFallbackDef(f64(5), nil, []dag.ModelFallback{
+				{Model: "mock/mid", AtBudgetFraction: f64(0.8)},
+				{Model: "mock/cheap", AtBudgetFraction: f64(0.5)},
+			}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.model_fallbacks[1].at_budget_fraction"}},
 		},
 		{
 			name:      "isolated step warns without failing",
