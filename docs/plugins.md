@@ -207,8 +207,10 @@ A step naming a validator the fleet did not register, or a config that fails
 its schema, dead-letters `permanent` at claim — **before** the executor runs,
 so nothing is spent. A failing verdict records the `validation_failed`
 outcome (the verdict persisted on the attempt, visible on
-`GET /v1/runs/{id}`) and dead-letters the step; M11.4 adds the semantic-retry
-loop that re-attempts with a feedback-augmented prompt before giving up.
+`GET /v1/runs/{id}`). If the step declares a semantic policy
+(`validation.max_attempts >= 2`), the engine then re-attempts with a
+feedback-augmented prompt (the **semantic-retry loop**, 11.4 — see below)
+before dead-lettering; without one it dead-letters on the first bad verdict.
 
 ### Built-in validators (11.2)
 
@@ -274,4 +276,40 @@ The persisted output gains a `json` field (the structured value) alongside
 provenance — `attempts[].repair` = `{status: native|raw|repaired|unrepairable,
 steps?, raw_text?}` — in `GET /v1/runs/{id}`. See
 [`examples/definitions/structured_extract.json`](../examples/definitions/structured_extract.json)
+for the canonical workflow.
+
+### Semantic retries (11.4)
+
+When a step's output fails its validation chain, a **semantic policy** lets the
+engine rebuild the prompt from the critique and re-attempt — instead of
+dead-lettering on the first bad verdict. It is authored alongside the chain on
+the step envelope:
+
+```jsonc
+"validation": {
+  "validators": [ { "name": "contains", "config": {"substring": "APPROVED"}, "target": "/text" } ],
+  "max_attempts": 3,                    // the semantic budget (1..10; 1 = no retry, the default)
+  "feedback": {                         // llm-family only; requires max_attempts >= 2
+    "template": "This is attempt ${{ feedback.attempt }} of ${{ feedback.max_attempts }}. Your previous output was rejected:\n${{ feedback.issues }}\n\nPrevious output:\n${{ feedback.prior_output }}\n\nRevise it.",
+    "max_output_chars": 2000            // truncates the spliced prior output
+  }
+}
+```
+
+On a failing verdict the engine records the attempt `validation_failed`,
+renders the feedback template (the default is used when `feedback` is omitted),
+and re-attempts with the critique folded into the prompt — a **different**
+request under a **semantic** budget disjoint from the transport retry budget
+(`retry`). The augmented prompt re-keys the response cache by construction, so a
+semantic retry is never served a stale hit; the attempts are cost-metered like
+any other. Exhausting `max_attempts` dead-letters the step with the full
+verdict history on the DLQ record. The template admits exactly four tokens —
+`${{ feedback.prior_output }}`, `${{ feedback.issues }}`, `${{ feedback.attempt }}`,
+`${{ feedback.max_attempts }}` — a narrower surface than the
+[step-input expressions](expressions.md).
+
+`GET /v1/runs/{id}` exposes both budgets per step (`transport_failures` and
+`validation_failures`, disjoint) and each augmented prompt as
+`attempts[].feedback` = `{semantic_attempt, max_attempts, prior_attempt, text}`.
+See [`examples/definitions/semantic_retry.json`](../examples/definitions/semantic_retry.json)
 for the canonical workflow.

@@ -157,7 +157,12 @@
             },
             "target": "/text"
           }
-        ]
+        ],
+        "max_attempts": 3,
+        "feedback": {
+          "template": "Attempt ${{ feedback.attempt }}/${{ feedback.max_attempts }} failed:\n${{ feedback.issues }}\nPrior output:\n${{ feedback.prior_output }}",
+          "max_output_chars": 2000
+        }
       }
     },
     {

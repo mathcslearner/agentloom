@@ -48,6 +48,13 @@ func checkJSONPointer(s string) error {
 // of checks.
 const MaxValidators = 16
 
+// MaxSemanticAttempts caps `validation.max_attempts`, the semantic-retry
+// budget (ADR-013, ticket 11.4). Each semantic attempt is a fresh (paid)
+// provider call, so the ceiling is far lower than the transport retry cap
+// (MaxRetryAttempts = 100): a step that cannot produce a valid output in ten
+// feedback-augmented tries is not going to on the eleventh.
+const MaxSemanticAttempts = 10
+
 // ValidatorSpec is one entry in a step's validation chain (ADR-013): the
 // name of a registered validator (kind validator), its opaque config
 // object, and an optional RFC 6901 JSON pointer selecting the sub-tree of
@@ -80,14 +87,61 @@ type ValidatorSpec struct {
 // validation — the output is accepted as produced). Uniform across step
 // types, so it lives on the step envelope, not in the per-type config —
 // like retry, timeout, cache, and budget. At least one validator must be
-// present when the block is present (Validate rejects an empty chain).
-//
-// 11.4 will add `max_attempts` (the semantic-retry budget) and `feedback`
-// (the critique-prompt template) to this struct; strict decode rejects
-// those keys until then, exactly as the ADR-006 reservation discipline
-// rejects an unripe field.
+// present when the block is present, except on an llm step that declares an
+// output_format (whose implicit json_schema validator is the chain — ticket
+// 11.3/11.4).
 type ValidationPolicy struct {
 	// Validators is the ordered chain; each entry names a validator and its
-	// config. Required and non-empty when a `validation` block is present.
-	Validators []ValidatorSpec `json:"validators"`
+	// config. Required and non-empty when a `validation` block is present,
+	// unless the step is an llm step with an output_format (the implicit
+	// validator supplies the chain).
+	Validators []ValidatorSpec `json:"validators,omitempty"`
+
+	// MaxAttempts is the semantic-retry budget (ADR-013, ticket 11.4): the
+	// most attempts a step may make against its validation chain, counting
+	// the first. Absent (0) means 1 — one attempt, no semantic retry (the
+	// 11.1 behavior every unset step keeps). A failing verdict on attempt n
+	// with n < MaxAttempts rebuilds the prompt from the verdict and
+	// re-attempts under a semantic counter disjoint from the transport retry
+	// budget; exhaustion dead-letters. Bounded by MaxSemanticAttempts.
+	MaxAttempts int `json:"max_attempts,omitempty"`
+
+	// Feedback is the critique-prompt policy for semantic retries (ticket
+	// 11.4): how the rejected output and its verdict issues fold into the
+	// next attempt's prompt. Nil means the default template. llm-family only
+	// (a critique template on a step whose executor cannot inject it is an
+	// authoring mistake) and requires MaxAttempts >= 2 (a critique nobody
+	// re-attempts with is meaningless — the model_fallbacks-without-budget
+	// precedent).
+	Feedback *FeedbackPolicy `json:"feedback,omitempty"`
+}
+
+// FeedbackPolicy shapes the critique prompt a semantic retry injects
+// (ADR-013, ticket 11.4). Both fields are optional: an absent Template uses
+// DefaultFeedbackTemplate, and an absent MaxOutputChars uses
+// DefaultFeedbackMaxOutputChars. The template admits exactly the tokens in
+// feedbackTokens (`${{ feedback.prior_output }}`, `${{ feedback.issues }}`,
+// `${{ feedback.attempt }}`, `${{ feedback.max_attempts }}`) — a deliberately
+// narrower surface than the 8.2 expression engine, since the fragment lives
+// on the envelope and is not step-config-rendered.
+type FeedbackPolicy struct {
+	// Template is the critique prompt, with `${{ feedback.* }}` tokens
+	// substituted at retry time. Empty means DefaultFeedbackTemplate.
+	Template string `json:"template,omitempty"`
+
+	// MaxOutputChars truncates the rejected output spliced into the prompt
+	// (`${{ feedback.prior_output }}`) so a large output cannot balloon the
+	// next request. Zero means DefaultFeedbackMaxOutputChars; must be
+	// positive when set.
+	MaxOutputChars int `json:"max_output_chars,omitempty"`
+}
+
+// EffectiveMaxAttempts returns the semantic-retry budget with the default
+// applied: 1 (no semantic retry) when the policy is nil or unset. One site
+// for the "absent means one attempt" rule the whole feature turns on.
+func (p *ValidationPolicy) EffectiveMaxAttempts() int {
+	if p == nil || p.MaxAttempts <= 0 {
+		return 1
+	}
+	return p.MaxAttempts
 }

@@ -46,6 +46,11 @@ const (
 	// resource re-queues to byte-identical delayed members and ZADD dedups
 	// to one pending re-dispatch per step.
 	ReasonThrottle = "throttle"
+	// ReasonSemanticRetry: an output-validation failure re-dispatched a step
+	// for a feedback-augmented re-attempt (ticket 11.4, ADR-013). Enqueued
+	// through the transactional outbox in the completion transaction, not the
+	// delayed set — a semantic retry has no backoff.
+	ReasonSemanticRetry = "semantic_retry"
 )
 
 // Envelope is a task message: a pointer to durable state, never a payload

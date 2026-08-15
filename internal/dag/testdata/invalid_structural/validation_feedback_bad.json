@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "name": "validation-feedback-bad",
+  "steps": [
+    {"id": "a", "type": "noop", "validation": {"validators": [{"name": "contains"}], "max_attempts": 3, "feedback": {"template": "fix it"}}},
+    {"id": "b", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi"}, "validation": {"validators": [{"name": "contains"}], "feedback": {"template": "fix it"}}},
+    {"id": "c", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi"}, "validation": {"validators": [{"name": "contains"}], "max_attempts": 3, "feedback": {"template": "revise ${{ steps.a.output }}"}}}
+  ],
+  "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "c"}]
+}

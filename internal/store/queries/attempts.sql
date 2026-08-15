@@ -1,9 +1,12 @@
 -- One row per execution try. Outcome/error/finished_at are written by the
 -- completion transitions (transitions.go, ticket 2.6).
 
+-- feedback is the semantic-retry critique this attempt was given (ticket
+-- 11.4), copied off the step's pending run_steps.feedback at claim; NULL on a
+-- first attempt or a step with no semantic policy.
 -- name: CreateStepAttempt :one
-INSERT INTO step_attempts (run_id, step_id, attempt_no, claim_id, started_at)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO step_attempts (run_id, step_id, attempt_no, claim_id, started_at, feedback)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- FinishStepAttempt closes an attempt with its outcome; called by the
@@ -35,6 +38,19 @@ ORDER BY attempt_no;
 -- name: CountCountedFailures :one
 SELECT count(*) FROM step_attempts sa
 WHERE sa.run_id = $1 AND sa.step_id = $2 AND sa.outcome IN ('transient', 'timeout')
+  AND sa.attempt_no > COALESCE((
+      SELECT MAX(dl.attempts_at_death) FROM dead_letters dl
+      WHERE dl.run_id = $1 AND dl.step_id = $2), 0);
+
+-- CountValidationFailures is the durable semantic-retry budget (ADR-013,
+-- ticket 11.4): validation_failed attempt outcomes only, disjoint from the
+-- transport budget (CountCountedFailures counts transient/timeout). Like it,
+-- the count starts at the requeue baseline — attempts past the latest
+-- dead_letters row's attempts_at_death — so a requeued step re-arms its full
+-- semantic policy independently of the transport one.
+-- name: CountValidationFailures :one
+SELECT count(*) FROM step_attempts sa
+WHERE sa.run_id = $1 AND sa.step_id = $2 AND sa.outcome = 'validation_failed'
   AND sa.attempt_no > COALESCE((
       SELECT MAX(dl.attempts_at_death) FROM dead_letters dl
       WHERE dl.run_id = $1 AND dl.step_id = $2), 0);

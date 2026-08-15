@@ -41,7 +41,7 @@ func columnExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table, 
 // latestVersion is the highest migration in internal/store/migrations —
 // bump when adding a migration (the round-trip test below walks every
 // down migration regardless, so forgetting only fails the version check).
-const latestVersion = 19
+const latestVersion = 20
 
 func TestMigrateUpDownRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -84,12 +84,12 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 	}
 
 	// Down rolls back one step: the newest migration's additions are gone,
-	// earlier ones untouched. 0019 drops step_attempts.repair — its revert is
-	// observable by that column being gone while everything below it survives:
-	// 0018's step_attempts.verdict and run_steps.validation_policy, 0017's runs
-	// budget columns and run_steps.budget_policy,
-	// 0016's cost_ledger table and runs cost columns, 0015's
-	// run_steps.cache_policy column, 0013's retrieval_docs table, 0012's
+	// earlier ones untouched. 0020 drops the semantic-retry feedback columns —
+	// its revert is observable by them being gone while everything below it
+	// survives: 0019's step_attempts.repair, 0018's step_attempts.verdict and
+	// run_steps.validation_policy, 0017's runs budget columns and
+	// run_steps.budget_policy, 0016's cost_ledger table and runs cost columns,
+	// 0015's run_steps.cache_policy column, 0013's retrieval_docs table, 0012's
 	// step_attempts.usage column, 0011's step_logs table, 0010's trace
 	// columns, 0009's fingerprint column, 0008's api_keys table, 0007's
 	// run-control columns, 0006's side_effects table, 0005's dead_letters
@@ -98,8 +98,14 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 	if err := mg.Down(); err != nil {
 		t.Fatalf("Down: %v", err)
 	}
-	if columnExists(ctx, t, pool, "step_attempts", "repair") {
-		t.Fatal("after one Down: step_attempts.repair was not dropped by 0019")
+	if columnExists(ctx, t, pool, "run_steps", "feedback") {
+		t.Fatal("after one Down: run_steps.feedback was not dropped by 0020")
+	}
+	if columnExists(ctx, t, pool, "step_attempts", "feedback") {
+		t.Fatal("after one Down: step_attempts.feedback was not dropped by 0020")
+	}
+	if !columnExists(ctx, t, pool, "step_attempts", "repair") {
+		t.Fatal("after one Down: step_attempts.repair was dropped by the wrong migration")
 	}
 	if !columnExists(ctx, t, pool, "step_attempts", "verdict") {
 		t.Fatal("after one Down: step_attempts.verdict was dropped by the wrong migration")

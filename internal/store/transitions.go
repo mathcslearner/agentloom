@@ -73,6 +73,19 @@ type stepThrottlePayload struct {
 	NextAttemptAt time.Time `json:"next_attempt_at"`
 }
 
+// stepSemanticRetryPayload is the step_semantic_retry_scheduled event body
+// (ticket 11.4): which attempt failed validation, how deep the semantic loop
+// has gone (semantic_attempt of max_attempts), the failing verdict's issue
+// count, and when the re-attempt is due.
+type stepSemanticRetryPayload struct {
+	StepID          string    `json:"step_id"`
+	AttemptNo       int32     `json:"attempt_no"`
+	SemanticAttempt int       `json:"semantic_attempt"`
+	MaxAttempts     int       `json:"max_attempts"`
+	IssueCount      int       `json:"issue_count"`
+	NextAttemptAt   time.Time `json:"next_attempt_at"`
+}
+
 // stepDeadLetteredPayload is the step_dead_lettered event body (ticket
 // 5.4): why the step died (source), the judged class (empty for poison),
 // the attempt count at death, and the dead_letters seq the full record
@@ -214,6 +227,12 @@ func ClaimStepWithOrigin(ctx context.Context, q Querier, args ClaimStepArgs) (ge
 	_, err = gq.CreateStepAttempt(ctx, gen.CreateStepAttemptParams{
 		RunID: args.RunID, StepID: args.StepID, AttemptNo: step.AttemptCount,
 		ClaimID: claimID, StartedAt: &args.Now,
+		// The semantic-retry critique (ticket 11.4): the step's pending
+		// feedback (set by the previous validation_failed completion, NULL for
+		// a first attempt or an un-validated step) is copied onto this attempt
+		// so the executor sees it and the attempt history is diffable. It stays
+		// on the step row until success/DLQ, so a takeover re-claim sees it too.
+		Feedback: step.Feedback,
 	})
 	if err != nil {
 		return gen.RunStep{}, origin, wrapErr(op+": insert attempt", err)
@@ -919,6 +938,92 @@ func ThrottleStep(ctx context.Context, q Querier, args ThrottleStepArgs) (gen.Ru
 		return gen.RunStep{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "step throttled",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID),
+		log.Attempt(int(step.AttemptCount)))
+	return step, nil
+}
+
+// SemanticRetryStepArgs are the inputs to SemanticRetryStep.
+type SemanticRetryStepArgs struct {
+	RunID  uuid.UUID
+	StepID string
+	// ClaimID is the fencing token ClaimStep issued to this caller.
+	ClaimID uuid.UUID
+	// Error is the validation-failure summary, stored on both the step (last
+	// failure) and the closed attempt; nil stores NULL.
+	Error json.RawMessage
+	// Usage is the failed attempt's token accounting — the provider call
+	// happened and billed even though the output was rejected (ADR-012 rule 5
+	// amended, ADR-013); nil stores NULL.
+	Usage json.RawMessage
+	// Verdict is the failing chain verdict, persisted on the closed attempt as
+	// the durable evidence of why this attempt was rejected; nil stores NULL.
+	Verdict json.RawMessage
+	// Repair is the structured-output provenance (ticket 11.3) of the rejected
+	// output; nil stores NULL.
+	Repair json.RawMessage
+	// Feedback is the critique the NEXT attempt must carry, stamped onto
+	// run_steps.feedback so the claim CAS copies it onto the fresh attempt.
+	// nil stores NULL (a step whose executor injects no critique).
+	Feedback json.RawMessage
+	// SemanticAttempt is the semantic-attempt depth this failure was at (the
+	// event's bookkeeping); MaxAttempts the budget; IssueCount the verdict's
+	// issue count.
+	SemanticAttempt int
+	MaxAttempts     int
+	IssueCount      int
+	// NextAttemptAt is when the re-attempt is due — now (no backoff). Required.
+	NextAttemptAt time.Time
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// SemanticRetryStep routes a step whose output failed its validation chain
+// running → retrying for a feedback-augmented re-attempt (ticket 11.4,
+// ADR-013). It reuses the 5.2 retry lifecycle (SemanticRetryRunStep — the
+// claim-fenced running → retrying CAS, claim cleared, next_attempt_at stamped)
+// but records the attempt with the validation_failed outcome (its own semantic
+// budget via CountValidationFailures, disjoint from the transport one) and
+// stamps the critique onto run_steps.feedback for the next claim to copy. Like
+// RetryStep it does NOT bump steps_failed — the step is not terminal. Enqueuing
+// the re-dispatch (reason semantic_retry) is the caller's move, in the same
+// completion transaction; a crash before it is healed by the same
+// overdue-retrying reconciler scan the transport retries rely on.
+func SemanticRetryStep(ctx context.Context, q Querier, args SemanticRetryStepArgs) (gen.RunStep, error) {
+	const op = "semantic retry step"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.RunStep{}, err
+	}
+	if args.NextAttemptAt.IsZero() {
+		return gen.RunStep{}, fmt.Errorf("store: %s: zero NextAttemptAt — pass the computed due time", op)
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.RunStep{}, err
+	}
+	step, err := gq.SemanticRetryRunStep(ctx, gen.SemanticRetryRunStepParams{
+		RunID: args.RunID, StepID: args.StepID, ClaimID: &args.ClaimID,
+		Error: args.Error, NextAttemptAt: args.NextAttemptAt, Feedback: args.Feedback, Now: args.Now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.RunStep{}, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
+			want: StepStatusRunning, to: StepStatusRetrying, claim: &args.ClaimID,
+		})
+	}
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op, err)
+	}
+	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeValidationFailed,
+		args.Error, args.Usage, args.Verdict, args.Repair, args.Now); err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepSemanticRetryScheduled, stepSemanticRetryPayload{
+		StepID: args.StepID, AttemptNo: step.AttemptCount, SemanticAttempt: args.SemanticAttempt,
+		MaxAttempts: args.MaxAttempts, IssueCount: args.IssueCount, NextAttemptAt: args.NextAttemptAt,
+	}); err != nil {
+		return gen.RunStep{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "step semantic retry scheduled",
 		log.RunID(args.RunID.String()), log.StepID(args.StepID),
 		log.Attempt(int(step.AttemptCount)))
 	return step, nil

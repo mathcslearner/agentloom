@@ -115,6 +115,13 @@ const (
 	// delivery was consumed by the run-status guard while the run was
 	// parked (ticket 5.6).
 	OutboxReasonUnpark = "unpark"
+	// OutboxReasonSemanticRetry: a validation-failure completion re-dispatched
+	// a step it routed running → retrying for a feedback-augmented re-attempt
+	// (ticket 11.4, ADR-013). Unlike a transport retry (delayed ZSET), a
+	// semantic retry has no backoff and is enqueued through the outbox in the
+	// completion transaction — the reconcile_retry scan still heals a crash
+	// between commit and dispatch, since the row is `retrying` and due now.
+	OutboxReasonSemanticRetry = "semantic_retry"
 )
 
 // Dead-letter sources (ticket 5.4, ADR-006 "Dead-letter model"): why a
@@ -220,6 +227,13 @@ const (
 	// payload carries the attempt, the resource, which bucket denied, the
 	// limiter's retry_after, and when the re-dispatch is due.
 	EventStepThrottled = "step_throttled"
+	// EventStepSemanticRetryScheduled: an output-validation failure routed the
+	// step running → retrying with a feedback-augmented re-attempt (ticket
+	// 11.4, ADR-013). The payload carries the attempt, the semantic-attempt
+	// depth and budget, the failing verdict's issue count, and when the
+	// re-dispatch is due. Distinct from step_retry_scheduled (transport) so the
+	// two budgets read apart in the event feed.
+	EventStepSemanticRetryScheduled = "step_semantic_retry_scheduled"
 	// EventStepDeadLettered: the step reached the terminal failure state
 	// (ticket 5.4, ADR-006). The payload carries the source, the judged
 	// class (empty for poison), the attempt count at death, and the

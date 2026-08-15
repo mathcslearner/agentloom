@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "validation-feedback-unknown-field",
+  "steps": [{"id": "a", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi"}, "validation": {"validators": [{"name": "contains", "config": {"substring": "x"}}], "max_attempts": 3, "feedback": {"tone": "harsh"}}}],
+  "edges": []
+}

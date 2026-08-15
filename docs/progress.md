@@ -6304,3 +6304,104 @@ semantically, not byte-wise.
 rebuild the prompt (11.4 — a failing verdict still dead-letters on the first
 attempt); the `llm_judge` validator + overhead cost (11.5); quality metrics
 including repair rate (11.6).
+
+### 11.4 — Semantic retry engine ✅
+
+**What shipped.** The semantic-retry loop ADR-013 reserved: on a failing
+validation verdict the engine now rebuilds the prompt from the critique and
+re-attempts under a semantic budget disjoint from the transport one — instead
+of dead-lettering on the first bad verdict (unless the budget is one, the
+default). Contract, executor hook, store transition, engine router, API surface,
+docs, and a canonical example.
+
+**Contract (`internal/dag`).** `ValidationPolicy` gained `max_attempts`
+(`1..MaxSemanticAttempts`=10; absent=0 means one attempt — the 11.1 behavior
+every unset step keeps, via `EffectiveMaxAttempts()`) and `feedback`
+(`FeedbackPolicy{template?, max_output_chars?}`, llm-family-only, requires
+`max_attempts >= 2`). `internal/dag/feedback.go` is a **deliberately narrow**
+template surface — exactly `${{ feedback.prior_output|issues|attempt|max_attempts }}`
+— with one scanner (`scanFeedbackTemplate`) shared by submit-time
+`CheckFeedbackTemplate` and retry-time `RenderFeedback`, so a template the
+definition accepts can never reference a token the renderer lacks. `checkValidation`
+grew `checkSemanticPolicy` and one relaxation: a `validation` block with no
+validators is admissible on an llm step with `output_format` (the implicit
+json_schema validator is the chain). Regenerated JSON Schema, both kitchen
+sinks carry a semantic policy (new 11.4 construct pin), `feedback_test.go`;
+`validation_reserved_key.json` repurposed to `validation_feedback_unknown_field.json`
+and two structural fixtures added.
+
+**Executor (`internal/exec`).** `exec.Feedback{schema_version, semantic_attempt,
+max_attempts, prior_attempt, text}` (the `exec.Repair` precedent) + the
+`FeedbackInjector` hook; `LLMExecutor.WithFeedback` re-keys the rendered config
+(prompt-suffix with a blank-line separator, or a trailing user message),
+byte-identical siblings otherwise — the `WithModel` pattern. Tests: prompt/messages
+forms, empty-text no-op, and `TestFeedbackChangesCacheKey` (the augmented request
+re-keys the cache).
+
+**Store.** Migration 0020: `run_steps.feedback` (the pending critique the claim
+CAS copies onto the next attempt, cleared on succeed/DLQ/poison) +
+`step_attempts.feedback` (what each attempt was given) — no new table/outcome/class.
+New `SemanticRetryRunStep` query (the 5.2 retry CAS + `feedback = @feedback`);
+`CreateStepAttempt` gained a feedback param (copied off `step.Feedback` at claim
+in `ClaimStepWithOrigin`); `CountValidationFailures` (validation_failed past the
+DLQ baseline — the exact mirror of `CountCountedFailures`); `SucceedRunStep`/
+`DeadLetterRunStep`/`PoisonDeadLetterRunStep` clear feedback. New transition
+`store.SemanticRetryStep`, event `step_semantic_retry_scheduled` + payload,
+outbox reason `semantic_retry`, queue reason `ReasonSemanticRetry`,
+`AttemptRepo.CountValidationFailures`. Migrate round-trip bumped to 20.
+
+**Engine.** `engine/feedback.go`: `injectFeedback` (decode `step.Feedback` →
+`FeedbackInjector.WithFeedback`; corrupt record or injector error warns and
+proceeds un-augmented — feedback is diagnostic, the verdict is load-bearing),
+`buildFeedback` (renders the critique for the next attempt; `priorOutputText`
+pulls the llm-family `/text` answer, `formatVerdictIssues` bullets the issues),
+`decodeValidationPolicy`, `collectVerdictHistory`. `claim.go` injects feedback
+**after resolveChain, before cacheRead**, threading the semantic attempt into
+`runChain` (11.1's `validationAttemptNumber` constant is gone) and `cacheRead`.
+`completeValidationFailure` became a router: in-tx `CountValidationFailures` →
+`n < max` ⇒ `SemanticRetryStep` + an **outbox** re-dispatch (reason
+`semantic_retry`, `next_attempt_at = now` — a semantic retry has no backoff, so
+it goes through the outbox, not the delayed ZSET; `reconcile_retry` heals a
+crash) + cost ledger + post-commit `metrics.RetryScheduled("validation_failed")`
++ nudge; else the terminal DLQ (source `retries_exhausted`) with
+`semantic_attempts` + `verdict_history` on the record.
+
+**API.** `AttemptView.feedback` (the critique on the wire) +
+`StepView.{transport_failures, validation_failures}` (disjoint counters derived
+from the attempt list); OpenAPI `Feedback` component + the two StepView fields
+(still 100/100). `examples/definitions/semantic_retry.json` (corpus-pinned).
+
+**Non-obvious decisions.** (1) **Feedback stored on the step, not only the
+attempt** — so the pending critique survives a crash/takeover and an interleaved
+transport retry (429) between semantic attempts; the claim CAS copies it onto
+the fresh attempt, and success/DLQ clears it. (2) **Semantic re-dispatch via the
+outbox, not the delayed ZSET** — a semantic retry has no backoff, so an in-tx
+outbox row (dispatched immediately, reason `semantic_retry`) beats the
+scheduler round-trip; the existing overdue-retrying reconciler scan still heals
+a commit-then-dispatch crash because the row is `retrying` and due now. (3)
+**Two disjoint budgets by construction** — `CountValidationFailures` and
+`CountCountedFailures` are separate queries over separate outcome sets, so
+neither can drain the other; both surface per step in the status API. (4) **The
+feedback template is not the 8.2 expression engine** — four fixed tokens on an
+envelope field that is never step-config-rendered; a fuller language would be
+unnecessary and a footgun. (5) **A budget park closes the parked attempt
+`budget_exceeded`, not validation_failed** — the semantic loop halts before the
+provider call, and the pending feedback stays on the (now-ready) step, so
+Unpark resumes the critique-carrying re-attempt. (6) **Corrupt feedback warns
+and proceeds** (un-augmented, still validated) rather than failing permanently,
+unlike a corrupt *policy* (which dead-letters, since the budget can't be read).
+
+**Verified.** `make generate` (no diff), `make lint` (0 issues), `make
+openapi-lint` (100/100), the full unit suite, and — against the compose DB at
+schema 20 (`make migrate-up`) — the store, engine, and api integration suites
+green. New tests: `internal/engine/semantic_retry_integration_test.go`
+(fail→fail→pass on 3 semantic attempts with diffable stored feedback + 2
+`step_semantic_retry_scheduled` events; exhaustion → DLQ with a 2-entry
+`verdict_history` + requeue re-arming the semantic budget; budget-park halting
+the loop then SetBudget+Unpark completing it), `internal/api/
+validation_integration_test.go::TestSemanticRetryVisibleInStatusAPI` (feedback +
+disjoint counters on the wire), plus the dag/exec unit suites.
+
+**Deferred:** the `llm_judge` validator + overhead cost (11.5); quality metrics
+— validation-failure rate, semantic-retry depth histogram, judge score
+distribution (11.6).

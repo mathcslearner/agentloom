@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/mathcslearner/agentloom/internal/cache"
 	"github.com/mathcslearner/agentloom/internal/dag"
@@ -292,6 +293,64 @@ func (e LLMExecutor) WithModel(sc StepContext, model string) (json.RawMessage, e
 	out, err := json.Marshal(fields)
 	if err != nil {
 		return nil, fmt.Errorf("re-encoding llm config for downgrade: %w", err)
+	}
+	return out, nil
+}
+
+// WithFeedback implements FeedbackInjector (ADR-013, ticket 11.4): it folds a
+// semantic-retry critique into the rendered config's request, leaving every
+// other value byte-identical (a raw-message re-key, not a struct round-trip,
+// exactly like WithModel). A prompt-form config gets the critique appended to
+// its prompt with a blank-line separator; a messages-form config gets a
+// trailing user message carrying the critique. Empty feedback text (a step
+// with no critique to inject) returns the config unchanged. Because the
+// prompt/messages feed the cache key, the resource estimate, and the provider
+// call, the one rewrite re-targets the whole pipeline — so a semantic retry is
+// a different cache key by construction.
+func (e LLMExecutor) WithFeedback(sc StepContext, fb Feedback) (json.RawMessage, error) {
+	if strings.TrimSpace(fb.Text) == "" {
+		return sc.Config, nil
+	}
+	fields := map[string]json.RawMessage{}
+	if len(sc.Config) > 0 {
+		if err := json.Unmarshal(sc.Config, &fields); err != nil {
+			return nil, fmt.Errorf("decoding llm config for feedback: %w", err)
+		}
+	}
+	// messages form wins when present (a config carries exactly one of prompt
+	// or messages — validated at submit time).
+	if raw, ok := fields["messages"]; ok && len(raw) > 0 {
+		var msgs []dag.LLMMessage
+		if err := json.Unmarshal(raw, &msgs); err != nil {
+			return nil, fmt.Errorf("decoding llm messages for feedback: %w", err)
+		}
+		msgs = append(msgs, dag.LLMMessage{Role: "user", Content: fb.Text})
+		encoded, err := json.Marshal(msgs)
+		if err != nil {
+			return nil, fmt.Errorf("re-encoding llm messages for feedback: %w", err)
+		}
+		fields["messages"] = encoded
+	} else {
+		var prompt string
+		if raw, ok := fields["prompt"]; ok && len(raw) > 0 {
+			if err := json.Unmarshal(raw, &prompt); err != nil {
+				return nil, fmt.Errorf("decoding llm prompt for feedback: %w", err)
+			}
+		}
+		if prompt != "" {
+			prompt += "\n\n" + fb.Text
+		} else {
+			prompt = fb.Text
+		}
+		encoded, err := json.Marshal(prompt)
+		if err != nil {
+			return nil, fmt.Errorf("re-encoding llm prompt for feedback: %w", err)
+		}
+		fields["prompt"] = encoded
+	}
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("re-encoding llm config for feedback: %w", err)
 	}
 	return out, nil
 }

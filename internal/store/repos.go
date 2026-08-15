@@ -363,6 +363,11 @@ type AttemptRepo interface {
 	// with a counted outcome — transient or timeout — the durable retry
 	// budget (ticket 5.2, ADR-006: `lost` closures are excluded).
 	CountCountedFailures(ctx context.Context, runID uuid.UUID, stepID string) (int64, error)
+	// CountValidationFailures returns how many of the step's attempts closed
+	// with the validation_failed outcome — the durable semantic-retry budget
+	// (ticket 11.4, ADR-013), disjoint from CountCountedFailures. Both count
+	// from the same requeue baseline.
+	CountValidationFailures(ctx context.Context, runID uuid.UUID, stepID string) (int64, error)
 }
 
 type attemptRepo struct{ q *gen.Queries }
@@ -385,6 +390,11 @@ func (r attemptRepo) ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.Step
 func (r attemptRepo) CountCountedFailures(ctx context.Context, runID uuid.UUID, stepID string) (int64, error) {
 	n, err := r.q.CountCountedFailures(ctx, gen.CountCountedFailuresParams{RunID: runID, StepID: stepID})
 	return n, wrapErr("count counted failures", err)
+}
+
+func (r attemptRepo) CountValidationFailures(ctx context.Context, runID uuid.UUID, stepID string) (int64, error) {
+	n, err := r.q.CountValidationFailures(ctx, gen.CountValidationFailuresParams{RunID: runID, StepID: stepID})
+	return n, wrapErr("count validation failures", err)
 }
 
 // DeadLetterRepo reads dead_letters rows (ticket 5.4). Read-only by

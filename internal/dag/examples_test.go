@@ -28,6 +28,7 @@ var exampleFiles = []string{
 	"mock_pipeline.json",
 	"rag_lite.json",
 	"structured_extract.json",
+	"semantic_retry.json",
 }
 
 // readExample loads one example definition document.
@@ -330,6 +331,19 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	}
 	if !hasValidationTarget {
 		t.Error("no validation chain entry with an explicit target in kitchen_sink.json")
+	}
+
+	// Ticket 11.4 construct (ADR-013): a step carrying a semantic-retry
+	// policy — a max_attempts budget above one and a feedback template — so a
+	// schema edit that dropped the semantic-policy fields would fail here.
+	var hasSemanticPolicy bool
+	for _, s := range def.Steps {
+		if s.Validation != nil && s.Validation.EffectiveMaxAttempts() > 1 && s.Validation.Feedback != nil {
+			hasSemanticPolicy = true
+		}
+	}
+	if !hasSemanticPolicy {
+		t.Error("no step with a semantic-retry policy (max_attempts + feedback) in kitchen_sink.json")
 	}
 
 	// Ticket 11.3 construct (ADR-013): an llm step with a structured-output

@@ -218,6 +218,18 @@
         "continue_independent_branches"
       ]
     },
+    "FeedbackPolicy": {
+      "properties": {
+        "template": {
+          "type": "string"
+        },
+        "max_output_chars": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "HumanApprovalConfig": {
       "properties": {
         "prompt": {
@@ -667,13 +679,16 @@
             "$ref": "#/$defs/ValidatorSpec"
           },
           "type": "array"
+        },
+        "max_attempts": {
+          "type": "integer"
+        },
+        "feedback": {
+          "$ref": "#/$defs/FeedbackPolicy"
         }
       },
       "additionalProperties": false,
-      "type": "object",
-      "required": [
-        "validators"
-      ]
+      "type": "object"
     },
     "ValidatorSpec": {
       "properties": {

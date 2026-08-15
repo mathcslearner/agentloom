@@ -26,6 +26,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
+	obstrace "github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 	"github.com/mathcslearner/agentloom/internal/validate"
@@ -119,25 +120,20 @@ func mergeValidationPolicy(implicit *dag.ValidatorSpec, authored *dag.Validation
 // semantics), returning the aggregated verdict — or nil when the chain is
 // empty (no validation). A non-nil error is a transport failure of a
 // validator (an llm_judge provider error, a ctx cancellation): the caller
-// routes it through the ADR-006 taxonomy, not as a fail verdict. The
-// semantic attempt is always 1 in 11.1 (no loop yet); 11.4 threads the
-// real semantic attempt number.
-func (e *Engine) runChain(ctx context.Context, chain *validate.Chain, out exec.Output) (*validate.Verdict, error) {
+// routes it through the ADR-006 taxonomy, not as a fail verdict. semanticAttempt
+// is the 1-based semantic attempt this output is (ticket 11.4): 1 on a first
+// try, higher on a feedback-augmented re-attempt, so a validator may loosen or
+// tighten across the semantic loop (validate.Input.Attempt).
+func (e *Engine) runChain(ctx context.Context, chain *validate.Chain, out exec.Output, semanticAttempt int) (*validate.Verdict, error) {
 	if chain.Empty() {
 		return nil, nil
 	}
-	v, err := chain.Run(ctx, out.Data, validationAttemptNumber, log.From(ctx))
+	v, err := chain.Run(ctx, out.Data, semanticAttempt, log.From(ctx))
 	if err != nil {
 		return nil, err
 	}
 	return &v, nil
 }
-
-// validationAttemptNumber is the semantic attempt number the engine passes
-// to a validation chain. Always 1 in 11.1 (no semantic-retry loop); 11.4
-// derives it from the semantic retry counter. Kept as a named constant so
-// the 11.4 change has one obvious site.
-const validationAttemptNumber = 1
 
 // validatorErrorClass maps a validator's transport error onto its ADR-006
 // class. A *validate.Error carries its declared class (transient or
@@ -155,20 +151,27 @@ func validatorErrorClass(err error) dag.ErrorClass {
 	return dag.ClassTransient
 }
 
-// completeValidationFailure is the validation-failure route (ADR-013's
-// decision table): the executor succeeded but the output failed its chain.
-// One transaction records the validation_failed attempt (with its usage and
-// verdict persisted), meters the spent cost, and dead-letters the step
-// (source retries_exhausted — the semantic budget is exhausted at one
-// attempt in 11.1) so the run's on_failure disposition applies — the
-// ordinary DLQ machinery, no new disposition logic. On a cancelling run the
-// step settles cancelled instead (the failure is not judged, ADR-006 row 8),
-// mirroring completeFailure.
+// completeValidationFailure is the validation-failure route and the
+// semantic-retry engine (ADR-013, ticket 11.4): the executor succeeded but the
+// output failed its chain. It consults the step's semantic budget
+// (validation.max_attempts, disjoint from the transport retry budget) and
+// routes in one transaction:
 //
-// The verdict is load-bearing evidence: a marshal failure of it is a
-// permanent step failure (unlike usage, which the success path drops with a
-// warning), because losing the verdict would erase why the output was
-// rejected.
+//   - budget remaining → a feedback-augmented re-attempt: the failing attempt
+//     is recorded validation_failed (usage + verdict + repair persisted), the
+//     critique the next attempt must carry is stamped onto the step, and the
+//     step is re-dispatched immediately through the outbox (reason
+//     semantic_retry, no backoff). The augmented prompt is built at the next
+//     claim from the stamped feedback, so it re-keys the cache by construction.
+//   - budget exhausted (or absent — the 11.1 default of one attempt, or a
+//     corrupt policy) → dead-lettered (source retries_exhausted) with the full
+//     verdict history attached, so the run's on_failure disposition applies.
+//
+// On a cancelling run the step settles cancelled instead (the failure is not
+// judged, ADR-006 row 8), mirroring completeFailure. The verdict is
+// load-bearing evidence: a marshal failure of it is a permanent step failure
+// (unlike usage, which the success path drops with a warning), because losing
+// the verdict would erase why the output was rejected.
 func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep, out exec.Output, verdict validate.Verdict, runTrace store.TraceContext) error {
 	logger := log.From(ctx)
 
@@ -187,6 +190,19 @@ func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep
 		payload = json.RawMessage(`{"message":"output validation failed","class":"validation_failed"}`)
 	}
 
+	// The semantic budget (ADR-013): a corrupt materialized policy cannot be
+	// retried against, so it falls through to the terminal dead-letter with a
+	// budget of one — deterministic, like a corrupt retry policy.
+	policy, policyErr := decodeValidationPolicy(step.ValidationPolicy)
+	if policyErr != nil {
+		logger.ErrorContext(ctx, "corrupt materialized validation policy; dead-lettering without semantic retry",
+			slog.Any("error", policyErr))
+	}
+	maxAttempts := 1
+	if policyErr == nil {
+		maxAttempts = policy.EffectiveMaxAttempts()
+	}
+
 	// The attempt's token usage (the provider call happened and billed even
 	// though the output was rejected — ADR-012 rule 5 amended): marshaled
 	// here so it lands on the attempt row inside the transaction.
@@ -198,18 +214,21 @@ func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep
 	}
 	// The structured-output provenance (ticket 11.3): a validation_failed
 	// output of a structured-output step carries how it was shaped (repaired /
-	// unrepairable), the evidence 11.4's feedback builder reads alongside the
+	// unrepairable), the evidence the feedback builder reads alongside the
 	// verdict. Best-effort like usage — the verdict is the load-bearing record.
 	repairJSON := marshalRepair(ctx, logger, out.Repair)
 
 	now := e.now()
 	// The attempt's cost row (ADR-012): a validation_failed attempt spent
-	// real money, so it ledgers exactly like a succeeded one. Priced before
-	// the transaction — pure, no reads.
+	// real money, so it ledgers exactly like a succeeded one — on both the
+	// semantic-retry and the terminal routes. Priced before the transaction —
+	// pure, no reads.
 	costRow := e.priceAttempt(ctx, step, out, now)
 
 	runFailed := false
 	cancelSettled := false
+	retried := false
+	semanticAttempt := 0
 	var terminalRun *gen.Run
 	var run gen.Run
 	var cancelledSteps []string
@@ -236,10 +255,74 @@ func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep
 			terminalRun, rerr = attemptCancelRollup(ctx, q, step.RunID, now)
 			return rerr
 		}
+		// The semantic-retry budget (ADR-013): validation_failed attempts past
+		// the requeue baseline, disjoint from the transport budget. n is this
+		// failing attempt's semantic number (prior failures + this one).
+		prior, cerr := q.Attempts().CountValidationFailures(ctx, step.RunID, step.StepID)
+		if cerr != nil {
+			return cerr
+		}
+		n := int(prior) + 1
+		semanticAttempt = n
+		if policyErr == nil && n < maxAttempts {
+			// Semantic retry: build the critique the next attempt (n+1) carries,
+			// record the failing attempt validation_failed, and re-dispatch.
+			fb := buildFeedback(policy, dag.StepType(step.StepType), out, verdict, n+1, int(step.AttemptCount))
+			fbJSON, merr := json.Marshal(fb)
+			if merr != nil {
+				logger.WarnContext(ctx, "marshaling semantic feedback failed; re-attempting un-augmented",
+					slog.Any("error", merr))
+				fbJSON = nil
+			}
+			if _, err := store.SemanticRetryStep(ctx, q, store.SemanticRetryStepArgs{
+				RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
+				Error: payload, Usage: usage, Verdict: verdictJSON, Repair: repairJSON,
+				Feedback: fbJSON, SemanticAttempt: n, MaxAttempts: maxAttempts,
+				IssueCount: len(verdict.Issues), NextAttemptAt: now, Now: now,
+			}); err != nil {
+				errors.As(err, &fenced)
+				return err
+			}
+			// Immediate re-dispatch through the transactional outbox (no
+			// backoff), carrying this completion span's trace context so the
+			// re-attempt's span links back. A crash between commit and drain is
+			// healed by the reconciler's overdue-retrying scan (the row is
+			// retrying, due now).
+			tp, ts := obstrace.Inject(ctx)
+			if _, err := q.Outbox().CreateTraced(ctx, step.RunID, step.StepID,
+				store.OutboxReasonSemanticRetry, store.TraceContext{Parent: tp, State: ts}); err != nil {
+				return err
+			}
+			if costRow != nil {
+				if _, err := store.ApplyAttemptCost(ctx, q, *costRow); err != nil {
+					return err
+				}
+			}
+			retried = true
+			return nil
+		}
+		// Terminal: dead-letter with the full verdict history (ticket 11.4's
+		// acceptance criterion). The prior attempts' verdicts plus this one make
+		// the DLQ record self-contained evidence of the exhausted semantic loop.
+		attempts, aerr := q.Attempts().ListByStep(ctx, step.RunID, step.StepID)
+		if aerr != nil {
+			return aerr
+		}
+		history := collectVerdictHistory(attempts, step.AttemptCount, verdictJSON)
+		dlqPayload, merr := json.Marshal(map[string]any{
+			"message":           validationFailureMessage(verdict),
+			"class":             string(dag.ClassValidationFailed),
+			"issues":            verdict.Issues,
+			"semantic_attempts": n,
+			"verdict_history":   history,
+		})
+		if merr != nil {
+			dlqPayload = payload
+		}
 		if _, err := store.DeadLetterStep(ctx, q, store.DeadLetterStepArgs{
 			RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
 			Source: store.DeadLetterSourceRetriesExhausted, Outcome: store.AttemptOutcomeValidationFailed,
-			Error: payload, Usage: usage, Verdict: verdictJSON, Repair: repairJSON, Now: now,
+			Error: dlqPayload, Usage: usage, Verdict: verdictJSON, Repair: repairJSON, Now: now,
 		}); err != nil {
 			errors.As(err, &fenced)
 			return err
@@ -285,11 +368,27 @@ func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep
 		}
 		return nil
 	}
+	if retried {
+		// The semantic retry rides the same retry-scheduled metric as transport
+		// retries, labeled by the validation_failed class so the two budgets
+		// read apart. The dispatcher is nudged: the outbox row is due now.
+		e.metrics.RetryScheduled(string(dag.ClassValidationFailed))
+		if e.nudge != nil {
+			e.nudge()
+		}
+		logger.InfoContext(ctx, "step output failed validation; semantic retry scheduled",
+			slog.Int("semantic_attempt", semanticAttempt),
+			slog.Int("max_attempts", maxAttempts),
+			slog.Int("issue_count", len(verdict.Issues)))
+		return nil
+	}
 	e.metrics.DeadLetter(store.DeadLetterSourceRetriesExhausted)
 	if runFailed {
 		e.recordRunCompleted(store.RunStatusFailed, run.StartedAt, now)
 	}
-	logger.WarnContext(ctx, "step output failed validation; dead-lettered",
+	logger.WarnContext(ctx, "step output failed validation; dead-lettered (semantic retries exhausted)",
+		slog.Int("semantic_attempts", semanticAttempt),
+		slog.Int("max_attempts", maxAttempts),
 		slog.Int("issue_count", len(verdict.Issues)),
 		slog.Int("steps_cancelled", len(cancelledSteps)),
 		slog.Bool("run_failed", runFailed))

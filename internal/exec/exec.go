@@ -291,6 +291,47 @@ type ModelFallback struct {
 	AtBudgetFraction *float64
 }
 
+// Feedback is the critique a semantic retry carries into its re-attempt
+// (ADR-013, ticket 11.4): the rendered critique-prompt fragment plus the
+// attempt bookkeeping. It rides durably on run_steps between attempts (the
+// completion transaction stamps the *next* attempt's feedback, the claim
+// copies it onto the attempt row) so the executor sees it in StepContext.
+// SchemaVersion/PriorAttempt make the record self-describing for the
+// status API; Text is what FeedbackInjector folds into the prompt.
+type Feedback struct {
+	// SchemaVersion is the record version (1).
+	SchemaVersion int `json:"schema_version"`
+	// SemanticAttempt is the 1-based semantic attempt this feedback is for —
+	// 2 on the first re-attempt, so a validator (validate.Input.Attempt) and
+	// the status API can see how deep the semantic loop has gone.
+	SemanticAttempt int `json:"semantic_attempt"`
+	// MaxAttempts is the step's semantic budget (validation.max_attempts).
+	MaxAttempts int `json:"max_attempts"`
+	// PriorAttempt is the durable attempt number whose rejected output
+	// produced this critique — the diff anchor for "what changed".
+	PriorAttempt int `json:"prior_attempt"`
+	// Text is the rendered critique-prompt fragment (dag.RenderFeedback). Empty
+	// for a step type whose executor injects no text — it still re-attempts,
+	// but identically. Structure/critique only, never a secret.
+	Text string `json:"text,omitempty"`
+}
+
+// FeedbackInjector is the optional executor hook the semantic-retry
+// middleware consults to fold a critique into the next attempt's request
+// (ADR-013, ticket 11.4). Only a step whose request has a natural prompt to
+// extend implements it (the llm executor); any other step type re-attempts
+// with its original rendered config (identical request under the semantic
+// budget). WithFeedback returns sc.Config with the critique appended (the llm
+// executor suffixes the prompt / adds a trailing user message), leaving every
+// other value byte-identical — so the augmented request re-keys the response
+// cache (a semantic retry is cache-bypassed by construction) and re-prices
+// exactly as WithModel does for a downgrade. An error means the binding could
+// not be computed; the middleware then proceeds with the un-augmented config
+// rather than failing the attempt (the ResourceClaim/WithModel convention).
+type FeedbackInjector interface {
+	WithFeedback(sc StepContext, fb Feedback) (json.RawMessage, error)
+}
+
 // CacheBinder is the optional executor hook the M9 response-cache middleware
 // consults before a step runs (ADR-011, ticket 9.5): it projects the
 // resolved request onto the cache key's inputs and supplies the

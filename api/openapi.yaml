@@ -1455,7 +1455,7 @@ components:
     StepView:
       type: object
       description: One run step with its attempt history.
-      required: [id, type, status, remaining_deps, fired_deps, attempt_count]
+      required: [id, type, status, remaining_deps, fired_deps, attempt_count, transport_failures, validation_failures]
       properties:
         id:
           type: string
@@ -1475,6 +1475,18 @@ components:
           description: The successful attempt's output document. Any JSON value.
         error:
           description: The last failure document. Any JSON value.
+        transport_failures:
+          type: integer
+          description: >
+            Count of the step's transport-retry failures (attempt outcomes
+            transient/timeout — ADR-006). Disjoint from validation_failures:
+            the transport and semantic retry budgets are separate.
+        validation_failures:
+          type: integer
+          description: >
+            Count of the step's output-validation failures (attempt outcome
+            validation_failed — ADR-013, ticket 11.4). Disjoint from
+            transport_failures.
         started_at:
           type: string
           format: date-time
@@ -1527,12 +1539,41 @@ components:
           $ref: "#/components/schemas/Verdict"
         repair:
           $ref: "#/components/schemas/RepairProvenance"
+        feedback:
+          $ref: "#/components/schemas/Feedback"
         started_at:
           type: string
           format: date-time
         finished_at:
           type: string
           format: date-time
+    Feedback:
+      type: object
+      description: >
+        The semantic-retry critique an attempt was given (ticket 11.4,
+        ADR-013). Present on a feedback-augmented re-attempt of a step with a
+        semantic policy (validation.max_attempts >= 2); absent on a first
+        attempt. The `text` is the critique folded into the attempt's request.
+      required: [schema_version, semantic_attempt, max_attempts, prior_attempt]
+      properties:
+        schema_version:
+          type: integer
+          description: Feedback record version (1).
+        semantic_attempt:
+          type: integer
+          description: 1-based semantic attempt number this critique is for (2 on the first re-attempt).
+        max_attempts:
+          type: integer
+          description: The step's semantic-retry budget (validation.max_attempts).
+        prior_attempt:
+          type: integer
+          description: The durable attempt number whose rejected output produced this critique.
+        text:
+          type: string
+          description: >
+            The rendered critique folded into this attempt's request. Empty for
+            a step type whose executor injects no text (it still re-attempts,
+            identically).
     RepairProvenance:
       type: object
       description: >

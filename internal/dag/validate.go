@@ -231,25 +231,32 @@ func (v *validator) checkSteps(def *Definition) map[string]int {
 		v.checkTimeout(path, s.Timeout)
 		v.checkCache(path, s.Cache)
 		v.checkStepBudget(path, s.Type, s.Budget)
-		v.checkValidation(path, s.Validation)
+		v.checkValidation(path, s)
 	}
 	return index
 }
 
 // checkValidation enforces the output-validation chain bounds (ADR-013,
-// ticket 11.1). The codec already rejected unknown fields (including
-// 11.4's reserved keys) and mistyped values; here the non-empty-chain
-// rule, each validator name's shape, each target's JSON-pointer syntax,
-// and the chain-length bound. The *existence* of a named validator is not
-// checked here — a definition may name validators a given worker build has
-// not registered, resolved at claim (the tool-args precedent). A nil chain
-// means the `validation` key was absent, nothing to check.
-func (v *validator) checkValidation(path string, vp *ValidationPolicy) {
+// tickets 11.1/11.4). The codec already rejected unknown fields and mistyped
+// values; here the non-empty-chain rule, each validator name's shape, each
+// target's JSON-pointer syntax, the chain-length bound, and the semantic-
+// retry policy (max_attempts within bounds, feedback llm-family-only with a
+// re-attempt budget and a valid template). The *existence* of a named
+// validator is not checked here — a definition may name validators a given
+// worker build has not registered, resolved at claim (the tool-args
+// precedent). A nil chain means the `validation` key was absent.
+func (v *validator) checkValidation(path string, s Step) {
+	vp := s.Validation
 	if vp == nil {
 		return
 	}
 	path += ".validation"
-	if len(vp.Validators) == 0 {
+	// An empty chain is meaningless *unless* the step is an llm step with an
+	// output_format: there the implicit json_schema validator (11.3) is the
+	// chain, so `validation` may carry only a semantic policy (max_attempts /
+	// feedback) with no explicit validators.
+	hasImplicitChain := s.Type == StepLLM && cfg[LLMConfig](s).OutputFormat != nil
+	if len(vp.Validators) == 0 && !hasImplicitChain {
 		v.add(CodeValidationFieldRequired, path+".validators", "at least one validator is required when a validation block is present")
 		return
 	}
@@ -268,6 +275,39 @@ func (v *validator) checkValidation(path string, vp *ValidationPolicy) {
 				v.add(CodeValidationFieldInvalid, entry+".target", "invalid JSON pointer: %v", err)
 			}
 		}
+	}
+	v.checkSemanticPolicy(path, s.Type, vp)
+}
+
+// checkSemanticPolicy enforces the semantic-retry bounds (ADR-013, ticket
+// 11.4): max_attempts within [1, MaxSemanticAttempts] (0 = absent = one
+// attempt), and feedback restricted to llm-family steps with a re-attempt
+// budget and a well-formed template.
+func (v *validator) checkSemanticPolicy(path string, st StepType, vp *ValidationPolicy) {
+	if vp.MaxAttempts != 0 && (vp.MaxAttempts < 1 || vp.MaxAttempts > MaxSemanticAttempts) {
+		v.add(CodeValidationFieldInvalid, path+".max_attempts",
+			"must be between 1 and %d, got %d", MaxSemanticAttempts, vp.MaxAttempts)
+	}
+	if vp.Feedback == nil {
+		return
+	}
+	fp := path + ".feedback"
+	if !st.IsLLMFamily() {
+		v.add(CodeValidationFieldInvalid, fp,
+			"applies only to llm-family steps, not %q", string(st))
+	}
+	if vp.EffectiveMaxAttempts() < 2 {
+		v.add(CodeValidationFieldInvalid, fp,
+			"has no effect without max_attempts >= 2 (a critique is only used on a re-attempt)")
+	}
+	if vp.Feedback.Template != "" {
+		if err := CheckFeedbackTemplate(vp.Feedback.Template); err != nil {
+			v.add(CodeValidationFieldInvalid, fp+".template", "%v", err)
+		}
+	}
+	if vp.Feedback.MaxOutputChars < 0 {
+		v.add(CodeValidationFieldInvalid, fp+".max_output_chars",
+			"must be positive, got %d", vp.Feedback.MaxOutputChars)
 	}
 }
 

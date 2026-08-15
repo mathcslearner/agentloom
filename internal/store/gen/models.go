@@ -133,6 +133,7 @@ type RunStep struct {
 	CachePolicy      json.RawMessage
 	BudgetPolicy     json.RawMessage
 	ValidationPolicy json.RawMessage
+	Feedback         json.RawMessage
 }
 
 type SchemaBaseline struct {
@@ -165,6 +166,7 @@ type StepAttempt struct {
 	Usage      json.RawMessage
 	Verdict    json.RawMessage
 	Repair     json.RawMessage
+	Feedback   json.RawMessage
 }
 
 type StepLog struct {

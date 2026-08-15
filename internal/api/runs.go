@@ -366,6 +366,22 @@ func decodeRunsCursor(s string) (runsCursor, error) {
 	return c, nil
 }
 
+// failureCounts tallies a step's attempts into the two disjoint failure
+// budgets (ADR-006 transport vs. ADR-013 semantic): transient/timeout are
+// transport failures, validation_failed a semantic one. Administrative
+// outcomes (lost/throttled/budget_exceeded) count toward neither.
+func failureCounts(attempts []AttemptView) (transport, validation int) {
+	for _, a := range attempts {
+		switch a.Outcome {
+		case store.AttemptOutcomeTransient, store.AttemptOutcomeTimeout:
+			transport++
+		case store.AttemptOutcomeValidationFailed:
+			validation++
+		}
+	}
+	return transport, validation
+}
+
 // buildRunView projects one run row onto the wire.
 func buildRunView(run gen.Run) RunView {
 	v := RunView{
@@ -406,6 +422,7 @@ func buildRunResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge, att
 			Usage:      a.Usage,
 			Verdict:    a.Verdict,
 			Repair:     a.Repair,
+			Feedback:   a.Feedback,
 			StartedAt:  a.StartedAt,
 			FinishedAt: a.FinishedAt,
 		}
@@ -435,18 +452,21 @@ func buildRunResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge, att
 		resp.DeadLetters = append(resp.DeadLetters, v)
 	}
 	for _, s := range steps {
+		transport, validation := failureCounts(byStep[s.StepID])
 		resp.Steps = append(resp.Steps, StepView{
-			ID:            s.StepID,
-			Type:          s.StepType,
-			Status:        s.Status,
-			RemainingDeps: int(s.RemainingDeps),
-			FiredDeps:     int(s.FiredDeps),
-			AttemptCount:  int(s.AttemptCount),
-			Output:        s.Output,
-			Error:         s.Error,
-			StartedAt:     s.StartedAt,
-			FinishedAt:    s.FinishedAt,
-			Attempts:      byStep[s.StepID],
+			ID:                 s.StepID,
+			Type:               s.StepType,
+			Status:             s.Status,
+			RemainingDeps:      int(s.RemainingDeps),
+			FiredDeps:          int(s.FiredDeps),
+			AttemptCount:       int(s.AttemptCount),
+			Output:             s.Output,
+			Error:              s.Error,
+			TransportFailures:  transport,
+			ValidationFailures: validation,
+			StartedAt:          s.StartedAt,
+			FinishedAt:         s.FinishedAt,
+			Attempts:           byStep[s.StepID],
 		})
 	}
 	for _, e := range edges {

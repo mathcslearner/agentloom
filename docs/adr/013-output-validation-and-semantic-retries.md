@@ -434,6 +434,118 @@ migration (0019), a single new leaf package (`internal/jsonrepair`), and no
 new engine hook interface — the repair happens inside the llm executor and the
 enforcement reuses the existing validate stage.
 
+### Semantic retry engine (as built, 11.4)
+
+11.4 activates the loop 11.1 reserved: a failing verdict no longer dead-letters
+on the first attempt (unless the semantic budget is one) but rebuilds the
+prompt from the critique and re-attempts, under a semantic counter disjoint
+from the transport one. Nothing in the verdict shape, the routing table, or the
+outcome vocabulary changes — the loop is inserted *before* the terminal
+dead-letter the decision table already describes.
+
+**Contract (`internal/dag`).** `ValidationPolicy` gains two fields, both
+strict-decoded (the reserved keys 11.1 rejected are now admissible):
+
+- `max_attempts` — the semantic budget, `1..MaxSemanticAttempts` (10; each
+  attempt is a paid provider call, so the ceiling is far below the transport
+  cap of 100). Absent (0) means one attempt — the exact 11.1 behavior every
+  unset step keeps, so no existing definition changes meaning.
+  `EffectiveMaxAttempts()` is the one site of the "absent means one" rule.
+- `feedback` — a `FeedbackPolicy{template?, max_output_chars?}`. It is
+  **llm-family-only** (a critique template on a step whose executor cannot
+  inject it is an authoring mistake) and requires `max_attempts >= 2` (a
+  critique nobody re-attempts with is meaningless — the
+  model_fallbacks-without-budget precedent).
+
+The feedback template is a **deliberately narrow surface**, not the 8.2
+expression engine: `internal/dag/feedback.go` admits exactly four tokens
+(`${{ feedback.prior_output }}`, `${{ feedback.issues }}`,
+`${{ feedback.attempt }}`, `${{ feedback.max_attempts }}`), sharing one scanner
+between submit-time validation (`CheckFeedbackTemplate`) and retry-time
+rendering (`RenderFeedback`) so a template the definition accepts can never
+reference a token the renderer does not know. A feedback fragment lives on the
+envelope and is never step-config-rendered, so a fuller expression language
+would be both unnecessary and a footgun. The default template is used when
+`feedback` is nil (any llm step with `max_attempts >= 2`). One relaxation: a
+`validation` block with **no validators** is admissible on an llm step that
+declares an `output_format` (the implicit `json_schema` validator is the
+chain), so `output_format` + `max_attempts` works without a dummy validator.
+
+**Where the critique lives.** Migration 0020 adds two nullable JSONB columns
+(the 0012/0018/0019 precedent — no new table, outcome, or class):
+
+- `run_steps.feedback` — the critique the step's **next** attempt must carry.
+  The validation-failure completion writes it; the claim CAS
+  (`CreateStepAttempt`) copies it onto the new attempt and it stays on the step
+  until success/DLQ clears it. Storing it on the step (not only the attempt) is
+  what makes it survive a crash/takeover and an interleaved transport retry
+  between semantic attempts.
+- `step_attempts.feedback` — the critique **this** attempt was given, so the
+  attempt history is a durable, diffable record of what each re-attempt was
+  told.
+
+The record is `exec.Feedback{schema_version, semantic_attempt, max_attempts,
+prior_attempt, text}` — the `exec.Repair` precedent (exec owns the type, the
+store treats it as opaque JSONB, so `finishAttempt`'s eight call sites are
+untouched).
+
+**Injection is an executor hook** mirroring `ModelDowngrader`:
+`exec.FeedbackInjector{ WithFeedback(sc, Feedback) (config, error) }` on the llm
+executor — a raw-message re-key that appends the critique to a prompt-form
+config's `prompt` (blank-line separator) or as a trailing `user` message on a
+messages-form config, leaving every sibling byte-identical. Injection happens
+in `execute()` **after `resolveChain` and before `cacheRead`**, so the
+augmented prompt feeds the cache key, the budget estimate, the limiter
+estimate, and the provider call alike — a semantic retry is **cache-bypassed by
+construction** (asserted at the exec layer, the `TestDowngradeChangesCacheKey`
+precedent) and re-priced. A non-llm-family step (or an injector error, or empty
+text) re-attempts with the un-augmented config — the convention `WithModel`
+established: a binding failure proceeds rather than fails the attempt.
+
+**The routing** (`completeValidationFailure`, now a router): inside the one
+completion transaction, after the cancelling-run check, it reads
+`CountValidationFailures` (validation_failed attempts past the requeue
+baseline, the exact mirror of `CountCountedFailures`, so requeue re-arms both
+budgets independently), computes `n = prior + 1` (this attempt's semantic
+number), and branches:
+
+- `n < max_attempts` → `store.SemanticRetryStep` records the failing attempt
+  `validation_failed` (usage + verdict + repair persisted, cost ledgered),
+  stamps the next critique onto `run_steps.feedback`, and re-dispatches
+  **immediately through the transactional outbox** (reason `semantic_retry`,
+  `next_attempt_at = now`) — not the delayed ZSET, because a semantic retry has
+  no backoff rationale; a crash between commit and drain is healed by the same
+  overdue-retrying reconciler scan (the row is `retrying`, due now). Post-commit
+  it records `engine_step_retries_total{class="validation_failed"}` and nudges
+  the dispatcher. The event is `step_semantic_retry_scheduled` (distinct from
+  the transport `step_retry_scheduled`).
+- `n >= max_attempts` (or a corrupt policy) → the terminal dead-letter 11.1
+  already had, but the DLQ `error` payload now carries `semantic_attempts` and
+  a `verdict_history` (`[{attempt_no, semantic_attempt, verdict}]` collected
+  in-tx), so the exhausted-retry record is self-contained evidence.
+
+**The two budgets are disjoint by construction and both visible.** The
+transport budget (`CountCountedFailures`: transient+timeout) and the semantic
+budget (`CountValidationFailures`: validation_failed) are separate queries over
+separate outcome sets, so provider flakiness and bad outputs cannot consume
+each other's budget. The run-status API surfaces both per step as
+`transport_failures` / `validation_failures`, and each augmented prompt as
+`attempts[].feedback`.
+
+**Budget interplay** (the ticket's second criterion): the semantic re-attempt
+is an ordinary claim, so the M10 budget check runs on it. If the augmented
+attempt's projected spend exceeds the run budget the run **parks** — the
+semantic loop halts mid-flight, the parked attempt records `budget_exceeded`
+(never reaching the provider), and the pending feedback stays on the step;
+`SetBudget` + `Unpark` re-dispatches the still-ready step, which carries the
+critique into its resumed attempt. No new interplay logic — the loop simply
+respects the existing middleware ordering.
+
+One migration (0020), no new config var, no new metric (semantic-retry depth is
+11.6), no new outcome or class. `MaxSemanticAttempts = 10`; the semantic policy
+is materialized with the rest of `validation_policy` at instantiation, so the
+claim path reads it off the row and never reparses the snapshot.
+
 ## Consequences
 
 Positive:

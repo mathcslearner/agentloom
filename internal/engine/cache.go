@@ -82,7 +82,7 @@ type cacheWriteBinding struct {
 // error, a miss) it returns handled=false with a *cacheWriteBinding when the
 // policy writes (nil otherwise), which execute() threads to the write-through
 // after a successful execution.
-func (e *Engine) cacheRead(ctx context.Context, step gen.RunStep, executor exec.Executor, sc exec.StepContext, chain *validate.Chain) (bool, *cacheWriteBinding, error) {
+func (e *Engine) cacheRead(ctx context.Context, step gen.RunStep, executor exec.Executor, sc exec.StepContext, chain *validate.Chain, semanticAttempt int) (bool, *cacheWriteBinding, error) {
 	if e.cache == nil {
 		return false, nil, nil
 	}
@@ -172,7 +172,7 @@ func (e *Engine) cacheRead(ctx context.Context, step gen.RunStep, executor exec.
 			// not served. A pass (or no chain) serves the hit; a fail or a
 			// validator error falls through to the executor (a fresh output
 			// re-validates and, on a write policy, overwrites the entry).
-			verdict, vErr := e.runChain(ctx, chain, out)
+			verdict, vErr := e.runChain(ctx, chain, out, semanticAttempt)
 			if vErr != nil {
 				e.metrics.CacheBypass(plabel)
 				logger.WarnContext(ctx, "cache hit but validation errored; re-executing",

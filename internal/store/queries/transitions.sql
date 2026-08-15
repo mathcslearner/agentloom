@@ -34,6 +34,7 @@ RETURNING *;
 UPDATE run_steps
 SET status      = 'succeeded',
     output      = @output,
+    feedback    = NULL,
     finished_at = @now::timestamptz,
     updated_at  = @now::timestamptz
 WHERE run_id = @run_id AND step_id = @step_id
@@ -49,6 +50,7 @@ RETURNING *;
 UPDATE run_steps
 SET status      = 'dead_lettered',
     error       = @error,
+    feedback    = NULL,
     finished_at = @now::timestamptz,
     updated_at  = @now::timestamptz
 WHERE run_id = @run_id AND step_id = @step_id
@@ -66,6 +68,7 @@ SET status          = 'dead_lettered',
     error           = @error,
     claim_id        = NULL,
     next_attempt_at = NULL,
+    feedback        = NULL,
     finished_at     = @now::timestamptz,
     updated_at      = @now::timestamptz
 WHERE run_id = @run_id AND step_id = @step_id
@@ -142,6 +145,26 @@ SET status          = 'retrying',
     error           = @error,
     claim_id        = NULL,
     next_attempt_at = @next_attempt_at::timestamptz,
+    updated_at      = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id
+  AND status = 'running' AND claim_id = @claim_id
+RETURNING *;
+
+-- Semantic-retry routing: running → retrying, fenced by claim_id (ticket
+-- 11.4, ADR-013). Mirrors RetryRunStep, but records the critique the NEXT
+-- attempt must carry (@feedback) so the claim CAS can copy it onto the fresh
+-- attempt — the difference between a transport retry (identical request) and
+-- a semantic retry (feedback-augmented request). next_attempt_at is stamped
+-- to now (a semantic retry has no backoff rationale) and the re-dispatch is an
+-- outbox row in the same transaction, not the delayed ZSET. finished_at stays
+-- NULL: the step is not terminal.
+-- name: SemanticRetryRunStep :one
+UPDATE run_steps
+SET status          = 'retrying',
+    error           = @error,
+    claim_id        = NULL,
+    next_attempt_at = @next_attempt_at::timestamptz,
+    feedback        = @feedback,
     updated_at      = @now::timestamptz
 WHERE run_id = @run_id AND step_id = @step_id
   AND status = 'running' AND claim_id = @claim_id

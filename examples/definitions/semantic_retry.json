@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "name": "semantic-retry",
+  "description": "The ticket 11.4 canonical semantic-retry workflow (ADR-013). A `draft` llm step carries a validation chain (a `contains` validator requiring the marker `APPROVED`) plus a semantic policy: `max_attempts: 3` and a `feedback` template. On a failing verdict the engine rebuilds the prompt from the critique — the `${{ feedback.* }}` tokens splice in the semantic-attempt number, the rejected output, and the verdict issues — and re-attempts under a semantic budget disjoint from the transport retry budget; the augmented prompt re-keys the response cache by construction, so a semantic retry is never served a stale hit. Exhausting the three attempts dead-letters the step with the full verdict history; a passing verdict flows the approved draft into the downstream `publish` step. The two budgets are visible per step in the run status API as `transport_failures` and `validation_failures`, and each augmented prompt is stored on its attempt as `attempts[].feedback`. It runs against the offline mock provider (model `mock/sim-1`); swapping the model id for a real provider makes it a live self-correcting workflow unchanged.",
+  "steps": [
+    {
+      "id": "draft",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Write a short launch blurb and end it with the word APPROVED once it is ready.",
+        "max_tokens": 256,
+        "temperature": 0
+      },
+      "validation": {
+        "validators": [
+          {
+            "name": "contains",
+            "config": {"substring": "APPROVED"},
+            "target": "/text"
+          }
+        ],
+        "max_attempts": 3,
+        "feedback": {
+          "template": "This is attempt ${{ feedback.attempt }} of ${{ feedback.max_attempts }}. Your previous draft was rejected:\n${{ feedback.issues }}\n\nPrevious draft:\n${{ feedback.prior_output }}\n\nRevise it and end with APPROVED once it is ready.",
+          "max_output_chars": 2000
+        }
+      }
+    },
+    {
+      "id": "publish",
+      "type": "echo",
+      "config": {
+        "input": {
+          "blurb": "${{ steps.draft.output.text }}"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "draft",
+      "to": "publish"
+    }
+  ]
+}

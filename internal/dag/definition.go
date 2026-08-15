@@ -110,6 +110,19 @@ const (
 	StepEffectfulEcho StepType = "effectful_echo"
 )
 
+// IsLLMFamily reports whether the step type produces a model completion —
+// llm, and the future planner/agent (ADR-013). These share the `/text`
+// default validation target and are the step types on which output_format
+// and the semantic-retry feedback template apply.
+func (t StepType) IsLLMFamily() bool {
+	switch t {
+	case StepLLM, StepPlanner, StepAgent:
+		return true
+	default:
+		return false
+	}
+}
+
 // Step is one node in the workflow graph.
 type Step struct {
 	ID   string   `json:"id"`

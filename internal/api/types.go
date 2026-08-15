@@ -165,9 +165,16 @@ type StepView struct {
 	AttemptCount  int             `json:"attempt_count"`
 	Output        json.RawMessage `json:"output,omitempty"`
 	Error         json.RawMessage `json:"error,omitempty"`
-	StartedAt     *time.Time      `json:"started_at,omitempty"`
-	FinishedAt    *time.Time      `json:"finished_at,omitempty"`
-	Attempts      []AttemptView   `json:"attempts,omitempty"`
+	// TransportFailures counts this step's transport-retry failures (attempt
+	// outcomes transient/timeout — ADR-006), and ValidationFailures its
+	// semantic failures (attempt outcome validation_failed — ADR-013, ticket
+	// 11.4). The two budgets are disjoint, so the counters are reported
+	// separately: a step can exhaust one while the other is untouched.
+	TransportFailures  int           `json:"transport_failures"`
+	ValidationFailures int           `json:"validation_failures"`
+	StartedAt          *time.Time    `json:"started_at,omitempty"`
+	FinishedAt         *time.Time    `json:"finished_at,omitempty"`
+	Attempts           []AttemptView `json:"attempts,omitempty"`
 }
 
 // AttemptView is one execution try of a step.
@@ -188,7 +195,12 @@ type AttemptView struct {
 	// Repair is the structured-output provenance (ticket 11.3, ADR-013),
 	// present on an attempt of an llm step that declared an output_format:
 	// {schema_version, status, steps?, raw_text?}. Absent otherwise.
-	Repair     json.RawMessage `json:"repair,omitempty"`
+	Repair json.RawMessage `json:"repair,omitempty"`
+	// Feedback is the semantic-retry critique this attempt was given (ticket
+	// 11.4, ADR-013): {schema_version, semantic_attempt, max_attempts,
+	// prior_attempt, text}. Present on a feedback-augmented re-attempt of a step
+	// with a semantic policy; absent on a first attempt.
+	Feedback   json.RawMessage `json:"feedback,omitempty"`
 	StartedAt  *time.Time      `json:"started_at,omitempty"`
 	FinishedAt *time.Time      `json:"finished_at,omitempty"`
 }

@@ -201,6 +201,14 @@ var structuralCases = map[string][]issueRef{
 		{dag.CodeUnknownEdgeEndpoint, "edges[2].to"},
 		{dag.CodeLoopFieldForbidden, "edges[2].max_iterations"},
 	},
+	"validation_max_attempts_bad.json": {
+		{dag.CodeValidationFieldInvalid, "steps[0].validation.max_attempts"},
+	},
+	"validation_feedback_bad.json": {
+		{dag.CodeValidationFieldInvalid, "steps[0].validation.feedback"},
+		{dag.CodeValidationFieldInvalid, "steps[1].validation.feedback"},
+		{dag.CodeValidationFieldInvalid, "steps[2].validation.feedback.template"},
+	},
 }
 
 // TestValidateInvalidStructuralFixtures is the ticket 1.3 acceptance test:

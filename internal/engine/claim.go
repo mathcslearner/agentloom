@@ -259,13 +259,27 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		Effects:        e.effects.ForStep(step.RunID, step.StepID, int(step.AttemptCount), claimID, logger),
 		Logger:         execLogger,
 	}
+	// Semantic-retry feedback injection (ticket 11.4, ADR-013): if this claim
+	// carries a pending critique — a prior attempt's output failed its
+	// validation chain and the step was semantic-retried — fold it into the
+	// request now, before the cache read and any spend. The augmented request
+	// re-keys the response cache (a semantic retry is cache-bypassed by
+	// construction) and re-prices the estimate, exactly as a model downgrade
+	// re-targets the pipeline. The feedback record's semantic-attempt number
+	// threads into the validation chain (validate.Input.Attempt) below.
+	augmentedConfig, feedback := e.injectFeedback(ctx, step, executor, sc.Config)
+	sc.Config = augmentedConfig
+	semanticAttempt := 1
+	if feedback != nil && feedback.SemanticAttempt > 0 {
+		semanticAttempt = feedback.SemanticAttempt
+	}
 	// Response cache read-through (ticket 9.5, ADR-011): ahead of the rate
 	// limiter, consult the cache. A hit completes the step from the stored
 	// result — no limiter acquire, no provider call — and returns handled.
 	// A miss (or a declined/ineligible policy, or any fail-open) returns a
 	// write binding threaded to the write-through after a successful
 	// execution; steps whose type is not cacheable bypass this entirely.
-	hit, cacheWB, cherr := e.cacheRead(ctx, step, executor, sc, chain)
+	hit, cacheWB, cherr := e.cacheRead(ctx, step, executor, sc, chain, semanticAttempt)
 	if hit {
 		return cherr
 	}
@@ -291,7 +305,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	if downgraded != nil {
 		sc.Config = downgraded
 		var reReadErr error
-		hit, cacheWB, reReadErr = e.cacheRead(ctx, step, executor, sc, chain)
+		hit, cacheWB, reReadErr = e.cacheRead(ctx, step, executor, sc, chain, semanticAttempt)
 		if hit {
 			return reReadErr
 		}
@@ -385,7 +399,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	// the validation stage (routes through the ADR-006 taxonomy); a fail
 	// verdict routes to the validation_failed outcome (dead-letter, 11.1); a
 	// pass (or no chain, verdict nil) proceeds to cacheWrite + success.
-	verdict, vErr := e.runChain(ctx, chain, out)
+	verdict, vErr := e.runChain(ctx, chain, out, semanticAttempt)
 	if vErr != nil {
 		if ctx.Err() != nil {
 			// Shutdown during validation — abandon like the executor path.
@@ -394,7 +408,10 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		return e.completeFailure(ctx, step, vErr, validatorErrorClass(vErr), origin.RunTrace)
 	}
 	if verdict != nil && !verdict.Passed() {
-		// Invalid output: never cached, dead-lettered as validation_failed.
+		// Invalid output: never cached. Route through the semantic-retry engine
+		// (ticket 11.4) — a feedback-augmented re-attempt if the semantic budget
+		// remains, else dead-lettered as validation_failed with the verdict
+		// history.
 		return e.completeValidationFailure(ctx, step, out, *verdict, origin.RunTrace)
 	}
 	// Response cache write-through (ticket 9.5, ADR-011): a successful miss

@@ -210,6 +210,11 @@ And because the validation chain is **not** a cache-key component (a definition
 can tighten a validator without changing the request), a cache **hit** is
 **re-validated** under the current chain: a stored-but-now-invalid output is
 re-executed, not served. A passing hit still short-circuits the provider call.
+**Semantic retries (11.4)** ride this for free: the feedback-augmented prompt is
+folded into the request *before* the cache read, so the augmented request has a
+**different cache key** by construction — a semantic retry never reads (or is
+served) the failed attempt's entry. Nothing about the cache key changed for the
+feedback loop; it falls out of the existing request-component rule.
 
 ### Storage — write-through Redis, with a size cap
 

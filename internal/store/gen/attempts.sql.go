@@ -40,11 +40,37 @@ func (q *Queries) CountCountedFailures(ctx context.Context, arg CountCountedFail
 	return count, err
 }
 
+const countValidationFailures = `-- name: CountValidationFailures :one
+SELECT count(*) FROM step_attempts sa
+WHERE sa.run_id = $1 AND sa.step_id = $2 AND sa.outcome = 'validation_failed'
+  AND sa.attempt_no > COALESCE((
+      SELECT MAX(dl.attempts_at_death) FROM dead_letters dl
+      WHERE dl.run_id = $1 AND dl.step_id = $2), 0)
+`
+
+type CountValidationFailuresParams struct {
+	RunID  uuid.UUID
+	StepID string
+}
+
+// CountValidationFailures is the durable semantic-retry budget (ADR-013,
+// ticket 11.4): validation_failed attempt outcomes only, disjoint from the
+// transport budget (CountCountedFailures counts transient/timeout). Like it,
+// the count starts at the requeue baseline — attempts past the latest
+// dead_letters row's attempts_at_death — so a requeued step re-arms its full
+// semantic policy independently of the transport one.
+func (q *Queries) CountValidationFailures(ctx context.Context, arg CountValidationFailuresParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countValidationFailures, arg.RunID, arg.StepID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createStepAttempt = `-- name: CreateStepAttempt :one
 
-INSERT INTO step_attempts (run_id, step_id, attempt_no, claim_id, started_at)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair
+INSERT INTO step_attempts (run_id, step_id, attempt_no, claim_id, started_at, feedback)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair, feedback
 `
 
 type CreateStepAttemptParams struct {
@@ -53,10 +79,14 @@ type CreateStepAttemptParams struct {
 	AttemptNo int32
 	ClaimID   uuid.UUID
 	StartedAt *time.Time
+	Feedback  json.RawMessage
 }
 
 // One row per execution try. Outcome/error/finished_at are written by the
 // completion transitions (transitions.go, ticket 2.6).
+// feedback is the semantic-retry critique this attempt was given (ticket
+// 11.4), copied off the step's pending run_steps.feedback at claim; NULL on a
+// first attempt or a step with no semantic policy.
 func (q *Queries) CreateStepAttempt(ctx context.Context, arg CreateStepAttemptParams) (StepAttempt, error) {
 	row := q.db.QueryRow(ctx, createStepAttempt,
 		arg.RunID,
@@ -64,6 +94,7 @@ func (q *Queries) CreateStepAttempt(ctx context.Context, arg CreateStepAttemptPa
 		arg.AttemptNo,
 		arg.ClaimID,
 		arg.StartedAt,
+		arg.Feedback,
 	)
 	var i StepAttempt
 	err := row.Scan(
@@ -78,6 +109,7 @@ func (q *Queries) CreateStepAttempt(ctx context.Context, arg CreateStepAttemptPa
 		&i.Usage,
 		&i.Verdict,
 		&i.Repair,
+		&i.Feedback,
 	)
 	return i, err
 }
@@ -128,7 +160,7 @@ func (q *Queries) FinishStepAttempt(ctx context.Context, arg FinishStepAttemptPa
 }
 
 const listRunStepAttempts = `-- name: ListRunStepAttempts :many
-SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair FROM step_attempts
+SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair, feedback FROM step_attempts
 WHERE run_id = $1
 ORDER BY step_id, attempt_no
 `
@@ -156,6 +188,7 @@ func (q *Queries) ListRunStepAttempts(ctx context.Context, runID uuid.UUID) ([]S
 			&i.Usage,
 			&i.Verdict,
 			&i.Repair,
+			&i.Feedback,
 		); err != nil {
 			return nil, err
 		}
@@ -168,7 +201,7 @@ func (q *Queries) ListRunStepAttempts(ctx context.Context, runID uuid.UUID) ([]S
 }
 
 const listStepAttempts = `-- name: ListStepAttempts :many
-SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair FROM step_attempts
+SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair, feedback FROM step_attempts
 WHERE run_id = $1 AND step_id = $2
 ORDER BY attempt_no
 `
@@ -199,6 +232,7 @@ func (q *Queries) ListStepAttempts(ctx context.Context, arg ListStepAttemptsPara
 			&i.Usage,
 			&i.Verdict,
 			&i.Repair,
+			&i.Feedback,
 		); err != nil {
 			return nil, err
 		}
