@@ -245,6 +245,19 @@ that is a hard requirement. The fairness gap is a throughput-distribution
 concern, not a correctness one, and is recorded here so the M19 load campaign
 knows exactly what to measure and what to add.
 
+### Not limited: the M11.5 `llm_judge` (documented gap)
+
+The `llm_judge` validator (ADR-013, M11.5) calls a provider from the engine's
+**validate stage**, which sits after the executor and is not routed through
+the `ResourceClaimer` middleware. So a judge's provider call is **not**
+back-pressured by the fleet limiter in 11.5: a workflow that judges every
+output doubles its provider traffic against limits the limiter does not see.
+This is an accepted limitation, not a correctness bug — the judge is priced
+and budget-metered (as overhead), so cost governance applies; only the
+rate-limit dimension is missing. Wiring the judge through a resource binding
+(its own `resource` key, `<judge-provider>:<judge-model>`) is a follow-up the
+M19 load campaign can pick up if judge traffic proves to need it.
+
 ### Configuration format & loading (this ticket, 9.1)
 
 Resource limits are a JSON document, supplied to the worker either inline

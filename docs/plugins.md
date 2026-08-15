@@ -212,9 +212,10 @@ outcome (the verdict persisted on the attempt, visible on
 feedback-augmented prompt (the **semantic-retry loop**, 11.4 — see below)
 before dead-lettering; without one it dead-letters on the first bad verdict.
 
-### Built-in validators (11.2)
+### Built-in validators (11.2, 11.5)
 
-The fleet ships five deterministic validators — pure, fast, `cacheable`-only:
+The fleet ships five deterministic validators — pure, fast, `cacheable`-only —
+plus the cost-bearing `llm_judge` (11.5):
 
 | Name | Config | What it checks |
 |---|---|---|
@@ -223,10 +224,44 @@ The fleet ships five deterministic validators — pure, fast, `cacheable`-only:
 | `contains` | `{substring, case_insensitive?, negate?}` | the target's string form contains a substring |
 | `cel` | `{expr, parse_json?}` | a CEL boolean predicate over `value` / `output` / `step_type` |
 | `numeric_range` | `{min?, max?, exclusive_min?, exclusive_max?}` | the target (a numeric string is accepted) is a number within bounds |
+| `llm_judge` | `{model, fallback_models?, rubric, threshold, on_error?, …}` | a (cheap) judge model grades the target against a rubric; pass iff its score meets the threshold |
 
 The default `target` for an llm-family step is `/text` (the model's answer),
-so `json_schema`/`regex`/`cel` judge the answer rather than the `{model,
-stop_reason, text}` envelope.
+so `json_schema`/`regex`/`cel`/`llm_judge` judge the answer rather than the
+`{model, stop_reason, text}` envelope.
+
+**`llm_judge` (11.5)** is the semantic quality gate — the sharpest expression
+of differentiator #1. It calls a judge model, parses a
+`{score, rationale}` answer, and passes iff `score >= threshold`; a
+below-threshold verdict's rationale is the critique the semantic retry (11.4)
+folds into the next attempt. Being `cost_bearing`, it runs **last** in the
+chain (only on an output the free validators already accepted), and its
+provider call is billed to the serving step as **overhead** (ADR-012 rule 4) —
+visible in `GET /v1/runs/{id}/cost` as a `judge:*` entry with `overhead: true`
+and in the per-step `overhead_nano_usd` roll-up. Key config:
+
+```jsonc
+{ "name": "llm_judge", "config": {
+    "model": "anthropic/claude-haiku-4-5",   // routed like an llm step; use a cheap judge
+    "fallback_models": ["openai/gpt-4o-mini"], // tried on provider errors
+    "rubric": "Score 1 if the answer cites a source; 0 otherwise.",
+    "threshold": 0.7,                          // pass iff score >= threshold
+    "on_error": "fail"                         // fail (default) | skip: what to do if the judge is unavailable
+} }
+```
+
+- `on_error: fail` (default) — a judge that cannot render a verdict (a provider
+  error, or a malformed answer) is a **transport failure of the validation
+  stage**: a provider error is transient (retried), a malformed answer
+  permanent. Real judge spend is still metered.
+- `on_error: skip` — degrade to a **pass with a warning** so an unavailable
+  judge never blocks a workflow; the per-validator result records
+  `status: error`.
+
+Judges are **terminal**: a judge's output is never itself validated or judged,
+and a judge is not a step. (Judge calls are not yet routed through the M9 fleet
+rate limiter, and judge overhead is metered after the fact rather than
+pre-projected at claim — both accepted limitations.)
 
 **`ConfigCompiler` (optional).** A validator whose config compiles into an
 artifact the config JSON Schema cannot fully vet — an unparseable regex, a CEL

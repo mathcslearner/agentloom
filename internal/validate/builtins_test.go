@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mathcslearner/agentloom/internal/dag"
+	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/plugin"
 	"github.com/mathcslearner/agentloom/internal/validate"
 )
@@ -18,7 +19,7 @@ import (
 func TestBuiltinValidatorManifests(t *testing.T) {
 	t.Parallel()
 
-	reg, err := validate.NewBuiltins()
+	reg, err := validate.NewBuiltins(nil)
 	if err != nil {
 		t.Fatalf("NewBuiltins: %v", err)
 	}
@@ -28,6 +29,7 @@ func TestBuiltinValidatorManifests(t *testing.T) {
 		"contains":      {Cacheable: true},
 		"cel":           {Cacheable: true},
 		"numeric_range": {Cacheable: true},
+		"llm_judge":     {Cacheable: true, CostBearing: true},
 	}
 	manifests := reg.Manifests()
 	if len(manifests) != len(want) {
@@ -296,12 +298,29 @@ func TestPreflightWarmsCacheNoRecompile(t *testing.T) {
 	// succeeded, which they cannot do without a live compiled artifact.
 }
 
-// builtins builds the built-in validator registry or fails the test.
+// builtins builds the built-in validator registry over a mock provider
+// registry (so the cost-bearing llm_judge's config resolves) or fails the
+// test.
 func builtins(t *testing.T) *validate.Registry {
 	t.Helper()
-	reg, err := validate.NewBuiltins()
+	reg, err := validate.NewBuiltins(judgeProviders(t))
 	if err != nil {
 		t.Fatalf("NewBuiltins: %v", err)
+	}
+	return reg
+}
+
+// judgeProviders builds a provider registry carrying a mock provider, so the
+// llm_judge validator's "mock/<model>" configs route at pre-flight.
+func judgeProviders(t *testing.T) *llm.Registry {
+	t.Helper()
+	mock, err := llm.NewMock(llm.MockConfig{})
+	if err != nil {
+		t.Fatalf("NewMock: %v", err)
+	}
+	reg, err := llm.NewRegistry(mock)
+	if err != nil {
+		t.Fatalf("llm.NewRegistry: %v", err)
 	}
 	return reg
 }

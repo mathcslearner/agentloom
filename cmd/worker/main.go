@@ -241,10 +241,11 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		slog.Int("retrievers", len(retrievers.Names())),
 		slog.Bool("test_executors", cfg.Worker.TestExecutors))
 	// Output validators (ticket 11.1, ADR-013): the validator-kind plugins
-	// the engine's validate stage resolves a step's chain against. Empty in
-	// 11.1 (no built-ins ship yet — 11.2 fills it); a step naming a validator
-	// then fails permanent at resolve time.
-	validators, err := validate.NewBuiltins()
+	// the engine's validate stage resolves a step's chain against — the five
+	// deterministic built-ins (11.2) plus the cost-bearing llm_judge (11.5),
+	// which routes its judge model through the same provider registry the llm
+	// executor uses.
+	validators, err := validate.NewBuiltins(providers)
 	if err != nil {
 		return fmt.Errorf("building validator registry: %w", err)
 	}

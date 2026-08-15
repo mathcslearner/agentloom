@@ -207,10 +207,12 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 	plugins = append(plugins, retrievers.Manifests()...)
 
 	// Output validators (ticket 11.1, ADR-013): the validator-kind plugins
-	// the fleet's validate stage runs. Empty in 11.1 (no built-ins ship yet
-	// — 11.2 fills it); the listing shape is present so a client sees the
-	// kind. WithPlugins re-sorts the combined slice into (kind, name) order.
-	validators, err := validate.NewBuiltins()
+	// the fleet's validate stage runs — the deterministic built-ins plus the
+	// cost-bearing llm_judge (11.5), which lists its config schema here even
+	// though cmd/api never executes it (it routes through the same provider
+	// registry the listing was built from). WithPlugins re-sorts the combined
+	// slice into (kind, name) order.
+	validators, err := validate.NewBuiltins(providers)
 	if err != nil {
 		return fmt.Errorf("configuring validators: %w", err)
 	}

@@ -20,6 +20,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
+	"github.com/mathcslearner/agentloom/internal/validate"
 )
 
 // toolPrefix is the ADR-010/ADR-012 tool resource namespace ("tool:<name>").
@@ -118,6 +120,64 @@ func (e *Engine) priceAttempt(ctx context.Context, step gen.RunStep, out exec.Ou
 	return args
 }
 
+// priceOverheads computes the cost_ledger overhead rows for a step's judge
+// validators (ticket 11.5, ADR-012 rule 4). An llm_judge's provider call is
+// attributed to the SERVING step, flagged overhead: true, so a breakdown can
+// separate productive spend from validation machinery. It reads the judge
+// token accounting off the verdict's per-validator results (the validator
+// reports it; the engine ledgers it — the validator never touches the ledger)
+// and prices each against the pricing catalog, exactly like priceAttempt but
+// with Overhead set and a distinct entry key per chain position. Returns nil
+// when pricing is off, there is no verdict, or no result carries usage. Pure
+// (no database reads) — the caller writes the rows inside the completion
+// transaction.
+func (e *Engine) priceOverheads(ctx context.Context, step gen.RunStep, verdict *validate.Verdict, now time.Time) []store.AttemptCostArgs {
+	if e.pricing == nil || verdict == nil {
+		return nil
+	}
+	var rows []store.AttemptCostArgs
+	for i, r := range verdict.Results {
+		if r.Usage == nil || r.Usage.Resource == "" {
+			continue
+		}
+		if row := e.priceOverhead(ctx, step, store.JudgeEntry(i), *r.Usage, now); row != nil {
+			rows = append(rows, *row)
+		}
+	}
+	return rows
+}
+
+// priceOverhead prices one judge call as an overhead row on the serving
+// step's attempt (ticket 11.5). It always prices under PolicyEstimate — post-
+// call pricing never fails a completed step over an unknown model (the money
+// is already spent) — so an unknown judge model is priced at the catalog
+// fallback with a cost_unknown_model warning, exactly like priceAttempt.
+// Returns nil only when the model is unpriceable on a catalog with no
+// fallback (a pathological override).
+func (e *Engine) priceOverhead(ctx context.Context, step gen.RunStep, entry string, u validate.ValidatorUsage, now time.Time) *store.AttemptCostArgs {
+	priced, err := e.pricing.PriceModel(u.Resource, now, cost.PolicyEstimate)
+	if err != nil {
+		log.From(ctx).WarnContext(ctx, "judge overhead unpriceable (no catalog fallback); recording no cost",
+			slog.String("resource", u.Resource), slog.Any("error", err))
+		return nil
+	}
+	rate, _ := json.Marshal(priced.Rate)
+	usageJSON, _ := json.Marshal(exec.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens})
+	amount := cost.Cost(u.InputTokens, u.OutputTokens, priced.Rate)
+	args := &store.AttemptCostArgs{
+		RunID: step.RunID, StepID: step.StepID, Attempt: step.AttemptCount,
+		Entry: entry, Resource: u.Resource, Usage: usageJSON, Rate: rate,
+		RateSource: priced.Source.String(), Overhead: true,
+		CostNanoUSD: amount, Now: now,
+	}
+	if priced.Fallback {
+		if w, werr := json.Marshal(cost.NewUnknownModelWarning(u.Resource, priced.Rate)); werr == nil {
+			args.Warning = w
+		}
+	}
+	return args
+}
+
 // recordCost emits the cost metrics for one priced attempt (ticket 10.5),
 // post-commit and off the completion transaction. A cache hit spent nothing,
 // so it records only its counterfactual savings; a productive call records its
@@ -135,4 +195,51 @@ func (e *Engine) recordCost(args store.AttemptCostArgs) {
 			e.metrics.CostTokens(args.Resource, u.InputTokens, u.OutputTokens)
 		}
 	}
+}
+
+// recordCostRows records the post-commit cost metrics for a productive
+// attempt row (may be nil) and any judge overhead rows (ticket 11.5) — a
+// convenience over recordCost for the completion paths that meter a
+// productive charge plus overhead in one place.
+func (e *Engine) recordCostRows(costRow *store.AttemptCostArgs, overheadRows []store.AttemptCostArgs) {
+	if costRow != nil {
+		e.recordCost(*costRow)
+	}
+	for _, oh := range overheadRows {
+		e.recordCost(oh)
+	}
+}
+
+// applyCostRows writes a productive attempt cost row (may be nil) and any
+// judge overhead rows inside the current completion transaction (ticket
+// 11.5). Called after the fenced step transition, under the run lock, exactly
+// like completeSuccess's ledgering — so a fenced completion (which returns
+// before this) never ledgers.
+func applyCostRows(ctx context.Context, q store.Querier, costRow *store.AttemptCostArgs, overheadRows []store.AttemptCostArgs) error {
+	if costRow != nil {
+		if _, err := store.ApplyAttemptCost(ctx, q, *costRow); err != nil {
+			return err
+		}
+	}
+	for _, oh := range overheadRows {
+		if _, err := store.ApplyAttemptCost(ctx, q, oh); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validatorErrorUsage extracts a judge call's billed token usage from a
+// validation-stage transport error (ticket 11.5): an llm_judge that billed a
+// provider call but then produced a malformed answer under `on_error: fail`
+// carries its usage on the *validate.Error so the engine can meter it as
+// overhead even though the stage failed. Returns nil for every other error
+// (a provider availability failure billed nothing; a mechanical executor
+// failure is not a *validate.Error at all).
+func validatorErrorUsage(err error) *validate.ValidatorUsage {
+	var ve *validate.Error
+	if errors.As(err, &ve) {
+		return ve.Usage
+	}
+	return nil
 }

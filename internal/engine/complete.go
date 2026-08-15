@@ -255,7 +255,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 			// Params were validated JSON at submission; failing to decode
 			// now is corrupt stored state — deterministic, so a permanent
 			// step failure (ADR-006 taxonomy row 7), not a redelivery loop.
-			return e.completeFailure(ctx, step, fmt.Errorf("decoding run params: %w", err), dag.ClassPermanent, store.TraceFromRun(run))
+			return e.completeFailure(ctx, step, exec.Output{}, fmt.Errorf("decoding run params: %w", err), dag.ClassPermanent, store.TraceFromRun(run))
 		}
 	}
 	verdicts, err := planEdges(step.StepType, outEdges, out.Data, params)
@@ -265,7 +265,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		// ADR-006 row 6: force-classified permanent).
 		logger.WarnContext(ctx, "edge predicate evaluation failed; recording step failure",
 			slog.Any("error", err))
-		return e.completeFailure(ctx, step, err, dag.ClassPermanent, store.TraceFromRun(run))
+		return e.completeFailure(ctx, step, exec.Output{}, err, dag.ClassPermanent, store.TraceFromRun(run))
 	}
 
 	// The attempt's token usage (ticket 8.6), set only by metered
@@ -313,6 +313,14 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 	// A cache hit prices its counterfactual "saved" figure here too, since it
 	// completes through this same path with Usage.CacheHit set.
 	costRow := e.priceAttempt(ctx, step, out, now)
+	// Judge overhead rows (ticket 11.5, ADR-012 rule 4): each llm_judge in the
+	// step's validation chain made a provider call that bills to the serving
+	// step, flagged overhead. Priced pure before the transaction from the
+	// verdict's per-validator usage; nil when the chain had no cost-bearing
+	// validator (or pricing is off). Even a cache HIT re-judges, so its judge
+	// spend is real (the productive row is $0 saved, but the overhead rows are
+	// genuine spend).
+	overheadRows := e.priceOverheads(ctx, step, verdict, now)
 	var fanned fanOutResult
 	var fenced *store.TransitionError
 	var terminalRun *gen.Run
@@ -348,6 +356,13 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		// the sum of the rows even under concurrent completions.
 		if costRow != nil {
 			if _, err := store.ApplyAttemptCost(ctx, q, *costRow); err != nil {
+				return err
+			}
+		}
+		// The judge overhead rows, under the same run lock and atomic with the
+		// success CAS (ticket 11.5): each is a distinct entry on this attempt.
+		for _, oh := range overheadRows {
+			if _, err := store.ApplyAttemptCost(ctx, q, oh); err != nil {
 				return err
 			}
 		}
@@ -404,7 +419,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		if errors.As(txErr, &de) {
 			logger.WarnContext(ctx, "corrupt step config discovered during fan-out; recording step failure",
 				slog.Any("error", txErr))
-			return e.completeFailure(ctx, step, txErr, dag.ClassPermanent, store.TraceFromRun(run))
+			return e.completeFailure(ctx, step, exec.Output{}, txErr, dag.ClassPermanent, store.TraceFromRun(run))
 		}
 		logger.ErrorContext(ctx, "completion transaction failed; delivery will redeliver",
 			slog.Any("error", txErr))
@@ -419,6 +434,9 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 	// (bounded to the catalog), never by run/step.
 	if costRow != nil {
 		e.recordCost(*costRow)
+	}
+	for _, oh := range overheadRows {
+		e.recordCost(oh)
 	}
 	logger.InfoContext(ctx, "step succeeded",
 		slog.Int("edges_resolved", len(verdicts)),
@@ -487,7 +505,7 @@ func attemptRunRollup(ctx context.Context, q store.Querier, runID uuid.UUID, now
 // parent, because the delayed re-dispatch descends from no live span —
 // the link back to this failed attempt is restored from
 // run_steps.trace_span at the next claim instead.
-func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr error, class dag.ErrorClass, runTrace store.TraceContext) error {
+func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, out exec.Output, execErr error, class dag.ErrorClass, runTrace store.TraceContext) error {
 	logger := log.From(ctx)
 	if declared, ok := misdeclaredClass(execErr); ok {
 		logger.ErrorContext(ctx, "executor declared a class it may not use; defaulting to transient",
@@ -499,6 +517,33 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 		payload = json.RawMessage(`{"message": "unencodable executor error", "class": "` + string(class) + `"}`)
 	}
 
+	// Metering the productive spend on a validation-stage transport failure
+	// (ticket 11.5 gap fix): almost every failure path is a mechanical failure
+	// whose provider call never billed (out.Usage nil ⇒ everything below is a
+	// no-op). The exception is a step whose executor SUCCEEDED and billed but
+	// whose output-validation chain then errored (an llm_judge under
+	// `on_error: fail`): the money was spent, so the failing attempt records
+	// its usage and ledgers a cost row — even though the step retries or
+	// dead-letters. The judge's own call, when it billed before erroring (a
+	// malformed answer), is metered as overhead off the *validate.Error.
+	now := e.now()
+	var usage json.RawMessage
+	if out.Usage != nil {
+		if u, merr := json.Marshal(out.Usage); merr != nil {
+			logger.WarnContext(ctx, "marshaling failed-attempt usage failed; recording no usage",
+				slog.Any("error", merr))
+		} else {
+			usage = u
+		}
+	}
+	costRow := e.priceAttempt(ctx, step, out, now)
+	var overheadRows []store.AttemptCostArgs
+	if judgeUsage := validatorErrorUsage(execErr); judgeUsage != nil {
+		if row := e.priceOverhead(ctx, step, store.JudgeErrorEntry, *judgeUsage, now); row != nil {
+			overheadRows = append(overheadRows, *row)
+		}
+	}
+
 	policy, perr := decodeRetryPolicy(step.RetryPolicy)
 	if perr != nil {
 		// Corrupt materialized policy — deterministic stored-state failure
@@ -508,7 +553,6 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 			slog.Any("error", perr))
 	}
 
-	now := e.now()
 	runFailed := false
 	cancelSettled := false
 	var terminalRun *gen.Run
@@ -571,10 +615,16 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 		if retry {
 			if _, err := store.RetryStep(ctx, q, store.RetryStepArgs{
 				RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
-				Outcome: string(class), Error: payload, NextAttemptAt: fireAt, Now: now,
+				Outcome: string(class), Error: payload, Usage: usage, NextAttemptAt: fireAt, Now: now,
 			}); err != nil {
 				// The fence firing on the retry path — see completeSuccess.
 				errors.As(err, &fenced)
+				return err
+			}
+			// Meter the productive spend + judge overhead on a validation-stage
+			// transport failure (ticket 11.5): nil rows on every mechanical
+			// failure, so this is a no-op there.
+			if err := applyCostRows(ctx, q, costRow, overheadRows); err != nil {
 				return err
 			}
 			scheduled = true
@@ -590,10 +640,15 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 		}
 		if _, err := store.DeadLetterStep(ctx, q, store.DeadLetterStepArgs{
 			RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
-			Source: dlqSource, Outcome: string(class), Error: payload, Now: now,
+			Source: dlqSource, Outcome: string(class), Error: payload, Usage: usage, Now: now,
 		}); err != nil {
 			// The fence firing on the failure path — see completeSuccess.
 			errors.As(err, &fenced)
+			return err
+		}
+		// Meter the productive spend + judge overhead on a terminal validation-
+		// stage transport failure (ticket 11.5); no-op on mechanical failures.
+		if err := applyCostRows(ctx, q, costRow, overheadRows); err != nil {
 			return err
 		}
 		if err := failpoint(stageAfterStepTransition); err != nil {
@@ -632,6 +687,7 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 	}
 	if scheduled {
 		e.metrics.RetryScheduled(string(class))
+		e.recordCostRows(costRow, overheadRows)
 		e.scheduleRetry(ctx, step, fireAt, runTrace)
 		logger.WarnContext(ctx, "step attempt failed; retry scheduled",
 			slog.Any("error", execErr),
@@ -640,6 +696,7 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, execErr 
 		return nil
 	}
 	e.metrics.DeadLetter(dlqSource)
+	e.recordCostRows(costRow, overheadRows)
 	if runFailed {
 		e.recordRunCompleted(store.RunStatusFailed, run.StartedAt, now)
 	}

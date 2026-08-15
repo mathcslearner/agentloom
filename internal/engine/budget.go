@@ -103,7 +103,7 @@ func (e *Engine) budgetCheck(ctx context.Context, step gen.RunStep, executor exe
 		// than run unbudgeted.
 		log.From(ctx).ErrorContext(ctx, "corrupt materialized budget policy; recording step failure",
 			slog.Any("error", sberr))
-		return true, nil, e.completeFailure(ctx, step,
+		return true, nil, e.completeFailure(ctx, step, exec.Output{},
 			exec.Permanentf("corrupt budget policy: %v", sberr), dag.ClassPermanent, origin.RunTrace)
 	}
 	if origin.BudgetNanoUSD == nil && stepBudget == nil {
@@ -135,7 +135,7 @@ func (e *Engine) budgetCheck(ctx context.Context, step gen.RunStep, executor exe
 	if stepBudget != nil && stepBudget.MaxTokens > 0 && projectedTokens > int64(stepBudget.MaxTokens) {
 		log.From(ctx).WarnContext(ctx, "step request exceeds max_tokens; recording permanent failure",
 			slog.String("resource", est.Resource))
-		ferr := e.completeFailure(ctx, step,
+		ferr := e.completeFailure(ctx, step, exec.Output{},
 			exec.Permanentf("budget_exceeded: projected %d tokens exceeds step max_tokens %d", projectedTokens, stepBudget.MaxTokens),
 			dag.ClassPermanent, origin.RunTrace)
 		if ferr == nil {
@@ -194,7 +194,7 @@ func (e *Engine) budgetCheck(ctx context.Context, step gen.RunStep, executor exe
 		log.From(ctx).WarnContext(ctx, "step exceeds budget; recording permanent failure",
 			slog.String("limit", decision.event.Limit),
 			slog.String("resource", est.Resource))
-		ferr := e.completeFailure(ctx, step,
+		ferr := e.completeFailure(ctx, step, exec.Output{},
 			exec.Permanentf("%s", decision.reason), dag.ClassPermanent, origin.RunTrace)
 		if ferr == nil {
 			e.metrics.BudgetExceeded(decision.event.Limit, budgetActionFail)

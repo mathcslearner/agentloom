@@ -104,9 +104,24 @@ type AttemptCostArgs struct {
 }
 
 // EntryAttempt is the cost_ledger.entry value for a productive provider or
-// tool call — the only entry kind 10.2 writes. ADR-012 rule 4 reserves
-// further values ('judge', 'compaction') for M11/M12 overhead rows.
+// tool call. ADR-012 rule 4 reserves further values ('judge', 'compaction')
+// for M11/M12 overhead rows; 11.5 writes judge overhead via JudgeEntry.
 const EntryAttempt = "attempt"
+
+// JudgeEntry is the cost_ledger.entry value for one llm_judge validator's
+// overhead charge on a step's attempt (ticket 11.5, ADR-012 rule 4). The
+// chain index disambiguates two judges on the same attempt so the
+// (run, step, attempt, entry) primary key never collides — the same-attempt
+// slot migration 0016 reserved for M11. On an errored judge (a billed
+// malformed answer under on_error:fail) there is exactly one, keyed "judge:e".
+func JudgeEntry(chainIndex int) string {
+	return fmt.Sprintf("judge:%d", chainIndex)
+}
+
+// JudgeErrorEntry is the entry for a judge that billed a call but then errored
+// (a malformed answer under on_error:fail) — a single such row per attempt,
+// so it needs no index.
+const JudgeErrorEntry = "judge:e"
 
 // CostUpdatedEvent is the cost_updated event payload (ticket 10.5, ADR-012):
 // one cost-bearing attempt's charge plus the run's running spend/saved totals

@@ -378,7 +378,7 @@ func TestListPluginsWithValidators(t *testing.T) {
 	rootKey := mintTestKey(t)
 
 	s := store.NewFromPool(storetest.NewDB(t))
-	validators, err := validate.NewBuiltins()
+	validators, err := validate.NewBuiltins(nil)
 	if err != nil {
 		t.Fatalf("validate.NewBuiltins: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestListPluginsWithValidators(t *testing.T) {
 			got[p.Name] = p
 		}
 	}
-	wantNames := []string{"cel", "contains", "json_schema", "numeric_range", "regex"}
+	wantNames := []string{"cel", "contains", "json_schema", "llm_judge", "numeric_range", "regex"}
 	if len(got) != len(wantNames) {
 		t.Fatalf("catalog has %d validators, want %d: %+v", len(got), len(wantNames), got)
 	}
@@ -413,8 +413,13 @@ func TestListPluginsWithValidators(t *testing.T) {
 			t.Errorf("validator %q missing from catalog", name)
 			continue
 		}
-		if !p.Capabilities.Cacheable || p.Capabilities.SideEffectful || p.Capabilities.CostBearing {
-			t.Errorf("%s capabilities = %+v — want cacheable only", name, p.Capabilities)
+		// The deterministic validators are cacheable-only; llm_judge (11.5) is
+		// additionally cost_bearing (it calls a provider). None is ever
+		// side_effectful.
+		wantCostBearing := name == "llm_judge"
+		if !p.Capabilities.Cacheable || p.Capabilities.SideEffectful || p.Capabilities.CostBearing != wantCostBearing {
+			t.Errorf("%s capabilities = %+v — want cacheable%s", name, p.Capabilities,
+				map[bool]string{true: "+cost_bearing", false: " only"}[wantCostBearing])
 		}
 		if p.Version != "1.0.0" {
 			t.Errorf("%s version = %q, want 1.0.0", name, p.Version)

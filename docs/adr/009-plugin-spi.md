@@ -492,9 +492,15 @@ so the kind is listed. The engine's validate stage, verdict persistence, and
 
 ### Validator built-ins & flag table (as built, 11.2)
 
-11.2 fills `NewBuiltins()` with the five deterministic validators. Each is a
-pure function of output + config, so `cacheable` and nothing else; the
-`llm_judge` (11.5) will add `cost_bearing`. The validator flag table:
+11.2 fills `NewBuiltins()` with the five deterministic validators, each a pure
+function of output + config (so `cacheable` and nothing else); 11.5 adds
+`llm_judge`, the first `cost_bearing` validator (it calls a provider). The
+engine reads `cost_bearing` to order the chain cheap-first (the judge runs only
+on an output the free validators accepted) and to attribute the judge's call as
+overhead (ADR-012 rule 4). `NewBuiltins` gained a `*llm.Registry` parameter in
+11.5 — the judge routes its model through the same registry the llm executor
+uses; a nil registry registers the judge (for the listing) but fails every
+config's routing pre-flight. The validator flag table:
 
 | Plugin (validator) | Version | side_effectful | cacheable | cost_bearing |
 |---|---|---|---|---|
@@ -503,6 +509,7 @@ pure function of output + config, so `cacheable` and nothing else; the
 | `contains` | 1.0.0 | – | ✓ | – |
 | `cel` | 1.0.0 | – | ✓ | – |
 | `numeric_range` | 1.0.0 | – | ✓ | – |
+| `llm_judge` | 1.0.0 | – | ✓ | ✓ |
 
 No validator is ever `side_effectful` (a mutating validator would break
 re-validation on retry and on cache hit). Validators that compile an artifact

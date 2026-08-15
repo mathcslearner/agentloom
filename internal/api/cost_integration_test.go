@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/storetest"
 	"github.com/mathcslearner/agentloom/internal/tools"
+	"github.com/mathcslearner/agentloom/internal/validate"
 )
 
 // Ticket 10.2's cost API contract test: the canonical fanout fixture runs to
@@ -178,6 +180,129 @@ func TestRunCostBreakdown(t *testing.T) {
 	// Unknown run → 404.
 	if status := getJSON(t, srv, rootKey, "/v1/runs/"+uuidStr()+"/cost", nil); status != http.StatusNotFound {
 		t.Errorf("GET cost for unknown run = %d, want 404", status)
+	}
+}
+
+// TestRunCostJudgeOverhead (ticket 11.5, ADR-012 rule 4): the canonical
+// llm_judge workflow runs on a priced fleet, and GET /v1/runs/{id}/cost
+// surfaces the judge's provider call as overhead — a ledger entry flagged
+// `overhead: true` under a `judge:*` entry key, and a non-zero
+// `overhead_nano_usd` in the per-step roll-up, separate from the productive
+// spend. Fully offline (the mock serves both the draft model and the judge).
+func TestRunCostJudgeOverhead(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	s := store.NewFromPool(storetest.NewDB(t))
+	h := queuetest.New(t)
+	h.EnsureGroup(ctx)
+	rootKey := mintTestKey(t)
+	handler, err := api.New(s, time.Now, nil, rootKey, api.RateLimitOptions{})
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	d, err := engine.NewDispatcher(s, h.Queue(), engine.DispatcherConfig{Interval: 10 * time.Millisecond, Batch: 16})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	dctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	t.Cleanup(func() { cancel(); <-done })
+	go func() { defer close(done); d.Run(dctx) }()
+
+	providers, err := llm.NewRegistryFromKeys(llm.ProviderKeys{Mock: &llm.MockConfig{}})
+	if err != nil {
+		t.Fatalf("NewRegistryFromKeys: %v", err)
+	}
+	toolReg, err := tools.NewBuiltins(tools.HTTPOptions{})
+	if err != nil {
+		t.Fatalf("tools.NewBuiltins: %v", err)
+	}
+	retrievers, err := retrieval.NewRegistry(pgfts.New(s))
+	if err != nil {
+		t.Fatalf("retrieval.NewRegistry: %v", err)
+	}
+	validators, err := validate.NewBuiltins(providers)
+	if err != nil {
+		t.Fatalf("validate.NewBuiltins: %v", err)
+	}
+	cat, err := cost.Default()
+	if err != nil {
+		t.Fatalf("cost.Default: %v", err)
+	}
+	eng, err := engine.New(s, exec.Builtins(providers, toolReg, retrievers), "judge-worker",
+		engine.WithDispatchNudge(d.Nudge), engine.WithPricing(cat), engine.WithValidators(validators))
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	h.Spawn("judge-worker", eng.Handle, queue.ConsumerConfig{Block: 500 * time.Millisecond, Batch: 1})
+
+	def, err := os.ReadFile("../../examples/definitions/llm_judge.json")
+	if err != nil {
+		t.Fatalf("reading llm_judge fixture: %v", err)
+	}
+	var sub api.SubmitRunResponse
+	if status := postJSON(t, srv, rootKey, submitBody(t, def, ""), &sub); status != http.StatusCreated {
+		t.Fatalf("POST /v1/runs = %d, want 201", status)
+	}
+
+	// The example uses on_error:skip, so a malformed mock judge answer degrades
+	// to a pass (the run succeeds) — but the judge call still billed, so its
+	// overhead is ledgered.
+	deadline := time.Now().Add(15 * time.Second)
+	var run api.RunResponse
+	for {
+		if getJSON(t, srv, rootKey, "/v1/runs/"+sub.RunID, &run) != http.StatusOK {
+			t.Fatal("GET run failed mid-watch")
+		}
+		if run.Run.Status != store.RunStatusRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run never finished:\n%+v", run)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if run.Run.Status != store.RunStatusSucceeded {
+		t.Fatalf("run status = %q, want succeeded", run.Run.Status)
+	}
+
+	var costResp api.RunCostResponse
+	if status := getJSON(t, srv, rootKey, "/v1/runs/"+sub.RunID+"/cost", &costResp); status != http.StatusOK {
+		t.Fatalf("GET cost = %d, want 200", status)
+	}
+	// A judge overhead entry: overhead flagged, entry keyed judge:*, resource
+	// the judge model.
+	var overheadEntry *api.CostEntryView
+	for i := range costResp.Entries {
+		if costResp.Entries[i].Overhead {
+			overheadEntry = &costResp.Entries[i]
+		}
+	}
+	if overheadEntry == nil {
+		t.Fatalf("no overhead entry in the cost breakdown: %+v", costResp.Entries)
+	}
+	if overheadEntry.Resource != "mock:judge-1" {
+		t.Errorf("overhead entry resource = %q, want mock:judge-1", overheadEntry.Resource)
+	}
+	// The draft step's roll-up separates overhead from productive spend.
+	var draft *api.CostByStepView
+	for i := range costResp.ByStep {
+		if costResp.ByStep[i].StepID == "draft" {
+			draft = &costResp.ByStep[i]
+		}
+	}
+	if draft == nil {
+		t.Fatalf("by_step missing draft: %+v", costResp.ByStep)
+	}
+	if draft.OverheadNanoUSD <= 0 {
+		t.Errorf("draft overhead_nano_usd = %d, want > 0 (the judge call)", draft.OverheadNanoUSD)
+	}
+	if draft.OverheadUSD == "" || draft.OverheadUSD == "0" {
+		t.Errorf("draft overhead_usd = %q, want a non-zero USD string", draft.OverheadUSD)
 	}
 }
 

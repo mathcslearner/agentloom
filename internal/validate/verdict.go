@@ -70,9 +70,43 @@ type ValidatorResult struct {
 	Score *float64 `json:"score,omitempty"`
 	// IssueCount is how many issues this validator raised.
 	IssueCount int `json:"issue_count"`
+	// Rationale is a cost-bearing validator's explanation of its judgment
+	// (11.5's llm_judge): the model's prose reasoning, on a pass and a fail
+	// alike. Empty for the deterministic validators, which have no rationale
+	// beyond their issue codes. Structure/explanation only — never the
+	// validated output verbatim (secret hygiene).
+	Rationale string `json:"rationale,omitempty"`
+	// Usage is a cost-bearing validator's token accounting (11.5's
+	// llm_judge): the resolved resource and the judge call's tokens, so the
+	// engine can ledger the judge's provider call as overhead on the serving
+	// step (ADR-012 rule 4). Nil for a validator that made no metered call
+	// (every deterministic validator, and a judge whose call did not bill).
+	Usage *ValidatorUsage `json:"usage,omitempty"`
+	// Error is the suppressed failure message when Status is `error` — a
+	// cost-bearing validator that errored under `on_error: skip` (11.5): the
+	// chain did not fail, but this result records that the validator could
+	// not render a judgment. Empty otherwise.
+	Error string `json:"error,omitempty"`
 	// DurationMS is the wall-clock time this validator took, milliseconds.
 	// Diagnostics only; excluded from equality in tests.
 	DurationMS int64 `json:"duration_ms"`
+}
+
+// ValidatorUsage is a cost-bearing validator's token accounting (11.5): the
+// resource its call bills to (for the cost ledger's overhead row) plus the
+// tokens the judge model consumed. It carries no output or rubric text —
+// only counts and identifiers — so it is safe on a verdict and on an Error.
+type ValidatorUsage struct {
+	// Resource is the ADR-010/ADR-012 resource the judge call bills to,
+	// "<resolved-provider>:<served-model>" — the key the overhead ledger row
+	// prices against.
+	Resource string `json:"resource"`
+	// Model is the model that served the judge call (the served model, which
+	// may differ from a requested alias).
+	Model string `json:"model"`
+	// InputTokens / OutputTokens are the judge call's token accounting.
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
 }
 
 // Verdict is a validator's or a chain's judgment on a step output — the

@@ -112,12 +112,14 @@ func buildRunCostResponse(
 	}
 	for _, s := range byStep {
 		resp.ByStep = append(resp.ByStep, CostByStepView{
-			StepID:       s.StepID,
-			Entries:      s.Entries,
-			SpentNanoUSD: s.SpentNanoUsd,
-			SavedNanoUSD: s.SavedNanoUsd,
-			SpentUSD:     nanoUSDString(s.SpentNanoUsd),
-			SavedUSD:     nanoUSDString(s.SavedNanoUsd),
+			StepID:          s.StepID,
+			Entries:         s.Entries,
+			SpentNanoUSD:    s.SpentNanoUsd,
+			SavedNanoUSD:    s.SavedNanoUsd,
+			OverheadNanoUSD: s.OverheadNanoUsd,
+			SpentUSD:        nanoUSDString(s.SpentNanoUsd),
+			SavedUSD:        nanoUSDString(s.SavedNanoUsd),
+			OverheadUSD:     nanoUSDString(s.OverheadNanoUsd),
 		})
 	}
 	for _, m := range byResource {

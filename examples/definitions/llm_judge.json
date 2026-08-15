@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "name": "llm-judge",
+  "description": "The ticket 11.5 canonical llm_judge workflow (ADR-013/ADR-012). A `draft` llm step carries a validation chain naming the cost-bearing `llm_judge` validator: a cheap judge model grades the draft against a rubric and passes only when its score meets the threshold. The judge is the last link in the chain (cheap-first ordering means it runs only on an output the free validators already accepted); a below-threshold verdict carries the judge's rationale, which the `feedback` template folds into the next semantic attempt's prompt, so the draft self-corrects. The judge's provider call is attributed to the `draft` step as OVERHEAD (ADR-012 rule 4) — it appears in `GET /v1/runs/{id}/cost` as a `judge:*` entry with `overhead: true` and in the per-step `overhead_nano_usd` roll-up, separate from the draft's own productive spend. `on_error: skip` degrades to a pass with a warning when the judge provider is unavailable, so an outage never blocks the workflow. Judges are terminal — a judge's output is never itself validated or judged. It runs against the offline mock provider (models `mock/sim-1` and `mock/judge-1`); swapping the model ids for real providers makes it a live semantic quality gate unchanged.",
+  "steps": [
+    {
+      "id": "draft",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Write a concise, well-supported answer to the user's question and cite a source.",
+        "max_tokens": 256,
+        "temperature": 0
+      },
+      "validation": {
+        "validators": [
+          {
+            "name": "llm_judge",
+            "config": {
+              "model": "mock/judge-1",
+              "fallback_models": ["mock/judge-2"],
+              "rubric": "Score 1 if the answer is detailed and cites a source; score 0 if it is terse or unsupported.",
+              "threshold": 0.7,
+              "max_tokens": 256,
+              "temperature": 0,
+              "on_error": "skip"
+            },
+            "target": "/text"
+          }
+        ],
+        "max_attempts": 3,
+        "feedback": {
+          "template": "This is attempt ${{ feedback.attempt }} of ${{ feedback.max_attempts }}. A judge rejected your previous answer:\n${{ feedback.issues }}\n\nPrevious answer:\n${{ feedback.prior_output }}\n\nRevise it to satisfy the rubric.",
+          "max_output_chars": 2000
+        }
+      }
+    },
+    {
+      "id": "publish",
+      "type": "echo",
+      "config": {
+        "input": {
+          "answer": "${{ steps.draft.output.text }}"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "draft",
+      "to": "publish"
+    }
+  ]
+}

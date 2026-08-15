@@ -1664,11 +1664,50 @@ components:
           description: >
             This validator's judgment. `skipped` = a cost-bearing validator
             the chain did not run because a cheaper one already failed.
+            `error` = a cost-bearing validator (llm_judge) that errored under
+            `on_error: skip`, so the chain did not fail but the judgment could
+            not be rendered.
         score:
           type: number
         issue_count:
           type: integer
+        rationale:
+          type: string
+          description: >
+            A cost-bearing validator's (llm_judge) explanation of its
+            judgment, on a pass and a fail alike. Absent for deterministic
+            validators.
+        usage:
+          $ref: '#/components/schemas/ValidatorUsage'
+          description: >
+            A cost-bearing validator's token accounting; present only when the
+            validator made a metered provider call. The engine ledgers this as
+            overhead on the serving step (ADR-012 rule 4).
+        error:
+          type: string
+          description: >
+            The suppressed failure message when status is `error` — a judge
+            that errored under `on_error: skip`.
         duration_ms:
+          type: integer
+          format: int64
+    ValidatorUsage:
+      type: object
+      description: >
+        A cost-bearing validator's token accounting (ticket 11.5): the
+        resource its call bills to and the judge model's token counts. Carries
+        no output or rubric text.
+      required: [resource, model, input_tokens, output_tokens]
+      properties:
+        resource:
+          type: string
+          description: The <provider>:<model> resource the judge call bills to.
+        model:
+          type: string
+        input_tokens:
+          type: integer
+          format: int64
+        output_tokens:
           type: integer
           format: int64
     EdgeView:
@@ -1764,7 +1803,7 @@ components:
     CostByStepView:
       type: object
       description: One step's spend/savings roll-up.
-      required: [step_id, entries, spent_nano_usd, saved_nano_usd, spent_usd, saved_usd]
+      required: [step_id, entries, spent_nano_usd, saved_nano_usd, overhead_nano_usd, spent_usd, saved_usd, overhead_usd]
       properties:
         step_id:
           type: string
@@ -1778,9 +1817,18 @@ components:
         saved_nano_usd:
           type: integer
           format: int64
+        overhead_nano_usd:
+          type: integer
+          format: int64
+          description: >
+            The slice of spend attributed to validation machinery — an
+            llm_judge's provider call (ADR-012 rule 4). Zero for steps with no
+            cost-bearing validators.
         spent_usd:
           type: string
         saved_usd:
+          type: string
+        overhead_usd:
           type: string
     CostByResourceView:
       type: object

@@ -32,8 +32,25 @@ type Error struct {
 	Class dag.ErrorClass
 	// Message describes the failure without leaking output or rubric values.
 	Message string
+	// Usage is the judge call's token accounting when a cost-bearing
+	// validator billed a provider call before erroring (11.5): an llm_judge
+	// whose model answered but produced a malformed rubric answer under
+	// `on_error: fail` spent real money that the engine must still meter as
+	// overhead on the serving step (ADR-012 rule 4). Nil when nothing billed
+	// (a provider error, a client-side validation failure). Like the rest of
+	// Error it carries no output or rubric — only counts and identifiers.
+	Usage *ValidatorUsage
 	// cause is the wrapped underlying error, when one exists.
 	cause error
+}
+
+// WithUsage attaches a cost-bearing validator's token accounting to the
+// error, for the case where the judge call billed before the failure (a
+// malformed answer under `on_error: fail`). Returns the receiver so it can
+// be chained onto a Transientf/Permanentf constructor.
+func (e *Error) WithUsage(u *ValidatorUsage) *Error {
+	e.Usage = u
+	return e
 }
 
 func (e *Error) Error() string {

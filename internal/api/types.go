@@ -238,14 +238,19 @@ type RunCostResponse struct {
 	Entries    []CostEntryView      `json:"entries"`
 }
 
-// CostByStepView is one step's spend/savings roll-up.
+// CostByStepView is one step's spend/savings roll-up. OverheadNanoUSD is the
+// slice of SpentNanoUSD attributed to validation machinery — an llm_judge's
+// provider call (ADR-012 rule 4, ticket 11.5) — so a reader can separate
+// productive spend from the cost of judging it.
 type CostByStepView struct {
-	StepID       string `json:"step_id"`
-	Entries      int64  `json:"entries"`
-	SpentNanoUSD int64  `json:"spent_nano_usd"`
-	SavedNanoUSD int64  `json:"saved_nano_usd"`
-	SpentUSD     string `json:"spent_usd"`
-	SavedUSD     string `json:"saved_usd"`
+	StepID          string `json:"step_id"`
+	Entries         int64  `json:"entries"`
+	SpentNanoUSD    int64  `json:"spent_nano_usd"`
+	SavedNanoUSD    int64  `json:"saved_nano_usd"`
+	OverheadNanoUSD int64  `json:"overhead_nano_usd"`
+	SpentUSD        string `json:"spent_usd"`
+	SavedUSD        string `json:"saved_usd"`
+	OverheadUSD     string `json:"overhead_usd"`
 }
 
 // CostByResourceView is one model's or tool's spend/savings roll-up: the

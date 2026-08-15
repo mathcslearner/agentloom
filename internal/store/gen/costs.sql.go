@@ -102,9 +102,10 @@ func (q *Queries) AggregateCostByResource(ctx context.Context, runID uuid.UUID) 
 
 const aggregateCostByStep = `-- name: AggregateCostByStep :many
 SELECT step_id,
-       COUNT(*)::bigint                         AS entries,
-       COALESCE(SUM(cost_nano_usd), 0)::bigint  AS spent_nano_usd,
-       COALESCE(SUM(saved_nano_usd), 0)::bigint AS saved_nano_usd
+       COUNT(*)::bigint                                                  AS entries,
+       COALESCE(SUM(cost_nano_usd), 0)::bigint                           AS spent_nano_usd,
+       COALESCE(SUM(saved_nano_usd), 0)::bigint                          AS saved_nano_usd,
+       COALESCE(SUM(cost_nano_usd) FILTER (WHERE overhead), 0)::bigint   AS overhead_nano_usd
 FROM cost_ledger
 WHERE run_id = $1
 GROUP BY step_id
@@ -112,14 +113,18 @@ ORDER BY spent_nano_usd DESC, step_id
 `
 
 type AggregateCostByStepRow struct {
-	StepID       string
-	Entries      int64
-	SpentNanoUsd int64
-	SavedNanoUsd int64
+	StepID          string
+	Entries         int64
+	SpentNanoUsd    int64
+	SavedNanoUsd    int64
+	OverheadNanoUsd int64
 }
 
-// AggregateCostByStep is the per-step breakdown: spend, savings, and row
-// count grouped by step, ordered by spend descending.
+// AggregateCostByStep is the per-step breakdown: spend, savings, row count,
+// and the overhead slice of the spend (judge/summarization charges, ADR-012
+// rule 4 — ticket 11.5) grouped by step, ordered by spend descending. The
+// overhead figure separates validation machinery from productive spend so a
+// reader sees what a step's judge cost, on that step's own bill.
 func (q *Queries) AggregateCostByStep(ctx context.Context, runID uuid.UUID) ([]AggregateCostByStepRow, error) {
 	rows, err := q.db.Query(ctx, aggregateCostByStep, runID)
 	if err != nil {
@@ -134,6 +139,7 @@ func (q *Queries) AggregateCostByStep(ctx context.Context, runID uuid.UUID) ([]A
 			&i.Entries,
 			&i.SpentNanoUsd,
 			&i.SavedNanoUsd,
+			&i.OverheadNanoUsd,
 		); err != nil {
 			return nil, err
 		}

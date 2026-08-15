@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/plugin"
 )
 
@@ -27,6 +28,7 @@ const (
 	containsVersion     = "1.0.0"
 	celVersion          = "1.0.0"
 	numericRangeVersion = "1.0.0"
+	llmJudgeVersion     = "1.0.0"
 )
 
 // The built-in validator names — the values a chain entry's `name` selects.
@@ -36,6 +38,7 @@ const (
 	containsName     = "contains"
 	celName          = "cel"
 	numericRangeName = "numeric_range"
+	llmJudgeName     = "llm_judge"
 )
 
 // NameJSONSchema is the built-in json_schema validator's registered name,
@@ -50,6 +53,14 @@ const NameJSONSchema = "json_schema"
 // else. (The llm_judge, 11.5, adds cost_bearing.)
 var deterministicCaps = plugin.Capabilities{Cacheable: true}
 
+// judgeCaps is the llm_judge's flag set (ticket 11.5): cost_bearing (it calls
+// a provider) and cacheable (a pure function of output + config + judge
+// model, though its cost still meters). Never side_effectful — a validator
+// that mutated the world would break re-validation on retry and on cache hit
+// (ADR-013). The engine reads cost_bearing to run it last in the chain
+// (cheap-first) and to attribute its call as overhead (ADR-012 rule 4).
+var judgeCaps = plugin.Capabilities{Cacheable: true, CostBearing: true}
+
 // builtinConfigSchema reflects a validator's config struct into its JSON
 // Schema — the same generator ConfigSchema exposes, wrapped so the built-in
 // manifests can panic on the unreachable reflect failure (a fixed struct)
@@ -62,18 +73,23 @@ func builtinConfigSchema(v any) json.RawMessage {
 	return schema
 }
 
-// NewBuiltins returns the registry of built-in validators (ticket 11.2): the
-// five deterministic validators json_schema, regex, contains, cel, and
-// numeric_range. 11.5 adds llm_judge. Both cmd/worker (which runs the
-// validate stage) and cmd/api (which lists the catalog) call this, so the
-// fleet and the /v1/plugins listing describe the same validators.
-func NewBuiltins() (*Registry, error) {
+// NewBuiltins returns the registry of built-in validators: the five
+// deterministic validators json_schema, regex, contains, cel, and
+// numeric_range (ticket 11.2), plus the cost-bearing llm_judge (ticket 11.5).
+// The judge routes its model through the given provider registry (nil is
+// valid — the judge registers and lists, but every config then fails the
+// pre-flight routing gate, the llm executor's keyless behavior). Both
+// cmd/worker (which runs the validate stage) and cmd/api (which lists the
+// catalog) call this, so the fleet and the /v1/plugins listing describe the
+// same validators.
+func NewBuiltins(providers *llm.Registry) (*Registry, error) {
 	return NewRegistry(
 		NewJSONSchema(),
 		NewRegex(),
 		NewContains(),
 		NewCEL(),
 		NewNumericRange(),
+		NewLLMJudge(providers),
 	)
 }
 

@@ -173,9 +173,19 @@ unless noted:
 4. **Overhead (judge, summarization)** — an M11 `llm_judge` validator's call or
    an M12 context-compaction summarization is attributed to the **step it
    serves**, on that step's bill, flagged `overhead: true` so a breakdown can
-   separate productive spend from machinery. The rule is stated now; the flag is
-   exercised when those milestones land. Judges are never themselves validated
-   or judged (no recursion), so overhead never nests.
+   separate productive spend from machinery. Judges are never themselves
+   validated or judged (no recursion), so overhead never nests.
+   *Exercised by ADR-013 (M11.5):* the `llm_judge` validator's provider call
+   is ledgered as an overhead row on the serving step's attempt, under a
+   `judge:<chain index>` `entry` (the same-attempt PK slot migration 0016
+   reserved — no schema change; a judge that billed before erroring uses
+   `judge:e`). Each overhead row is priced under `PolicyEstimate` (post-call
+   pricing never fails a completed step), bumps `runs.spent_nano_usd`, emits a
+   `cost_updated` event, and records `engine_cost_spent_usd_total{resource}`
+   keyed on the judge model — so judge spend counts against the run budget on
+   the next claim and against a step `max_usd` cap (SumByStep sums all
+   entries). The cost API surfaces it as `entries[].overhead` under the
+   `judge:*` entry plus a per-step `overhead_nano_usd` roll-up.
 
 5. **No usage ⇒ no cost row.** A throttled attempt (ADR-010), a `lost`
    administrative outcome (ADR-005), or an errored provider call carries no

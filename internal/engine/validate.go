@@ -179,7 +179,7 @@ func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep
 	if verr != nil {
 		logger.ErrorContext(ctx, "marshaling validation verdict failed; failing step permanently",
 			slog.Any("error", verr))
-		return e.completeFailure(ctx, step, verr, dag.ClassPermanent, runTrace)
+		return e.completeFailure(ctx, step, out, verr, dag.ClassPermanent, runTrace)
 	}
 	payload, perr := json.Marshal(map[string]any{
 		"message": validationFailureMessage(verdict),
@@ -224,6 +224,12 @@ func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep
 	// semantic-retry and the terminal routes. Priced before the transaction —
 	// pure, no reads.
 	costRow := e.priceAttempt(ctx, step, out, now)
+	// Judge overhead rows (ticket 11.5, ADR-012 rule 4): a below-threshold
+	// llm_judge verdict is exactly the case that produced judge spend, so the
+	// judge's provider call ledgers as overhead on this failing attempt — on
+	// both the semantic-retry and the terminal routes, since the money was
+	// spent either way.
+	overheadRows := e.priceOverheads(ctx, step, &verdict, now)
 
 	runFailed := false
 	cancelSettled := false
@@ -298,6 +304,11 @@ func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep
 					return err
 				}
 			}
+			for _, oh := range overheadRows {
+				if _, err := store.ApplyAttemptCost(ctx, q, oh); err != nil {
+					return err
+				}
+			}
 			retried = true
 			return nil
 		}
@@ -335,6 +346,11 @@ func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep
 				return err
 			}
 		}
+		for _, oh := range overheadRows {
+			if _, err := store.ApplyAttemptCost(ctx, q, oh); err != nil {
+				return err
+			}
+		}
 		if err := failpoint(stageAfterStepTransition); err != nil {
 			return err
 		}
@@ -359,6 +375,16 @@ func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep
 
 	if costRow != nil {
 		e.recordCost(*costRow)
+	}
+	// Judge overhead metrics record only when the completion committed (a
+	// cancel-settled path skips fan-out but the cost still landed, so record
+	// there too — the rows were applied inside the tx on both non-cancel
+	// branches). On the cancel branch below no overhead rows were written, so
+	// nothing to record; guard by having applied them only on retry/DLQ.
+	if !cancelSettled {
+		for _, oh := range overheadRows {
+			e.recordCost(oh)
+		}
 	}
 	if cancelSettled {
 		logger.InfoContext(ctx, "step output invalid but run is cancelling — settled cancelled, not judged",

@@ -186,7 +186,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		logger.ErrorContext(ctx, "no executor registered for step type; recording step failure",
 			slog.String("step_type", step.StepType),
 			slog.Any("error", err))
-		return e.completeFailure(ctx, step, err, dag.ClassPermanent, origin.RunTrace)
+		return e.completeFailure(ctx, step, exec.Output{}, err, dag.ClassPermanent, origin.RunTrace)
 	}
 
 	timeout, terr := stepTimeout(step.Timeout)
@@ -195,7 +195,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		// (ADR-006 taxonomy row 7 in spirit), like a corrupt retry policy.
 		logger.ErrorContext(ctx, "corrupt materialized step timeout; recording step failure",
 			slog.Any("error", terr))
-		return e.completeFailure(ctx, step, terr, dag.ClassPermanent, origin.RunTrace)
+		return e.completeFailure(ctx, step, exec.Output{}, terr, dag.ClassPermanent, origin.RunTrace)
 	}
 	// Template rendering (ticket 8.2): resolve the config's `${{ ... }}`
 	// references against upstream outputs and run params. Deterministic
@@ -209,7 +209,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		if errors.As(rcErr, &re) {
 			logger.ErrorContext(ctx, "step config rendering failed; recording step failure",
 				slog.Any("error", rcErr))
-			return e.completeFailure(ctx, step, rcErr, dag.ClassPermanent, origin.RunTrace)
+			return e.completeFailure(ctx, step, exec.Output{}, rcErr, dag.ClassPermanent, origin.RunTrace)
 		}
 		return rcErr
 	}
@@ -224,7 +224,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	if chErr != nil {
 		logger.ErrorContext(ctx, "step validation chain unresolvable; recording step failure",
 			slog.Any("error", chErr))
-		return e.completeFailure(ctx, step, chErr, dag.ClassPermanent, origin.RunTrace)
+		return e.completeFailure(ctx, step, exec.Output{}, chErr, dag.ClassPermanent, origin.RunTrace)
 	}
 	// The claim always stamps a claim_id; the guard only keeps a corrupt
 	// row from panicking the journal binding (misuse detection catches the
@@ -378,7 +378,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 			// The engine assigns the timeout class from context state
 			// (ADR-006 row 3) — the executor's own error, whatever it
 			// wrapped, is the recorded cause.
-			return e.completeFailure(ctx, step,
+			return e.completeFailure(ctx, step, out,
 				fmt.Errorf("step timed out after %s: %w", timeout, execErr), dag.ClassTimeout, origin.RunTrace)
 		}
 		// Success racing the deadline: the work is done, and discarding it
@@ -390,7 +390,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		// Worker-side classification at completion time (ADR-006): a
 		// declared class is honored, config-decode misses are permanent,
 		// and everything unclassified defaults to transient.
-		return e.completeFailure(ctx, step, execErr, classifyFailure(execErr), origin.RunTrace)
+		return e.completeFailure(ctx, step, out, execErr, classifyFailure(execErr), origin.RunTrace)
 	}
 	// Output validation (ticket 11.1, ADR-013): run the resolved chain over
 	// the executor's output. It sits here — after a successful execute and
@@ -405,7 +405,11 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 			// Shutdown during validation — abandon like the executor path.
 			return fmt.Errorf("engine: step abandoned during validation: %w", context.Cause(ctx))
 		}
-		return e.completeFailure(ctx, step, vErr, validatorErrorClass(vErr), origin.RunTrace)
+		// The executor SUCCEEDED (out carries its usage/resource) but the
+		// validation chain errored — pass out so the productive spend is
+		// metered even though the step fails (ticket 11.5 gap fix); the judge's
+		// own billed usage rides on vErr.
+		return e.completeFailure(ctx, step, out, vErr, validatorErrorClass(vErr), origin.RunTrace)
 	}
 	if verdict != nil && !verdict.Passed() {
 		// Invalid output: never cached. Route through the semantic-retry engine
@@ -477,7 +481,7 @@ func (e *Engine) rateLimit(ctx context.Context, step gen.RunStep, executor exec.
 				slog.String("resource", resourceName),
 				slog.Int64("est_tokens", estTokens),
 				slog.Any("error", err))
-			return true, nil, e.completeFailure(ctx, step,
+			return true, nil, e.completeFailure(ctx, step, exec.Output{},
 				fmt.Errorf("resource %q: %w", resourceName, err), dag.ClassPermanent, origin.RunTrace)
 		}
 		// Any other error is a Redis/transport failure: fail open.
@@ -503,7 +507,7 @@ func (e *Engine) rateLimit(ctx context.Context, step gen.RunStep, executor exec.
 		logger.ErrorContext(ctx, "resource denied by a never-refilling bucket; failing permanently",
 			slog.String("resource", resourceName),
 			slog.String("bucket", dec.Bucket))
-		return true, nil, e.completeFailure(ctx, step,
+		return true, nil, e.completeFailure(ctx, step, exec.Output{},
 			fmt.Errorf("resource %q bucket %q never refills — request can never be admitted", resourceName, dec.Bucket),
 			dag.ClassPermanent, origin.RunTrace)
 	}

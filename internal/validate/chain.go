@@ -156,10 +156,28 @@ func (c *Chain) Run(ctx context.Context, output json.RawMessage, attempt int, lo
 					v.Issues[j].Validator = e.name
 				}
 			}
-			results[i] = ValidatorResult{
+			res := ValidatorResult{
 				Name: e.name, Status: v.Status, Score: v.Score,
 				IssueCount: len(v.Issues), DurationMS: dur,
 			}
+			// Lift a cost-bearing validator's per-result detail (rationale,
+			// usage, and — for on_error:skip — an error status) from its
+			// single-validator verdict into the chain's per-validator result
+			// (11.5). A validator returns these on its own Results[0]; the
+			// chain is the aggregator that surfaces them per validator.
+			if len(v.Results) == 1 {
+				r0 := v.Results[0]
+				res.Rationale = r0.Rationale
+				res.Usage = r0.Usage
+				res.Error = r0.Error
+				// on_error:skip returns a PASS verdict whose sole result is an
+				// `error` status: the chain does not fail, but the per-validator
+				// result records that the validator could not judge.
+				if r0.Status == StatusError {
+					res.Status = StatusError
+				}
+			}
+			results[i] = res
 			minScore = minScorePtr(minScore, v.Score)
 			if !v.Passed() {
 				chainFailed = true

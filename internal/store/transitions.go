@@ -803,6 +803,13 @@ type RetryStepArgs struct {
 	// Error is the failure summary, stored on both the step (last failure)
 	// and the attempt; nil stores NULL.
 	Error json.RawMessage
+	// Usage is the attempt's token accounting when the failing attempt spent
+	// money before failing (ticket 11.5): an executor that succeeded and
+	// billed but whose output-validation stage then errored under
+	// `on_error: fail` — the provider call happened, so the usage must be
+	// recorded and the cost ledgered even though the step retries. nil for a
+	// mechanical failure (no successful provider call to meter).
+	Usage json.RawMessage
 	// NextAttemptAt is when the next attempt is due — now plus the computed
 	// backoff delay. Required.
 	NextAttemptAt time.Time
@@ -849,7 +856,7 @@ func RetryStep(ctx context.Context, q Querier, args RetryStepArgs) (gen.RunStep,
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := finishAttempt(ctx, gq, op, step, args.Outcome, args.Error, nil, nil, nil, args.Now); err != nil {
+	if err := finishAttempt(ctx, gq, op, step, args.Outcome, args.Error, args.Usage, nil, nil, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
 	if err := appendEvent(ctx, gq, op, args.RunID, EventStepRetryScheduled, stepRetryPayload{

@@ -29,6 +29,7 @@ var exampleFiles = []string{
 	"rag_lite.json",
 	"structured_extract.json",
 	"semantic_retry.json",
+	"llm_judge.json",
 }
 
 // readExample loads one example definition document.

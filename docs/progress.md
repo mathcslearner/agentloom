@@ -6405,3 +6405,119 @@ disjoint counters on the wire), plus the dag/exec unit suites.
 **Deferred:** the `llm_judge` validator + overhead cost (11.5); quality metrics
 — validation-failure rate, semantic-retry depth histogram, judge score
 distribution (11.6).
+
+### 11.5 — LLM-judge validator ✅
+
+Added `llm_judge`, the first **cost-bearing** built-in validator — a semantic
+quality gate whose failing rationale feeds 11.4's semantic-retry loop, and
+whose provider call is billed to the serving step as **overhead** (ADR-012 rule
+4). Reuses the whole 11.1–11.4 substrate (verdict shape, routing table, chain
+semantics, outcome vocabulary): **no migration, no new config var, no new
+metric, no new outcome/class.**
+
+**The validator (`internal/validate/llm_judge.go`).** `cacheable +
+cost_bearing` at `1.0.0`. Config: `model` (routed through the `llm.Registry`
+like an llm step) + ordered `fallback_models` + `rubric` (static text) +
+`threshold` (pass iff `score >= threshold`) + `on_error` (`fail` default |
+`skip`) + optional `max_tokens`/`temperature`/`timeout`/`max_output_chars`/
+`max_rationale_chars`. `CompileConfig` (11.2's `ConfigCompiler`) is the
+pre-flight gate: a blank rubric, an out-of-range threshold, a duplicate/blank
+fallback, a bad `on_error`/`timeout`, or a `model`/fallback that does **not
+route** (a nil registry — the keyless build — routes nothing) is a permanent
+config error at claim, before the productive step spends; the validated
+artifact (parsed config + resolved timeout + model chain) is compile-cached by
+config bytes. `Validate` builds a fixed content-free system prompt + a user
+message pairing the rubric with the delimited candidate output
+(`stringOf(in.Value)` — the `/text` default, truncated) + a `ResponseFormat`
+(native structured output for real providers; the `jsonrepair` pass reused from
+11.3 for text answers) at temperature 0, calls the model chain under a per-call
+`context.WithTimeout` (a provider error or the judge's own timeout falls
+through to the next model; a caller-context cancel passes through **unwrapped**
+so the engine keeps the timeout/cancelled judgment — the `http_request`
+precedent), and parses a required `{score∈[0,1], rationale}`.
+
+**Verdict.** Pass → a verdict carrying the score + one `Results[0]` with
+`rationale` and `usage`; below-threshold → a `rubric_below_threshold` fail
+whose message carries the rationale, so 11.4's `formatVerdictIssues` folds it
+into the feedback prompt with no feedback-builder change. New optional
+`ValidatorResult.{rationale,usage,error}` + a `ValidatorUsage` type (resolved
+resource + served model + token counts) + `validate.Error.Usage` — all additive
+JSON on the existing `verdict` JSONB (the `StatusError` per-validator status
+11.1 reserved is now produced by the skip path); the `Chain` runner lifts them
+from a validator's single-result verdict into the chain verdict.
+
+**`on_error` policy.** `fail` (default) → a classified `*validate.Error` (a
+transport failure of the validation stage): a provider availability failure is
+transient (retried), a malformed answer permanent (the same model reproduces
+it); routed through `completeFailure`. `skip` → a **pass** verdict whose sole
+`Results[0]` records `status: error` + the message — an unavailable judge never
+blocks a workflow.
+
+**Cost as overhead (ADR-012 rule 4, exercised).** Pure `engine.priceOverheads`
+reads judge usage off the verdict's per-validator results and applies
+`overhead: true` `cost_ledger` rows under a `judge:<chain index>` entry (the
+same-attempt PK slot migration 0016 reserved — no schema change) inside the
+same completion transaction on every verdict-carrying route: `completeSuccess`
+(a cache **hit** re-judges, so its overhead is real spend though the productive
+row is $0 saved), `completeValidationFailure` (both the semantic-retry and the
+terminal DLQ branch), and `completeFailure` (the malformed-under-fail case,
+`judge:e`). Each row is priced under `PolicyEstimate` (post-call pricing never
+fails a completed step; an unknown judge model → fallback + `cost_unknown_model`
+warning), bumps `runs.spent_nano_usd`, emits `cost_updated`, and records
+`engine_cost_spent_usd_total{resource=<judge model>}` — so judge spend counts
+against the run budget on the **next** claim's projection and against a step
+`max_usd` cap (`SumByStep` sums all entries). Cost API: `entries[].overhead`
+under the `judge:*` entry + a new per-step `overhead_nano_usd` roll-up
+(`AggregateCostByStep`, sqlc-regenerated) + `CostByStepView.overhead_nano_usd`/
+`overhead_usd`; OpenAPI `ValidatorResult` gained `rationale`/`usage`/`error`, a
+new `ValidatorUsage` component, and `CostByStepView` the overhead fields (still
+lint 100/100).
+
+**Pre-existing gap closed (asked for).** Before 11.5, a step whose executor
+**succeeded and billed** but whose validation chain then **errored** (a judge
+under `on_error: fail`) dropped the productive attempt's usage and cost —
+`completeFailure` never saw the output. It now takes the executor `exec.Output`
+(every mechanical-failure caller passes `exec.Output{}`, a no-op there since an
+errored provider call carries no usage): the failing attempt records its usage
+(`RetryStepArgs` gained a `Usage` field threaded through `finishAttempt`;
+`DeadLetterStepArgs` already had one) and ledgers its productive cost on both
+the retry and DLQ branches, and the judge's own billed call (a malformed answer
+that spent money) rides its usage on `*validate.Error.Usage` and is metered as a
+`judge:e` overhead row. So **every** judge spend is metered regardless of
+outcome; only a provider error that billed nothing ledgers nothing.
+
+**Guardrails & limitations.** Judges are terminal — a judge has no `validation`
+envelope, the chain never recurses, and a judge is not a step (a judged run has
+one step, not two). Two accepted limitations documented (ADR-013/010): judge
+calls bypass the M9 fleet rate limiter (the validate stage is not routed
+through the `ResourceClaimer` middleware), and judge overhead is metered after
+the fact rather than pre-projected at claim (the bounded-overshoot tolerance
+concurrent fan-out already accepts). The rubric is static (un-templated).
+
+**Wiring.** `validate.NewBuiltins` gained a `*llm.Registry` parameter — the
+`exec.Builtins` precedent; `cmd/worker` passes the provider registry the llm
+executor already builds, `cmd/api` passes the one it builds for the plugin
+listing (so `GET /v1/plugins` describes `llm_judge` with its config schema even
+though the API never runs it). `internal/validate` now imports `internal/llm`
+and `internal/jsonrepair` (no cycle).
+
+**Tests.** `internal/validate/llm_judge_test.go` — a full unit matrix
+(pass/fail/boundary at `score == threshold`, native structured + fenced-text
+answers, malformed under fail/skip, provider error under fail/skip, the
+fallback chain serving after a primary error, ctx-cancel passthrough, a
+request-shape golden, and the `CompileConfig` matrix). `internal/engine/
+llm_judge_integration_test.go` — the headline fail→feedback→pass e2e (2
+productive + 2 `judge:*` overhead ledger rows, run aggregate = ledger sum, the
+rationale carried into attempt 2's feedback, one step not two); `on_error:fail`
+metering the productive **and** judge spend then dead-lettering; `on_error:skip`
+degrading to a pass with an `error` result and no overhead. `internal/api/
+cost_integration_test.go::TestRunCostJudgeOverhead` — the overhead surface on
+the wire (`entries[].overhead`, `by_step[].overhead_nano_usd`). Canonical
+`examples/definitions/llm_judge.json` (corpus-pinned). ADR-013 §"LLM-judge
+validator (as built, 11.5)"; ADR-012 rule 4, ADR-009 flag table, ADR-010
+amended; `docs/plugins.md` updated.
+
+**Deferred:** quality metrics — validation-failure rate by step type/model/
+validator, semantic-retry depth histogram, repair rate, judge score
+distribution, per-step verdict summaries, the Grafana "output quality" panel
+(11.6, closing M11).
