@@ -188,6 +188,32 @@ func (c *Control) Park(ctx context.Context, runID uuid.UUID, reason string) (gen
 	return run, nil
 }
 
+// SetBudget is the raise-budget op (ticket 10.3; M10.3 exposes it via PATCH
+// /v1/runs/{id}/budget): it sets the run's spend budget to budgetNanoUSD and
+// appends the run_budget_updated event. Guarded to non-terminal runs — a
+// settled run's budget is immutable (a typed *store.TransitionError surfaces
+// otherwise). Raising a budget does not itself resume a budget-parked run;
+// the caller unparks to resume. No dispatch nudge (ADR-002: the API never
+// dispatches; unpark does).
+func (c *Control) SetBudget(ctx context.Context, runID uuid.UUID, budgetNanoUSD int64) (gen.Run, error) {
+	ctx = log.With(ctx, log.RunID(runID.String()))
+	now := c.now()
+	var run gen.Run
+	txErr := c.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+		var err error
+		run, err = store.SetRunBudget(ctx, q, store.SetRunBudgetArgs{
+			RunID: runID, BudgetNanoUSD: budgetNanoUSD, Now: now,
+		})
+		return err
+	})
+	if txErr != nil {
+		return gen.Run{}, txErr
+	}
+	log.From(ctx).InfoContext(ctx, "run budget updated",
+		slog.Int64("budget_nano_usd", budgetNanoUSD))
+	return run, nil
+}
+
 // UnparkResult is what Unpark did.
 type UnparkResult struct {
 	// Run is the run row back in running.

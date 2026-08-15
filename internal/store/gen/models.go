@@ -92,6 +92,8 @@ type Run struct {
 	TraceState             *string
 	SpentNanoUsd           int64
 	SavedNanoUsd           int64
+	BudgetNanoUsd          *int64
+	OnBudgetExceeded       string
 }
 
 type RunEdge struct {
@@ -129,6 +131,7 @@ type RunStep struct {
 	Timeout       *string
 	TraceSpan     *string
 	CachePolicy   json.RawMessage
+	BudgetPolicy  json.RawMessage
 }
 
 type SchemaBaseline struct {

@@ -163,7 +163,16 @@ type Engine struct {
 	// cost_ledger row and folding it into the run aggregate inside the
 	// completion transaction. Nil disables the ledger entirely (the default
 	// for every test layer that doesn't opt in): completions record no cost.
+	// The claim-time budget check (ticket 10.3) reads the same catalog to
+	// project a step's pre-flight cost.
 	pricing *cost.Catalog
+	// unknownModelPolicy is how the pre-flight budget check (ticket 10.3)
+	// treats a cost-bearing model with no catalog entry: PolicyEstimate
+	// (default — price at the fallback and proceed) or PolicyFail (fail the
+	// step permanently before any money is spent). cmd/worker maps
+	// config.Cost.UnknownModelPolicy here. Post-call ledger pricing always
+	// uses PolicyEstimate regardless (10.2 — never fail a succeeded attempt).
+	unknownModelPolicy cost.UnknownModelPolicy
 }
 
 // Option customizes an Engine.
@@ -291,6 +300,16 @@ func WithResponseCache(c ResponseCache, defaultTTL time.Duration) Option {
 // completions write no cost_ledger rows and run aggregates stay zero.
 func WithPricing(cat *cost.Catalog) Option {
 	return func(e *Engine) { e.pricing = cat }
+}
+
+// WithUnknownModelPolicy sets how the claim-time budget check (ticket 10.3)
+// treats a cost-bearing model with no catalog entry: cost.PolicyEstimate (the
+// default — price it at the catalog fallback and proceed) or cost.PolicyFail
+// (fail the step permanently before any money is spent). cmd/worker maps
+// config.Cost.UnknownModelPolicy here. Only the pre-flight gate honors
+// PolicyFail; post-call ledger pricing always estimates (10.2).
+func WithUnknownModelPolicy(p cost.UnknownModelPolicy) Option {
+	return func(e *Engine) { e.unknownModelPolicy = p }
 }
 
 // New builds an Engine over the given store and executor registry.

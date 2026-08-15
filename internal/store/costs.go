@@ -24,6 +24,10 @@ type CostRepo interface {
 	// SumByRun independently sums a run's ledger — the property test compares
 	// it against the materialized runs aggregate.
 	SumByRun(ctx context.Context, runID uuid.UUID) (gen.SumCostLedgerByRunRow, error)
+	// SumByStep is a step's cumulative attributed spend (all attempts) — the
+	// claim-time budget check reads it to enforce a step-level max_usd cap
+	// (ticket 10.3).
+	SumByStep(ctx context.Context, runID uuid.UUID, stepID string) (int64, error)
 	// AggregateByStep is the per-step spend/savings breakdown.
 	AggregateByStep(ctx context.Context, runID uuid.UUID) ([]gen.AggregateCostByStepRow, error)
 	// AggregateByResource is the per-model / per-tool spend/savings breakdown
@@ -41,6 +45,11 @@ func (r costRepo) ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.CostLed
 func (r costRepo) SumByRun(ctx context.Context, runID uuid.UUID) (gen.SumCostLedgerByRunRow, error) {
 	row, err := r.q.SumCostLedgerByRun(ctx, runID)
 	return row, wrapErr("sum cost ledger", err)
+}
+
+func (r costRepo) SumByStep(ctx context.Context, runID uuid.UUID, stepID string) (int64, error) {
+	n, err := r.q.SumCostLedgerByStep(ctx, gen.SumCostLedgerByStepParams{RunID: runID, StepID: stepID})
+	return n, wrapErr("sum cost ledger by step", err)
 }
 
 func (r costRepo) AggregateByStep(ctx context.Context, runID uuid.UUID) ([]gen.AggregateCostByStepRow, error) {

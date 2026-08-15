@@ -29,6 +29,7 @@ var routeClasses = map[string]routeClass{
 	"POST /v1/runs/{runID}/cancel":                 classSubmit,
 	"POST /v1/runs/{runID}/park":                   classSubmit,
 	"POST /v1/runs/{runID}/unpark":                 classSubmit,
+	"PATCH /v1/runs/{runID}/budget":                classSubmit,
 	"POST /v1/runs/{runID}/steps/{stepID}/requeue": classSubmit,
 	"GET /v1/runs/{runID}/steps/{stepID}/logs":     classRead,
 	"POST /v1/definitions":                         classSubmit,

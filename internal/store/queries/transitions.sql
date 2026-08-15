@@ -162,6 +162,22 @@ WHERE run_id = @run_id AND step_id = @step_id
   AND status = 'running' AND claim_id = @claim_id
 RETURNING *;
 
+-- Budget park release: running → ready, fenced by claim_id (ticket 10.3,
+-- ADR-012). A live worker whose claim's projected spend would exceed the run
+-- budget releases its own step back to ready (so unpark re-dispatches it) and
+-- parks the run in the same transaction. Mechanically the takeover CAS —
+-- running → ready, claim cleared — but semantically distinct: the holder is
+-- releasing its own claim before running, not reclaiming a dead one, and the
+-- attempt closes `budget_exceeded`, not `lost`. finished_at stays NULL.
+-- name: BudgetParkRunStep :one
+UPDATE run_steps
+SET status     = 'ready',
+    claim_id   = NULL,
+    updated_at = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id
+  AND status = 'running' AND claim_id = @claim_id
+RETURNING *;
+
 -- Edge resolution bookkeeping (not a status transition): the unresolved
 -- guard is what makes retried completion transactions idempotent — an
 -- already-resolved edge matches nothing, so counters can never

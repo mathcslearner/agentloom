@@ -257,6 +257,33 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 		t.Error("no step with a cache policy in kitchen_sink.json")
 	}
 
+	// Ticket 10.3 constructs (ADR-012): a run-level spend budget with an
+	// explicit exceed policy, and a step with per-step budget caps.
+	if def.BudgetUSD == nil {
+		t.Error("no budget_usd in kitchen_sink.json")
+	}
+	if def.OnBudgetExceeded == "" {
+		t.Error("no explicit on_budget_exceeded policy in kitchen_sink.json")
+	}
+	var hasStepBudget, hasStepMaxTokens bool
+	for _, s := range def.Steps {
+		if s.Budget == nil {
+			continue
+		}
+		if s.Budget.MaxUSD != nil {
+			hasStepBudget = true
+		}
+		if s.Budget.MaxTokens > 0 {
+			hasStepMaxTokens = true
+		}
+	}
+	if !hasStepBudget {
+		t.Error("no step with a budget.max_usd cap in kitchen_sink.json")
+	}
+	if !hasStepMaxTokens {
+		t.Error("no llm step with a budget.max_tokens cap in kitchen_sink.json")
+	}
+
 	// Ticket 8.2 constructs: template expressions referencing a run param
 	// and an upstream step output somewhere in the step configs.
 	var paramRef, stepRef bool

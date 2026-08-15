@@ -80,7 +80,15 @@ administrative outcome, `throttled`** (ADR-010): a rate-limit denial
 recorded *before* the executor runs, likewise outside the taxonomy and
 excluded from the retry budget — 9.2's migration adds it to the CHECK,
 exactly as 5.2 added the classed vocabulary, and the taxonomy table
-below (rows 16–17) records its disposition. The bare outcome `failed`
+below (rows 16–17) records its disposition. **M10 reserves a third
+administrative outcome, `budget_exceeded`** (ADR-012, ticket 10.3): a
+claim whose projected spend would exceed the run budget under the park
+policy, recorded when the step is released `running → ready` and the run
+parked — again before the executor runs, outside the taxonomy, and never
+counted against the retry budget (row 18 below). 10.3's migration adds
+it to the CHECK. (The *fail* budget policy is not a new outcome — the
+step dead-letters `permanent` through the ordinary DLQ path with a
+`budget_exceeded: …` message, row 19.) The bare outcome `failed`
 (written by 2.6–4.x) is retired by that migration in favor of the
 classed vocabulary; existing rows are backfilled to `permanent` (under
 pre-M5 semantics every failure was terminal, which is what `permanent`
@@ -136,6 +144,8 @@ means the dead-letter path (5.4).
 | 15 | Template rendering failure pre-execution (ticket 8.2: strict reference did not resolve — missing output path, skipped/unfinished referenced step, unsubmitted param — or the stored config's templates no longer parse) (`Engine.renderConfig`) | `permanent` | no retry; DLQ. A run's recorded state is immutable, so a re-render fails identically. Transport failures during the pre-render reads are row 11, not this row: nothing was decided, the delivery redelivers |
 | 16 | Rate-limit denial from the M9 limiter middleware before the provider call (ticket 9.2, ADR-010) | `throttled` (administrative, outside the taxonomy) | **not a failure**: no retry-budget consumption, no DLQ. The step goes `running → retrying` (5.2's CAS, `steps_failed` un-bumped) and is re-dispatched through the delayed ZSET (reason `throttle`) at `retry_after` + jitter; the worker slot is released immediately |
 | 17 | Limiter denial that no wait can lift — token estimate exceeds the token bucket's capacity (`ratelimit.ErrCostExceedsCapacity`), or a never-refilling bucket (`ratelimit.RetryAfterNever`) (ticket 9.2, ADR-010) | `permanent` | no retry; DLQ (source `permanent`). Deterministic function of the estimate and the config — re-execution is provably futile, like rows 4–7/15 |
+| 18 | Claim-time projected spend exceeds the run budget under the `park` policy (ticket 10.3, ADR-012), evaluated before the provider call | `budget_exceeded` (administrative, outside the taxonomy) | **not a failure**: no retry-budget consumption, no DLQ. The step is released `running → ready` (`BudgetParkStep`, claim cleared, `steps_failed` un-bumped) and the run parked with reason `budget_exceeded`; raising the budget (`PATCH …/budget`) + unpark re-dispatches the released step |
+| 19 | Claim-time budget violation that is terminal — projected spend over budget under the `fail` policy, a step `max_usd`/`max_tokens` cap the request can never satisfy, or an unpriced model under fail-closed (ticket 10.3, ADR-012) | `permanent` | no retry; DLQ (source `permanent`) with a `budget_exceeded: …` message, then the run's `on_failure` disposition. Deterministic given the estimate and the caps — re-execution within budget is provably futile, like rows 4–7/15/17 |
 
 Rows 4–7 and 15 are the force-classified `permanent` set: they are
 deterministic functions of stored state, so re-execution is provably
@@ -154,7 +164,8 @@ failure modes and never mix:
   attempts (M9, ADR-010) do not count either, and for the same reason: a
   rate-limit denial is backpressure, not a judgment about the step's
   content — `CountCountedFailures` already counts only `transient`/`timeout`,
-  so both administrative outcomes are excluded by construction.
+  so every administrative outcome (`lost`, `throttled`, and 10.3's
+  `budget_exceeded`) is excluded by construction.
 - The **delivery count** (poison threshold, ADR-005) bounds
   crash-loops: a step that keeps killing its workers (row 9/10
   repeating) never records a failure, but its entry's delivery count

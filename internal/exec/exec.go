@@ -183,6 +183,45 @@ type ResourceClaimer interface {
 	ResourceClaim(sc StepContext) (resource string, estTokens int64, err error)
 }
 
+// CostEstimator is the optional executor hook the M10 budget middleware
+// consults before a cost-bearing executor's provider call (ADR-012): it
+// projects the pre-flight pricing inputs so the claim path can compare the
+// run's projected spend (run spend + estimate) against the run budget and
+// the step's caps before any money is spent. An executor that implements it
+// (the llm and tool executors) is subject to budget enforcement; one that
+// does not bypasses it — the middleware is a no-op for steps that estimate
+// no cost.
+//
+// The estimate splits input and output tokens so the middleware prices each
+// at the model's respective rate (ADR-012's upper-bound Estimate). Its error
+// convention mirrors ResourceClaim: a resolution or config failure means the
+// estimate could not be computed (an unresolvable model, a corrupt config),
+// so the middleware skips the budget check and lets Execute land the
+// classified failure — the routing judgment lives in one place. The
+// fail-closed unknown-model policy is a separate decision the middleware
+// makes from the returned resource, not signaled here.
+type CostEstimator interface {
+	CostEstimate(sc StepContext) (CostEstimate, error)
+}
+
+// CostEstimate is what a CostEstimator projects for the budget middleware:
+// the pricing key and the pre-flight token split.
+type CostEstimate struct {
+	// Resource is the ADR-010/ADR-012 pricing key, by the *resolved* provider
+	// ("mock:sim-1", "tool:paid_search"). Empty means the step is not
+	// cost-bearing (the middleware then proceeds without a check).
+	Resource string
+	// InputTokens is the pre-call input-token estimate (roughly chars/4 over
+	// the rendered request), priced at the model's input rate. Zero for a
+	// flat-priced tool.
+	InputTokens int64
+	// MaxTokens is the output ceiling priced at the model's output rate — the
+	// step's configured max_tokens (defaulted). Zero for a tool. This is also
+	// the figure a step-level budget.max_tokens cap is checked against
+	// (together with InputTokens), so an oversized request never runs.
+	MaxTokens int64
+}
+
 // CacheBinder is the optional executor hook the M9 response-cache middleware
 // consults before a step runs (ADR-011, ticket 9.5): it projects the
 // resolved request onto the cache key's inputs and supplies the

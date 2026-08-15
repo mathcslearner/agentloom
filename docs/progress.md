@@ -5662,3 +5662,116 @@ unit matrix (nil catalog / no resource / llm / cache-hit / no-usage / unknown /
 priced tool / free tool), the `ApplyAttemptCost` store test (aggregate == sum,
 event append, `ErrNoTx` guard), and the API `/cost` per-step/per-model contract
 test (plus zero-summary and 404 cases).
+
+### 10.3 — Budget enforcement at claim time ✅
+
+Delivered the enforcement half of the cost model: budgets checked *inside* the
+scheduler path, at the same point as the readiness/claim decision, before any
+money is spent — a run parks (or a step fails) exactly at its cap, and raising
+the budget + unparking resumes it.
+
+**The contract (`internal/dag`).** Run-level `budget_usd` (a positive USD
+number; `*float64`, nil = unbudgeted, encoded/decoded like the existing
+`Temperature` pointer) and `on_budget_exceeded` (`park` the resumable default |
+`fail`, mirroring `on_failure`); step-envelope `budget: {max_usd?, max_tokens?}`
+(a `*StepBudget` like `*CachePolicy`). New validation codes
+`budget_field_required` / `budget_field_invalid`: `budget_usd` positive,
+`on_budget_exceeded` a no-op without a budget (rejected — a can't-fire config is
+an authoring mistake), the step block needs at least one cap, `max_usd`
+positive, and **`max_tokens` restricted to llm steps** (a token cap on a
+non-metered step can never fire). New `decodeFloat` helper (the first top-level
+number field). Kitchen-sink fixtures (both copies) + construct pins + decode/
+validate unit tables + regenerated JSON Schema.
+
+**Materialization & migration 0017.** `runs.budget_nano_usd` (nullable
+`BIGINT` — NULL is unbudgeted, deliberately distinct from 0, which would park
+every cost-bearing step) and `runs.on_budget_exceeded` (`NOT NULL DEFAULT
+'park'`, CHECK `park|fail`); `run_steps.budget_policy` JSONB (the caps, read off
+the claimed row like `cache_policy`, never reparsed); and the
+`step_attempts.outcome` CHECK extended with `budget_exceeded` (the 0014
+drop/re-add recipe). Instantiation converts `budget_usd` → nano with a local
+`usdToNanoUSD` matching `cost.USDToNano` (the store deliberately does not import
+`internal/cost` — it holds computed nano, never prices; the trivial conversion
+is the accepted leaf-boundary duplication). `runRepo.Create` defaults an empty
+`on_budget_exceeded` to `park` (mirroring the existing `on_failure` default), so
+the many test builders that hand-build `CreateRunParams` need no change. Migrate
+round-trip pinned to 17.
+
+**The estimate hook (`internal/exec`).** New optional `exec.CostEstimator`
+returning `CostEstimate{Resource, InputTokens, MaxTokens}` — the input/output
+token split ADR-012's upper-bound `Estimate` needs (input priced at the model's
+input rate, `max_tokens` at its output rate). The llm executor implements it via
+the refactored `estimateLLMInputTokens` / `estimateLLMMaxTokens` (the old fused
+`estimateLLMTokens` now sums them, so the limiter's `ResourceClaim` is
+unchanged); resource is `<resolved-provider>:<routed-model>` (the ledger later
+keys the *served* model — a documented pre-flight/ledger resource asymmetry).
+The tool executor returns `tool:<name>` with zero tokens (a flat-priced call).
+Estimator errors route like `ResourceClaim`'s: skip the check, defer to
+Execute.
+
+**The middleware (`engine/budget.go`).** `budgetCheck` sits in `execute()`
+**after the cache read and before the rate limiter** — a deliberate deviation
+from the nominal cache→limit→budget order (recorded in ADR-012 and the CLAUDE.md
+middleware-chain line): a hit is $0 and never budget-gated, and parking after a
+limiter acquire would strand debited tokens 9.3 only reconciles on success. It
+is a no-op (no reads) when pricing is disabled, the executor is not a
+`CostEstimator`, or the run is unbudgeted *and* the step is uncapped (the fast
+path — the common case costs nothing extra). The pure `budgetDecide` (unit-
+matrix-tested) prices the estimate (`estimateNanoUSD`: tool flat-or-free, model
+`cost.Estimate` under the engine's `WithUnknownModelPolicy`) and routes in
+order: step `max_tokens` over cap → permanent fail (oversized request never
+sent); unknown model under fail-closed → permanent fail before spend; step
+`max_usd` (cumulative `SumByStep` ledger read + estimate) over cap → permanent
+fail; run budget (`origin.SpentNanoUSD + estimate`) over budget → park or fail
+per disposition. A `$0` estimate (free tool) never triggers a run park (avoids
+an unpark→park bounce). The decision uses the **claim-time spend on the
+`ClaimOrigin`** (read under the run lock the claim already took — extended
+`LockRun` to return `budget_nano_usd` / `spent_nano_usd` / `on_budget_exceeded`
+alongside the trace context): exact for a sequential chain, conservative-low for
+concurrent fan-out (spend only rises after the read, so it never over-parks) —
+the accepted bounded-overshoot tolerance.
+
+**Park vs fail.** Park is atomic in `store.BudgetParkStep`: the
+`BudgetParkRunStep` CAS releases the step `running → ready` (claim cleared,
+fenced on the caller's claim), the attempt closes with the administrative
+outcome `budget_exceeded` (uncounted — the step never ran, like `lost` /
+`throttled`), the `budget_exceeded` event lands with the full projection detail,
+and the run parks with reason `budget_exceeded` — but **only when the run is
+still `running` under the lock**, so concurrent fan-out siblings each release
+without a duplicate `run_parked`. The released step is `ready` (not `retrying`),
+so `Unpark` re-dispatches it with **zero reconciler dependency** (unlike
+throttle). The completion follows the throttle route's cancelling-run
+settlement. Fail reuses `completeFailure(permanent, "budget_exceeded: …")` — the
+existing DLQ + `on_failure` disposition — so the descriptive dead-letter is the
+record and the fail path needs no new event or write-off logic.
+
+**Resume & API.** `engine.Control.SetBudget` (registry-free, `store.SetRunBudget`
+under the run lock, guarded to non-terminal runs, `run_budget_updated` event, no
+dispatch nudge — ADR-002); `PATCH /v1/runs/{id}/budget` (submit scope/class,
+`DisallowUnknownFields`, positive-required → 400, terminal → 409) wired through
+the four route tables + OpenAPI (path + `SetBudgetRequest`/`SetBudgetResponse` +
+`CostSummaryView` budget fields; still lint 100/100) + auth/class matrices;
+`CostSummaryView` (run view + `/cost`) grew `budget_nano_usd` / `budget_usd`
+(nullable) + `on_budget_exceeded`; `ctl budget <run-id> <usd>` mirrors it.
+`cmd/worker` maps `cfg.Cost.UnknownModelPolicy` onto `cost.PolicyEstimate|Fail`
+via the new `cost.ParseUnknownModelPolicy` and wires `WithUnknownModelPolicy`
+(the config value that was loaded-but-unconsumed since 10.1).
+
+**Tests.** Headline engine integration: a sequential mock-llm chain (fixed-usage
+provider so actual == estimate) under a $0.005 budget parks at exactly the step
+whose projection first exceeds the cap (asserted `spent ≤ budget < spent +
+one-step estimate` — the defined tolerance), history `[budget_exceeded]`,
+`budget_exceeded` event present; then `SetBudget($1)` + `Unpark` → succeeded with
+history `[budget_exceeded, succeeded]` and all five steps ledgered. Plus the
+fail-policy DLQ (run failed, gen dead-lettered `permanent`), the
+oversized-`max_tokens` guard (a call-counting provider asserts **zero** provider
+calls), the `budgetDecide` unit matrix (run park/fail/proceed, step max_tokens,
+unknown-model fail-closed, free-tool proceed), the `CostEstimate` exec unit
+test, the store migrate round-trip, the api PATCH contract (200/400/404 + run-
+view reflection), and the ctl unit test. Full store/engine/api integration
+suites green; golangci-lint + `openapi-lint` clean.
+
+**Deferred:** model downgrade chains (10.4 — slots before park/fail in
+`budgetDecide`), budget metrics + `cost_updated` events (10.5), a submit-time
+`budget_usd` override on `POST /v1/runs`, and reservation-based exact accounting
+for parallel fan-out (backlog).

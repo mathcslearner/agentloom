@@ -85,6 +85,19 @@ func Decode(data []byte) (*Definition, error) {
 	if raw, ok := fields["max_wall_clock"]; ok {
 		def.MaxWallClock, _ = decodeString(raw, "max_wall_clock", &errs)
 	}
+	if raw, ok := fields["budget_usd"]; ok {
+		if f, fok := decodeFloat(raw, "budget_usd", &errs); fok {
+			def.BudgetUSD = &f
+		}
+	}
+	if raw, ok := fields["on_budget_exceeded"]; ok {
+		if s, sok := decodeString(raw, "on_budget_exceeded", &errs); sok {
+			def.OnBudgetExceeded = BudgetPolicy(s)
+			if !slices.Contains(budgetPolicies, def.OnBudgetExceeded) {
+				errs.add("on_budget_exceeded", "unknown budget policy %q (expected one of: %s)", s, joinEnum(budgetPolicies))
+			}
+		}
+	}
 	if raw, ok := fields["params"]; ok {
 		def.Params = decodeParams(raw, &errs)
 	}
@@ -108,7 +121,8 @@ func Decode(data []byte) (*Definition, error) {
 
 	topLevel := map[string]bool{
 		"schema_version": true, "name": true, "description": true,
-		"on_failure": true, "max_wall_clock": true, "params": true,
+		"on_failure": true, "max_wall_clock": true, "budget_usd": true,
+		"on_budget_exceeded": true, "params": true,
 		"steps": true, "edges": true, "ui": true,
 	}
 	for _, k := range sortedKeys(fields) {
@@ -197,14 +211,27 @@ func decodeStep(raw json.RawMessage, path string, errs *errList) Step {
 	if cacheRaw, present := m["cache"]; present {
 		step.Cache = decodeCache(cacheRaw, path+".cache", errs)
 	}
+	if budgetRaw, present := m["budget"]; present {
+		step.Budget = decodeBudget(budgetRaw, path+".budget", errs)
+	}
 	for _, k := range sortedKeys(m) {
 		switch k {
-		case "id", "type", "config", "retry", "timeout", "cache":
+		case "id", "type", "config", "retry", "timeout", "cache", "budget":
 		default:
 			errs.add(path+"."+k, "unknown field")
 		}
 	}
 	return step
+}
+
+// decodeBudget decodes a step's budget caps (ADR-012). Like decodeCache the
+// codec level enforces shape only — unknown fields and mistyped values; the
+// at-least-one-cap rule, positivity, and the llm-only constraint on
+// max_tokens are structural validation (Validate).
+func decodeBudget(raw json.RawMessage, path string, errs *errList) *StepBudget {
+	var b StepBudget
+	strictUnmarshal(raw, &b, path, errs)
+	return &b
 }
 
 // decodeCache decodes a step's response-cache policy (ADR-011). Like
@@ -478,6 +505,21 @@ func decodeInt(raw json.RawMessage, path string, errs *errList) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// decodeFloat decodes a JSON number (integer or fractional) into a float64
+// with a path-qualified error.
+func decodeFloat(raw json.RawMessage, path string, errs *errList) (float64, bool) {
+	if jt := jsonTypeOf(raw); jt != "number" {
+		errs.add(path, "expected number, got %s", jt)
+		return 0, false
+	}
+	var f float64
+	if err := json.Unmarshal(raw, &f); err != nil {
+		errs.add(path, "expected number, got %s", bytes.TrimSpace(raw))
+		return 0, false
+	}
+	return f, true
 }
 
 // decodeObjectMap decodes a JSON object into its raw fields with a

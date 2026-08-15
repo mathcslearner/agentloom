@@ -177,6 +177,13 @@ const (
 	// executor runs. Routed running → retrying, re-dispatched at
 	// next_attempt_at.
 	AttemptOutcomeThrottled = "throttled"
+	// AttemptOutcomeBudgetExceeded: the claim's projected spend would exceed
+	// the run budget under the park policy, so the step was released and the
+	// run parked (ticket 10.3, ADR-012). Like `lost` and `throttled`, an
+	// administrative outcome outside ADR-006's taxonomy — never counted
+	// against the retry budget (the step was never executed), decided before
+	// the executor runs. Routed running → ready; unpark re-dispatches it.
+	AttemptOutcomeBudgetExceeded = "budget_exceeded"
 )
 
 // Event types written by run instantiation (2.5) and the guarded
@@ -241,4 +248,14 @@ const (
 	// transaction; the payload is cost.UnknownModelWarning. Mirrors
 	// cost.EventTypeUnknownModel — the value the 10.1 contract fixed.
 	EventCostUnknownModel = "cost_unknown_model"
+	// EventBudgetExceeded: a claim's projected spend crossed a budget limit
+	// (ticket 10.3, ADR-012). The payload (budgetExceededPayload) carries the
+	// step, attempt, resource, the run spend and estimate that made the
+	// projection, the limit crossed, and the action taken (park or fail).
+	// Appended by BudgetParkStep and by the budget-fail completion.
+	EventBudgetExceeded = "budget_exceeded"
+	// EventRunBudgetUpdated: PATCH /v1/runs/{id}/budget raised the run's
+	// spend budget (ticket 10.3). The payload carries the previous and new
+	// budget in nano-USD.
+	EventRunBudgetUpdated = "run_budget_updated"
 )

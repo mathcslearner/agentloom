@@ -140,14 +140,19 @@ type RunView struct {
 	Cost CostSummaryView `json:"cost"`
 }
 
-// CostSummaryView is a run's cumulative cost (ticket 10.2, ADR-012). Money is
-// integer nano-USD on the wire (the exact source of truth); the *_usd strings
-// are the human-readable USD rendering derived from the integers.
+// CostSummaryView is a run's cumulative cost and budget (ticket 10.2/10.3,
+// ADR-012). Money is integer nano-USD on the wire (the exact source of truth);
+// the *_usd strings are the human-readable USD rendering derived from the
+// integers. Budget is nullable (nil = unbudgeted); on_budget_exceeded is the
+// materialized disposition (park | fail), always present.
 type CostSummaryView struct {
-	SpentNanoUSD int64  `json:"spent_nano_usd"`
-	SavedNanoUSD int64  `json:"saved_nano_usd"`
-	SpentUSD     string `json:"spent_usd"`
-	SavedUSD     string `json:"saved_usd"`
+	SpentNanoUSD     int64   `json:"spent_nano_usd"`
+	SavedNanoUSD     int64   `json:"saved_nano_usd"`
+	SpentUSD         string  `json:"spent_usd"`
+	SavedUSD         string  `json:"saved_usd"`
+	BudgetNanoUSD    *int64  `json:"budget_nano_usd,omitempty"`
+	BudgetUSD        *string `json:"budget_usd,omitempty"`
+	OnBudgetExceeded string  `json:"on_budget_exceeded"`
 }
 
 // StepView is one run step with its attempt history.
@@ -313,6 +318,19 @@ type ParkRunResponse struct {
 type UnparkRunResponse struct {
 	Run        RunView  `json:"run"`
 	Dispatched []string `json:"dispatched"`
+}
+
+// SetBudgetRequest is the body of PATCH /v1/runs/{id}/budget (ticket 10.3):
+// the new run spend budget in US dollars. Required and positive.
+type SetBudgetRequest struct {
+	BudgetUSD *float64 `json:"budget_usd"`
+}
+
+// SetBudgetResponse answers PATCH /v1/runs/{id}/budget: the run with its
+// updated cost/budget summary. Raising the budget does not resume a parked
+// run — unpark does.
+type SetBudgetResponse struct {
+	Run RunView `json:"run"`
 }
 
 // RequeueStepResponse answers POST /v1/runs/{id}/steps/{sid}/requeue: the

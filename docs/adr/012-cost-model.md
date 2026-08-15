@@ -367,6 +367,87 @@ success CAS, with run-level aggregates and a cost API on top.
   nothing. `overhead` is always `false` in 10.2 (the flag and its PK slot are
   pre-wired for M11/M12).
 
+### As built (10.3)
+
+Budget enforcement at claim time — the check that makes cost a *scheduling*
+feature, evaluated at the same point as the readiness/claim decision, before
+any money is spent.
+
+- **The contract.** `internal/dag` gained the run-level `budget_usd` (a
+  positive USD number; nil = unbudgeted) and `on_budget_exceeded` (`park` the
+  resumable default | `fail`), plus the step-envelope `budget` block
+  (`max_usd`, `max_tokens`), validated under new codes `budget_field_required`
+  / `budget_field_invalid` (positivity, at-least-one-cap, and `max_tokens`
+  restricted to llm steps — a cap that can never fire is an authoring
+  mistake). Money is materialized as integer **nano-USD** on `runs`
+  (`budget_nano_usd` nullable, `on_budget_exceeded` NOT NULL DEFAULT `park`,
+  migration 0017) — the same unit as `spent_nano_usd`, so the projection
+  compare is exact — and the step caps ride `run_steps.budget_policy` JSONB,
+  read off the claimed row like `cache_policy`.
+
+- **The estimate hook.** A new optional executor interface
+  `exec.CostEstimator` projects `{Resource, InputTokens, MaxTokens}` — the
+  input/output token split (the llm executor's `chars/4` input estimate and
+  its `max_tokens` output ceiling, `<resolved-provider>:<model>`; the tool
+  executor's `tool:<name>`, no token dimension). Its error routes like
+  `ResourceClaim`/`CacheBinding`: skip the check, let Execute land the
+  classified failure, so the routing judgment lives in one place.
+
+- **The middleware.** `engine/budget.go`'s `budgetCheck` runs in `execute()`
+  **after the cache read and before the rate limiter** — a deliberate
+  deviation from the middleware chain's nominal cache→limit→budget order,
+  because a cache hit is $0 (never budget-gated) and parking *after* a limiter
+  acquire would strand debited tokens 9.3 only reconciles on success. The pure
+  `budgetDecide` prices the estimate against the catalog (upper-bound
+  `cost.Estimate`), then routes: **step `max_tokens`** over cap → permanent
+  fail (the oversized request never runs); an **unknown model under
+  fail-closed** (`WithUnknownModelPolicy`, mapped from
+  `AGENTLOOM_COST_UNKNOWN_MODEL_POLICY`) → permanent fail before spend; **step
+  `max_usd`** (cumulative step ledger + estimate) over cap → permanent fail; a
+  **run-budget** projection (`spent + estimate`, from the claim-time
+  `ClaimOrigin` spend read under the run lock) over budget → park or fail per
+  the run's disposition. A `$0` estimate (a free tool) never triggers a run
+  park. The decision uses the claim-time spend on the origin — exact for a
+  sequential chain (the predecessor committed before the claim), and
+  conservative-low for concurrent fan-out (spend only rises after the read, so
+  the check never *over*-parks), the accepted bounded-overshoot tolerance.
+
+- **Park vs fail.** Park is atomic: `store.BudgetParkStep` releases the step
+  `running → ready` (the `BudgetParkRunStep` CAS, fenced on the caller's
+  claim), closes the attempt with the administrative outcome
+  **`budget_exceeded`** (the third such outcome after `lost` and `throttled`,
+  outside ADR-006's taxonomy — never counted against the retry budget, the
+  step never ran; migration 0017 extends the outcome CHECK), appends the
+  `budget_exceeded` event with the full projection detail, and parks the run
+  with reason `budget_exceeded` — all in one transaction. Parking only when
+  the run is still `running` under the lock makes concurrent fan-out siblings
+  release without a duplicate `run_parked`. The released step is `ready` (not
+  `retrying`), so unpark re-dispatches it with **zero reconciler dependency**.
+  Fail routes through the existing `completeFailure(permanent, "budget_
+  exceeded: …")` — DLQ + the run's ordinary `on_failure` disposition — so the
+  descriptive dead-letter is the record and the fail path needs no new event.
+
+- **Resume.** `PATCH /v1/runs/{id}/budget` (submit scope) raises the budget
+  (`store.SetRunBudget`, guarded to non-terminal runs, `run_budget_updated`
+  event); the client then unparks. `engine.Control.SetBudget` is the
+  registry-free op the API and `ctl budget <run-id> <usd>` call; no dispatch
+  nudge (ADR-002 — unpark dispatches). `GET /v1/runs/{id}` and `/cost` carry
+  the budget on the cost summary (`budget_nano_usd`/`budget_usd` nullable,
+  `on_budget_exceeded`); OpenAPI still lints 100/100.
+
+- **Headline test.** A sequential mock-llm chain under a $0.005 budget (each
+  step ~$0.002) parks at exactly the step whose projection first exceeds the
+  cap (`spent ≤ budget < spent + one step's estimate` — the defined
+  tolerance), emits `budget_exceeded`, then — budget raised to $1 and
+  unparked — resumes and completes with every step's cost ledgered. Plus the
+  fail-policy DLQ, the oversized-`max_tokens` zero-provider-calls guard, and
+  the decision unit matrix.
+
+- **Not in 10.3.** Model downgrade chains (`model_fallbacks`; 10.4 slots
+  before park/fail in `budgetDecide`), budget metrics and `cost_updated`
+  events (10.5), a submit-time `budget_usd` override on `POST /v1/runs`, and
+  reservation-based exact accounting for parallel fan-out (backlogged).
+
 ## Consequences
 
 **Easier.**

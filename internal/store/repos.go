@@ -137,6 +137,11 @@ func (r runRepo) Create(ctx context.Context, arg gen.CreateRunParams) (gen.Run, 
 		// always materializes explicitly, like retry_policy.
 		arg.OnFailure = string(dag.FailFast)
 	}
+	if arg.OnBudgetExceeded == "" {
+		// Absent on_budget_exceeded means park (ADR-012, ticket 10.3);
+		// instantiation materializes explicitly, like on_failure.
+		arg.OnBudgetExceeded = string(dag.BudgetPark)
+	}
 	run, err := r.q.CreateRun(ctx, arg)
 	return run, wrapErr("create run", err)
 }

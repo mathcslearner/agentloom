@@ -5,8 +5,9 @@
 INSERT INTO runs (id, definition_id, definition, status, params,
                   idempotency_token, idempotency_fingerprint, on_failure,
                   steps_total, started_at, deadline_at,
-                  trace_parent, trace_state)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                  trace_parent, trace_state,
+                  budget_nano_usd, on_budget_exceeded)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 RETURNING *;
 
 -- name: GetRun :one
@@ -60,5 +61,9 @@ UPDATE runs SET next_seq = next_seq + 1 WHERE id = $1 RETURNING next_seq;
 -- claim path refuses steps of terminal runs; 5.6's park/cancel reuses it).
 -- name: LockRun :one
 -- trace_parent/trace_state ride along (ticket 7.3) so the claim path can
--- surface the run's root trace context without a second read.
-SELECT id, status, trace_parent, trace_state FROM runs WHERE id = $1 FOR UPDATE;
+-- surface the run's root trace context without a second read; the budget
+-- columns and spend ride along (ticket 10.3) so the claim path can project
+-- spend for the budget check without a second read.
+SELECT id, status, trace_parent, trace_state,
+       budget_nano_usd, spent_nano_usd, on_budget_exceeded
+FROM runs WHERE id = $1 FOR UPDATE;

@@ -183,3 +183,8 @@ func (CacheMode) JSONSchema() *jsonschema.Schema {
 func (CacheScope) JSONSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "string", Enum: enumAny(cacheScopes)}
 }
+
+// JSONSchema declares the budget-policy enum in the generated schema (ADR-012).
+func (BudgetPolicy) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny(budgetPolicies)}
+}

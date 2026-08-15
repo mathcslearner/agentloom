@@ -36,6 +36,13 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "BudgetPolicy": {
+      "type": "string",
+      "enum": [
+        "park",
+        "fail"
+      ]
+    },
     "CacheMode": {
       "type": "string",
       "enum": [
@@ -91,6 +98,12 @@
         },
         "max_wall_clock": {
           "type": "string"
+        },
+        "budget_usd": {
+          "type": "number"
+        },
+        "on_budget_exceeded": {
+          "$ref": "#/$defs/BudgetPolicy"
         },
         "params": {
           "additionalProperties": {
@@ -556,6 +569,9 @@
         },
         "cache": {
           "$ref": "#/$defs/CachePolicy"
+        },
+        "budget": {
+          "$ref": "#/$defs/StepBudget"
         }
       },
       "additionalProperties": false,
@@ -564,6 +580,18 @@
         "id",
         "type"
       ]
+    },
+    "StepBudget": {
+      "properties": {
+        "max_usd": {
+          "type": "number"
+        },
+        "max_tokens": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
     },
     "StepType": {
       "type": "string",

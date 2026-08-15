@@ -34,6 +34,13 @@ func ToolCost(perCallUSD float64) int64 {
 	return usdToNano(perCallUSD)
 }
 
+// USDToNano converts a USD amount to integer nano-USD, rounding half away
+// from zero and clamping negatives to zero. Run instantiation uses it to
+// materialize a validated (positive) budget_usd as the integer nano-USD
+// budget the claim-time check (10.3) compares against the run's integer
+// spend, so budget and spend share one unit and the comparison is exact.
+func USDToNano(usd float64) int64 { return usdToNano(usd) }
+
 // component prices one direction: round(tokens × usdPerMTok / 1e6) in
 // nano-USD, half-up. The rate is converted to nano-USD-per-MTok first so the
 // division is exact integer arithmetic. tokens × nanoPerMTok stays well within

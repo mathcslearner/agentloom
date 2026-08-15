@@ -41,7 +41,7 @@ func columnExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table, 
 // latestVersion is the highest migration in internal/store/migrations —
 // bump when adding a migration (the round-trip test below walks every
 // down migration regardless, so forgetting only fails the version check).
-const latestVersion = 16
+const latestVersion = 17
 
 func TestMigrateUpDownRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -84,9 +84,10 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 	}
 
 	// Down rolls back one step: the newest migration's additions are gone,
-	// earlier ones untouched. 0016 drops cost_ledger and the runs cost
-	// columns — its revert is observable by those being gone while everything
-	// below it survives: 0015's run_steps.cache_policy column, 0013's
+	// earlier ones untouched. 0017 drops the runs budget columns and the
+	// run_steps.budget_policy column — its revert is observable by those
+	// being gone while everything below it survives: 0016's cost_ledger table
+	// and runs cost columns, 0015's run_steps.cache_policy column, 0013's
 	// retrieval_docs table, 0012's step_attempts.usage column, 0011's
 	// step_logs table, 0010's trace columns, 0009's fingerprint column,
 	// 0008's api_keys table, 0007's run-control columns, 0006's side_effects
@@ -95,11 +96,17 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 	if err := mg.Down(); err != nil {
 		t.Fatalf("Down: %v", err)
 	}
-	if tableExists(ctx, t, pool, "cost_ledger") {
-		t.Fatal("after one Down: cost_ledger was not dropped by 0016")
+	if columnExists(ctx, t, pool, "runs", "budget_nano_usd") {
+		t.Fatal("after one Down: runs.budget_nano_usd was not dropped by 0017")
 	}
-	if columnExists(ctx, t, pool, "runs", "spent_nano_usd") {
-		t.Fatal("after one Down: runs.spent_nano_usd was not dropped by 0016")
+	if columnExists(ctx, t, pool, "run_steps", "budget_policy") {
+		t.Fatal("after one Down: run_steps.budget_policy was not dropped by 0017")
+	}
+	if !tableExists(ctx, t, pool, "cost_ledger") {
+		t.Fatal("after one Down: cost_ledger was dropped by the wrong migration")
+	}
+	if !columnExists(ctx, t, pool, "runs", "spent_nano_usd") {
+		t.Fatal("after one Down: runs.spent_nano_usd was dropped by the wrong migration")
 	}
 	if !columnExists(ctx, t, pool, "run_steps", "cache_policy") {
 		t.Fatal("after one Down: run_steps.cache_policy was dropped by the wrong migration")

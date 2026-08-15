@@ -143,6 +143,17 @@ func (c *client) unparkRun(ctx context.Context, runID string) (api.UnparkRunResp
 	return resp, err
 }
 
+// setBudget PATCHes a run's spend budget (ticket 10.3).
+func (c *client) setBudget(ctx context.Context, runID string, budgetUSD float64) (api.SetBudgetResponse, error) {
+	body, err := json.Marshal(api.SetBudgetRequest{BudgetUSD: &budgetUSD})
+	if err != nil {
+		return api.SetBudgetResponse{}, fmt.Errorf("encoding request: %w", err)
+	}
+	var resp api.SetBudgetResponse
+	err = c.do(ctx, http.MethodPatch, "/v1/runs/"+url.PathEscape(runID)+"/budget", body, &resp)
+	return resp, err
+}
+
 // requeueStep POSTs the dead-lettered-step requeue op (ticket 6.5).
 func (c *client) requeueStep(ctx context.Context, runID, stepID string) (api.RequeueStepResponse, error) {
 	var resp api.RequeueStepResponse

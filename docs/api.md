@@ -287,10 +287,15 @@ human-readable rendering.
   "run": {
     "id": "018f3b1c-…",
     "status": "succeeded",
-    "cost": {"spent_nano_usd": 2100000, "saved_nano_usd": 0, "spent_usd": "0.0021", "saved_usd": "0"}
+    "cost": {"spent_nano_usd": 2100000, "saved_nano_usd": 0, "spent_usd": "0.0021", "saved_usd": "0",
+             "on_budget_exceeded": "park"}
   }
 }
 ```
+
+When the definition sets a `budget_usd`, the summary also carries
+`budget_nano_usd` / `budget_usd`; they are absent on an unbudgeted run.
+`on_budget_exceeded` is always present (`park` | `fail`).
 
 `GET /v1/runs/{id}/cost` returns the full breakdown — the summary plus
 per-step and per-model roll-ups and the per-attempt ledger:
@@ -330,6 +335,37 @@ not know is priced at the conservative fallback rate (`rate_source:
 "fallback"`) and emits a `cost_unknown_model` event in the run's event feed
 — the cue to add a catalog entry. A run with no cost-bearing steps answers
 with a zero summary and empty breakdowns.
+
+## Budgets
+
+A definition may cap spend: a run-level `budget_usd` with an
+`on_budget_exceeded` policy (`park`, the default, or `fail`), and per-step
+`budget: {max_usd, max_tokens}` caps. Enforcement is at **claim time**,
+before a cost-bearing step runs: the engine projects the step's cost (run
+spend so far + a pre-flight estimate) and, if it would exceed the budget,
+either parks the run (resumable) or dead-letters the step permanently. An
+oversized request (`max_tokens` cap exceeded) is failed before the provider
+is ever called.
+
+Under the `park` policy a budget crossing parks the run with reason
+`budget_exceeded` and emits a `budget_exceeded` event carrying the
+projection detail. Raise the budget and unpark to resume:
+
+```bash
+curl -s -X PATCH "http://127.0.0.1:8080/v1/runs/$RUN_ID/budget" \
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  -d '{"budget_usd": 5.00}' | jq '.run.cost | {budget_usd, spent_usd}'
+```
+
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/runs/$RUN_ID/unpark" \
+  -H "Authorization: Bearer $API_KEY" | jq '{status: .run.status, dispatched}'
+```
+
+`PATCH …/budget` answers `200` with the updated run; `budget_usd` must be
+positive (`400` otherwise), and the budget is immutable on a terminal run
+(`409`). Raising the budget does not itself resume work — unpark does. The
+`ctl budget <run-id> <usd>` command wraps the same endpoint.
 
 ## Per-step logs
 

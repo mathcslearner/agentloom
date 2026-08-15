@@ -193,6 +193,14 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	if err != nil {
 		return fmt.Errorf("loading pricing catalog: %w", err)
 	}
+	// Map the validated unknown-model policy string onto cost's typed enum
+	// for the claim-time budget check (ticket 10.3): fail-closed blocks an
+	// unpriced model before any money is spent; estimate (the default) prices
+	// it at the fallback and proceeds. Config validated the string at load.
+	unknownModelPolicy, err := cost.ParseUnknownModelPolicy(cfg.Cost.UnknownModelPolicy)
+	if err != nil {
+		return fmt.Errorf("mapping unknown-model policy: %w", err)
+	}
 	logger.InfoContext(ctx, "pricing catalog loaded",
 		slog.Int("models", pricing.ModelCount()),
 		slog.Int("tools", pricing.ToolCount()),
@@ -245,6 +253,10 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		// attempts against the boot-loaded catalog, writing a cost_ledger
 		// row + run-aggregate bump in each success completion transaction.
 		engine.WithPricing(pricing),
+		// Claim-time budget enforcement (ticket 10.3, ADR-012): the same
+		// catalog prices each cost-bearing step's pre-flight estimate; the
+		// unknown-model policy governs the fail-closed pre-flight gate.
+		engine.WithUnknownModelPolicy(unknownModelPolicy),
 	}
 	if resourceLimiter != nil {
 		engineOpts = append(engineOpts,

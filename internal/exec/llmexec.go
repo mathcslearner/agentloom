@@ -200,6 +200,55 @@ func (e LLMExecutor) CacheBinding(sc StepContext) (*CacheBinding, error) {
 	}, nil
 }
 
+// CostEstimate implements CostEstimator (ADR-012): the llm step's pricing
+// resource is "<provider>:<model>" by the *resolved* provider (the pre-flight
+// routed model — the ledger later keys the served model), and the pre-call
+// token split feeds the budget middleware's upper-bound estimate (input at
+// the model's input rate, max_tokens at its output rate). Resolution or
+// config failures route like ResourceClaim's: skip the check, let Execute
+// land the permanent failure.
+func (e LLMExecutor) CostEstimate(sc StepContext) (CostEstimate, error) {
+	cfg, err := configAs[*dag.LLMConfig](sc)
+	if err != nil {
+		return CostEstimate{}, err
+	}
+	if cfg == nil || cfg.Model == "" {
+		return CostEstimate{}, fmt.Errorf("missing required field %q", "model")
+	}
+	if e.providers == nil {
+		return CostEstimate{}, fmt.Errorf("no model providers configured for model %q", cfg.Model)
+	}
+	provider, model, err := e.providers.Resolve("", cfg.Model)
+	if err != nil {
+		return CostEstimate{}, fmt.Errorf("resolving model %q: %w", cfg.Model, err)
+	}
+	return CostEstimate{
+		Resource:    provider.Manifest().Name + ":" + model,
+		InputTokens: estimateLLMInputTokens(cfg),
+		MaxTokens:   estimateLLMMaxTokens(cfg),
+	}, nil
+}
+
+// estimateLLMInputTokens is the pre-call input-token estimate: roughly four
+// characters per token over the rendered prompt and messages.
+func estimateLLMInputTokens(cfg *dag.LLMConfig) int64 {
+	inputChars := len(cfg.Prompt)
+	for _, m := range cfg.Messages {
+		inputChars += len(m.Content)
+	}
+	return int64((inputChars + 3) / 4)
+}
+
+// estimateLLMMaxTokens is the completion's max_tokens bound (defaulted when
+// absent) — the output-token ceiling the pre-call estimate prices.
+func estimateLLMMaxTokens(cfg *dag.LLMConfig) int64 {
+	maxTokens := cfg.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = llmDefaultMaxTokens
+	}
+	return int64(maxTokens)
+}
+
 // estimateLLMTokens is the ADR-010 pre-call token estimate for an llm step:
 // roughly four characters per input token over the rendered prompt/messages,
 // plus the completion's max_tokens bound (defaulted when absent). It is
@@ -208,15 +257,7 @@ func (e LLMExecutor) CacheBinding(sc StepContext) (*CacheBinding, error) {
 // biased estimator cannot drift the fleet past the provider's real budget.
 // Never below 1 (the token bucket requires a positive cost).
 func estimateLLMTokens(cfg *dag.LLMConfig) int64 {
-	inputChars := len(cfg.Prompt)
-	for _, m := range cfg.Messages {
-		inputChars += len(m.Content)
-	}
-	maxTokens := cfg.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = llmDefaultMaxTokens
-	}
-	est := int64((inputChars+3)/4) + int64(maxTokens)
+	est := estimateLLMInputTokens(cfg) + estimateLLMMaxTokens(cfg)
 	if est < 1 {
 		est = 1
 	}

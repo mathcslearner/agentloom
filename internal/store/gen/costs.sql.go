@@ -225,6 +225,58 @@ func (q *Queries) ListCostLedgerByRun(ctx context.Context, runID uuid.UUID) ([]C
 	return items, nil
 }
 
+const setRunBudget = `-- name: SetRunBudget :one
+UPDATE runs
+SET budget_nano_usd = $1::bigint
+WHERE id = $2
+  AND status IN ('running', 'parked', 'cancelling')
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded
+`
+
+type SetRunBudgetParams struct {
+	BudgetNanoUsd int64
+	RunID         uuid.UUID
+}
+
+// SetRunBudget raises (or sets) a run's spend budget (ticket 10.3: PATCH
+// /v1/runs/{id}/budget). Guarded to non-terminal runs so a settled run's
+// budget is immutable; the Go wrapper takes the run lock and appends the
+// run_budget_updated event in the same transaction.
+func (q *Queries) SetRunBudget(ctx context.Context, arg SetRunBudgetParams) (Run, error) {
+	row := q.db.QueryRow(ctx, setRunBudget, arg.BudgetNanoUsd, arg.RunID)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.DefinitionID,
+		&i.Definition,
+		&i.Status,
+		&i.Params,
+		&i.IdempotencyToken,
+		&i.GraphVersion,
+		&i.NextSeq,
+		&i.StepsTotal,
+		&i.StepsSucceeded,
+		&i.StepsFailed,
+		&i.StepsSkipped,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.OnFailure,
+		&i.StepsCancelled,
+		&i.ParkReason,
+		&i.CancelReason,
+		&i.DeadlineAt,
+		&i.IdempotencyFingerprint,
+		&i.TraceParent,
+		&i.TraceState,
+		&i.SpentNanoUsd,
+		&i.SavedNanoUsd,
+		&i.BudgetNanoUsd,
+		&i.OnBudgetExceeded,
+	)
+	return i, err
+}
+
 const sumCostLedgerByRun = `-- name: SumCostLedgerByRun :one
 SELECT COALESCE(SUM(cost_nano_usd), 0)::bigint  AS spent_nano_usd,
        COALESCE(SUM(saved_nano_usd), 0)::bigint AS saved_nano_usd
@@ -244,4 +296,27 @@ func (q *Queries) SumCostLedgerByRun(ctx context.Context, runID uuid.UUID) (SumC
 	var i SumCostLedgerByRunRow
 	err := row.Scan(&i.SpentNanoUsd, &i.SavedNanoUsd)
 	return i, err
+}
+
+const sumCostLedgerByStep = `-- name: SumCostLedgerByStep :one
+SELECT COALESCE(SUM(cost_nano_usd), 0)::bigint AS spent_nano_usd
+FROM cost_ledger
+WHERE run_id = $1 AND step_id = $2
+`
+
+type SumCostLedgerByStepParams struct {
+	RunID  uuid.UUID
+	StepID string
+}
+
+// SumCostLedgerByStep is a step's cumulative attributed spend so far (all
+// attempts, all entries). The claim-time budget check (ticket 10.3) reads it
+// to enforce a step-level max_usd cap against the step's own running total —
+// so a step whose retries would push its total over the cap is refused before
+// the next attempt runs.
+func (q *Queries) SumCostLedgerByStep(ctx context.Context, arg SumCostLedgerByStepParams) (int64, error) {
+	row := q.db.QueryRow(ctx, sumCostLedgerByStep, arg.RunID, arg.StepID)
+	var spent_nano_usd int64
+	err := row.Scan(&spent_nano_usd)
+	return spent_nano_usd, err
 }

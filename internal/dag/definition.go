@@ -41,6 +41,20 @@ type Definition struct {
 	// past it is cancelled with reason `deadline_exceeded` (ADR-006).
 	MaxWallClock string `json:"max_wall_clock,omitempty"`
 
+	// BudgetUSD is the run's optional overall spend budget in US dollars
+	// (ADR-012); nil means the key was absent (unbudgeted). Instantiation
+	// materializes it onto the run in nano-USD, and the claim path refuses a
+	// step whose projected spend (run spend so far + pre-flight estimate)
+	// would exceed it, taking the OnBudgetExceeded action.
+	BudgetUSD *float64 `json:"budget_usd,omitempty"`
+
+	// OnBudgetExceeded is the action when a claim's projected spend would
+	// exceed BudgetUSD (ADR-012): park (the resumable default) or fail.
+	// Empty means the key was absent — the engine default, BudgetPark.
+	// Encode omits the empty value, so the canonical spelling of the default
+	// is no key. Has no effect without BudgetUSD (Validate rejects that).
+	OnBudgetExceeded BudgetPolicy `json:"on_budget_exceeded,omitempty"`
+
 	Params map[string]ParamSpec `json:"params,omitempty"`
 	Steps  []Step               `json:"steps"`
 	Edges  []Edge               `json:"edges"`
@@ -126,6 +140,12 @@ type Step struct {
 	// bypass the rest). Uniform across step types, so it lives on the step
 	// envelope, not in the per-type config.
 	Cache *CachePolicy `json:"cache,omitempty"`
+
+	// Budget is the step's authored budget caps (ADR-012, ticket 10.3); nil
+	// when the source document had no budget key (only the run budget
+	// applies). Uniform across step types, so it lives on the step envelope,
+	// not in the per-type config.
+	Budget *StepBudget `json:"budget,omitempty"`
 }
 
 // EdgeType distinguishes normal dependency edges from marked loop edges.

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync/atomic"
 	"time"
 
@@ -265,6 +266,20 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		t := args.Now.Add(d)
 		deadlineAt = &t
 	}
+	// The optional spend budget is materialized as integer nano-USD (ticket
+	// 10.3, ADR-012) — the same unit as spent_nano_usd, so the claim-time
+	// projection compare is exact. NULL means unbudgeted (distinct from 0).
+	// on_budget_exceeded is the materialized disposition (like on_failure);
+	// absent means park.
+	var budgetNanoUSD *int64
+	if p.def.BudgetUSD != nil {
+		n := usdToNanoUSD(*p.def.BudgetUSD)
+		budgetNanoUSD = &n
+	}
+	onBudgetExceeded := p.def.OnBudgetExceeded
+	if onBudgetExceeded == "" {
+		onBudgetExceeded = dag.BudgetPark
+	}
 	run, err := q.Runs().Create(ctx, gen.CreateRunParams{
 		ID:                     args.RunID,
 		DefinitionID:           args.DefinitionID,
@@ -279,6 +294,8 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		DeadlineAt:             deadlineAt,
 		TraceParent:            nullableText(args.Trace.Parent),
 		TraceState:             nullableText(args.Trace.State),
+		BudgetNanoUsd:          budgetNanoUSD,
+		OnBudgetExceeded:       string(onBudgetExceeded),
 	})
 	if err != nil {
 		return gen.Run{}, err
@@ -326,6 +343,17 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 				return gen.Run{}, fmt.Errorf("marshaling cache policy of step %q: %w", step.ID, err)
 			}
 		}
+		// The authored budget caps are materialized the same way (ticket
+		// 10.3, ADR-012): the claim-time check reads them off the row. NULL
+		// when the step authored no `budget` block — only the run budget then
+		// applies.
+		var budgetPolicy json.RawMessage
+		if step.Budget != nil {
+			budgetPolicy, err = json.Marshal(step.Budget)
+			if err != nil {
+				return gen.Run{}, fmt.Errorf("marshaling budget policy of step %q: %w", step.ID, err)
+			}
+		}
 		steps[i] = gen.CreateRunStepsParams{
 			RunID:         run.ID,
 			StepID:        step.ID,
@@ -334,6 +362,7 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 			RetryPolicy:   retryPolicy,
 			Timeout:       timeout,
 			CachePolicy:   cachePolicy,
+			BudgetPolicy:  budgetPolicy,
 			Status:        status,
 			RemainingDeps: p.remaining[step.ID],
 			GraphVersion:  1,
@@ -480,3 +509,18 @@ func reusedResult(run gen.Run) (CreateRunResult, error) {
 	}
 	return CreateRunResult{Run: run, EntrySteps: plan.entry, Reused: true}, nil
 }
+
+// usdToNanoUSD converts a validated (positive) USD budget to integer
+// nano-USD, rounding half away from zero. Kept identical to
+// cost.USDToNano — the store deliberately does not import internal/cost (it
+// holds computed nano values, never prices), so the trivial unit conversion
+// is duplicated here rather than pull the pricing leaf into the store.
+func usdToNanoUSD(usd float64) int64 {
+	if usd <= 0 {
+		return 0
+	}
+	return int64(math.Round(usd * float64(nanoPerUSD)))
+}
+
+// nanoPerUSD mirrors cost.NanoPerUSD (1e9) for usdToNanoUSD.
+const nanoPerUSD = int64(1_000_000_000)

@@ -30,6 +30,7 @@ var routeScopes = map[string]Scope{
 	"POST /v1/runs/{runID}/cancel":                 ScopeSubmit,
 	"POST /v1/runs/{runID}/park":                   ScopeSubmit,
 	"POST /v1/runs/{runID}/unpark":                 ScopeSubmit,
+	"PATCH /v1/runs/{runID}/budget":                ScopeSubmit,
 	"POST /v1/runs/{runID}/steps/{stepID}/requeue": ScopeSubmit,
 	"GET /v1/runs/{runID}/steps/{stepID}/logs":     ScopeRead,
 	"POST /v1/definitions":                         ScopeSubmit,

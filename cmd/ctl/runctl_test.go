@@ -111,6 +111,29 @@ func TestParkUnparkCommands(t *testing.T) {
 	}
 }
 
+func TestBudgetCommand(t *testing.T) {
+	t.Parallel()
+	budgetUSD := "1.5"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/v1/runs/r-1/budget" {
+			t.Errorf("unexpected request: %s %s, want PATCH /v1/runs/r-1/budget", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(api.SetBudgetResponse{
+			Run: api.RunView{ID: "r-1", Status: "parked", Cost: api.CostSummaryView{BudgetUSD: &budgetUSD}},
+		})
+	}))
+	defer srv.Close()
+	if _, errOut, err := runCtl(t, nil, "budget", "r-1", "1.5", "--api", srv.URL); err != nil || !strings.Contains(errOut, "$1.5") {
+		t.Fatalf("budget: err=%v stderr=%q", err, errOut)
+	}
+
+	// A non-numeric budget is rejected locally before any request.
+	if _, _, err := runCtl(t, nil, "budget", "r-1", "lots", "--api", srv.URL); err == nil {
+		t.Error("budget with non-numeric amount: want error, got nil")
+	}
+}
+
 func TestRequeueCommand(t *testing.T) {
 	t.Parallel()
 	srv := fakeAPI(t, "/v1/runs/r-1/steps/flaky/requeue", http.StatusOK, api.RequeueStepResponse{

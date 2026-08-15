@@ -376,13 +376,23 @@ guarantees at most one `attempt` row per attempt. `runs` gained
 aggregate bumped in the same transaction so it always equals the exact
 integer sum of the run's ledger rows (money is nano-USD `int64`, ADR-012);
 by-step and by-model breakdowns are read-time `GROUP BY` over the ledger,
-not materialized.
+not materialized. Since 10.3 (migration 0017) `runs` also carries
+`budget_nano_usd` (nullable `BIGINT` — NULL = unbudgeted, distinct from 0)
+and `on_budget_exceeded` (`TEXT NOT NULL DEFAULT 'park'`, CHECK
+`park | fail`), the materialized run spend budget and its exceed
+disposition (ADR-012); `run_steps` gains `budget_policy` (nullable JSONB, the
+authored `{max_usd, max_tokens}` caps read off the claimed row like
+`cache_policy`). Migration 0017 also extends the `step_attempts.outcome`
+CHECK with the administrative outcome `budget_exceeded` (the drop/re-add
+recipe, as 0014 did for `throttled`).
 
 **`events`** — `(run_id, seq)` PK, `type`, `payload` (JSONB),
 `created_at`. Append-only. Since 10.2 the vocabulary includes
 `cost_unknown_model` (payload `{model, fallback}`): a cost-bearing attempt
 priced at the catalog fallback because its model had no entry, appended by
-`ApplyAttemptCost` in the same completion transaction.
+`ApplyAttemptCost` in the same completion transaction. Since 10.3 it also
+includes `budget_exceeded` (the projection detail a claim-time budget
+park/fail records) and `run_budget_updated` (a `PATCH …/budget` raise).
 
 **`task_outbox`** — the transactional Postgres→Redis dispatch buffer
 (ADR-002). `id` (identity, drain order), `run_id`, `step_id`, `reason`

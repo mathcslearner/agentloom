@@ -35,14 +35,21 @@ func nanoUSDString(nano int64) string {
 }
 
 // costSummary builds the wire cost summary from the materialized run
-// aggregates.
-func costSummary(spentNano, savedNano int64) CostSummaryView {
-	return CostSummaryView{
-		SpentNanoUSD: spentNano,
-		SavedNanoUSD: savedNano,
-		SpentUSD:     nanoUSDString(spentNano),
-		SavedUSD:     nanoUSDString(savedNano),
+// aggregates and budget (ticket 10.2/10.3).
+func costSummary(run gen.Run) CostSummaryView {
+	v := CostSummaryView{
+		SpentNanoUSD:     run.SpentNanoUsd,
+		SavedNanoUSD:     run.SavedNanoUsd,
+		SpentUSD:         nanoUSDString(run.SpentNanoUsd),
+		SavedUSD:         nanoUSDString(run.SavedNanoUsd),
+		OnBudgetExceeded: run.OnBudgetExceeded,
 	}
+	if run.BudgetNanoUsd != nil {
+		usd := nanoUSDString(*run.BudgetNanoUsd)
+		v.BudgetNanoUSD = run.BudgetNanoUsd
+		v.BudgetUSD = &usd
+	}
+	return v
 }
 
 // handleRunCost is GET /v1/runs/{id}/cost (ticket 10.2, ADR-012): the run's
@@ -98,7 +105,7 @@ func buildRunCostResponse(
 ) RunCostResponse {
 	resp := RunCostResponse{
 		RunID:      run.ID.String(),
-		Summary:    costSummary(run.SpentNanoUsd, run.SavedNanoUsd),
+		Summary:    costSummary(run),
 		ByStep:     make([]CostByStepView, 0, len(byStep)),
 		ByResource: make([]CostByResourceView, 0, len(byResource)),
 		Entries:    make([]CostEntryView, 0, len(entries)),

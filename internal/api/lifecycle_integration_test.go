@@ -117,6 +117,52 @@ func TestParkUnparkCycle(t *testing.T) {
 	}
 }
 
+func TestSetRunBudget(t *testing.T) {
+	t.Parallel()
+	_, srv, key := newServer(t)
+	runID := submitProbeRun(t, srv, key)
+
+	// Raise the budget on the running probe run.
+	var res api.SetBudgetResponse
+	resp := doAuth(t, srv, http.MethodPatch, "/v1/runs/"+runID+"/budget", key, []byte(`{"budget_usd": 2.5}`), &res)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH budget = %d, want 200", resp.StatusCode)
+	}
+	if res.Run.Cost.BudgetUSD == nil || *res.Run.Cost.BudgetUSD != "2.5" {
+		t.Errorf("budget_usd = %v, want 2.5", res.Run.Cost.BudgetUSD)
+	}
+	if res.Run.Cost.BudgetNanoUSD == nil || *res.Run.Cost.BudgetNanoUSD != 2_500_000_000 {
+		t.Errorf("budget_nano_usd = %v, want 2_500_000_000", res.Run.Cost.BudgetNanoUSD)
+	}
+	if res.Run.Cost.OnBudgetExceeded != "park" {
+		t.Errorf("on_budget_exceeded = %q, want park (the default)", res.Run.Cost.OnBudgetExceeded)
+	}
+
+	// The GET run view reflects the raised budget.
+	var run api.RunResponse
+	if status := getJSON(t, srv, key, "/v1/runs/"+runID, &run); status != http.StatusOK {
+		t.Fatalf("GET run = %d, want 200", status)
+	}
+	if run.Run.Cost.BudgetNanoUSD == nil || *run.Run.Cost.BudgetNanoUSD != 2_500_000_000 {
+		t.Errorf("run view budget = %v, want 2_500_000_000", run.Run.Cost.BudgetNanoUSD)
+	}
+
+	// A missing/non-positive budget is a 400.
+	var envelope api.ErrorBody
+	for _, body := range []string{`{}`, `{"budget_usd": 0}`, `{"budget_usd": -1}`} {
+		bad := doAuth(t, srv, http.MethodPatch, "/v1/runs/"+runID+"/budget", key, []byte(body), &envelope)
+		if bad.StatusCode != http.StatusBadRequest {
+			t.Errorf("PATCH %s = %d, want 400", body, bad.StatusCode)
+		}
+	}
+
+	// A missing run is a 404.
+	miss := doAuth(t, srv, http.MethodPatch, "/v1/runs/"+uuid.NewString()+"/budget", key, []byte(`{"budget_usd": 1}`), &envelope)
+	if miss.StatusCode != http.StatusNotFound {
+		t.Errorf("PATCH missing run = %d, want 404", miss.StatusCode)
+	}
+}
+
 func TestLifecycleMisses(t *testing.T) {
 	t.Parallel()
 	_, srv, key := newServer(t)

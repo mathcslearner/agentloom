@@ -6,6 +6,7 @@ package main
 // the submit/watch convention.
 
 import (
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -80,6 +81,37 @@ func newUnparkCmd() *cobra.Command {
 			}
 			fprintf(cmd.ErrOrStderr(), "run %s unparked, %d step(s) re-dispatched\n",
 				args[0], len(resp.Dispatched))
+			return nil
+		},
+	}
+}
+
+// newBudgetCmd builds `ctl budget <run-id> <usd>`: raise a run's spend
+// budget (ticket 10.3). Combined with unpark, this resumes a run parked with
+// reason budget_exceeded.
+func newBudgetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "budget <run-id> <usd>",
+		Short: "Raise a run's spend budget (resume path with unpark)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			usd, err := strconv.ParseFloat(args[1], 64)
+			if err != nil {
+				return fmt.Errorf("budget must be a number in US dollars: %w", err)
+			}
+			cl, err := clientFromCmd(cmd)
+			if err != nil {
+				return err
+			}
+			resp, err := cl.setBudget(cmd.Context(), args[0], usd)
+			if err != nil {
+				return err
+			}
+			budget := "none"
+			if resp.Run.Cost.BudgetUSD != nil {
+				budget = "$" + *resp.Run.Cost.BudgetUSD
+			}
+			fprintf(cmd.ErrOrStderr(), "run %s budget set to %s\n", args[0], budget)
 			return nil
 		},
 	}

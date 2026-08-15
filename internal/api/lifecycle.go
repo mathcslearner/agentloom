@@ -8,12 +8,15 @@ package api
 // dispatchers (the API holds no queue client, ADR-002).
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/mathcslearner/agentloom/internal/cost"
 	"github.com/mathcslearner/agentloom/internal/engine"
 	"github.com/mathcslearner/agentloom/internal/store"
 )
@@ -109,6 +112,45 @@ func (h *Handler) handleRequeueStep(w http.ResponseWriter, r *http.Request) {
 		Revived:    res.Revived,
 		Dispatched: orEmpty(res.Dispatched),
 	})
+}
+
+// handleSetRunBudget is PATCH /v1/runs/{id}/budget (ticket 10.3, ADR-012):
+// raise (or set) the run's spend budget. Combined with unpark, this is the
+// documented resume path for a run parked with reason budget_exceeded. The
+// budget is immutable on a terminal run (409). Raising the budget does not
+// itself dispatch — the client unparks to resume (ADR-002).
+func (h *Handler) handleSetRunBudget(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.runIDParam(w, r)
+	if !ok {
+		return
+	}
+	var req SetBudgetRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, ErrorDetail{
+			Code: ErrCodeInvalidRequest, Message: "decoding request body: " + err.Error(),
+		})
+		return
+	}
+	if dec.More() {
+		writeError(w, http.StatusBadRequest, ErrorDetail{
+			Code: ErrCodeInvalidRequest, Message: "request body holds more than one JSON document",
+		})
+		return
+	}
+	if req.BudgetUSD == nil || *req.BudgetUSD <= 0 {
+		writeError(w, http.StatusBadRequest, ErrorDetail{
+			Code: ErrCodeInvalidRequest, Message: "budget_usd is required and must be positive",
+		})
+		return
+	}
+	run, err := h.ctl.SetBudget(r.Context(), id, cost.USDToNano(*req.BudgetUSD))
+	if err != nil {
+		h.writeRunOpError(w, r, "setting run budget", id, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, SetBudgetResponse{Run: buildRunView(run)})
 }
 
 // runIDParam parses the {runID} path parameter, answering the 400 itself.

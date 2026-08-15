@@ -63,6 +63,8 @@ const (
 	CodeMaxWallClockInvalid     ValidationCode = "max_wall_clock_field_invalid"
 	CodeCacheFieldRequired      ValidationCode = "cache_field_required"
 	CodeCacheFieldInvalid       ValidationCode = "cache_field_invalid"
+	CodeBudgetFieldRequired     ValidationCode = "budget_field_required"
+	CodeBudgetFieldInvalid      ValidationCode = "budget_field_invalid"
 	CodeLimitExceeded           ValidationCode = "limit_exceeded"
 	CodeCycle                   ValidationCode = "cycle_detected"
 	CodeLoopEdgeNotAncestor     ValidationCode = "loop_edge_not_ancestor"
@@ -124,6 +126,7 @@ func Validate(def *Definition) (issues []*ValidationIssue, err error) {
 
 	v.checkLimits(def)
 	v.checkMaxWallClock(def.MaxWallClock)
+	v.checkRunBudget(def)
 	stepIndex := v.checkSteps(def)
 	v.checkEdges(def, stepIndex)
 	v.checkGraph(def, stepIndex)
@@ -222,8 +225,47 @@ func (v *validator) checkSteps(def *Definition) map[string]int {
 		v.checkRetry(path, s.Retry)
 		v.checkTimeout(path, s.Timeout)
 		v.checkCache(path, s.Cache)
+		v.checkStepBudget(path, s.Type, s.Budget)
 	}
 	return index
+}
+
+// checkRunBudget enforces the run-level budget bounds (ADR-012): a present
+// budget_usd must be positive, and on_budget_exceeded is a no-op — hence an
+// authoring mistake — without a budget_usd to act on. A nil budget means the
+// key was absent (unbudgeted), nothing to check.
+func (v *validator) checkRunBudget(def *Definition) {
+	if def.BudgetUSD != nil && *def.BudgetUSD <= 0 {
+		v.add(CodeBudgetFieldInvalid, "budget_usd", "must be positive, got %g", *def.BudgetUSD)
+	}
+	if def.OnBudgetExceeded != "" && def.BudgetUSD == nil {
+		v.add(CodeBudgetFieldInvalid, "on_budget_exceeded", "has no effect without budget_usd")
+	}
+}
+
+// checkStepBudget enforces the per-step budget-cap bounds (ADR-012). The
+// codec already rejected unknown fields and mistyped values; here the
+// at-least-one-cap rule, positivity, and the llm-only constraint on
+// max_tokens (a cap on a step type that never meters tokens can never fire,
+// so it is an authoring mistake). A nil block means the `budget` key was
+// absent, nothing to check.
+func (v *validator) checkStepBudget(path string, st StepType, b *StepBudget) {
+	if b == nil {
+		return
+	}
+	path += ".budget"
+	if b.MaxUSD == nil && b.MaxTokens == 0 {
+		v.add(CodeBudgetFieldRequired, path, "at least one of max_usd or max_tokens is required when a budget block is present")
+	}
+	if b.MaxUSD != nil && *b.MaxUSD <= 0 {
+		v.add(CodeBudgetFieldInvalid, path+".max_usd", "must be positive, got %g", *b.MaxUSD)
+	}
+	if b.MaxTokens < 0 {
+		v.add(CodeBudgetFieldInvalid, path+".max_tokens", "must be positive, got %d", b.MaxTokens)
+	}
+	if b.MaxTokens > 0 && st != StepLLM {
+		v.add(CodeBudgetFieldInvalid, path+".max_tokens", "applies only to llm steps, not %q", string(st))
+	}
 }
 
 // checkCache enforces the response-cache policy bounds (ADR-011, ticket

@@ -51,6 +51,23 @@ const (
 	PolicyFail
 )
 
+// ParseUnknownModelPolicy maps a policy string ("estimate" | "fail", or ""
+// for the default) to the typed enum. cmd/worker calls it to map the
+// validated config string onto the engine's claim-time budget check (ticket
+// 10.3). An unrecognized value returns PolicyEstimate and an error; config
+// already validates the string at load, so cmd/worker treats an error here as
+// a boot failure.
+func ParseUnknownModelPolicy(s string) (UnknownModelPolicy, error) {
+	switch s {
+	case "estimate", "":
+		return PolicyEstimate, nil
+	case "fail":
+		return PolicyFail, nil
+	default:
+		return PolicyEstimate, fmt.Errorf("cost: unknown unknown-model policy %q (want estimate or fail)", s)
+	}
+}
+
 // Priced is a resolved model price with its provenance.
 type Priced struct {
 	// Rate is the price to meter the attempt at.

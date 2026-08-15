@@ -60,6 +60,10 @@ func decodeFixture(t *testing.T, parts ...string) *dag.Definition {
 	return def
 }
 
+// f64 returns a pointer to a float64 literal, for the optional-number
+// contract fields (budget_usd, budget.max_usd).
+func f64(v float64) *float64 { return &v }
+
 // exprOfLen builds a compiling CEL predicate of exactly n bytes by padding
 // inside a string literal (n must leave room for the comparison scaffold).
 func exprOfLen(n int) string {
@@ -571,6 +575,65 @@ func TestValidateTableDriven(t *testing.T) {
 				Steps:         []dag.Step{noop("a")},
 				Edges:         []dag.Edge{},
 			},
+		},
+		{
+			name: "budget_usd positive with explicit policy",
+			def: &dag.Definition{
+				SchemaVersion:    dag.CurrentSchemaVersion,
+				Name:             "t",
+				BudgetUSD:        f64(5),
+				OnBudgetExceeded: dag.BudgetFail,
+				Steps:            []dag.Step{noop("a")},
+				Edges:            []dag.Edge{},
+			},
+		},
+		{
+			name: "budget_usd not positive",
+			def: &dag.Definition{
+				SchemaVersion: dag.CurrentSchemaVersion,
+				Name:          "t",
+				BudgetUSD:     f64(0),
+				Steps:         []dag.Step{noop("a")},
+				Edges:         []dag.Edge{},
+			},
+			wantErrs: []issueRef{{dag.CodeBudgetFieldInvalid, "budget_usd"}},
+		},
+		{
+			name: "on_budget_exceeded without budget_usd",
+			def: &dag.Definition{
+				SchemaVersion:    dag.CurrentSchemaVersion,
+				Name:             "t",
+				OnBudgetExceeded: dag.BudgetPark,
+				Steps:            []dag.Step{noop("a")},
+				Edges:            []dag.Edge{},
+			},
+			wantErrs: []issueRef{{dag.CodeBudgetFieldInvalid, "on_budget_exceeded"}},
+		},
+		{
+			name: "step budget empty block",
+			def:  single(dag.Step{ID: "a", Type: dag.StepNoop, Budget: &dag.StepBudget{}}),
+			wantErrs: []issueRef{
+				{dag.CodeBudgetFieldRequired, "steps[0].budget"},
+			},
+		},
+		{
+			name:     "step budget max_usd not positive",
+			def:      single(dag.Step{ID: "a", Type: dag.StepNoop, Budget: &dag.StepBudget{MaxUSD: f64(-1)}}),
+			wantErrs: []issueRef{{dag.CodeBudgetFieldInvalid, "steps[0].budget.max_usd"}},
+		},
+		{
+			name: "step budget max_tokens on non-llm step",
+			def:  single(dag.Step{ID: "a", Type: dag.StepNoop, Budget: &dag.StepBudget{MaxTokens: 1000}}),
+			wantErrs: []issueRef{
+				{dag.CodeBudgetFieldInvalid, "steps[0].budget.max_tokens"},
+			},
+		},
+		{
+			name: "step budget max_tokens on llm step",
+			def: single(dag.Step{ID: "draft", Type: dag.StepLLM, Config: &dag.LLMConfig{
+				Model:    "anthropic/claude-sonnet-5",
+				Messages: []dag.LLMMessage{{Role: "user", Content: "hi"}},
+			}, Budget: &dag.StepBudget{MaxUSD: f64(1), MaxTokens: 1000}}),
 		},
 		{
 			name:      "isolated step warns without failing",

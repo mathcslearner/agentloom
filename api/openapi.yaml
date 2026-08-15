@@ -424,6 +424,49 @@ paths:
         "500":
           $ref: "#/components/responses/Internal"
 
+  /v1/runs/{run_id}/budget:
+    patch:
+      operationId: setRunBudget
+      tags: [Runs]
+      summary: Raise a run's spend budget
+      description: |
+        Scope `submit`, rate-limit class `submit`. Sets the run's spend
+        budget (`budget_usd`, positive US dollars). Combined with `unpark`,
+        this is the documented resume path for a run parked with reason
+        `budget_exceeded`: raise the budget, then unpark. Raising the budget
+        does not itself dispatch work (ADR-002). The budget is immutable on a
+        terminal run — a `409` with code `conflict`.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      requestBody:
+        required: true
+        description: The new spend budget in US dollars.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetBudgetRequest"
+      responses:
+        "200":
+          description: The run with its updated cost/budget summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetBudgetResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
   /v1/runs/{run_id}/steps/{step_id}/requeue:
     post:
       operationId: requeueStep
@@ -1374,10 +1417,11 @@ components:
     CostSummaryView:
       type: object
       description: |
-        A run's cumulative cost (ADR-012). Money is integer nano-USD
-        (1 USD = 1e9) — the exact source of truth; the `*_usd` strings are the
-        derived human-readable USD rendering.
-      required: [spent_nano_usd, saved_nano_usd, spent_usd, saved_usd]
+        A run's cumulative cost and spend budget (ADR-012). Money is integer
+        nano-USD (1 USD = 1e9) — the exact source of truth; the `*_usd` strings
+        are the derived human-readable USD rendering. Budget fields are absent
+        on an unbudgeted run; `on_budget_exceeded` is always present.
+      required: [spent_nano_usd, saved_nano_usd, spent_usd, saved_usd, on_budget_exceeded]
       properties:
         spent_nano_usd:
           type: integer
@@ -1393,6 +1437,17 @@ components:
         saved_usd:
           type: string
           description: saved_nano_usd rendered as a USD decimal string.
+        budget_nano_usd:
+          type: integer
+          format: int64
+          description: The run's spend budget in nano-USD; absent when unbudgeted (ticket 10.3).
+        budget_usd:
+          type: string
+          description: budget_nano_usd rendered as a USD decimal string; absent when unbudgeted.
+        on_budget_exceeded:
+          type: string
+          enum: [park, fail]
+          description: Action when a claim's projected spend would exceed the budget.
     StepView:
       type: object
       description: One run step with its attempt history.
@@ -1721,6 +1776,22 @@ components:
           description: Ready steps re-dispatched because their deliveries were consumed while parked.
           items:
             type: string
+    SetBudgetRequest:
+      type: object
+      description: The new run spend budget in US dollars (ticket 10.3).
+      additionalProperties: false
+      required: [budget_usd]
+      properties:
+        budget_usd:
+          type: number
+          description: The new spend budget in US dollars; must be positive.
+    SetBudgetResponse:
+      type: object
+      description: The run whose spend budget was raised, with its refreshed cost summary.
+      required: [run]
+      properties:
+        run:
+          $ref: "#/components/schemas/RunView"
     RequeueStepResponse:
       type: object
       description: The requeued step, back in ready with its budget re-armed.

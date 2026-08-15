@@ -20,6 +20,27 @@ SET spent_nano_usd = spent_nano_usd + @d_spent::bigint,
     saved_nano_usd = saved_nano_usd + @d_saved::bigint
 WHERE id = @run_id;
 
+-- SumCostLedgerByStep is a step's cumulative attributed spend so far (all
+-- attempts, all entries). The claim-time budget check (ticket 10.3) reads it
+-- to enforce a step-level max_usd cap against the step's own running total —
+-- so a step whose retries would push its total over the cap is refused before
+-- the next attempt runs.
+-- name: SumCostLedgerByStep :one
+SELECT COALESCE(SUM(cost_nano_usd), 0)::bigint AS spent_nano_usd
+FROM cost_ledger
+WHERE run_id = $1 AND step_id = $2;
+
+-- SetRunBudget raises (or sets) a run's spend budget (ticket 10.3: PATCH
+-- /v1/runs/{id}/budget). Guarded to non-terminal runs so a settled run's
+-- budget is immutable; the Go wrapper takes the run lock and appends the
+-- run_budget_updated event in the same transaction.
+-- name: SetRunBudget :one
+UPDATE runs
+SET budget_nano_usd = @budget_nano_usd::bigint
+WHERE id = @run_id
+  AND status IN ('running', 'parked', 'cancelling')
+RETURNING *;
+
 -- ListCostLedgerByRun reads a run's ledger rows in a stable order for the
 -- cost API's per-entry breakdown.
 -- name: ListCostLedgerByRun :many

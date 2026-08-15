@@ -120,6 +120,22 @@ func (ToolExecutor) ResourceClaim(sc StepContext) (string, int64, error) {
 	return "tool:" + cfg.Tool, 0, nil
 }
 
+// CostEstimate implements CostEstimator (ADR-012): a tool step's pricing
+// resource is "tool:<name>", priced flat per call by the catalog (an unpriced
+// tool is free, no ledger row). Tools have no token dimension, so InputTokens
+// and MaxTokens are 0 — the budget middleware checks only USD limits for a
+// tool. A corrupt config routes like ResourceClaim's: skip, defer to Execute.
+func (ToolExecutor) CostEstimate(sc StepContext) (CostEstimate, error) {
+	cfg, err := configAs[*dag.ToolConfig](sc)
+	if err != nil {
+		return CostEstimate{}, err
+	}
+	if cfg == nil || cfg.Tool == "" {
+		return CostEstimate{}, fmt.Errorf("missing required field %q", "tool")
+	}
+	return CostEstimate{Resource: "tool:" + cfg.Tool}, nil
+}
+
 // CacheBinding implements CacheBinder (ADR-011, ticket 9.5): a tool step's
 // cache key is built over the invoked tool's identity and the rendered
 // arguments. Critically, the eligibility flags come from the INVOKED TOOL's

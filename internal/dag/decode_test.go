@@ -313,6 +313,45 @@ func TestDecodeCachePolicy(t *testing.T) {
 	}
 }
 
+// TestDecodeBudget covers the run-level budget fields and the step-envelope
+// budget caps (ADR-012, ticket 10.3).
+func TestDecodeBudget(t *testing.T) {
+	t.Parallel()
+
+	def, err := dag.Decode(readFixture(t, "valid", "kitchen_sink.json"))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if def.BudgetUSD == nil || *def.BudgetUSD != 5 {
+		t.Errorf("budget_usd = %v, want 5", def.BudgetUSD)
+	}
+	if def.OnBudgetExceeded != dag.BudgetPark {
+		t.Errorf("on_budget_exceeded = %q, want park", def.OnBudgetExceeded)
+	}
+
+	byID := make(map[string]dag.Step, len(def.Steps))
+	for _, s := range def.Steps {
+		byID[s.ID] = s
+	}
+
+	fetch := byID["fetch"].Budget
+	if fetch == nil || fetch.MaxUSD == nil || *fetch.MaxUSD != 0.5 {
+		t.Errorf("fetch budget = %+v, want max_usd 0.5", fetch)
+	}
+	if fetch != nil && fetch.MaxTokens != 0 {
+		t.Errorf("fetch budget decoded absent max_tokens as %d", fetch.MaxTokens)
+	}
+
+	draft := byID["draft"].Budget
+	if draft == nil || draft.MaxUSD == nil || *draft.MaxUSD != 1.5 || draft.MaxTokens != 8000 {
+		t.Errorf("draft budget = %+v, want {max_usd 1.5, max_tokens 8000}", draft)
+	}
+
+	if b := byID["start"].Budget; b != nil {
+		t.Errorf("start (no budget key) budget = %+v, want nil", b)
+	}
+}
+
 // TestDecodeStepConfig covers the single-config decode path the execution
 // layer uses on run_steps rows (step type and raw config JSONB, no
 // surrounding document): same strictness and normalization as Decode.

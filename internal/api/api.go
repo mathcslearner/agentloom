@@ -18,6 +18,7 @@
 //	POST   /v1/runs/{id}/cancel                     submit  submit  cancel a run (cooperative; converges via workers/reconciler)
 //	POST   /v1/runs/{id}/park                       submit  submit  pause dispatch
 //	POST   /v1/runs/{id}/unpark                     submit  submit  resume dispatch (re-outboxes stranded ready steps)
+//	PATCH  /v1/runs/{id}/budget                     submit  submit  raise the run spend budget (resume path with unpark)
 //	POST   /v1/runs/{id}/steps/{sid}/requeue        submit  submit  requeue a dead-lettered step (budget re-armed)
 //	GET    /v1/runs/{id}/steps/{sid}/logs           read    read    one attempt's captured executor logs (keyset pages)
 //	POST   /v1/definitions                          submit  submit  register a definition (version 1; name must be new)
@@ -246,6 +247,7 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/runs/{runID}/cancel", h.handleCancelRun)
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/runs/{runID}/park", h.handleParkRun)
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/runs/{runID}/unpark", h.handleUnparkRun)
+		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Patch("/runs/{runID}/budget", h.handleSetRunBudget)
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/runs/{runID}/steps/{stepID}/requeue", h.handleRequeueStep)
 		// Per-step logs (ticket 7.4).
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/runs/{runID}/steps/{stepID}/logs", h.handleStepLogs)

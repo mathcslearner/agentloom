@@ -62,6 +62,42 @@ func okResponse() llm.ChatResponse {
 	}
 }
 
+func TestLLMExecutorCostEstimate(t *testing.T) {
+	t.Parallel()
+	e := recExecutor(t, &recordingProvider{resp: okResponse()})
+
+	// "abcd" prompt is 4 chars → 1 input token; explicit max_tokens 55.
+	est, err := e.CostEstimate(llmStep(t, map[string]any{
+		"model": "rec/sim-1", "prompt": "abcd", "max_tokens": 55,
+	}))
+	if err != nil {
+		t.Fatalf("CostEstimate: %v", err)
+	}
+	if est.Resource != "rec:sim-1" {
+		t.Errorf("resource = %q, want rec:sim-1", est.Resource)
+	}
+	if est.InputTokens != 1 {
+		t.Errorf("input tokens = %d, want 1", est.InputTokens)
+	}
+	if est.MaxTokens != 55 {
+		t.Errorf("max tokens = %d, want 55", est.MaxTokens)
+	}
+
+	// Absent max_tokens defaults to the executor's bound.
+	est, err = e.CostEstimate(llmStep(t, map[string]any{"model": "rec/sim-1", "prompt": ""}))
+	if err != nil {
+		t.Fatalf("CostEstimate (defaulted): %v", err)
+	}
+	if est.MaxTokens != int64(llmDefaultMaxTokens) {
+		t.Errorf("defaulted max tokens = %d, want %d", est.MaxTokens, llmDefaultMaxTokens)
+	}
+
+	// An unresolvable model returns an error (middleware skips the check).
+	if _, err := e.CostEstimate(llmStep(t, map[string]any{"model": "unknown/x"})); err == nil {
+		t.Error("CostEstimate with unresolvable model: want error, got nil")
+	}
+}
+
 func TestLLMExecutorPromptRequestAndOutput(t *testing.T) {
 	t.Parallel()
 	p := &recordingProvider{resp: okResponse()}

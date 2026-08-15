@@ -256,6 +256,18 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	if hit {
 		return cherr
 	}
+	// Claim-time budget enforcement (ticket 10.3, ADR-012): after the cache
+	// read (a hit is $0, never budget-gated) and before the rate limiter
+	// (parking after a limiter acquire would strand debited tokens), project
+	// this step's pre-flight cost against the run budget and the step's caps.
+	// A projection over budget parks the run (reason budget_exceeded,
+	// resumable) or fails the step permanently, per policy; an oversized
+	// request or an unpriceable model under fail-closed fails before the call.
+	// Steps that estimate no cost bypass this entirely.
+	budgeted, berr := e.budgetCheck(ctx, step, executor, sc, origin)
+	if budgeted {
+		return berr
+	}
 	// Fleet-wide rate limiting (ticket 9.2, ADR-010): before a cost-bearing
 	// executor's provider call, acquire the step's resource buckets. A
 	// denial defers the step (throttle → delayed requeue, slot released now,

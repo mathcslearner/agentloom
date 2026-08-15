@@ -134,6 +134,15 @@ type ClaimOrigin struct {
 	// row the claim already locks — the parent for re-dispatch envelopes
 	// that descend from no live span (the delayed retry envelope).
 	RunTrace TraceContext
+	// BudgetNanoUSD is the run's spend budget in nano-USD (ticket 10.3), read
+	// from the same locked run row — nil means unbudgeted. SpentNanoUSD is
+	// the run's spend so far (exact as of the claim, since the claim holds
+	// the run lock), and OnBudgetExceeded is the materialized park|fail
+	// disposition. The budget middleware uses these to project spend without
+	// a second read; a $0 (unbudgeted) run short-circuits the check.
+	BudgetNanoUSD    *int64
+	SpentNanoUSD     int64
+	OnBudgetExceeded string
 }
 
 // ClaimStep transitions a step ready → running — or retrying → running
@@ -186,6 +195,9 @@ func ClaimStepWithOrigin(ctx context.Context, q Querier, args ClaimStepArgs) (ge
 		}
 	}
 	origin.RunTrace = TraceContext{Parent: textOrEmpty(run.TraceParent), State: textOrEmpty(run.TraceState)}
+	origin.BudgetNanoUSD = run.BudgetNanoUsd
+	origin.SpentNanoUSD = run.SpentNanoUsd
+	origin.OnBudgetExceeded = run.OnBudgetExceeded
 	claimID := uuid.New()
 	step, err := gq.ClaimRunStep(ctx, gen.ClaimRunStepParams{
 		RunID: args.RunID, StepID: args.StepID, ClaimID: &claimID, Now: args.Now,

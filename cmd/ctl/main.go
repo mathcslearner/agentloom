@@ -7,6 +7,7 @@
 //	ctl cancel <run-id>          cancel a run (ticket 6.5)
 //	ctl park <run-id>            pause a run's dispatch (ticket 6.5)
 //	ctl unpark <run-id>          resume a parked run (ticket 6.5)
+//	ctl budget <run-id> <usd>    raise a run's spend budget (ticket 10.3)
 //	ctl requeue <run-id> <step>  requeue a dead-lettered step (ticket 6.5)
 //	ctl keys …                   manage API keys (create/list/revoke; ticket 6.1)
 //	ctl plugins list             list the plugin catalog (ticket 8.1)
@@ -52,7 +53,7 @@ func newRootCmd(lookup func(string) (string, bool)) *cobra.Command {
 	root.PersistentFlags().String("api", defaultAPI, "base URL of the agentloom API")
 	root.PersistentFlags().String("key", defaultKey, "bearer API key (default AGENTLOOM_API_KEY)")
 	root.AddCommand(newValidateCmd(), newSubmitCmd(), newWatchCmd(), newRunsCmd(),
-		newCancelCmd(), newParkCmd(), newUnparkCmd(), newRequeueCmd(), newKeysCmd(),
-		newPluginsCmd(), newCacheCmd())
+		newCancelCmd(), newParkCmd(), newUnparkCmd(), newBudgetCmd(), newRequeueCmd(),
+		newKeysCmd(), newPluginsCmd(), newCacheCmd())
 	return root
 }
