@@ -49,9 +49,13 @@ done
 say "booting compose app+obs profiles (idempotent)"
 AGENTLOOM_OBS_OTEL_ENABLED=true docker compose --profile app --profile obs up -d --build --wait
 
-# submit <definition-json> — POST an inline definition, print the run id.
+# submit <definition-json> [params-json] — POST an inline definition, print
+# the run id. The optional second arg supplies run params (default {});
+# fanout.json templates on run.params.topic, so it must carry one.
 submit() {
-  jq -n --argjson d "$1" '{definition: $d}' |
+  local params="${2:-}"
+  [ -n "$params" ] || params='{}'
+  jq -n --argjson d "$1" --argjson p "$params" '{definition: $d, params: $p}' |
     curl -fsS -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
       -d @- "$API_URL/v1/runs" | jq -r '.run_id'
 }
@@ -77,7 +81,7 @@ say "submitting workload"
 fanout_ids=()
 fanout_def="$(cat examples/definitions/fanout.json)"
 for _ in 1 2 3; do
-  fanout_ids+=("$(submit "$fanout_def")")
+  fanout_ids+=("$(submit "$fanout_def" '{"topic":"turtles"}')")
 done
 note "3 fanout runs: ${fanout_ids[*]}"
 
@@ -101,10 +105,26 @@ doomed_id="$(submit '{
 }')"
 note "dead-letter run: $doomed_id"
 
+# Cost signal (ticket 10.5): a deterministic temperature=0 mock llm step run
+# twice — the first spends (engine_cost_spent_usd_total + token counters), the
+# second is a response-cache hit recording counterfactual savings
+# (engine_cost_saved_usd_total).
+cost_def='{
+  "schema_version": 1, "name": "smoke-cost",
+  "steps": [{"id": "gen", "type": "llm",
+             "config": {"model": "mock/sim-1", "prompt": "summarize turtles", "temperature": 0}}],
+  "edges": []
+}'
+cost_miss_id="$(submit "$cost_def")"
+cost_hit_id="$(submit "$cost_def")"
+note "cost runs: miss $cost_miss_id, hit $cost_hit_id"
+
 say "waiting for terminal states"
 for id in "${fanout_ids[@]}"; do wait_terminal "$id" succeeded; done
 wait_terminal "$retry_id" succeeded
 wait_terminal "$doomed_id" failed
+wait_terminal "$cost_miss_id" succeeded
+wait_terminal "$cost_hit_id" succeeded
 note "all runs terminal"
 
 # Two scrape intervals (5s each) plus the 10s gauge-sample interval, so
@@ -186,6 +206,11 @@ must_be_positive 'engine_dispatch_dispatched_total{reason="step_ready"}'
 must_be_positive 'engine_api_requests_total{route="/v1/runs",method="POST",code="201"}'
 must_be_positive 'engine_api_request_duration_seconds_count'
 must_be_positive 'engine_api_ratelimit_decisions_total{decision="allowed"}'
+# Cost metrics (ticket 10.5): the mock llm workload spends at the mock:*
+# rate and the temperature=0 pair produces a cache hit that saves.
+must_be_positive 'engine_cost_spent_usd_total{resource="mock:sim-1"}'
+must_be_positive 'engine_cost_output_tokens_total{resource="mock:sim-1"}'
+must_be_positive 'engine_cost_saved_usd_total{resource="mock:sim-1"}'
 
 if [ "$failures" -gt 0 ]; then
   fail "$failures metric check(s) failed"

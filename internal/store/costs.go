@@ -3,10 +3,12 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
@@ -106,6 +108,47 @@ type AttemptCostArgs struct {
 // further values ('judge', 'compaction') for M11/M12 overhead rows.
 const EntryAttempt = "attempt"
 
+// CostUpdatedEvent is the cost_updated event payload (ticket 10.5, ADR-012):
+// one cost-bearing attempt's charge plus the run's running spend/saved totals
+// after the charge is folded into the aggregate. The M18 live meter reads
+// RunSpentNanoUSD/RunSavedNanoUSD directly and BudgetNanoUSD for the progress
+// bar, so it needs no state of its own. Money fields are integer nano-USD.
+// The step/attempt/entry context is stamped inside ApplyAttemptCost (like the
+// budget_exceeded event) so callers name only the charge.
+type CostUpdatedEvent struct {
+	StepID  string `json:"step_id"`
+	Attempt int32  `json:"attempt"`
+	// Entry is the charge kind (EntryAttempt now; judge/compaction in M11/M12).
+	Entry string `json:"entry"`
+	// Resource is the ADR-010/ADR-012 resource billed ("mock:sim-1",
+	// "tool:paid_search").
+	Resource string `json:"resource"`
+	// CacheHit marks a $0 cache-served charge (CostNanoUSD 0, SavedNanoUSD set).
+	CacheHit bool `json:"cache_hit,omitempty"`
+	// Overhead flags a judge/summarization charge (ADR-012 rule 4).
+	Overhead bool `json:"overhead,omitempty"`
+	// CostNanoUSD / SavedNanoUSD are this attempt's charge and cache savings.
+	CostNanoUSD  int64 `json:"cost_nano_usd,omitempty"`
+	SavedNanoUSD int64 `json:"saved_nano_usd,omitempty"`
+	// RunSpentNanoUSD / RunSavedNanoUSD are the run's totals after this charge
+	// — non-decreasing in seq order across a run's cost_updated events.
+	RunSpentNanoUSD int64 `json:"run_spent_nano_usd"`
+	RunSavedNanoUSD int64 `json:"run_saved_nano_usd"`
+	// BudgetNanoUSD is the run's budget (nil = unbudgeted), for the M18 meter's
+	// progress bar.
+	BudgetNanoUSD *int64 `json:"budget_nano_usd,omitempty"`
+}
+
+// CostApplied is the outcome of ApplyAttemptCost: the run's totals after the
+// charge (also carried on the cost_updated event) and whether a row was
+// written. A nil-charge call (nothing to ledger) never reaches here — the
+// engine's priceAttempt returns nil and the caller skips ApplyAttemptCost.
+type CostApplied struct {
+	RunSpentNanoUSD int64
+	RunSavedNanoUSD int64
+	BudgetNanoUSD   *int64
+}
+
 // ApplyAttemptCost writes one attempt's cost row and folds it into the run
 // aggregate, atomically (ticket 10.2, ADR-012). It must be called inside the
 // success completion transaction, after the fenced SucceedStep CAS and while
@@ -114,17 +157,17 @@ const EntryAttempt = "attempt"
 // with every other run mutation. When Warning is set (a fallback-priced
 // unknown model), the cost_unknown_model event is appended under the same
 // transaction's monotonic seq.
-func ApplyAttemptCost(ctx context.Context, q Querier, args AttemptCostArgs) error {
+func ApplyAttemptCost(ctx context.Context, q Querier, args AttemptCostArgs) (CostApplied, error) {
 	const op = "apply attempt cost"
 	gq, err := transitionQueries(ctx, q, op, args.Now)
 	if err != nil {
-		return err
+		return CostApplied{}, err
 	}
 	if args.Resource == "" {
-		return fmt.Errorf("store: %s: empty Resource", op)
+		return CostApplied{}, fmt.Errorf("store: %s: empty Resource", op)
 	}
 	if len(args.Rate) == 0 {
-		return fmt.Errorf("store: %s: empty Rate snapshot", op)
+		return CostApplied{}, fmt.Errorf("store: %s: empty Rate snapshot", op)
 	}
 	entry := args.Entry
 	if entry == "" {
@@ -145,21 +188,46 @@ func ApplyAttemptCost(ctx context.Context, q Querier, args AttemptCostArgs) erro
 		SavedNanoUsd: args.SavedNanoUSD,
 		CreatedAt:    args.Now,
 	}); err != nil {
-		return wrapErr(op+": insert ledger row", err)
+		return CostApplied{}, wrapErr(op+": insert ledger row", err)
 	}
-	rows, err := gq.AddRunCost(ctx, gen.AddRunCostParams{
+	total, err := gq.AddRunCost(ctx, gen.AddRunCostParams{
 		RunID: args.RunID, DSpent: args.CostNanoUSD, DSaved: args.SavedNanoUSD,
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CostApplied{}, fmt.Errorf("store: %s: bump run cost: run %s: %w", op, args.RunID, ErrNotFound)
+	}
 	if err != nil {
-		return wrapErr(op+": bump run cost", err)
+		return CostApplied{}, wrapErr(op+": bump run cost", err)
 	}
-	if rows != 1 {
-		return fmt.Errorf("store: %s: bump run cost: run %s: %w", op, args.RunID, ErrNotFound)
+	applied := CostApplied{
+		RunSpentNanoUSD: total.SpentNanoUsd,
+		RunSavedNanoUSD: total.SavedNanoUsd,
+		BudgetNanoUSD:   total.BudgetNanoUsd,
 	}
+	// cost_updated (ticket 10.5): appended under the same run lock and monotonic
+	// seq as the bump above, so the totals across a run's events never regress.
+	updated := CostUpdatedEvent{
+		StepID:          args.StepID,
+		Attempt:         args.Attempt,
+		Entry:           entry,
+		Resource:        args.Resource,
+		CacheHit:        args.CacheHit,
+		Overhead:        args.Overhead,
+		CostNanoUSD:     args.CostNanoUSD,
+		SavedNanoUSD:    args.SavedNanoUSD,
+		RunSpentNanoUSD: applied.RunSpentNanoUSD,
+		RunSavedNanoUSD: applied.RunSavedNanoUSD,
+		BudgetNanoUSD:   applied.BudgetNanoUSD,
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventCostUpdated, updated); err != nil {
+		return CostApplied{}, err
+	}
+	// The unknown-model warning follows the cost_updated event (higher seq), so
+	// a consumer sees the total move before the advisory that priced it.
 	if len(args.Warning) > 0 {
 		if err := appendEvent(ctx, gq, op, args.RunID, EventCostUnknownModel, args.Warning); err != nil {
-			return err
+			return CostApplied{}, err
 		}
 	}
-	return nil
+	return applied, nil
 }

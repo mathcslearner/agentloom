@@ -27,3 +27,15 @@ type UnknownModelWarning struct {
 func NewUnknownModelWarning(model string, fallback Rate) UnknownModelWarning {
 	return UnknownModelWarning{Model: model, Fallback: fallback}
 }
+
+// EventTypeCostUpdated is the run-event type appended once per cost-bearing
+// attempt completion (ticket 10.5, ADR-012), carrying that attempt's charge
+// plus the run's running spend/saved totals after the charge is folded in. It
+// feeds the M18 live cost meter (via the M16 event feed): because the append
+// shares the completion transaction's run lock and monotonic seq with the
+// aggregate bump, the totals reported across a run's cost_updated events are
+// non-decreasing in seq order. The payload struct lives in the store package
+// (store.CostUpdatedEvent) because it is composed from the post-bump run
+// totals the store returns; 10.1 fixes only the type string here, mirroring
+// EventTypeUnknownModel — the value store.EventCostUpdated registers.
+const EventTypeCostUpdated = "cost_updated"

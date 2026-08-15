@@ -28,7 +28,7 @@ var (
 // allowedSubsystems is ADR-008's subsystem vocabulary; extending it is an
 // ADR amendment first.
 var allowedSubsystems = []string{
-	"build", "queue", "outbox", "dispatch", "reconcile", "step", "steplog", "run", "api", "worker", "ratelimit", "cache",
+	"build", "queue", "outbox", "dispatch", "reconcile", "step", "steplog", "run", "api", "worker", "ratelimit", "cache", "cost",
 }
 
 // allowedLabels is ADR-008's label allowlist. run_id, step_id, attempt,
@@ -41,6 +41,7 @@ var allowedLabels = map[string]bool{
 	"route": true, "method": true, "code": true,
 	"duty": true, "result": true, "bucket": true, "decision": true,
 	"resource": true, "plugin": true,
+	"limit": true, "action": true, "trigger": true,
 }
 
 // exercise touches every instrument at least once so vec children exist
@@ -75,6 +76,11 @@ func exercise(w *metrics.WorkerMetrics, a *metrics.APIMetrics) {
 	w.CacheBypass("tool:http_request")
 	w.CacheStore("tool:json_transform")
 	w.CacheFailOpen()
+	w.CostSpent("mock:sim-1", 2_000_000)
+	w.CostSaved("mock:sim-1", 1_500_000)
+	w.CostTokens("mock:sim-1", 1000, 500)
+	w.BudgetExceeded("run", "park")
+	w.ModelDowngraded("budget_threshold")
 	a.Request("/v1/runs", "POST", 200, 20*time.Millisecond)
 	a.RequestStarted()
 	a.RequestFinished()

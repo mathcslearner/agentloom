@@ -323,7 +323,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		// run lock SucceedStep already holds, so the aggregate stays exactly
 		// the sum of the rows even under concurrent completions.
 		if costRow != nil {
-			if err := store.ApplyAttemptCost(ctx, q, *costRow); err != nil {
+			if _, err := store.ApplyAttemptCost(ctx, q, *costRow); err != nil {
 				return err
 			}
 		}
@@ -387,6 +387,15 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		return txErr
 	}
 
+	// Cost metrics (ticket 10.5): recorded post-commit from the priced row, so
+	// a fenced or rolled-back completion (which returned above) records nothing
+	// — the metric counters track only charges that actually landed in the
+	// ledger. A cache hit records saved (its cost is $0); a productive call
+	// records spend and its token usage. Labeled by the resolved resource
+	// (bounded to the catalog), never by run/step.
+	if costRow != nil {
+		e.recordCost(*costRow)
+	}
 	logger.InfoContext(ctx, "step succeeded",
 		slog.Int("edges_resolved", len(verdicts)),
 		slog.Int("steps_readied", len(fanned.readied)),

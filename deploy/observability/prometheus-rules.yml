@@ -83,3 +83,21 @@ groups:
             stalled: check Redis reachability from workers, dispatcher
             errors in worker logs, and engine_dispatch_dispatched_total
             (flat = nothing draining). Runs are frozen until it recovers.
+
+      - alert: BudgetParkRateSpike
+        # Runs are parking at their budget caps (ticket 10.5). A sustained
+        # park flow means budgeted work is stalling on cost, not failing —
+        # ~0/s in a healthy steady state, so 0.01/s (~3 per 5 minutes) is a
+        # spike at dev scale.
+        expr: sum(rate(engine_cost_budget_exceeded_total{action="park"}[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Runs are parking on budget"
+          description: >-
+            engine_cost_budget_exceeded_total{action="park"} is rising
+            faster than 0.01/s over 5 minutes: budgeted runs are hitting
+            their caps and parking. Check the Cost row on the Engine
+            dashboard for spend rate by resource, and raise budgets (PATCH
+            /v1/runs/{id}/budget) or add model_fallbacks to resume them.

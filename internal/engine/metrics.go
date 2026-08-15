@@ -79,6 +79,26 @@ type Metrics interface {
 	// the step proceeded uncached (ADR-011 fail-open) — unlabeled, like the
 	// rate-limiter fail-open.
 	CacheFailOpen()
+	// CostSpent records one productive attempt's attributed spend (ticket
+	// 10.5, ADR-012) in nano-USD, by resolved resource (the model or
+	// "tool:<name>" — bounded to the pricing catalog). Recorded post-commit,
+	// so it counts only charges that landed in the ledger.
+	CostSpent(resource string, nanoUSD int64)
+	// CostSaved records one cache hit's counterfactual savings (ADR-011 rule
+	// 2) in nano-USD, by resource — the money a hit avoided spending, the
+	// saved-by-cache signal.
+	CostSaved(resource string, nanoUSD int64)
+	// CostTokens records one productive attempt's billed input/output tokens
+	// by resource (cache hits consume none, so they are not recorded here).
+	CostTokens(resource string, input, output int64)
+	// BudgetExceeded records one claim the budget check terminated (ticket
+	// 10.5) by the limit crossed (run/step_usd/step_tokens) and the action
+	// (park/fail). Under fan-out each released sibling counts once, mirroring
+	// the budget_exceeded event count; only the first actually parks the run.
+	BudgetExceeded(limit, action string)
+	// ModelDowngraded records one claim routed to a cheaper model (ticket
+	// 10.5) by trigger (budget_threshold/budget_projection).
+	ModelDowngraded(trigger string)
 }
 
 // nopMetrics is the default Metrics: every test layer runs with recording
@@ -105,3 +125,8 @@ func (nopMetrics) CacheMiss(string)                           {}
 func (nopMetrics) CacheBypass(string)                         {}
 func (nopMetrics) CacheStore(string)                          {}
 func (nopMetrics) CacheFailOpen()                             {}
+func (nopMetrics) CostSpent(string, int64)                    {}
+func (nopMetrics) CostSaved(string, int64)                    {}
+func (nopMetrics) CostTokens(string, int64, int64)            {}
+func (nopMetrics) BudgetExceeded(string, string)              {}
+func (nopMetrics) ModelDowngraded(string)                     {}

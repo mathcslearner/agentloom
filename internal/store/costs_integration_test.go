@@ -44,7 +44,8 @@ func TestApplyAttemptCostAggregatesAndEvents(t *testing.T) {
 	}
 	for _, args := range rows {
 		if err := s.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
-			return store.ApplyAttemptCost(ctx, q, args)
+			_, aerr := store.ApplyAttemptCost(ctx, q, args)
+			return aerr
 		}); err != nil {
 			t.Fatalf("ApplyAttemptCost(%s/%d): %v", args.StepID, args.Attempt, err)
 		}
@@ -94,6 +95,35 @@ func TestApplyAttemptCostAggregatesAndEvents(t *testing.T) {
 	if warned != 1 {
 		t.Errorf("cost_unknown_model events = %d, want 1", warned)
 	}
+
+	// Ticket 10.5: one cost_updated event per applied row, in seq order, with
+	// run totals that never regress and whose final value equals the aggregate.
+	var updates []store.CostUpdatedEvent
+	for _, e := range events {
+		if e.Type != store.EventCostUpdated {
+			continue
+		}
+		var u store.CostUpdatedEvent
+		if uerr := json.Unmarshal(e.Payload, &u); uerr != nil {
+			t.Fatalf("decoding cost_updated payload: %v", uerr)
+		}
+		updates = append(updates, u)
+	}
+	if len(updates) != 3 {
+		t.Fatalf("cost_updated events = %d, want 3", len(updates))
+	}
+	var prevSpent, prevSaved int64
+	for i, u := range updates {
+		if u.RunSpentNanoUSD < prevSpent || u.RunSavedNanoUSD < prevSaved {
+			t.Errorf("cost_updated[%d] totals regressed: {spent %d, saved %d} after {spent %d, saved %d}",
+				i, u.RunSpentNanoUSD, u.RunSavedNanoUSD, prevSpent, prevSaved)
+		}
+		prevSpent, prevSaved = u.RunSpentNanoUSD, u.RunSavedNanoUSD
+	}
+	if last := updates[len(updates)-1]; last.RunSpentNanoUSD != got.SpentNanoUsd || last.RunSavedNanoUSD != got.SavedNanoUsd {
+		t.Errorf("final cost_updated totals {%d,%d} != run aggregate {%d,%d}",
+			last.RunSpentNanoUSD, last.RunSavedNanoUSD, got.SpentNanoUsd, got.SavedNanoUsd)
+	}
 }
 
 func TestApplyAttemptCostRequiresTx(t *testing.T) {
@@ -101,7 +131,7 @@ func TestApplyAttemptCostRequiresTx(t *testing.T) {
 	s := store.NewFromPool(storetest.NewDB(t))
 	run := instantiate(t, s, decodeDef(t, twoEntrySteps))
 	// Called on the pool (no WithTx marker) → ErrNoTx.
-	err := store.ApplyAttemptCost(context.Background(), s, store.AttemptCostArgs{
+	_, err := store.ApplyAttemptCost(context.Background(), s, store.AttemptCostArgs{
 		RunID: run.ID, StepID: "a", Attempt: 1, Resource: "mock:sim-1",
 		Rate: json.RawMessage(`{"input_per_mtok":1,"output_per_mtok":2}`), Now: testNow,
 	})

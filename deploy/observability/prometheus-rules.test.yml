@@ -102,3 +102,24 @@ tests:
                 stalled: check Redis reachability from workers, dispatcher
                 errors in worker logs, and engine_dispatch_dispatched_total
                 (flat = nothing draining). Runs are frozen until it recovers.
+
+  # BudgetParkRateSpike: one budget park per minute (~0.017/s) clears the
+  # 0.01/s example threshold after the 5m hold.
+  - interval: 1m
+    input_series:
+      - series: 'engine_cost_budget_exceeded_total{limit="run", action="park", job="worker", instance="w1"}'
+        values: "0+1x30"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: BudgetParkRateSpike
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Runs are parking on budget"
+              description: >-
+                engine_cost_budget_exceeded_total{action="park"} is rising
+                faster than 0.01/s over 5 minutes: budgeted runs are hitting
+                their caps and parking. Check the Cost row on the Engine
+                dashboard for spend rate by resource, and raise budgets (PATCH
+                /v1/runs/{id}/budget) or add model_fallbacks to resume them.

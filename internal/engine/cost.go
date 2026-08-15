@@ -117,3 +117,22 @@ func (e *Engine) priceAttempt(ctx context.Context, step gen.RunStep, out exec.Ou
 	}
 	return args
 }
+
+// recordCost emits the cost metrics for one priced attempt (ticket 10.5),
+// post-commit and off the completion transaction. A cache hit spent nothing,
+// so it records only its counterfactual savings; a productive call records its
+// spend and the tokens it billed. Everything is labeled by the resolved
+// resource alone (bounded to the pricing catalog, never run/step) per ADR-008.
+func (e *Engine) recordCost(args store.AttemptCostArgs) {
+	if args.CacheHit {
+		e.metrics.CostSaved(args.Resource, args.SavedNanoUSD)
+		return
+	}
+	e.metrics.CostSpent(args.Resource, args.CostNanoUSD)
+	if len(args.Usage) > 0 {
+		var u exec.Usage
+		if json.Unmarshal(args.Usage, &u) == nil {
+			e.metrics.CostTokens(args.Resource, u.InputTokens, u.OutputTokens)
+		}
+	}
+}

@@ -248,6 +248,15 @@ const (
 	// transaction; the payload is cost.UnknownModelWarning. Mirrors
 	// cost.EventTypeUnknownModel — the value the 10.1 contract fixed.
 	EventCostUnknownModel = "cost_unknown_model"
+	// EventCostUpdated: one cost-bearing attempt completed and its charge was
+	// folded into the run aggregate (ticket 10.5, ADR-012). The payload
+	// (CostUpdatedEvent) carries the attempt's charge and the run's running
+	// spend/saved totals after the bump. Appended by ApplyAttemptCost in the
+	// completion transaction, under the run lock and the same monotonic seq as
+	// the aggregate bump — so the totals across a run's cost_updated events are
+	// non-decreasing in seq order. Mirrors cost.EventTypeCostUpdated. Feeds the
+	// M18 live meter via the M16 event feed.
+	EventCostUpdated = "cost_updated"
 	// EventBudgetExceeded: a claim's projected spend crossed a budget limit
 	// (ticket 10.3, ADR-012). The payload (budgetExceededPayload) carries the
 	// step, attempt, resource, the run spend and estimate that made the

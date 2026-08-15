@@ -336,6 +336,14 @@ not know is priced at the conservative fallback rate (`rate_source:
 — the cue to add a catalog entry. A run with no cost-bearing steps answers
 with a zero summary and empty breakdowns.
 
+Each cost-bearing attempt also appends a `cost_updated` event carrying that
+charge and the run's running spend/saved totals (non-decreasing per run) —
+the source the live cost meter will render (the event-feed read API and the
+meter UI land in M16/M18). Spend is also exported as Prometheus counters by
+resource (`engine_cost_spent_usd_total`, `engine_cost_saved_usd_total`, …)
+on the worker's `/metrics`, surfaced in the Grafana Engine dashboard's Cost
+row.
+
 ## Budgets
 
 A definition may cap spend: a run-level `budget_usd` with an

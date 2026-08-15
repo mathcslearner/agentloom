@@ -392,7 +392,13 @@ recipe, as 0014 did for `throttled`).
 priced at the catalog fallback because its model had no entry, appended by
 `ApplyAttemptCost` in the same completion transaction. Since 10.3 it also
 includes `budget_exceeded` (the projection detail a claim-time budget
-park/fail records) and `run_budget_updated` (a `PATCH …/budget` raise).
+park/fail records) and `run_budget_updated` (a `PATCH …/budget` raise),
+since 10.4 `model_downgraded` (a claim routed to a cheaper fallback), and
+since 10.5 `cost_updated` (payload `CostUpdatedEvent`: one cost-bearing
+attempt's charge plus the run's running spend/saved totals after the bump,
+appended by `ApplyAttemptCost` under the completion transaction's run lock
+and seq, so the totals are non-decreasing in seq order — the M18 live
+meter's source).
 
 **`task_outbox`** — the transactional Postgres→Redis dispatch buffer
 (ADR-002). `id` (identity, drain order), `run_id`, `step_id`, `reason`

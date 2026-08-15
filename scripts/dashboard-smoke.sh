@@ -58,8 +58,13 @@ AGENTLOOM_OBS_OTEL_ENABLED=true docker compose --profile app --profile obs up -d
 
 # ---------------------------------------------------------------- helpers
 
+# submit <definition-json> [params-json] — POST a run, print the run id.
+# The optional second arg supplies run params (default {}); fanout.json
+# templates on run.params.topic, so it must be submitted with one.
 submit() {
-  jq -n --argjson d "$1" '{definition: $d}' |
+  local params="${2:-}"
+  [ -n "$params" ] || params='{}'
+  jq -n --argjson d "$1" --argjson p "$params" '{definition: $d, params: $p}' |
     curl -fsS -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
       -d @- "$API_URL/v1/runs" | jq -r '.run_id'
 }
@@ -180,7 +185,7 @@ say "submitting fan-outs and a retry run"
 fanout_ids=()
 fanout_def="$(cat examples/definitions/fanout.json)"
 for _ in 1 2 3; do
-  fanout_ids+=("$(submit "$fanout_def")")
+  fanout_ids+=("$(submit "$fanout_def" '{"topic":"turtles"}')")
 done
 retry_id="$(submit '{
   "schema_version": 1, "name": "smoke-retry",
@@ -189,6 +194,27 @@ retry_id="$(submit '{
   "edges": []
 }')"
 note "3 fanout runs + 1 retry run"
+
+# Cost signal (ticket 10.5): a deterministic temperature=0 mock llm step
+# submitted repeatedly — the first run spends (engine_cost_spent_usd_total),
+# the rest are response-cache hits recording counterfactual savings
+# (engine_cost_saved_usd_total). Paced 2s like the dead-letter burst so the
+# spend/saved increments are observed across scrapes and the rate() panels
+# are non-empty. Budget parks and downgrades are not driven here (the "Budget
+# actions & downgrades/s" panel is allowlisted below).
+say "submitting the cost workload (1 spend + cache-hit savings, paced 2s)"
+cost_def='{
+  "schema_version": 1, "name": "smoke-cost",
+  "steps": [{"id": "gen", "type": "llm",
+             "config": {"model": "mock/sim-1", "prompt": "summarize turtles", "temperature": 0}}],
+  "edges": []
+}'
+cost_ids=()
+for _ in $(seq 6); do
+  cost_ids+=("$(submit "$cost_def")")
+  sleep 2
+done
+note "6 cost runs submitted (1 miss + 5 cache hits)"
 
 say "429 storm — admin class (capacity 10, refill 2/s)"
 got_429=0
@@ -202,6 +228,7 @@ note "$got_429 requests rate-limited"
 say "waiting for terminal states"
 for id in "${doomed_ids[@]}"; do wait_terminal "$id" failed; done
 for id in "${fanout_ids[@]}"; do wait_terminal "$id" succeeded; done
+for id in "${cost_ids[@]}"; do wait_terminal "$id" succeeded; done
 wait_terminal "$retry_id" succeeded
 note "all runs terminal"
 
@@ -225,6 +252,8 @@ allowlisted() {
     *engine_reconcile_healed_total*) return 0 ;;  # queue-level reclaim usually beats the reconciler
     *engine_api_ratelimit_failopen_total*) return 0 ;;  # rate-limit Redis is healthy
     *'code=~"5.."'*) return 0 ;;  # no server errors driven, by design
+    *engine_cost_budget_exceeded_total*) return 0 ;;  # no budgeted runs in the workload (ticket 10.5)
+    *engine_cost_downgrades_total*) return 0 ;;  # no model_fallbacks in the workload (ticket 10.5)
   esac
   return 1
 }
@@ -255,7 +284,7 @@ check_dashboard deploy/observability/grafana/dashboards/api.json
 
 say "checking the alert rules loaded in Prometheus"
 rules_json="$(curl -fsS "$PROM_URL/api/v1/rules")"
-for alert in QueueDepthGrowing DeadLetterRateSpike ReclaimRateSpike OutboxDispatchLag; do
+for alert in QueueDepthGrowing DeadLetterRateSpike ReclaimRateSpike OutboxDispatchLag BudgetParkRateSpike; do
   if [ "$(jq -r --arg a "$alert" '[.data.groups[].rules[] | select(.name==$a)] | length' <<<"$rules_json")" = 1 ]; then
     note "loaded ✓  $alert"
   else

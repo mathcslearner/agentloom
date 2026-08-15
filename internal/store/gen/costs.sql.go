@@ -13,11 +13,12 @@ import (
 	"github.com/google/uuid"
 )
 
-const addRunCost = `-- name: AddRunCost :execrows
+const addRunCost = `-- name: AddRunCost :one
 UPDATE runs
 SET spent_nano_usd = spent_nano_usd + $1::bigint,
     saved_nano_usd = saved_nano_usd + $2::bigint
 WHERE id = $3
+RETURNING spent_nano_usd, saved_nano_usd, budget_nano_usd
 `
 
 type AddRunCostParams struct {
@@ -26,15 +27,25 @@ type AddRunCostParams struct {
 	RunID  uuid.UUID
 }
 
+type AddRunCostRow struct {
+	SpentNanoUsd  int64
+	SavedNanoUsd  int64
+	BudgetNanoUsd *int64
+}
+
 // AddRunCost applies one ledger row's spend and savings to the run
 // aggregate, in the same transaction — so runs.spent_nano_usd always equals
-// the exact sum of the run's cost_ledger rows.
-func (q *Queries) AddRunCost(ctx context.Context, arg AddRunCostParams) (int64, error) {
-	result, err := q.db.Exec(ctx, addRunCost, arg.DSpent, arg.DSaved, arg.RunID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// the exact sum of the run's cost_ledger rows. It RETURNs the post-bump run
+// totals and budget so ApplyAttemptCost can carry them on the cost_updated
+// event (ticket 10.5): because the bump and the event append share the run
+// lock and the same monotonic seq, the totals a run's cost_updated events
+// report are non-decreasing in seq order by construction. Empty result set
+// (no such run) is a caller error, checked in Go.
+func (q *Queries) AddRunCost(ctx context.Context, arg AddRunCostParams) (AddRunCostRow, error) {
+	row := q.db.QueryRow(ctx, addRunCost, arg.DSpent, arg.DSaved, arg.RunID)
+	var i AddRunCostRow
+	err := row.Scan(&i.SpentNanoUsd, &i.SavedNanoUsd, &i.BudgetNanoUsd)
+	return i, err
 }
 
 const aggregateCostByResource = `-- name: AggregateCostByResource :many

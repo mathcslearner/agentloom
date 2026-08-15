@@ -62,11 +62,13 @@ Rules, following Prometheus upstream conventions:
   `api` subsystem (`engine_api_requests_total`), not a second namespace.
 - Subsystem vocabulary (extended only by ADR amendment): `build`,
   `queue`, `outbox`, `dispatch`, `reconcile`, `step`, `steplog` (7.4),
-  `run`, `api`, `worker`, `ratelimit` (9.2), `cache` (9.5).
+  `run`, `api`, `worker`, `ratelimit` (9.2), `cache` (9.5), `cost` (10.5).
 - Base units and suffixes: durations in seconds (`_seconds`), sizes in
   bytes (`_bytes`), token counts in tokens (`_tokens`, 9.3's
-  estimate-error histogram), counters end `_total`, gauges carry no suffix
-  (`engine_queue_ready_depth`). Histograms are the default for
+  estimate-error histogram), money in USD (`_usd`, 10.5's cost counters —
+  the base unit; the ledger keeps the exact integer nano-USD, a rate
+  counter tolerates the float), counters end `_total`, gauges carry no
+  suffix (`engine_queue_ready_depth`). Histograms are the default for
   latency/duration (M19 needs percentiles) and for the signed token-cost
   estimate error; summaries are banned (not aggregatable across the fleet).
 - `engine_build_info{service, version} 1` is the conventional info gauge,
@@ -101,8 +103,11 @@ requires amending this table first, and must be a closed vocabulary.
 | `result` | claim decisions (7.2): `won`, `ack_drop`, `redeliver`, `takeover` | 4 |
 | `bucket` | API rate-limit bucket kind (7.2): `per_key`, `global`; fleet rate-limit denying dimension (9.2): `requests`, `tokens`, `both` | ≤ 5 |
 | `decision` | rate-limit decision (7.2): `allowed`, `denied` | 2 |
-| `resource` | fleet-limit resource name (9.2): the resolved config-entry name (`anthropic:*`, `mock:sim-1`, `tool:http_request`) — operator-authored, bounded | ~config size |
+| `resource` | fleet-limit resource name (9.2) and cost resource (10.5): the resolved ADR-010 name (`anthropic:*`, `mock:sim-1`, `tool:http_request`) — the pricing catalog + limiter config, bounded | ~config size |
 | `plugin` | response-cache concrete plugin (9.5): `<kind>:<name>` of the provider/tool/retriever (`model_provider:anthropic`, `tool:json_transform`, `retriever:pg_fulltext`) — the compiled-in catalog | ~ catalog size |
+| `limit` | budget limit crossed (10.5): `run`, `step_usd`, `step_tokens` | 3 |
+| `action` | budget action taken (10.5): `park`, `fail` | 2 |
+| `trigger` | model-downgrade trigger (10.5): `budget_threshold`, `budget_projection` | 2 |
 
 Worst-case series count per metric is the product of its label bounds;
 any metric whose product exceeds ~1,000 needs an explicit justification
@@ -159,6 +164,17 @@ from the allowlist above.
 | `engine_cache_bypass_total` | counter | `plugin` | response cache (9.5): step not consulted by policy (ineligible, non-deterministic default, mode off, unbuildable key, or oversized value skipped on write) |
 | `engine_cache_stores_total` | counter | `plugin` | response cache (9.5): write-through — a miss's result stored |
 | `engine_cache_fail_opens_total` | counter | — | response cache (9.5): store error (read or write) after which the step proceeded uncached |
+| `engine_cost_spent_usd_total` | counter | `resource` | cost ledger (10.5): attributed spend in USD by resolved resource, recorded post-commit |
+| `engine_cost_saved_usd_total` | counter | `resource` | cost ledger (10.5): cache-hit counterfactual savings in USD by resource |
+| `engine_cost_input_tokens_total` | counter | `resource` | cost ledger (10.5): billed input tokens by resource (cache hits excluded) |
+| `engine_cost_output_tokens_total` | counter | `resource` | cost ledger (10.5): billed output tokens by resource |
+| `engine_cost_budget_exceeded_total` | counter | `limit`, `action` | budget check (10.5): claims terminated by the claim-time budget, by limit crossed and action (park/fail) |
+| `engine_cost_downgrades_total` | counter | `trigger` | budget check (10.5): claims routed to a cheaper model, by trigger |
+
+The `cost` counters label only by the pricing-catalog `resource` (or the
+tiny `limit`/`action`/`trigger` vocabularies) — never by run/step — so the
+worst-case series count is bounded by the catalog size, within the ~1,000
+budget above.
 
 Gauges are sampled by a cmd/worker loop every
 `AGENTLOOM_WORKER_METRICS_SAMPLE_INTERVAL` (default 10s, under the 15s
@@ -322,11 +338,15 @@ polling the endpoint's cursor.
   worker replica, so panels and rules aggregate them with `max()`.
 - **Example alert rules** ship in
   `deploy/observability/prometheus-rules.yml` (queue depth growing, DLQ
-  rate spike, reclaim spike, outbox dispatch lag), loaded via
-  `rule_files` in the compose Prometheus. Thresholds are dev-scale by
-  design so `make smoke-dashboards` can test-fire them. promtool unit
-  tests (`prometheus-rules.test.yml`) run in CI via `make obs-lint`,
-  pinned to the same Prometheus image tag compose runs.
+  rate spike, reclaim spike, outbox dispatch lag, and — 10.5 — budget-park
+  rate spike), loaded via `rule_files` in the compose Prometheus.
+  Thresholds are dev-scale by design so `make smoke-dashboards` can
+  test-fire them. promtool unit tests (`prometheus-rules.test.yml`) run in
+  CI via `make obs-lint`, pinned to the same Prometheus image tag compose
+  runs.
+- **Cost row (10.5).** The Engine dashboard gained a **Cost** row — spend
+  rate and saved-by-cache rate by resource, tokens/s, and a budget
+  actions/downgrades panel — driven by the `cost` subsystem counters.
 - **Anti-drift audit.** `TestDashboardsAndRulesReferenceRegisteredMetrics`
   (internal/obs/metrics) extracts every `engine_*` name referenced in
   the dashboards and rules files and fails unless it is a registered

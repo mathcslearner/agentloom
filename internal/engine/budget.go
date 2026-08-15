@@ -54,6 +54,13 @@ const (
 	budgetFail
 )
 
+// Budget metric action labels (ticket 10.5): the action a terminated claim
+// took, mirroring store.BudgetExceededEvent.Action.
+const (
+	budgetActionPark = "park"
+	budgetActionFail = "fail"
+)
+
 // budgetDecision is the pure result of the claim-time budget check: the
 // action plus the projection detail recorded on the budget_exceeded event
 // (park) or the dead-letter error (fail).
@@ -128,9 +135,13 @@ func (e *Engine) budgetCheck(ctx context.Context, step gen.RunStep, executor exe
 	if stepBudget != nil && stepBudget.MaxTokens > 0 && projectedTokens > int64(stepBudget.MaxTokens) {
 		log.From(ctx).WarnContext(ctx, "step request exceeds max_tokens; recording permanent failure",
 			slog.String("resource", est.Resource))
-		return true, nil, e.completeFailure(ctx, step,
+		ferr := e.completeFailure(ctx, step,
 			exec.Permanentf("budget_exceeded: projected %d tokens exceeds step max_tokens %d", projectedTokens, stepBudget.MaxTokens),
 			dag.ClassPermanent, origin.RunTrace)
+		if ferr == nil {
+			e.metrics.BudgetExceeded(store.BudgetLimitStepTokens, budgetActionFail)
+		}
+		return true, nil, ferr
 	}
 
 	// Read the step's cumulative cost once (the only IO), shared by the
@@ -164,6 +175,7 @@ func (e *Engine) budgetCheck(ctx context.Context, step gen.RunStep, executor exe
 				// proceeding on the primary model.
 				return true, nil, rerr
 			}
+			e.metrics.ModelDowngraded(event.Trigger)
 			log.From(ctx).InfoContext(ctx, "model downgraded for budget",
 				slog.String("from_model", event.FromModel),
 				slog.String("to_model", event.ToModel),
@@ -182,8 +194,12 @@ func (e *Engine) budgetCheck(ctx context.Context, step gen.RunStep, executor exe
 		log.From(ctx).WarnContext(ctx, "step exceeds budget; recording permanent failure",
 			slog.String("limit", decision.event.Limit),
 			slog.String("resource", est.Resource))
-		return true, nil, e.completeFailure(ctx, step,
+		ferr := e.completeFailure(ctx, step,
 			exec.Permanentf("%s", decision.reason), dag.ClassPermanent, origin.RunTrace)
+		if ferr == nil {
+			e.metrics.BudgetExceeded(decision.event.Limit, budgetActionFail)
+		}
+		return true, nil, ferr
 	default:
 		return false, nil, nil
 	}
@@ -338,6 +354,11 @@ func (e *Engine) completeBudgetPark(ctx context.Context, step gen.RunStep, event
 		}
 		return nil
 	}
+	// Post-commit (ticket 10.5): the step released and its budget_exceeded event
+	// landed, so count this park. Under fan-out each sibling that releases
+	// counts once — mirroring the budget_exceeded event count — even though only
+	// the first sibling actually re-parked the run.
+	e.metrics.BudgetExceeded(event.Limit, budgetActionPark)
 	logger.InfoContext(ctx, "run parked: budget exceeded",
 		slog.String("resource", event.Resource),
 		slog.String("limit", event.Limit),

@@ -13,12 +13,18 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13);
 
 -- AddRunCost applies one ledger row's spend and savings to the run
 -- aggregate, in the same transaction — so runs.spent_nano_usd always equals
--- the exact sum of the run's cost_ledger rows.
--- name: AddRunCost :execrows
+-- the exact sum of the run's cost_ledger rows. It RETURNs the post-bump run
+-- totals and budget so ApplyAttemptCost can carry them on the cost_updated
+-- event (ticket 10.5): because the bump and the event append share the run
+-- lock and the same monotonic seq, the totals a run's cost_updated events
+-- report are non-decreasing in seq order by construction. Empty result set
+-- (no such run) is a caller error, checked in Go.
+-- name: AddRunCost :one
 UPDATE runs
 SET spent_nano_usd = spent_nano_usd + @d_spent::bigint,
     saved_nano_usd = saved_nano_usd + @d_saved::bigint
-WHERE id = @run_id;
+WHERE id = @run_id
+RETURNING spent_nano_usd, saved_nano_usd, budget_nano_usd;
 
 -- SumCostLedgerByStep is a step's cumulative attributed spend so far (all
 -- attempts, all entries). The claim-time budget check (ticket 10.3) reads it

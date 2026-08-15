@@ -83,6 +83,15 @@ crash-path counters (reclaims, takeovers, fencing rejections, poison) —
 all ~0 in a healthy fleet. The reconciler-heals panel has **no series at
 all** until the first heal; empty is the good state.
 
+**Cost row.** Spend rate ($/min) and saved-by-cache rate ($/min) by
+resource (the pricing-catalog name — model or `tool:<name>`), tokens/s by
+resource, and a budget-actions/downgrades panel. Spend is the run's real
+money burn; saved is the counterfactual value response-cache hits avoided.
+The budget-actions panel is ~0 until runs start hitting their caps (parks
+by limit, downgrades by trigger) — empty is the healthy state, so
+`make smoke-dashboards` allowlists it. `BudgetParkRateSpike` alerts when
+budgeted runs park in a sustained flow.
+
 **Fleet row.** Active workers (consumer-group members recently active),
 scrape-target health, and `engine_build_info` per instance.
 

@@ -5876,3 +5876,87 @@ store/engine/exec/dag/api integration suites green; golangci-lint clean
 **Deferred:** downgrade + budget metrics and `cost_updated` events (10.5), and
 rescuing an unpriceable primary via a known fallback (kept out — an unknown
 primary fails closed, crisply).
+
+### 10.5 — Cost metrics & events ✅
+
+Closed M10 with the reporting half of the cost model: Prometheus cost counters,
+the budget-park and saved-by-cache counters, and a `cost_updated` event appended
+per cost-bearing attempt carrying the run's running totals — the durable source
+the M18 live meter will render (via M16's feed). No migration, no config var, no
+new store primitive; the only SQL change is a `RETURNING` on the existing
+aggregate bump.
+
+**The metrics (`internal/obs/metrics` + `engine.Metrics`).** A new ADR-008
+`cost` subsystem, six bounded-label counters: `engine_cost_spent_usd_total`
+and `engine_cost_saved_usd_total` (labeled `resource`), the paired
+`engine_cost_{input,output}_tokens_total{resource}`,
+`engine_cost_budget_exceeded_total{limit,action}`, and
+`engine_cost_downgrades_total{trigger}`. Money is exported in the **base USD
+unit** (`float64(nano)/1e9`, a new `nanoUSDToFloat` helper) — the ledger stays
+the exact integer nano-USD source of truth, and a rate counter tolerates the
+float; the units-in-name rule gained `_usd` in ADR-008. `resource` is the same
+pricing-catalog name the ledger and limiter use (bounded to the catalog, never
+run/step), and the three tiny new label vocabularies (`limit`: run/step_usd/
+step_tokens, `action`: park/fail, `trigger`: budget_threshold/budget_projection)
+were added to ADR-008's allowlist and the executable conformance table. New
+`engine.Metrics` methods `CostSpent/CostSaved/CostTokens/BudgetExceeded/
+ModelDowngraded` (with `nopMetrics` stubs so every test layer stays recording-
+off), the instruments/registration/recorders in `WorkerMetrics`, and the
+`exercise()` audit helper all extended together.
+
+**Where the counters fire.** Spend/saved/tokens are recorded **post-commit** in
+`completeSuccess` via a new pure `engine.recordCost(store.AttemptCostArgs)` —
+reached only after `txErr == nil`, so a fenced or rolled-back completion counts
+nothing (the counters track exactly the charges that landed in the ledger). A
+cache hit records only its counterfactual `saved`; a productive call records
+`spent` and decodes its `Usage` for the token counters. The budget counter
+increments at the claim-time decision: `park` inside `completeBudgetPark`
+(post-commit, at the parked-log point — so under fan-out each released sibling
+counts once, mirroring the `budget_exceeded` event, even though only the first
+re-parks the run), and `fail` at both `completeFailure` routes in `budgetCheck`
+(max_tokens and the `budgetDecide` fail), each guarded on the completion
+returning nil. The downgrade counter increments once per successfully recorded
+`model_downgraded`. These are the **first** metric recordings on the
+completion-success and budget paths (survey confirmed none existed).
+
+**The `cost_updated` event (`internal/store`).** `AddRunCost` grew a
+`RETURNING spent_nano_usd, saved_nano_usd, budget_nano_usd` (now `:one`), so
+`ApplyAttemptCost` returns `(store.CostApplied, error)` and — in the **same
+completion transaction**, under the run lock, sharing the monotonic `seq` with
+the aggregate bump — appends `cost_updated` (`store.EventCostUpdated` mirroring
+the new `cost.EventTypeCostUpdated`) carrying `store.CostUpdatedEvent`: the
+attempt's charge plus the run's running spend/saved totals + budget after the
+bump. Because the append shares the lock and seq with the bump, a run's
+`cost_updated` totals are **non-decreasing in seq order by construction** — the
+property the M18 meter relies on to render the running total straight off the
+event stream, stateless. One event per cost-bearing attempt (same guard as the
+ledger row — free tools and no-usage attempts write nothing; cache hits do,
+since the saved total moves), and it precedes the `cost_unknown_model` warning
+(lower seq) so a consumer sees the total move before the advisory that priced it.
+
+**Dashboard, alert, smoke.** The Engine Grafana board gained a **Cost** row —
+spend rate ($/min) and saved-by-cache rate ($/min) by resource, tokens/s, and a
+budget-actions/downgrades panel — inserted before the Fleet row (renumbered),
+green under the anti-drift `TestDashboardsAndRulesReferenceRegisteredMetrics`.
+A dev-scale `BudgetParkRateSpike` example alert joined `prometheus-rules.yml`
+with a byte-matched promtool test (`make obs-lint` green). `make smoke-metrics`
+gained a temperature=0 mock pair (miss → spend + tokens, hit → saved) and the
+positive-value assertions; `make smoke-dashboards` drives the same pair paced 2s
+so the spend/saved panels are genuinely non-empty, allowlists the
+budget/downgrade panel (no budgeted runs in the smoke workload), and adds
+`BudgetParkRateSpike` to the loaded-rules check.
+
+**Tests.** The store `TestApplyAttemptCostAggregatesAndEvents` now asserts one
+`cost_updated` per row with monotonic totals ending at the aggregate; the new
+`internal/engine/cost_metrics_integration_test.go` proves spend/saved/token
+counters equal the ledger (miss+hit via the pricing cache fixture) with the
+run's `cost_updated` events matching the aggregate, the budget-park counter on a
+metered budget fixture, and the downgrade counter equal to the
+`model_downgraded` event count on a metered downgrade fixture. Full
+store/engine/api integration suites green (cost-bearing runs now carry an extra
+`cost_updated` event — no exact-count assertion broke); golangci-lint clean;
+`make obs-lint` green.
+
+**Deferred:** the `cost_updated` events are durable but have **no read API and
+no pub/sub** — the event-feed endpoint and live publish path are M16 (ADR-018),
+and the run-header cost ticker/meter UI is M18.4.

@@ -11,9 +11,9 @@ package metrics
 // this package while cmd/worker and cmd/api wire the concrete structs.
 //
 // Label vocabularies are ADR-008's allowlist: step_type, outcome, status,
-// reason, class, source, route, method, code, result, bucket, decision.
-// run_id/step_id/attempt/claim_id/worker_id/key_id are log and trace
-// fields, never labels.
+// reason, class, source, route, method, code, result, bucket, decision,
+// resource, plugin, limit, action, trigger. run_id/step_id/attempt/
+// claim_id/worker_id/key_id are log and trace fields, never labels.
 
 import (
 	"strconv"
@@ -101,6 +101,13 @@ type WorkerMetrics struct {
 	cacheBypass    *prometheus.CounterVec
 	cacheStores    *prometheus.CounterVec
 	cacheFailOpens prometheus.Counter
+
+	costSpent        *prometheus.CounterVec
+	costSaved        *prometheus.CounterVec
+	costInputTokens  *prometheus.CounterVec
+	costOutputTokens *prometheus.CounterVec
+	costBudgetExceed *prometheus.CounterVec
+	costDowngrades   *prometheus.CounterVec
 }
 
 // NewWorkerMetrics registers the worker instrument set on reg (ADR-008:
@@ -255,6 +262,30 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 			Namespace: Namespace, Subsystem: "cache", Name: "fail_opens_total",
 			Help: "Cache store errors (read or write, e.g. Redis unreachable) after which the step proceeded uncached (ADR-011 fail-open).",
 		}),
+		costSpent: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "cost", Name: "spent_usd_total",
+			Help: "Attributed spend in USD (ticket 10.5, ADR-012), by resolved resource (the model or tool:<name>). Recorded post-commit from the cost ledger, so it counts only charges that landed.",
+		}, []string{"resource"}),
+		costSaved: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "cost", Name: "saved_usd_total",
+			Help: "Cache-hit counterfactual savings in USD (ADR-011 rule 2): the money a response-cache hit avoided spending, by resource.",
+		}, []string{"resource"}),
+		costInputTokens: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "cost", Name: "input_tokens_total",
+			Help: "Input tokens billed by productive attempts (ticket 10.5), by resource. Cache hits consume none and are not counted here.",
+		}, []string{"resource"}),
+		costOutputTokens: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "cost", Name: "output_tokens_total",
+			Help: "Output tokens billed by productive attempts (ticket 10.5), by resource.",
+		}, []string{"resource"}),
+		costBudgetExceed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "cost", Name: "budget_exceeded_total",
+			Help: "Claims the claim-time budget check terminated (ticket 10.5, ADR-012), by limit crossed (run/step_usd/step_tokens) and action (park/fail). Under fan-out each released sibling counts once; only the first parks the run.",
+		}, []string{"limit", "action"}),
+		costDowngrades: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "cost", Name: "downgrades_total",
+			Help: "Claims routed to a cheaper model in a model_fallbacks chain (ticket 10.5, ADR-012), by trigger (budget_threshold/budget_projection).",
+		}, []string{"trigger"}),
 	}
 	reg.MustRegister(
 		m.queueReadyDepth, m.queueStreamLength, m.queuePELSize, m.queueDelayedDepth,
@@ -270,6 +301,8 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 		m.throttled, m.throttleWait, m.rateLimitFailOpens,
 		m.estimateError, m.reconcileFailures,
 		m.cacheHits, m.cacheMisses, m.cacheBypass, m.cacheStores, m.cacheFailOpens,
+		m.costSpent, m.costSaved, m.costInputTokens, m.costOutputTokens,
+		m.costBudgetExceed, m.costDowngrades,
 	)
 	return m
 }
@@ -371,6 +404,42 @@ func (m *WorkerMetrics) CacheStore(plugin string) { m.cacheStores.WithLabelValue
 // CacheFailOpen records one cache store error after which the step proceeded
 // uncached (ADR-011 fail-open).
 func (m *WorkerMetrics) CacheFailOpen() { m.cacheFailOpens.Inc() }
+
+// nanoUSDToFloat converts integer nano-USD (the ledger's exact unit) to the
+// base USD unit Prometheus counters carry (ADR-008: base units). The ledger
+// stays the integer source of truth; a rate counter tolerates float.
+func nanoUSDToFloat(nanoUSD int64) float64 { return float64(nanoUSD) / 1e9 }
+
+// CostSpent records one productive attempt's attributed spend (ticket 10.5),
+// by resource.
+func (m *WorkerMetrics) CostSpent(resource string, nanoUSD int64) {
+	m.costSpent.WithLabelValues(resource).Add(nanoUSDToFloat(nanoUSD))
+}
+
+// CostSaved records one cache hit's counterfactual savings (ticket 10.5), by
+// resource.
+func (m *WorkerMetrics) CostSaved(resource string, nanoUSD int64) {
+	m.costSaved.WithLabelValues(resource).Add(nanoUSDToFloat(nanoUSD))
+}
+
+// CostTokens records one productive attempt's billed input/output tokens by
+// resource (ticket 10.5).
+func (m *WorkerMetrics) CostTokens(resource string, input, output int64) {
+	m.costInputTokens.WithLabelValues(resource).Add(float64(input))
+	m.costOutputTokens.WithLabelValues(resource).Add(float64(output))
+}
+
+// BudgetExceeded records one claim the budget check terminated (ticket 10.5),
+// by the limit crossed and the action taken.
+func (m *WorkerMetrics) BudgetExceeded(limit, action string) {
+	m.costBudgetExceed.WithLabelValues(limit, action).Inc()
+}
+
+// ModelDowngraded records one claim routed to a cheaper model (ticket 10.5),
+// by trigger.
+func (m *WorkerMetrics) ModelDowngraded(trigger string) {
+	m.costDowngrades.WithLabelValues(trigger).Inc()
+}
 
 // The setters below are the cmd/worker sampler's surface — point-in-time
 // gauges sampled from Redis and Postgres on an interval.

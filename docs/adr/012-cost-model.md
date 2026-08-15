@@ -529,6 +529,61 @@ approaches its budget, instead of parking at the primary's price:
   and rescuing an unpriceable primary via a known fallback (deliberately kept
   out — an unknown primary fails closed, crisply).
 
+### As built (10.5)
+
+Cost metrics and the `cost_updated` event — the reporting half of the cost
+model, closing M10 — with **no migration, no config var, and no new store
+primitive** (only a `RETURNING` on the existing aggregate bump).
+
+- **The metrics.** A new `cost` subsystem on the ADR-008 registry (six
+  counters, all bounded-label): `engine_cost_spent_usd_total{resource}` and
+  `engine_cost_saved_usd_total{resource}` (money in the base **USD** unit —
+  `float64(nano)/1e9`; the ledger keeps the exact integer, a rate counter
+  tolerates the float), `engine_cost_{input,output}_tokens_total{resource}`,
+  `engine_cost_budget_exceeded_total{limit,action}`, and
+  `engine_cost_downgrades_total{trigger}`. `resource` is the same
+  pricing-catalog name the ledger and limiter use — bounded to the catalog,
+  never run/step — so cardinality stays within the ADR-008 budget. Spend,
+  saved, and tokens are recorded **post-commit** from the priced row (a fenced
+  or rolled-back completion records nothing — the counters track only charges
+  that landed in the ledger): a cache hit records only its saved figure, a
+  productive call records spend and its billed tokens. The budget counter
+  increments at the claim-time decision (park inside `completeBudgetPark`,
+  fail at the two `completeFailure` routes — only when the completion
+  committed); under fan-out each released sibling counts once, mirroring the
+  `budget_exceeded` event count, even though only the first re-parks the run.
+  The downgrade counter increments once per recorded `model_downgraded`.
+
+- **The event.** `cost_updated` (`store.EventCostUpdated`, mirroring
+  `cost.EventTypeCostUpdated`) is appended by `ApplyAttemptCost` **inside** the
+  completion transaction — under the run lock, sharing the monotonic `seq` with
+  the aggregate bump — once per cost-bearing attempt (the same guard as the
+  ledger row: free tools and no-usage attempts write nothing, cache hits do
+  since the saved total moves). The `AddRunCost` bump grew a `RETURNING
+  spent_nano_usd, saved_nano_usd, budget_nano_usd`, so the payload
+  (`store.CostUpdatedEvent`) carries the attempt's charge **and** the run's
+  running totals + budget after the bump — the M18 live meter reads the total
+  straight off the event stream with no state of its own. Because the append
+  shares the lock and seq with the bump, the totals a run's `cost_updated`
+  events report are **non-decreasing in seq order by construction** (asserted
+  in the store and engine integration tests, and cross-checked against the run
+  aggregate — the M18.4 meter-consistency check, pre-paid). The
+  `cost_unknown_model` warning now follows the `cost_updated` event (higher
+  seq), so a consumer sees the total move before the advisory that priced it.
+
+- **The dashboard.** The Engine board gained a **Cost** row (spend rate and
+  saved-by-cache rate by resource, tokens/s, budget-actions/downgrades),
+  plus a dev-scale `BudgetParkRateSpike` example alert. `make smoke-dashboards`
+  drives a temperature=0 mock pair (miss + cache-hit savings) so the spend and
+  saved panels are genuinely non-empty; the budget/downgrade panel is
+  allowlisted (no budgeted runs in the smoke workload), and
+  `make smoke-metrics` asserts the spend/saved/token counters positive.
+
+- **Not in 10.5.** The `cost_updated` events are appended to the durable feed,
+  but there is **no read API and no pub/sub** — the event feed endpoint and
+  live publish path are M16 (ADR-018), and the run-header cost ticker/meter UI
+  is M18.4. This closes M10.
+
 ## Consequences
 
 **Easier.**
