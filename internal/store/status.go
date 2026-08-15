@@ -170,6 +170,13 @@ const (
 	// AttemptOutcomeCancelled: the attempt was cancelled by run-level
 	// control flow (M5.6/5.7); never retried.
 	AttemptOutcomeCancelled = "cancelled"
+	// AttemptOutcomeThrottled: a fleet-wide rate-limit denial deferred the
+	// attempt (ticket 9.2, ADR-010). Like `lost`, an administrative outcome
+	// outside ADR-006's taxonomy — never counted against the retry budget
+	// (the step was never executed), decided by the limiter before the
+	// executor runs. Routed running → retrying, re-dispatched at
+	// next_attempt_at.
+	AttemptOutcomeThrottled = "throttled"
 )
 
 // Event types written by run instantiation (2.5) and the guarded
@@ -192,6 +199,11 @@ const (
 	// ADR-006). The payload carries the attempt, its class, and when the
 	// next attempt is due.
 	EventStepRetryScheduled = "step_retry_scheduled"
+	// EventStepThrottled: a fleet-wide rate-limit denial routed the step
+	// running → retrying without executing it (ticket 9.2, ADR-010). The
+	// payload carries the attempt, the resource, which bucket denied, the
+	// limiter's retry_after, and when the re-dispatch is due.
+	EventStepThrottled = "step_throttled"
 	// EventStepDeadLettered: the step reached the terminal failure state
 	// (ticket 5.4, ADR-006). The payload carries the source, the judged
 	// class (empty for poison), the attempt count at death, and the

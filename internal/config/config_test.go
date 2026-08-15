@@ -412,13 +412,20 @@ func TestLoadResourcesOverrides(t *testing.T) {
 	t.Parallel()
 
 	// Default: neither source set — the worker treats every resource as
-	// unlimited (ADR-010, ticket 9.1).
+	// unlimited (ADR-010, ticket 9.1); the throttle knobs and key prefix
+	// carry their 9.2 defaults.
 	cfg, err := config.Load(lookupFrom(nil))
 	if err != nil {
 		t.Fatalf("Load with empty env: %v", err)
 	}
-	if cfg.Resources != (config.ResourcesConfig{}) {
-		t.Errorf("default Resources config = %+v, want zero value", cfg.Resources)
+	if cfg.Resources.Inline != "" || cfg.Resources.File != "" {
+		t.Errorf("default Resources sources = %+v, want both empty", cfg.Resources)
+	}
+	if cfg.Resources.KeyPrefix != config.DefaultResourcesKeyPrefix ||
+		cfg.Resources.ThrottleFloor != config.DefaultResourcesThrottleFloor ||
+		cfg.Resources.ThrottleCap != config.DefaultResourcesThrottleCap ||
+		cfg.Resources.ThrottleJitterFrac != config.DefaultResourcesThrottleJitterFrac {
+		t.Errorf("default Resources knobs = %+v, want the 9.2 defaults", cfg.Resources)
 	}
 
 	// Inline source.
@@ -438,6 +445,39 @@ func TestLoadResourcesOverrides(t *testing.T) {
 	}
 	if cfg.Resources.File != "/etc/agentloom/resources.json" || cfg.Resources.Inline != "" {
 		t.Errorf("Resources = %+v, want file set only", cfg.Resources)
+	}
+
+	// Throttle knobs + key prefix.
+	cfg, err = config.Load(lookupFrom(map[string]string{
+		config.EnvResourcesKeyPrefix: "rl:test",
+		config.EnvResourcesThrFloor:  "250ms",
+		config.EnvResourcesThrCap:    "2m",
+		config.EnvResourcesThrJitter: "0.5",
+	}))
+	if err != nil {
+		t.Fatalf("Load throttle knobs: %v", err)
+	}
+	if cfg.Resources.KeyPrefix != "rl:test" ||
+		cfg.Resources.ThrottleFloor != 250*time.Millisecond ||
+		cfg.Resources.ThrottleCap != 2*time.Minute ||
+		cfg.Resources.ThrottleJitterFrac != 0.5 {
+		t.Errorf("Resources knobs = %+v, want the overrides", cfg.Resources)
+	}
+}
+
+func TestLoadResourcesInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	for name, env := range map[string]map[string]string{
+		"jitter >= 1":     {config.EnvResourcesThrJitter: "1"},
+		"jitter negative": {config.EnvResourcesThrJitter: "-0.1"},
+		"jitter unparse":  {config.EnvResourcesThrJitter: "half"},
+		"floor above cap": {config.EnvResourcesThrFloor: "10m", config.EnvResourcesThrCap: "1m"},
+		"bad floor":       {config.EnvResourcesThrFloor: "nope"},
+	} {
+		if _, err := config.Load(lookupFrom(env)); err == nil {
+			t.Errorf("%s: Load want error, got nil", name)
+		}
 	}
 }
 

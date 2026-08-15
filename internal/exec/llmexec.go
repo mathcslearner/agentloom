@@ -113,6 +113,54 @@ func (e LLMExecutor) Execute(ctx context.Context, sc StepContext) (Output, error
 	return out, nil
 }
 
+// ResourceClaim implements ResourceClaimer (ADR-010): the llm step's
+// fleet-wide resource is "<provider>:<model>", keyed by the *resolved*
+// provider so the limiter meters what the provider actually bills, and its
+// token cost is a rough pre-call estimate. A resolution failure (unknown
+// model, unconfigured provider) or a corrupt config returns an error, which
+// tells the middleware to skip limiting and let Execute land the permanent
+// failure — the routing judgment lives in one place.
+func (e LLMExecutor) ResourceClaim(sc StepContext) (string, int64, error) {
+	cfg, err := configAs[*dag.LLMConfig](sc)
+	if err != nil {
+		return "", 0, err
+	}
+	if cfg == nil || cfg.Model == "" {
+		return "", 0, fmt.Errorf("missing required field %q", "model")
+	}
+	if e.providers == nil {
+		return "", 0, fmt.Errorf("no model providers configured for model %q", cfg.Model)
+	}
+	provider, model, err := e.providers.Resolve("", cfg.Model)
+	if err != nil {
+		return "", 0, fmt.Errorf("resolving model %q: %w", cfg.Model, err)
+	}
+	return provider.Manifest().Name + ":" + model, estimateLLMTokens(cfg), nil
+}
+
+// estimateLLMTokens is the ADR-010 pre-call token estimate for an llm step:
+// roughly four characters per input token over the rendered prompt/messages,
+// plus the completion's max_tokens bound (defaulted when absent). It is
+// deliberately rough — M12's real token counters refine it, and 9.3
+// reconciles the post-call actual−estimate error back onto the bucket so a
+// biased estimator cannot drift the fleet past the provider's real budget.
+// Never below 1 (the token bucket requires a positive cost).
+func estimateLLMTokens(cfg *dag.LLMConfig) int64 {
+	inputChars := len(cfg.Prompt)
+	for _, m := range cfg.Messages {
+		inputChars += len(m.Content)
+	}
+	maxTokens := cfg.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = llmDefaultMaxTokens
+	}
+	est := int64((inputChars+3)/4) + int64(maxTokens)
+	if est < 1 {
+		est = 1
+	}
+	return est
+}
+
 // buildChatRequest maps the (already template-rendered) step config onto
 // the unified ChatRequest. Model is filled in by the caller after
 // routing so the provider sees its canonical (prefix-stripped) model id.

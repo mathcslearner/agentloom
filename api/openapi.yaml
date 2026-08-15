@@ -1119,9 +1119,11 @@ components:
       description: >
         How an attempt ended: `succeeded`; a judged failure class
         (`transient`, `permanent`, `timeout` — ADR-006); `cancelled` by
-        run-level control flow; or the administrative `lost` (lease-
-        expiry takeover — never counted against the retry budget).
-      enum: [succeeded, transient, permanent, timeout, cancelled, lost]
+        run-level control flow; or an administrative outcome outside the
+        taxonomy — `lost` (lease-expiry takeover) or `throttled` (a
+        fleet-wide rate-limit denial deferred the attempt, ADR-010) —
+        neither of which is counted against the retry budget.
+      enum: [succeeded, transient, permanent, timeout, cancelled, lost, throttled]
     Scope:
       type: string
       description: >

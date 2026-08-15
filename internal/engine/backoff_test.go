@@ -97,6 +97,43 @@ func TestRetryDelayFullJitter(t *testing.T) {
 	}
 }
 
+func TestThrottleDelayClampAndJitter(t *testing.T) {
+	t.Parallel()
+
+	const floor = 500 * time.Millisecond
+	const ceiling = 5 * time.Minute
+
+	for _, tc := range []struct {
+		name       string
+		retryAfter time.Duration
+		frac       float64
+		draw       float64
+		want       time.Duration
+	}{
+		// Below the floor clamps up; no jitter with frac 0.
+		{"below floor", 10 * time.Millisecond, 0, 0.5, floor},
+		{"negative clamps to floor", -1, 0, 0.5, floor},
+		// Above the cap clamps down.
+		{"above cap", 10 * time.Minute, 0, 0.5, ceiling},
+		// In range, no jitter.
+		{"in range no jitter", 3 * time.Second, 0, 0.9, 3 * time.Second},
+		// Additive jitter: clamped + draw × frac × clamped.
+		{"additive jitter max draw", 10 * time.Second, 0.20, 1.0, 12 * time.Second},
+		{"additive jitter half draw", 10 * time.Second, 0.20, 0.5, 11 * time.Second},
+		{"additive jitter zero draw", 10 * time.Second, 0.20, 0.0, 10 * time.Second},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := throttleDelay(tc.retryAfter, floor, ceiling, tc.frac, func() float64 { return tc.draw })
+			if got != tc.want {
+				t.Errorf("throttleDelay(%v, frac=%v, draw=%v) = %v, want %v",
+					tc.retryAfter, tc.frac, tc.draw, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRetryDelayCorruptPolicy(t *testing.T) {
 	t.Parallel()
 

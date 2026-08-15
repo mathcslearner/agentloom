@@ -221,6 +221,250 @@ func (l *Limiter) acquire(ctx context.Context, b Bucket, cost int64, nowArg stri
 	return parseAcquireReply(raw)
 }
 
+// DeniedBucket reports which dimension(s) of a dual acquire denied it
+// (ADR-010): the two-key script grants only when both buckets have their
+// tokens, so a denial names requests, tokens, or both. DeniedNone marks an
+// allowed acquire. It is the source of the middleware's `bucket` metric
+// label — the ratelimit library returns the enum, the caller names it.
+type DeniedBucket int
+
+const (
+	// DeniedNone marks an allowed acquire (both buckets debited).
+	DeniedNone DeniedBucket = 0
+	// DeniedRequests means the requests bucket lacked a token; tokens had room.
+	DeniedRequests DeniedBucket = 1
+	// DeniedTokens means the tokens bucket lacked the estimate; requests had room.
+	DeniedTokens DeniedBucket = 2
+	// DeniedBoth means neither bucket had room.
+	DeniedBoth DeniedBucket = 3
+)
+
+// String renders the denied dimension for the middleware's `bucket` label.
+func (d DeniedBucket) String() string {
+	switch d {
+	case DeniedRequests:
+		return "requests"
+	case DeniedTokens:
+		return "tokens"
+	case DeniedBoth:
+		return "both"
+	default:
+		return "none"
+	}
+}
+
+// DualResult reports one two-key (dual-bucket) acquire.
+type DualResult struct {
+	// Allowed is whether both buckets granted — the acquire is all-or-nothing.
+	Allowed bool
+	// Denied names the dimension(s) that lacked tokens on a denial;
+	// DeniedNone when allowed.
+	Denied DeniedBucket
+	// RetryAfter is zero when allowed; when denied, the time until *both*
+	// dimensions can admit the call — the max of the denying buckets'
+	// per-cost refill deadlines (RetryAfterNever if any denying bucket never
+	// refills, so no wait can lift it).
+	RetryAfter time.Duration
+	// RemainingRequests / RemainingTokens are the whole tokens left in each
+	// bucket after this acquire (unchanged from the refilled balance on a
+	// denial — neither bucket debits).
+	RemainingRequests int64
+	RemainingTokens   int64
+}
+
+// acquireDualScript is the atomic two-key acquire of ADR-010: it refills
+// both buckets against one Redis clock, grants only if *both* hold their
+// cost, and debits both or neither — the all-or-nothing property that keeps
+// the request and token ledgers from drifting apart under steady-state
+// throttling (6.4's sequential no-refund acquire would leak a request token
+// on every token denial). Each bucket is the same {tokens, ts} hash the
+// single-key script maintains, with identical semantics: absent key = full,
+// %.17g exact balance, TTL re-armed to time-to-full (PERSIST for a
+// never-refilling bucket), backwards-clock elapsed clamped to zero. Refill
+// bookkeeping is written for both buckets even on a denial — that only
+// advances the clock, minting nothing.
+//
+// KEYS[1] = requests bucket, KEYS[2] = tokens bucket. ARGV = cap1, rate1,
+// cost1, cap2, rate2, cost2, and the test-only now override in epoch
+// microseconds (empty in production). Returns {allowed 0|1, tokens1 %.17g,
+// tokens2 %.17g, retry_after µs (-1 = never), denied 0|1|2|3}.
+var acquireDualScript = redis.NewScript(`
+local now
+if ARGV[7] == '' then
+  local t = redis.call('TIME')
+  now = t[1] * 1000000 + t[2]
+else
+  now = tonumber(ARGV[7])
+end
+
+local function refill(key, capacity, rate)
+  local tokens = capacity
+  local state = redis.call('HMGET', key, 'tokens', 'ts')
+  if state[1] and state[2] then
+    tokens = tonumber(state[1])
+    local elapsed = now - tonumber(state[2])
+    if elapsed < 0 then elapsed = 0 end
+    tokens = tokens + elapsed * rate / 1000000
+    if tokens > capacity then tokens = capacity end
+  end
+  return tokens
+end
+
+local cap1 = tonumber(ARGV[1]); local rate1 = tonumber(ARGV[2]); local cost1 = tonumber(ARGV[3])
+local cap2 = tonumber(ARGV[4]); local rate2 = tonumber(ARGV[5]); local cost2 = tonumber(ARGV[6])
+
+local t1 = refill(KEYS[1], cap1, rate1)
+local t2 = refill(KEYS[2], cap2, rate2)
+
+local ok1 = cost1 <= t1
+local ok2 = cost2 <= t2
+local allowed = 0
+local denied = 0
+local retry_after = 0
+if ok1 and ok2 then
+  allowed = 1
+  t1 = t1 - cost1
+  t2 = t2 - cost2
+else
+  local function ra(ok, cost, tokens, rate)
+    if ok then return 0 end
+    if rate > 0 then return math.ceil((cost - tokens) / rate * 1000000) end
+    return -1
+  end
+  local r1 = ra(ok1, cost1, t1, rate1)
+  local r2 = ra(ok2, cost2, t2, rate2)
+  if (not ok1) and (not ok2) then
+    denied = 3
+  elseif not ok1 then
+    denied = 1
+  else
+    denied = 2
+  end
+  if r1 == -1 or r2 == -1 then
+    retry_after = -1
+  elseif r1 >= r2 then
+    retry_after = r1
+  else
+    retry_after = r2
+  end
+end
+
+local function persist(key, capacity, rate, tokens)
+  redis.call('HSET', key, 'tokens', string.format('%.17g', tokens), 'ts', string.format('%.0f', now))
+  if rate > 0 then
+    redis.call('PEXPIRE', key, math.ceil((capacity - tokens) / rate * 1000) + 1000)
+  else
+    redis.call('PERSIST', key)
+  end
+end
+persist(KEYS[1], cap1, rate1, t1)
+persist(KEYS[2], cap2, rate2, t2)
+
+return {allowed, string.format('%.17g', t1), string.format('%.17g', t2), retry_after, denied}
+`)
+
+// AcquireDual atomically takes reqCost from the requests bucket and tokCost
+// from the tokens bucket in one step, refilling both for the elapsed time
+// first: both grant and both debit, or neither debits and the call is
+// denied. This is ADR-010's fleet-wide resource acquire — the requests and
+// token dimensions of one provider limit, enforced together so a denial on
+// one never leaks a token from the other. Time comes from the Redis server
+// clock, so every worker sharing the bucket sees one ledger.
+func (l *Limiter) AcquireDual(ctx context.Context, requests Bucket, reqCost int64, tokens Bucket, tokCost int64) (DualResult, error) {
+	res, _, _, err := l.acquireDual(ctx, requests, reqCost, tokens, tokCost, "")
+	return res, err
+}
+
+// acquireDualAt is AcquireDual against an injected clock — the test seam
+// behind the injectable-time invariant, exposed only through export_test.go.
+// It also returns the exact fractional balances the accounting property test
+// compares against its model.
+func (l *Limiter) acquireDualAt(ctx context.Context, requests Bucket, reqCost int64, tokens Bucket, tokCost int64, now time.Time) (DualResult, float64, float64, error) {
+	if now.IsZero() {
+		return DualResult{}, 0, 0, errors.New("ratelimit: acquireDualAt: zero now — pass the injected current time")
+	}
+	return l.acquireDual(ctx, requests, reqCost, tokens, tokCost, strconv.FormatInt(now.UnixMicro(), 10))
+}
+
+func (l *Limiter) acquireDual(ctx context.Context, requests Bucket, reqCost int64, tokens Bucket, tokCost int64, nowArg string) (DualResult, float64, float64, error) {
+	if err := requests.validate(reqCost); err != nil {
+		return DualResult{}, 0, 0, fmt.Errorf("ratelimit: requests bucket: %w", err)
+	}
+	if err := tokens.validate(tokCost); err != nil {
+		return DualResult{}, 0, 0, fmt.Errorf("ratelimit: tokens bucket: %w", err)
+	}
+	raw, err := acquireDualScript.Run(ctx, l.client, []string{requests.Key, tokens.Key},
+		strconv.FormatInt(requests.Capacity, 10),
+		strconv.FormatFloat(requests.RefillPerSec, 'g', -1, 64),
+		strconv.FormatInt(reqCost, 10),
+		strconv.FormatInt(tokens.Capacity, 10),
+		strconv.FormatFloat(tokens.RefillPerSec, 'g', -1, 64),
+		strconv.FormatInt(tokCost, 10),
+		nowArg,
+	).Result()
+	if err != nil {
+		return DualResult{}, 0, 0, fmt.Errorf("ratelimit: dual acquire from %s + %s: %w", requests.Key, tokens.Key, err)
+	}
+	return parseDualReply(raw)
+}
+
+// parseDualReply decodes the two-key script's
+// {allowed, tokens1, tokens2, retry_after, denied} reply.
+func parseDualReply(raw any) (DualResult, float64, float64, error) {
+	reply, ok := raw.([]any)
+	if !ok || len(reply) != 5 {
+		return DualResult{}, 0, 0, fmt.Errorf("ratelimit: unexpected dual acquire reply %v", raw)
+	}
+	allowed, ok := reply[0].(int64)
+	if !ok {
+		return DualResult{}, 0, 0, fmt.Errorf("ratelimit: unexpected allowed reply %v", reply[0])
+	}
+	t1, err := parseBalance(reply[1])
+	if err != nil {
+		return DualResult{}, 0, 0, err
+	}
+	t2, err := parseBalance(reply[2])
+	if err != nil {
+		return DualResult{}, 0, 0, err
+	}
+	retryAfterUS, ok := reply[3].(int64)
+	if !ok {
+		return DualResult{}, 0, 0, fmt.Errorf("ratelimit: unexpected retry_after reply %v", reply[3])
+	}
+	denied, ok := reply[4].(int64)
+	if !ok {
+		return DualResult{}, 0, 0, fmt.Errorf("ratelimit: unexpected denied reply %v", reply[4])
+	}
+	res := DualResult{
+		Allowed:           allowed == 1,
+		Denied:            DeniedBucket(denied),
+		RemainingRequests: int64(math.Floor(t1)),
+		RemainingTokens:   int64(math.Floor(t2)),
+	}
+	switch {
+	case res.Allowed:
+		res.RetryAfter = 0
+	case retryAfterUS < 0:
+		res.RetryAfter = RetryAfterNever
+	default:
+		res.RetryAfter = time.Duration(retryAfterUS) * time.Microsecond
+	}
+	return res, t1, t2, nil
+}
+
+// parseBalance decodes one %.17g bucket-balance string from a script reply.
+func parseBalance(v any) (float64, error) {
+	s, ok := v.(string)
+	if !ok {
+		return 0, fmt.Errorf("ratelimit: unexpected tokens reply %v", v)
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, fmt.Errorf("ratelimit: unparseable tokens %q: %w", s, err)
+	}
+	return f, nil
+}
+
 // parseAcquireReply decodes the script's {allowed, tokens, retry_after}
 // reply. The balance comes back as a %.17g string because the script's
 // exact float64 state is part of the contract the property test pins;

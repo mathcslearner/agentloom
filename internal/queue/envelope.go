@@ -40,6 +40,12 @@ const (
 	// so identical (run, step) retries encode to byte-identical delayed
 	// members — ZADD's move-the-fire-time dedup (ADR-005).
 	ReasonRetry = "retry"
+	// ReasonThrottle: a rate-limited step's re-dispatch scheduled through
+	// the delayed set (ticket 9.2, ADR-010). Like ReasonRetry the envelope
+	// carries no EnqueuedAt, so a fan-out of siblings throttled against one
+	// resource re-queues to byte-identical delayed members and ZADD dedups
+	// to one pending re-dispatch per step.
+	ReasonThrottle = "throttle"
 )
 
 // Envelope is a task message: a pointer to durable state, never a payload

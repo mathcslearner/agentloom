@@ -60,6 +60,19 @@ type stepRetryPayload struct {
 	NextAttemptAt time.Time `json:"next_attempt_at"`
 }
 
+// stepThrottlePayload is the step_throttled event body (ticket 9.2): which
+// attempt was deferred, the resource whose limit denied it, which bucket
+// (requests/tokens/both) lacked capacity, the limiter's own retry_after,
+// and when the re-dispatch is due.
+type stepThrottlePayload struct {
+	StepID        string    `json:"step_id"`
+	AttemptNo     int32     `json:"attempt_no"`
+	Resource      string    `json:"resource"`
+	Bucket        string    `json:"bucket"`
+	RetryAfter    string    `json:"retry_after"`
+	NextAttemptAt time.Time `json:"next_attempt_at"`
+}
+
 // stepDeadLetteredPayload is the step_dead_lettered event body (ticket
 // 5.4): why the step died (source), the judged class (empty for poison),
 // the attempt count at death, and the dead_letters seq the full record
@@ -792,6 +805,85 @@ func RetryStep(ctx context.Context, q Querier, args RetryStepArgs) (gen.RunStep,
 		return gen.RunStep{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "step retry scheduled",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID),
+		log.Attempt(int(step.AttemptCount)))
+	return step, nil
+}
+
+// ThrottleStepArgs are the inputs to ThrottleStep.
+type ThrottleStepArgs struct {
+	RunID  uuid.UUID
+	StepID string
+	// ClaimID is the fencing token ClaimStep issued to this caller.
+	ClaimID uuid.UUID
+	// Resource is the ADR-010 resource whose limit denied the step (e.g.
+	// "anthropic:claude-sonnet-5"); recorded on the event for diagnostics.
+	Resource string
+	// Bucket names the denying dimension (requests/tokens/both) for the
+	// event.
+	Bucket string
+	// RetryAfter is the limiter's own computed time-to-tokens, recorded on
+	// the event (the pre-jitter, pre-clamp figure); its human string form.
+	RetryAfter string
+	// NextAttemptAt is when the re-dispatch is due — now plus the clamped,
+	// jittered delay the engine computed. Required.
+	NextAttemptAt time.Time
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// ThrottleStep routes a rate-limited step running → retrying without
+// executing it (ticket 9.2, ADR-010): the fleet-wide limiter denied the
+// step's provider call, so it is deferred, not failed. It reuses 5.2's
+// retry CAS wholesale (RetryRunStep — the claim-fenced running → retrying
+// transition, claim cleared, next_attempt_at stamped) but records the
+// attempt with the administrative outcome `throttled` (never a counted
+// class, so CountCountedFailures ignores it — the retry budget is
+// untouched) and appends step_throttled rather than step_retry_scheduled.
+// Like RetryStep it does NOT bump steps_failed — a throttle is not a
+// failure. Scheduling the delayed re-dispatch (reason `throttle`) is the
+// caller's post-commit move; a crash before it is healed by the same
+// overdue-retrying reconciler scan 5.2's retries rely on.
+func ThrottleStep(ctx context.Context, q Querier, args ThrottleStepArgs) (gen.RunStep, error) {
+	const op = "throttle step"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.RunStep{}, err
+	}
+	if args.NextAttemptAt.IsZero() {
+		return gen.RunStep{}, fmt.Errorf("store: %s: zero NextAttemptAt — pass the computed due time", op)
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.RunStep{}, err
+	}
+	// The throttle event's cause is recorded on the step's error column too,
+	// so GET /v1/runs shows why a step is waiting; JSON marshaling a small
+	// fixed map cannot fail.
+	errPayload, _ := json.Marshal(map[string]string{
+		"outcome": AttemptOutcomeThrottled, "resource": args.Resource, "bucket": args.Bucket,
+	})
+	step, err := gq.RetryRunStep(ctx, gen.RetryRunStepParams{
+		RunID: args.RunID, StepID: args.StepID, ClaimID: &args.ClaimID,
+		Error: errPayload, NextAttemptAt: args.NextAttemptAt, Now: args.Now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.RunStep{}, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
+			want: StepStatusRunning, to: StepStatusRetrying, claim: &args.ClaimID,
+		})
+	}
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op, err)
+	}
+	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeThrottled, errPayload, nil, args.Now); err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepThrottled, stepThrottlePayload{
+		StepID: args.StepID, AttemptNo: step.AttemptCount, Resource: args.Resource,
+		Bucket: args.Bucket, RetryAfter: args.RetryAfter, NextAttemptAt: args.NextAttemptAt,
+	}); err != nil {
+		return gen.RunStep{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "step throttled",
 		log.RunID(args.RunID.String()), log.StepID(args.StepID),
 		log.Attempt(int(step.AttemptCount)))
 	return step, nil

@@ -83,6 +83,10 @@ type WorkerMetrics struct {
 	stepLogCaptured      prometheus.Counter
 	stepLogDropped       prometheus.Counter
 	stepLogFlushFailures prometheus.Counter
+
+	throttled          *prometheus.CounterVec
+	throttleWait       *prometheus.HistogramVec
+	rateLimitFailOpens prometheus.Counter
 }
 
 // NewWorkerMetrics registers the worker instrument set on reg (ADR-008:
@@ -195,6 +199,19 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 			Namespace: Namespace, Subsystem: "steplog", Name: "flush_failures_total",
 			Help: "Step-log flush transactions that failed and dropped their batch.",
 		}),
+		throttled: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "ratelimit", Name: "throttled_total",
+			Help: "Steps deferred by fleet-wide rate limiting (ticket 9.2, ADR-010), by resource and the denying bucket (requests, tokens, both).",
+		}, []string{"resource", "bucket"}),
+		throttleWait: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: Namespace, Subsystem: "ratelimit", Name: "throttle_wait_seconds",
+			Help:    "Computed re-dispatch delay of a throttled step (the queue-wait rate limiting adds), by resource.",
+			Buckets: latencyBuckets,
+		}, []string{"resource"}),
+		rateLimitFailOpens: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "ratelimit", Name: "fail_opens_total",
+			Help: "Resource-limiter errors (e.g. Redis unreachable) after which the step proceeded without a limit (ADR-010 fail-open).",
+		}),
 	}
 	reg.MustRegister(
 		m.queueReadyDepth, m.queueStreamLength, m.queuePELSize, m.queueDelayedDepth,
@@ -207,6 +224,7 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 		m.runDuration,
 		m.workerActive,
 		m.stepLogCaptured, m.stepLogDropped, m.stepLogFlushFailures,
+		m.throttled, m.throttleWait, m.rateLimitFailOpens,
 	)
 	return m
 }
@@ -268,6 +286,19 @@ func (m *WorkerMetrics) Dispatched(reason string, lag time.Duration) {
 func (m *WorkerMetrics) ReconcileHealed(reason string, n int) {
 	m.reconcileHealed.WithLabelValues(reason).Add(float64(n))
 }
+
+// Throttled records one rate-limit backpressure event (ticket 9.2).
+func (m *WorkerMetrics) Throttled(resource, bucket string) {
+	m.throttled.WithLabelValues(resource, bucket).Inc()
+}
+
+// ThrottleWait records the computed re-dispatch delay of one throttle.
+func (m *WorkerMetrics) ThrottleWait(resource string, d time.Duration) {
+	m.throttleWait.WithLabelValues(resource).Observe(d.Seconds())
+}
+
+// RateLimitFailOpen records one fail-open (limiter error → proceed).
+func (m *WorkerMetrics) RateLimitFailOpen() { m.rateLimitFailOpens.Inc() }
 
 // The setters below are the cmd/worker sampler's surface — point-in-time
 // gauges sampled from Redis and Postgres on an interval.

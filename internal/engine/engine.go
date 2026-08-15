@@ -29,8 +29,27 @@ import (
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/exec/effects"
 	"github.com/mathcslearner/agentloom/internal/queue"
+	"github.com/mathcslearner/agentloom/internal/ratelimit/resource"
 	"github.com/mathcslearner/agentloom/internal/store"
 )
+
+// Default requeue-math knobs for the throttle backoff (ADR-010): the delay
+// before a rate-limited step's re-dispatch is clamp(retry_after, floor,
+// cap) plus additive jitter. cmd/worker overrides these from config.
+const (
+	defaultThrottleFloor      = 500 * time.Millisecond
+	defaultThrottleCap        = 5 * time.Minute
+	defaultThrottleJitterFrac = 0.20
+)
+
+// ResourceLimiter is the engine's seam onto the fleet-wide resource rate
+// limiter (ticket 9.2, ADR-010) — satisfied by *resource.Limiter. The
+// middleware acquires a cost-bearing step's resource buckets before its
+// provider call; a denial defers the step (throttle), an impossible request
+// perm-fails, a Redis error fails open. Nil disables limiting entirely.
+type ResourceLimiter interface {
+	Acquire(ctx context.Context, resourceName string, estTokens int64) (resource.Decision, error)
+}
 
 // RetryScheduler is the engine's seam onto delayed delivery (ticket 5.2)
 // — satisfied by *queue.Delayed. After a retry-routing completion commits,
@@ -110,6 +129,18 @@ type Engine struct {
 	tracerProvider oteltrace.TracerProvider
 	// tracer is tracerProvider's resolved tracer. Never nil after New.
 	tracer oteltrace.Tracer
+	// limiter, when set, is the fleet-wide resource rate limiter the M9
+	// middleware acquires before a cost-bearing executor's provider call
+	// (ticket 9.2, ADR-010). Nil disables limiting — every step executes
+	// without an acquire, the default for every test layer that doesn't opt
+	// in.
+	limiter ResourceLimiter
+	// throttleFloor / throttleCap / throttleJitterFrac are ADR-010's requeue
+	// math knobs (the delay before a throttled step's re-dispatch). Set to
+	// the defaults in New; cmd/worker overrides via WithThrottleBackoff.
+	throttleFloor      time.Duration
+	throttleCap        time.Duration
+	throttleJitterFrac float64
 }
 
 // Option customizes an Engine.
@@ -190,6 +221,34 @@ func WithTracerProvider(tp oteltrace.TracerProvider) Option {
 	return func(e *Engine) { e.tracerProvider = tp }
 }
 
+// WithResourceLimiter sets the fleet-wide resource rate limiter the M9
+// middleware consults before a cost-bearing executor's provider call
+// (ticket 9.2, ADR-010) — cmd/worker wires *resource.Limiter here when the
+// resource-limit config names any resource. Nil (the default) disables
+// limiting: every step executes with no acquire.
+func WithResourceLimiter(l ResourceLimiter) Option {
+	return func(e *Engine) { e.limiter = l }
+}
+
+// WithThrottleBackoff overrides ADR-010's requeue-math knobs — the floor,
+// cap, and jitter fraction of a throttled step's re-dispatch delay.
+// cmd/worker wires config.WorkerConfig here. Non-positive floor/cap keep the
+// defaults; a negative jitter fraction is clamped to zero (no jitter).
+func WithThrottleBackoff(floor, ceiling time.Duration, jitterFrac float64) Option {
+	return func(e *Engine) {
+		if floor > 0 {
+			e.throttleFloor = floor
+		}
+		if ceiling > 0 {
+			e.throttleCap = ceiling
+		}
+		if jitterFrac < 0 {
+			jitterFrac = 0
+		}
+		e.throttleJitterFrac = jitterFrac
+	}
+}
+
 // New builds an Engine over the given store and executor registry.
 // workerID may be empty (logs then carry an empty worker_id — the queue
 // consumer name is the conventional value).
@@ -200,7 +259,12 @@ func New(s *store.Store, r *exec.Registry, workerID string, opts ...Option) (*En
 	if r == nil {
 		return nil, errors.New("engine: New requires an executor registry")
 	}
-	e := &Engine{store: s, registry: r, workerID: workerID, now: time.Now, jitterRand: rand.Float64, metrics: nopMetrics{}}
+	e := &Engine{
+		store: s, registry: r, workerID: workerID, now: time.Now,
+		jitterRand: rand.Float64, metrics: nopMetrics{},
+		throttleFloor: defaultThrottleFloor, throttleCap: defaultThrottleCap,
+		throttleJitterFrac: defaultThrottleJitterFrac,
+	}
 	for _, opt := range opts {
 		opt(e)
 	}

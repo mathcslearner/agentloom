@@ -27,6 +27,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	obstrace "github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/queue"
+	"github.com/mathcslearner/agentloom/internal/ratelimit/resource"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
@@ -624,6 +625,118 @@ func (e *Engine) scheduleRetry(ctx context.Context, step gen.RunStep, fireAt tim
 	}
 	if err := e.scheduler.Schedule(ctx, env, fireAt); err != nil {
 		logger.ErrorContext(ctx, "delayed retry schedule failed; reconciler will re-dispatch",
+			slog.Time("fire_at", fireAt),
+			slog.Any("error", err))
+	}
+}
+
+// completeThrottle is the backpressure route (ticket 9.2, ADR-010): a
+// fleet-wide rate-limit denial defers a step without failing it. It computes
+// the requeue delay (clamp(retry_after) + additive jitter), routes the step
+// running → retrying via ThrottleStep — the administrative `throttled`
+// outcome, no steps_failed bump, no counted failure, so the retry budget is
+// untouched — and schedules the delayed re-dispatch (reason throttle)
+// post-commit. The worker slot is released the moment this returns nil:
+// nothing waits in-process for tokens. On a cancelling run the throttle is
+// abandoned and the step settles as cancelled instead (the run must quiesce,
+// not wait for capacity). The return follows the Handle/ACK contract: nil =
+// committed, ACK; non-nil = redeliver.
+//
+// runTrace is the run's durable root trace context (ticket 7.3): the delayed
+// throttle envelope's parent, exactly as the retry route uses it — the
+// re-dispatch descends from no live span, and the next claim restores the
+// attempt link from run_steps.trace_span.
+func (e *Engine) completeThrottle(ctx context.Context, step gen.RunStep, dec resource.Decision, runTrace store.TraceContext) error {
+	logger := log.From(ctx)
+	delay := throttleDelay(dec.RetryAfter, e.throttleFloor, e.throttleCap, e.throttleJitterFrac, e.jitterRand)
+	now := e.now()
+	fireAt := now.Add(delay)
+	cancelSettled := false
+	var terminalRun *gen.Run
+	var fenced *store.TransitionError
+	txCtx, txSpan := e.tracer.Start(ctx, "step.completion")
+	txErr := e.store.WithTx(txCtx, func(ctx context.Context, q store.Querier) error {
+		// The run-status check (ticket 5.6), as on the success/failure paths:
+		// a throttle on a cancelling run is dropped — the successors are
+		// already cancelled and the run must converge, not wait for tokens.
+		status, serr := store.LockRunStatus(ctx, q, step.RunID, now)
+		if serr != nil {
+			return serr
+		}
+		if status == store.RunStatusCancelling {
+			if _, cerr := store.CancelRunningStep(ctx, q, store.CancelRunningStepArgs{
+				RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
+				Reason: store.CancelReasonRunCancelled, Error: nil, Now: now,
+			}); cerr != nil {
+				errors.As(cerr, &fenced)
+				return cerr
+			}
+			cancelSettled = true
+			var rerr error
+			terminalRun, rerr = attemptCancelRollup(ctx, q, step.RunID, now)
+			return rerr
+		}
+		if _, err := store.ThrottleStep(ctx, q, store.ThrottleStepArgs{
+			RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
+			Resource: dec.Resource, Bucket: dec.Bucket, RetryAfter: dec.RetryAfter.String(),
+			NextAttemptAt: fireAt, Now: now,
+		}); err != nil {
+			// The fence firing on the throttle path — see completeSuccess.
+			errors.As(err, &fenced)
+			return err
+		}
+		return nil
+	})
+	endTxSpan(txSpan, txErr)
+	if txErr != nil {
+		if fenced != nil {
+			return e.abandonFenced(ctx, step, fenced, txErr)
+		}
+		logger.ErrorContext(ctx, "throttle-completion transaction failed; delivery will redeliver",
+			slog.Any("error", txErr))
+		return txErr
+	}
+	if cancelSettled {
+		logger.InfoContext(ctx, "step throttled on a cancelling run — settled as cancelled",
+			slog.String("resource", dec.Resource),
+			slog.Bool("run_cancelled", terminalRun != nil))
+		if terminalRun != nil {
+			e.recordRunCompleted(terminalRun.Status, terminalRun.StartedAt, now)
+		}
+		return nil
+	}
+	e.metrics.Throttled(dec.Resource, dec.Bucket)
+	e.metrics.ThrottleWait(dec.Resource, delay)
+	e.scheduleThrottle(ctx, step, fireAt, runTrace)
+	logger.InfoContext(ctx, "step throttled; re-dispatch scheduled",
+		slog.String("resource", dec.Resource),
+		slog.String("bucket", dec.Bucket),
+		slog.Duration("retry_after", dec.RetryAfter),
+		slog.Duration("delay", delay),
+		slog.Time("next_attempt_at", fireAt))
+	return nil
+}
+
+// scheduleThrottle performs the post-commit half of the throttle route: the
+// delayed-ZSET write due at fireAt, under reason throttle. Failures (and a
+// nil scheduler) only log — the committed row already carries
+// next_attempt_at, so the reconciler's overdue-retrying scan re-dispatches;
+// nothing here may turn into a handler error, which would un-ACK an
+// already-consumed delivery. The envelope carries no EnqueuedAt, so a
+// fan-out of siblings throttled against one resource dedups to one pending
+// re-dispatch per step (ADR-005's byte-identical ZADD member).
+func (e *Engine) scheduleThrottle(ctx context.Context, step gen.RunStep, fireAt time.Time, runTrace store.TraceContext) {
+	logger := log.From(ctx)
+	if e.scheduler == nil {
+		logger.WarnContext(ctx, "no scheduler configured; reconciler will re-dispatch the throttled step")
+		return
+	}
+	env := queue.Envelope{
+		RunID: step.RunID, StepID: step.StepID, Reason: queue.ReasonThrottle,
+		TraceParent: runTrace.Parent, TraceState: runTrace.State,
+	}
+	if err := e.scheduler.Schedule(ctx, env, fireAt); err != nil {
+		logger.ErrorContext(ctx, "delayed throttle schedule failed; reconciler will re-dispatch",
 			slog.Time("fire_at", fireAt),
 			slog.Any("error", err))
 	}

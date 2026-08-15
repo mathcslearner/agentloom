@@ -45,3 +45,27 @@ func retryDelay(policy dag.ResolvedRetryPolicy, n int, jitterRand func() float64
 		return time.Duration(jitterRand() * computed), nil
 	}
 }
+
+// throttleDelay computes the re-dispatch delay for a rate-limited step
+// (ticket 9.2, ADR-010's requeue math): clamp(retryAfter, floor, ceiling)
+// plus additive partial jitter drawn from U[0, jitterFrac × clamped]. The
+// jitter is deliberately additive, not the full jitter retryDelay uses:
+// retryAfter is a real token-refill deadline, so spreading a fan-out of
+// throttled siblings uniformly across [0, retryAfter] would wake most of
+// them before the tokens exist and guarantee a second denial. Additive
+// jitter de-correlates the herd while still respecting the deadline.
+// jitterRand supplies the [0,1) draw; a non-positive jitterFrac disables it.
+// Pure — fake-clock tests pin the delay exactly with a fixed rand.
+func throttleDelay(retryAfter, floor, ceiling time.Duration, jitterFrac float64, jitterRand func() float64) time.Duration {
+	clamped := retryAfter
+	if clamped < floor {
+		clamped = floor
+	}
+	if clamped > ceiling {
+		clamped = ceiling
+	}
+	if jitterFrac <= 0 {
+		return clamped
+	}
+	return clamped + time.Duration(jitterRand()*jitterFrac*float64(clamped))
+}

@@ -4864,3 +4864,140 @@ zero-value, inline-only, file-only) and the mutual-exclusion load error.
 ./internal/limits/ ./internal/config/`, and the full `go test -race
 ./...` green; no integration tests — 9.1 crosses no process or datastore
 boundary (both new surfaces are pure).
+
+### 9.2 — Limiter middleware for executors ✅
+
+Fleet-wide rate-limit enforcement as executor middleware: before a
+cost-bearing executor's provider call the engine acquires the resource's
+dual buckets; a denial defers the step (throttle → delayed requeue, slot
+released, no counted attempt), an impossible request perm-fails, a Redis
+error fails open. Everything conforms to ADR-010 as written in 9.1 — this
+is the build.
+
+**The two-key atomic acquire (`internal/ratelimit`).** `AcquireDual` +
+`acquireDualScript` — 6.3's explicitly-deferred second Lua script, now
+mandatory because M9 denials are steady-state. It refills both buckets
+against one Redis `TIME`, grants only if **both** hold their cost, debits
+both or neither, and on denial reports `retry_after = max` of the denying
+buckets and a denied-dimension code (`DeniedRequests`/`Tokens`/`Both`).
+Each bucket keeps the same `{tokens, ts}` hash as the single-key script
+(absent = full, `%.17g` exact balance, TTL re-armed to time-to-full,
+`PERSIST` for rate-zero, backwards-clock clamp); refill bookkeeping is
+written for both even on a denial (advancing the clock mints nothing). The
+drift property the script exists for — a token-dimension denial must **not**
+debit the request bucket — is proven by an all-or-nothing concurrency stress
+(the request ledger ends debited by exactly the grant count, no leaked
+tokens). Test seam `AcquireDualAt` (injected clock) through
+`export_test.go`, mirroring `AcquireAt`.
+
+**The resource adapter (`internal/ratelimit/resource`).** A new subpackage
+— the one place importing both `limits` and `ratelimit`, keeping each a leaf
+(the `retrieval/pgfts` precedent). `resource.Limiter.Acquire(ctx,
+resourceName, estTokens)` resolves the name against the configured `Set`
+(exact → wildcard → **unlimited-skips-Redis**, ADR-010's opt-in policy) and
+maps the resolved entry onto buckets via 9.1's `Rate.Capacity()` /
+`RefillPerSec()`: both dimensions + `estTokens > 0` → `AcquireDual`; one
+effective dimension (requests-only, tokens-nil, or a tool claim's
+`estTokens == 0`) → single `Acquire`; a tokens-only resource with a zero
+estimate meters nothing (unlimited). `ErrCostExceedsCapacity` passes through
+typed; `RetryAfterNever` is re-exported for the engine. Keys
+`<prefix>:<resource>:{requests,tokens}`.
+
+**The `ResourceClaimer` hook (`internal/exec`).** ADR-010's interface
+verbatim in `exec.go`. `LLMExecutor.ResourceClaim` resolves the model
+through the `llm.Registry` and forms `<provider>:<model>` by the **resolved**
+provider (so `mock/sim-1` → `mock:sim-1`), estimating chars/4 over the
+rendered prompt/messages plus `max_tokens` (defaulted); a resolution failure
+returns an error so the middleware skips limiting and lets `Execute` land the
+one permanent classification. `ToolExecutor.ResourceClaim` returns
+`tool:<name>` with `estTokens 0` (requests-only). Every other executor
+doesn't implement the interface → structurally bypassed.
+
+**The engine middleware.** `rateLimit` in `execute()` (after `renderConfig`,
+before `runExecutor`; the `StepContext` is hoisted so the claim hook and the
+executor share it): if the executor implements `ResourceClaimer` and a
+limiter is wired, bind → `Acquire` → route. Granted / unlimited /
+claim-binding-error / Redis-error(**fail-open**, `RateLimitFailOpen`
+metric) all proceed to the executor; `ErrCostExceedsCapacity` or
+`RetryAfterNever` → `completeFailure(..., ClassPermanent, ...)` → DLQ source
+`permanent` (wait-vs-never); a genuine denial → `completeThrottle`.
+`completeThrottle` (sibling of `completeFailure` in `complete.go`) computes
+the delay via the pure `throttleDelay` (clamp(retry_after, floor, cap) +
+**additive** jitter `U[0, frac×clamped]` — deliberately not `retryDelay`'s
+full jitter, since retry_after is a real refill deadline and full jitter
+would wake fanned-out siblings before tokens exist), then one transaction:
+`LockRunStatus` (cancelling run → settle via `CancelRunningStep`) else
+`ThrottleStep`; fence conflicts → `abandonFenced`; post-commit schedules the
+delayed envelope (reason `throttle`, no `EnqueuedAt`) through the existing
+`scheduler` seam, failures log-and-ACK (reconciler backstop). Seam:
+`engine.ResourceLimiter` + `WithResourceLimiter`, `WithThrottleBackoff`;
+nil limiter = every existing test layer untouched.
+
+**Store (`ThrottleStep`, migration 0014).** `store.ThrottleStep` reuses
+5.2's `RetryRunStep` query **verbatim** (the claim-fenced `running →
+retrying` CAS, claim cleared, `next_attempt_at` stamped — ADR-010's "no new
+store primitive") but records the attempt with the administrative outcome
+`throttled` and appends `step_throttled` (payload: resource, bucket,
+retry_after, next_attempt_at); like `RetryStep` it never bumps
+`steps_failed`. `throttled` is not a counted class, so
+`CountCountedFailures` ignores it — the retry budget is untouched (a step may
+throttle any number of times; the physical `attempt_count` grows like it does
+for `lost`, but the budget does not). Migration 0014 adds `throttled` to the
+`step_attempts.outcome` CHECK (`run_events.type` is free-form TEXT — no DDL
+for `step_throttled`). No claim-path or reconciler change: the claim CAS
+already admits due retrying steps and the overdue-retrying scan already heals
+a lost `throttle` schedule.
+
+**Config / worker / obs.** `queue.ReasonThrottle`. `ResourcesConfig` grew
+`KeyPrefix` (`AGENTLOOM_RESOURCES_KEY_PREFIX`) + `ThrottleFloor/Cap/JitterFrac`
+(`AGENTLOOM_RESOURCES_THROTTLE_{FLOOR,CAP,JITTER_FRAC}`, validated
+`0 < floor ≤ cap`, `jitter ∈ [0,1)`). `cmd/worker` builds `resource.New` over
+the queue's Redis client only when `resourceLimits.Len() > 0` and wires the
+two engine options. New obs subsystem `ratelimit`:
+`engine_ratelimit_throttled_total{resource, bucket}`,
+`engine_ratelimit_throttle_wait_seconds{resource}`,
+`engine_ratelimit_fail_opens_total`; `resource` added to ADR-008's label
+allowlist and `TestInstrumentConformance` exercises them. OpenAPI outcome
+enum gained `throttled` (spec still lints 100/100).
+
+**Non-obvious decisions.**
+- **The step IS claimed when throttled.** The middleware runs after the
+  claim (attempt row created), so a throttle closes that attempt as
+  `throttled` and the physical `attempt_count` increments per throttle —
+  exactly as `lost` does. "Attempt counter unchanged by throttles" (the
+  acceptance criterion) means the **retry-budget** counter
+  (`CountCountedFailures`), which `throttled` is excluded from — not the
+  physical column. Each throttle re-dispatches a fresh delayed entry
+  (delivery count resets), so no poison escalation.
+- **Fail-open on a claim-binding error, not just a Redis error.** If
+  `ResourceClaim` can't resolve the model, the middleware proceeds and lets
+  `Execute` land the permanent failure — the routing judgment lives in one
+  place, never duplicated.
+- **The fleet test asserts the token-bucket cumulative bound, not a
+  wall-clock rate.** `TestFleetRespectsResourceLimit` records every provider
+  call's elapsed time and asserts `n ≤ burst + refill×elapsed + ε` for the
+  n-th call — the exact invariant the shared bucket guarantees, deterministic
+  regardless of scheduling, and the honest form of "N workers ≤ R calls/min".
+
+**Tests.** `ratelimit`: dual-acquire integration matrix (both-grant exact
+accounting, token-denial-leaves-request-ledger-untouched, `retry_after` max,
+never-refill sentinel, cost-exceeds typed, all-or-nothing concurrency
+stress). `resource`: unit (nil-client reject, unlimited-skips-Redis via an
+unroutable client, nil-`Set`) + integration (exact/wildcard, dual dimension
+with a token denial, tokens-only-zero-estimate, tool requests-only,
+cost-exceeds). `exec`: `ResourceClaim` unit (llm resource+estimate+default,
+routing failure, tool name, missing-tool). `engine`: `throttleDelay` unit
+(clamp + additive jitter, table) + integration — headline throttle-defer-
+and-complete on the fake clock (history `[throttled, succeeded]`, budget 0,
+one `step_throttled` event, executor invoked once, next_attempt_at cleared),
+the two perm-fail paths → DLQ permanent, fail-open, and the 4-worker fleet
+bound. `config`: throttle-knob overrides + validation matrix. `store`:
+migration round-trip bumped to 14 (the single-Down now reverts 0014's
+CHECK — a constraint-only change — so 0013's `retrieval_docs` survives).
+
+**Verified.** `go build ./...`, `go vet ./...`, `golangci-lint` clean,
+`make openapi-lint` 100/100, full `go test ./...` green, and the full
+`-tags integration` suite green against the compose stack
+(`ratelimit`/`resource`/`store`/`exec`/`config`/`obs`/`engine`/`api`/
+`cmd/worker`/`queue`). Requires migration 0014 on any long-lived database
+(`make migrate-up`); the integration harness migrates each test DB itself.

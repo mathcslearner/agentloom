@@ -142,6 +142,27 @@ type Executor interface {
 	Execute(ctx context.Context, sc StepContext) (Output, error)
 }
 
+// ResourceClaimer is the optional executor hook the M9 limiter middleware
+// consults before a cost-bearing executor's provider call (ADR-010): it
+// names the shared external resource the call draws on and estimates the
+// token cost. An executor that implements it (the llm executor; a
+// rate-limited tool) is subject to fleet-wide rate limiting on that
+// resource; one that does not (noop, echo, sleep, pure tools) bypasses the
+// limiter entirely — the middleware is a no-op for steps that name no
+// resource.
+//
+// resource is the ADR-010 name keyed by the *resolved* provider
+// ("anthropic:<model>", "mock:<model>", "tool:<name>"), so the limiter keys
+// off what the provider actually meters. estTokens is a pre-call estimate
+// (the tokens bucket's cost); a requests-only resource returns 0. An error
+// return means the binding could not be computed (e.g. an unresolvable
+// model): the middleware then skips limiting and lets Execute run, so the
+// executor lands the properly classified failure itself rather than the
+// limiter duplicating that judgment.
+type ResourceClaimer interface {
+	ResourceClaim(sc StepContext) (resource string, estTokens int64, err error)
+}
+
 // configAs decodes sc.Config into the typed config struct T registered
 // for sc.StepType. An absent config yields a typed nil (callers
 // required-field-check it, mirroring how Validate treats a missing config

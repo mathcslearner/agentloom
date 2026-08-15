@@ -97,6 +97,25 @@ func (e ToolExecutor) Execute(ctx context.Context, sc StepContext) (Output, erro
 	return Output{Data: result}, nil
 }
 
+// ResourceClaim implements ResourceClaimer (ADR-010): a tool step's
+// fleet-wide resource is "tool:<name>", the pool a rate-limited endpoint
+// declares (e.g. "tool:http_request" for a shared third-party API). The
+// token dimension is not meaningful for a tool call, so estTokens is 0 —
+// the middleware then governs only the requests bucket, and a tool whose
+// resource is unconfigured (pure tools like json_transform, or any tool an
+// operator did not name) bypasses the limiter entirely. A corrupt config
+// returns an error so the middleware defers to Execute's permanent failure.
+func (ToolExecutor) ResourceClaim(sc StepContext) (string, int64, error) {
+	cfg, err := configAs[*dag.ToolConfig](sc)
+	if err != nil {
+		return "", 0, err
+	}
+	if cfg == nil || cfg.Tool == "" {
+		return "", 0, fmt.Errorf("missing required field %q", "tool")
+	}
+	return "tool:" + cfg.Tool, 0, nil
+}
+
 // classifyToolError maps a tool failure onto the executor's classified
 // contract. A *tools.Error carries its ADR-006 class; a
 // *tools.HostNotAllowedError is permanent (its own type, per the ticket);

@@ -285,7 +285,23 @@ The middleware records throttle count and queue-wait time **by `resource`**
 (the bounded label above); 9.3 adds an estimate-error histogram. The counters
 feed M10's "saved" accounting indirectly (a throttle is deferred spend, not
 avoided spend). Instrument names follow ADR-008's `engine_<subsystem>_...`
-convention under a new `ratelimit`/`resource` subsystem, defined in 9.2.
+convention under a new `ratelimit` subsystem.
+
+**As built (9.2):** the subsystem is `ratelimit`, with
+`engine_ratelimit_throttled_total{resource, bucket}` (bucket ∈
+`requests`/`tokens`/`both`), `engine_ratelimit_throttle_wait_seconds{resource}`
+(the clamped+jittered re-dispatch delay — the queue-wait a throttle adds), and
+`engine_ratelimit_fail_opens_total` (a limiter error after which the step
+proceeded unlimited). `resource` joins ADR-008's label allowlist. The two-key
+atomic acquire ships as `ratelimit.AcquireDual` (a second Lua script beside the
+single-key `Acquire`); the resource→bucket mapping and the unknown-resource
+skip live in the leaf adapter `internal/ratelimit/resource`, which the engine
+consults through the `ResourceLimiter` seam. The `throttled` outcome joins the
+`step_attempts.outcome` CHECK in migration 0014, and the store transition
+`ThrottleStep` reuses 5.2's `RetryRunStep` CAS verbatim (no new SQL). The
+requeue-math knobs (`floor`, `cap`, `jitter_frac`) are worker config
+(`AGENTLOOM_RESOURCES_THROTTLE_*`); the key prefix is
+`AGENTLOOM_RESOURCES_KEY_PREFIX`.
 
 ## Consequences
 

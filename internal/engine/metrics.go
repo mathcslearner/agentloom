@@ -40,6 +40,18 @@ type Metrics interface {
 	// ReconcileHealed records n heals of one outbox reason from a
 	// reconciler sweep.
 	ReconcileHealed(reason string, n int)
+	// Throttled records one fleet-wide rate-limit backpressure event
+	// (ticket 9.2, ADR-010) by resource and the denying bucket
+	// (requests/tokens/both).
+	Throttled(resource, bucket string)
+	// ThrottleWait records the computed re-dispatch delay of one throttle,
+	// by resource — the queue-wait a rate-limited step incurs before its
+	// next attempt.
+	ThrottleWait(resource string, d time.Duration)
+	// RateLimitFailOpen records one fail-open: the resource limiter errored
+	// (e.g. Redis unreachable) and the step proceeded without a limit
+	// (ADR-010 — a limit is never a correctness dependency).
+	RateLimitFailOpen()
 }
 
 // nopMetrics is the default Metrics: every test layer runs with recording
@@ -56,3 +68,6 @@ func (nopMetrics) DeadLetter(string)                          {}
 func (nopMetrics) RunCompleted(string, time.Duration)         {}
 func (nopMetrics) Dispatched(string, time.Duration)           {}
 func (nopMetrics) ReconcileHealed(string, int)                {}
+func (nopMetrics) Throttled(string, string)                   {}
+func (nopMetrics) ThrottleWait(string, time.Duration)         {}
+func (nopMetrics) RateLimitFailOpen()                         {}

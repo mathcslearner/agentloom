@@ -39,6 +39,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/obs/metrics"
 	"github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/queue"
+	"github.com/mathcslearner/agentloom/internal/ratelimit/resource"
 	"github.com/mathcslearner/agentloom/internal/retrieval"
 	"github.com/mathcslearner/agentloom/internal/retrieval/pgfts"
 	"github.com/mathcslearner/agentloom/internal/store"
@@ -178,6 +179,25 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	logger.InfoContext(ctx, "resource limits loaded",
 		slog.Int("resources", resourceLimits.Len()),
 		slog.Any("names", resourceLimits.Names()))
+	// The fleet-wide rate limiter (ticket 9.2, ADR-010): built over the same
+	// Redis client the queue uses (the shared coordination Redis, ADR-002 —
+	// Postgres stays the API's only hard dependency, but the worker already
+	// depends on Redis for the queue). Wired into the engine only when the
+	// config names any resource; an empty set means every resource is
+	// unlimited, so the limiter would never do anything — skip it and the
+	// per-step middleware short-circuits on a nil limiter.
+	var resourceLimiter *resource.Limiter
+	if resourceLimits.Len() > 0 {
+		resourceLimiter, err = resource.New(client, resourceLimits, cfg.Resources.KeyPrefix)
+		if err != nil {
+			return fmt.Errorf("configuring resource limiter: %w", err)
+		}
+		logger.InfoContext(ctx, "resource rate limiter enabled",
+			slog.String("key_prefix", cfg.Resources.KeyPrefix),
+			slog.Duration("throttle_floor", cfg.Resources.ThrottleFloor),
+			slog.Duration("throttle_cap", cfg.Resources.ThrottleCap),
+			slog.Float64("throttle_jitter_frac", cfg.Resources.ThrottleJitterFrac))
+	}
 	// Production workers register the core set; the filesystem-writing
 	// test executors (counter, effectful_echo) are opt-in via
 	// AGENTLOOM_WORKER_TEST_EXECUTORS (ticket 6.2) — the compose dev
@@ -202,6 +222,11 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		engine.WithStrictEffects(cfg.Worker.EffectsStrict),
 		engine.WithCancelPollInterval(cfg.Worker.CancelPollInterval),
 		engine.WithMetrics(engineMetrics),
+	}
+	if resourceLimiter != nil {
+		engineOpts = append(engineOpts,
+			engine.WithResourceLimiter(resourceLimiter),
+			engine.WithThrottleBackoff(cfg.Resources.ThrottleFloor, cfg.Resources.ThrottleCap, cfg.Resources.ThrottleJitterFrac))
 	}
 	var logSinkStep *steplog.Sink
 	if cfg.Worker.StepLogEnabled {

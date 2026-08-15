@@ -17,6 +17,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	obstrace "github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/queue"
+	"github.com/mathcslearner/agentloom/internal/ratelimit/resource"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
@@ -231,14 +232,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		}
 		execLogger = e.stepLogs.LoggerFor(logger, step.RunID, step.StepID, int(step.AttemptCount), traceID)
 	}
-	// The in-flight cancellation watch (ticket 5.6): polls the run's
-	// status while the executor runs and cancels its context when the run
-	// turns cancelling. Pure latency — the completion transactions below
-	// re-check the run status under the run lock either way.
-	watchCtx, stopWatch := e.watchRunCancel(ctx, step.RunID)
-	execStart := e.now()
-	execCtx, execSpan := e.tracer.Start(watchCtx, "step.executor")
-	out, expired, execErr := runExecutor(execCtx, executor, exec.StepContext{
+	sc := exec.StepContext{
 		StepType: dag.StepType(step.StepType),
 		// The rendered config (ticket 8.2): templates resolved, ready for
 		// the executor's strict decode. Input stays nil — rendering happens
@@ -251,7 +245,23 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		IdempotencyKey: effects.Key(step.RunID, step.StepID),
 		Effects:        e.effects.ForStep(step.RunID, step.StepID, int(step.AttemptCount), claimID, logger),
 		Logger:         execLogger,
-	}, timeout)
+	}
+	// Fleet-wide rate limiting (ticket 9.2, ADR-010): before a cost-bearing
+	// executor's provider call, acquire the step's resource buckets. A
+	// denial defers the step (throttle → delayed requeue, slot released now,
+	// no counted attempt), an impossible request perm-fails, a Redis error
+	// fails open. Executors that name no resource bypass this entirely.
+	if handled, herr := e.rateLimit(ctx, step, executor, sc, origin); handled {
+		return herr
+	}
+	// The in-flight cancellation watch (ticket 5.6): polls the run's
+	// status while the executor runs and cancels its context when the run
+	// turns cancelling. Pure latency — the completion transactions below
+	// re-check the run status under the run lock either way.
+	watchCtx, stopWatch := e.watchRunCancel(ctx, step.RunID)
+	execStart := e.now()
+	execCtx, execSpan := e.tracer.Start(watchCtx, "step.executor")
+	out, expired, execErr := runExecutor(execCtx, executor, sc, timeout)
 	if execErr != nil {
 		execSpan.RecordError(execErr)
 		execSpan.SetStatus(codes.Error, "executor failed")
@@ -306,6 +316,73 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		return e.completeFailure(ctx, step, execErr, classifyFailure(execErr), origin.RunTrace)
 	}
 	return e.completeSuccess(ctx, step, out)
+}
+
+// rateLimit is the M9 limiter middleware (ticket 9.2, ADR-010). For a
+// cost-bearing executor — one implementing exec.ResourceClaimer — it
+// acquires the step's fleet-wide resource buckets before the provider call.
+// It returns handled=true when it decided the delivery, with the Handle/ACK
+// error to return: a throttle (running → retrying + delayed requeue, ACK,
+// slot released with no counted attempt) returns nil; an impossible request
+// (estimate > token-bucket capacity, or a never-refilling bucket) perm-fails
+// to the DLQ (ADR-010 wait-vs-never). It returns handled=false when the step
+// may execute: no limiter wired, the executor names no resource, the claim
+// binding could not be computed, the resource is unlimited, the acquire was
+// granted, or a Redis error made it fail open (ADR-010 — a limit is never a
+// correctness dependency).
+func (e *Engine) rateLimit(ctx context.Context, step gen.RunStep, executor exec.Executor, sc exec.StepContext, origin store.ClaimOrigin) (bool, error) {
+	if e.limiter == nil {
+		return false, nil
+	}
+	claimer, ok := executor.(exec.ResourceClaimer)
+	if !ok {
+		return false, nil // names no resource — bypasses the limiter
+	}
+	logger := log.From(ctx)
+	resourceName, estTokens, err := claimer.ResourceClaim(sc)
+	if err != nil {
+		// The binding could not be computed (unroutable model, corrupt
+		// config). Don't classify here — let the executor run and land its
+		// own permanent failure, so the routing judgment lives in one place.
+		logger.WarnContext(ctx, "resource claim failed; skipping rate limit, executor will classify",
+			slog.Any("error", err))
+		return false, nil
+	}
+	dec, err := e.limiter.Acquire(ctx, resourceName, estTokens)
+	if err != nil {
+		if errors.Is(err, resource.ErrCostExceedsCapacity) {
+			// The estimate exceeds the token bucket's capacity — no refill
+			// admits it (ADR-010 wait-vs-never). Permanent → DLQ.
+			logger.ErrorContext(ctx, "token estimate exceeds resource capacity; failing permanently",
+				slog.String("resource", resourceName),
+				slog.Int64("est_tokens", estTokens),
+				slog.Any("error", err))
+			return true, e.completeFailure(ctx, step,
+				fmt.Errorf("resource %q: %w", resourceName, err), dag.ClassPermanent, origin.RunTrace)
+		}
+		// Any other error is a Redis/transport failure: fail open.
+		e.metrics.RateLimitFailOpen()
+		logger.WarnContext(ctx, "resource limiter error; failing open (proceeding without limit)",
+			slog.String("resource", resourceName),
+			slog.Any("error", err))
+		return false, nil
+	}
+	if dec.Allowed {
+		return false, nil
+	}
+	if dec.RetryAfter == resource.RetryAfterNever {
+		// Denied by a never-refilling bucket — the tokens never come back
+		// (ADR-010 wait-vs-never; v1 config forbids rate-zero buckets, so
+		// this is defensive). Permanent → DLQ.
+		logger.ErrorContext(ctx, "resource denied by a never-refilling bucket; failing permanently",
+			slog.String("resource", resourceName),
+			slog.String("bucket", dec.Bucket))
+		return true, e.completeFailure(ctx, step,
+			fmt.Errorf("resource %q bucket %q never refills — request can never be admitted", resourceName, dec.Bucket),
+			dag.ClassPermanent, origin.RunTrace)
+	}
+	// A genuine throttle: defer the step, release the slot, no attempt spent.
+	return true, e.completeThrottle(ctx, step, dec, origin.RunTrace)
 }
 
 // annotateAttemptSpan enriches the consumer's attempt span (ticket 7.3)
