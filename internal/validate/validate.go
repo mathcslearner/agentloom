@@ -55,6 +55,31 @@ type Validator interface {
 	Validate(ctx context.Context, in Input) (Verdict, error)
 }
 
+// ConfigCompiler is an optional extra interface a Validator implements when
+// its config compiles into an artifact whose *content* can be invalid in a
+// way the config JSON Schema cannot express — an unparseable regex, a CEL
+// expression that fails to typecheck (or is not a boolean predicate), a JSON
+// Schema document that will not compile, a numeric_range with no bound
+// (ticket 11.2, ADR-013).
+//
+// The registry calls CompileConfig from ValidateConfig, AFTER the schema
+// check passes, so a validator that also implements ConfigCompiler gets a
+// second, deeper pre-flight gate: an error here becomes a
+// *ConfigValidationError (permanent), fired at claim before the executor
+// runs and before any money is spent — exactly like a schema violation, so
+// the validator's Validate is never reached with config it cannot compile.
+// Because it is the pre-flight gate, CompileConfig also warms the
+// validator's compile cache, so the artifact Validate later needs is already
+// built (no per-attempt recompilation).
+//
+// The method must be pure in config and safe for concurrent calls (the
+// registry is read-only after boot, but ValidateConfig runs on the claim
+// path across consumer goroutines). It returns nil for a config the schema
+// admitted and the artifact accepts.
+type ConfigCompiler interface {
+	CompileConfig(config json.RawMessage) error
+}
+
 // Input is everything a Validator sees about the output it is judging. The
 // engine builds one per validator from the completed step's output and the
 // chain entry's config; validators must treat it as read-only.

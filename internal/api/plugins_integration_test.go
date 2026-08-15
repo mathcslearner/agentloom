@@ -28,6 +28,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/storetest"
 	"github.com/mathcslearner/agentloom/internal/tools"
+	"github.com/mathcslearner/agentloom/internal/validate"
 )
 
 // pluginsServer boots the API with the full builtin catalog wired, the
@@ -363,6 +364,68 @@ func TestListPluginsWithRetrievers(t *testing.T) {
 		return a.Name < b.Name
 	}) {
 		t.Error("combined catalog is not sorted by (kind, name)")
+	}
+}
+
+// TestListPluginsWithValidators pins ticket 11.2's catalog wiring: the five
+// deterministic built-in validators (the way cmd/api folds in
+// validate.NewBuiltins) surface on GET /v1/plugins with kind validator,
+// cacheable-only flags, and — the "config schemas exposed via plugin
+// registry (UI-ready)" criterion — a non-empty, self-describing config
+// schema each.
+func TestListPluginsWithValidators(t *testing.T) {
+	t.Parallel()
+	rootKey := mintTestKey(t)
+
+	s := store.NewFromPool(storetest.NewDB(t))
+	validators, err := validate.NewBuiltins()
+	if err != nil {
+		t.Fatalf("validate.NewBuiltins: %v", err)
+	}
+	manifests := append(exec.CoreBuiltins(nil, nil, nil).Manifests(), validators.Manifests()...)
+
+	logger := log.New(config.LogConfig{Level: slog.LevelDebug, Format: config.LogFormatJSON}, testDiscard{})
+	h, err := api.New(s, func() time.Time { return testNow }, logger, rootKey, api.RateLimitOptions{},
+		api.WithPlugins(manifests))
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	var resp api.ListPluginsResponse
+	if res := doAuth(t, srv, http.MethodGet, "/v1/plugins", rootKey, nil, &resp); res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/plugins = %d, want 200", res.StatusCode)
+	}
+	got := map[string]api.PluginInfo{}
+	for _, p := range resp.Plugins {
+		if p.Kind == "validator" {
+			got[p.Name] = p
+		}
+	}
+	wantNames := []string{"cel", "contains", "json_schema", "numeric_range", "regex"}
+	if len(got) != len(wantNames) {
+		t.Fatalf("catalog has %d validators, want %d: %+v", len(got), len(wantNames), got)
+	}
+	for _, name := range wantNames {
+		p, ok := got[name]
+		if !ok {
+			t.Errorf("validator %q missing from catalog", name)
+			continue
+		}
+		if !p.Capabilities.Cacheable || p.Capabilities.SideEffectful || p.Capabilities.CostBearing {
+			t.Errorf("%s capabilities = %+v — want cacheable only", name, p.Capabilities)
+		}
+		if p.Version != "1.0.0" {
+			t.Errorf("%s version = %q, want 1.0.0", name, p.Version)
+		}
+		// UI-ready: a valid, self-describing config schema.
+		var schema map[string]any
+		if err := json.Unmarshal(p.ConfigSchema, &schema); err != nil {
+			t.Errorf("%s: config_schema is not a JSON object: %v", name, err)
+		} else if schema["$schema"] == nil {
+			t.Errorf("%s: config_schema missing $schema", name)
+		}
 	}
 }
 

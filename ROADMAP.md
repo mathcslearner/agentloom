@@ -803,13 +803,13 @@ Prometheus: cost counters by model/plugin (bounded labels), budget-park counter,
 - [x] ADR decision table: transport failure vs validation failure vs throttle — routing for each
 - [x] Verdict persistence visible in run status API
 
-#### 11.2 — Deterministic validators
+#### 11.2 — Deterministic validators ✅
 **Depends on:** 11.1
-Built-ins: `json_schema` (compiled once per definition; detailed path-level issues), `regex`/`contains`, `cel` (predicate over parsed output), `numeric_range`. All pure, fast, and unit-tested against a corpus of good/bad outputs.
+Built-ins: `json_schema` (compiled once per definition; detailed path-level issues), `regex`/`contains`, `cel` (predicate over parsed output), `numeric_range`. All pure, fast, and unit-tested against a corpus of good/bad outputs. *(As built: the five deterministic validators in `internal/validate` — one file each, all `cacheable`-only at `1.0.0`, registered by `NewBuiltins()` (both deployables and `GET /v1/plugins` pick them up with zero wiring change). `json_schema` compiles the author schema via `santhosh-tekuri/jsonschema/v6` and reports one issue per violating instance location with the RFC 6901 pointer in `Path` (a string target — the `/text` default — is re-parsed as JSON; a non-JSON string is an `invalid_json` fail verdict, never a panic); `regex` (RE2, `negate`) and `contains` (`case_insensitive`, `negate`) stringify a non-string target as compact JSON (grep-like); `cel` evaluates a boolean predicate over a distinct env (`value`/`output`/`step_type`, `parse_json` opt-in) with compile-time bool enforcement but runtime eval errors as `cel_eval_error` fail verdicts; `numeric_range` accepts a numeric string and rejects NaN/±Inf. **New SPI hook `ConfigCompiler`** (`CompileConfig(config) error`): the registry calls it from `ValidateConfig` after the schema check, so an unparseable regex / non-boolean CEL / uncompilable schema / bound-less-or-inverted range is a permanent `*ConfigValidationError` at claim **before any spend**, and the call warms a `compileCache` keyed on config bytes so each artifact compiles **once per distinct config per process** — reused across every attempt/retry/takeover/run (benchmarked: warm `json_schema` ~20× cold). Table tests per validator (incl. malformed JSON → structured issues, never a panic), an in-package compile-once assertion, warm/cold benchmarks, api plugin-listing coverage for kind `validator` (config schemas exposed, UI-ready), and engine integration on the real built-ins (a `contains` pass and a `json_schema` malformed-output `invalid_json` fail, verdicts persisted). No migration, no config var, no metric, no engine/dag change. ADR-013/009 amended, `docs/plugins.md` + `docs/expressions.md` updated.)*
 **Done when:**
-- [ ] Table tests per validator incl. malformed JSON → structured issue list (not a panic)
-- [ ] Compiled artifacts reused across attempts (no per-attempt recompilation — benchmarked)
-- [ ] Config schemas exposed via plugin registry (UI-ready)
+- [x] Table tests per validator incl. malformed JSON → structured issue list (not a panic)
+- [x] Compiled artifacts reused across attempts (no per-attempt recompilation — benchmarked)
+- [x] Config schemas exposed via plugin registry (UI-ready)
 
 #### 11.3 — JSON repair & structured-output modes
 **Depends on:** 11.2, 8.3

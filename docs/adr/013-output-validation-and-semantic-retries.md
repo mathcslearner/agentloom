@@ -296,6 +296,56 @@ validation is not "just another retry class".
 - **Judges are terminal** — never validated, never semantically retried; no
   recursion.
 
+### Built-in deterministic validators (as built, 11.2)
+
+11.2 fills the empty `NewBuiltins()` with the five deterministic validators,
+all `cacheable`-only at `1.0.0` (pure functions of output + config), each in
+its own file under `internal/validate`:
+
+| Name | Config | Judges | Fail codes |
+|---|---|---|---|
+| `json_schema` | `{schema}` | the target as a JSON document (a **string** target is re-parsed as JSON — LLM JSON arrives as text) against a compiled JSON Schema | `invalid_json`, one per violating instance location (`type_mismatch`, `required`, `additional_properties`, `below_minimum`, `pattern_no_match`, …) with the RFC 6901 pointer in `Path` |
+| `regex` | `{pattern, negate?}` | the target's string form (a JSON string → its contents; any other value → its compact JSON) against an RE2 pattern | `pattern_no_match` / `pattern_matched` |
+| `contains` | `{substring, case_insensitive?, negate?}` | same string form, substring scan | `substring_missing` / `substring_present` |
+| `cel` | `{expr, parse_json?}` | a CEL boolean predicate over `value` (targeted sub-tree), `output` (whole output), `step_type` | `predicate_false`, `cel_eval_error`, `invalid_json` |
+| `numeric_range` | `{min?, max?, exclusive_min?, exclusive_max?}` | the target as a number (a numeric **string** like `"42"` is accepted; NaN/±Inf are not) against the bounds | `below_min`, `above_max`, `not_a_number` |
+
+Two rules fell out of the target model:
+
+- **String targets are content, not envelopes.** `regex`/`contains` stringify
+  a non-string target rather than failing outright (grep-like semantics);
+  `json_schema` re-parses a string target as JSON (its purpose is structural
+  JSON, and the `/text` default hands it a JSON string); `cel` re-parses a
+  string only under `parse_json: true`. A string that should be JSON but is not
+  is an `invalid_json` **fail verdict**, never a panic — the ticket's explicit
+  "malformed JSON → structured issue list" criterion.
+- **Config errors are pre-flight; content errors are verdicts.** A validator
+  whose config compiles into an artifact the config JSON Schema cannot fully
+  vet — an unparseable regex, a CEL expression that will not typecheck or is
+  not boolean, a JSON Schema that will not compile, a `numeric_range` with no
+  bound or an inverted one — implements the new optional `ConfigCompiler`
+  (`CompileConfig(config) error`). The registry calls it from `ValidateConfig`
+  after the schema check, so a bad artifact is a permanent `*ConfigValidationError`
+  fired at claim **before any spend**, exactly like a schema violation. A
+  *runtime* failure on a particular output (a `cel` predicate referencing a
+  field this output lacks) is by contrast a **fail verdict** (`cel_eval_error`),
+  not a transport error — it is deterministic in the content and repairable by
+  the semantic retry.
+
+**Compiled artifacts are reused across attempts.** `json_schema`, `regex`, and
+`cel` hold a `compileCache` keyed by the SHA-256 of the config bytes;
+`CompileConfig` warms it and `Validate` reads it, so an artifact is compiled
+**once per distinct config per worker process** and reused across every attempt,
+retry, takeover, and run of the definition (materialized policy bytes are
+byte-stable). Benchmarked: a warm `json_schema` validation is ~20× the speed of
+a cold one that recompiles.
+
+`NewBuiltins()` registers all five, so both `cmd/worker` (the validate stage)
+and `cmd/api` (`GET /v1/plugins`) describe the same validators; the listing
+carries each validator's generated config schema (UI-ready). No migration, no
+config var, no metric, no engine change — the 11.1 stage runs the built-ins
+unchanged.
+
 ## Consequences
 
 Positive:

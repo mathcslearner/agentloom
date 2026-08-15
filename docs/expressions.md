@@ -111,3 +111,23 @@ returns the routing boolean or a `*EvalError` (`errors.As`-reachable,
 wrapping the CEL cause); compiled expressions are safe for concurrent
 reuse. The engine's completion transaction (M4) owns calling `Eval` and
 recording failures.
+
+## The `cel` validator (M11.2)
+
+The `cel` **output validator** (`internal/validate`, ADR-013) uses CEL too,
+but with a **different environment** — it judges a step's output, not an edge:
+
+| Variable | Type | Meaning |
+|---|---|---|
+| `value` | `dyn` | the sub-tree the chain entry's `target` selected (the whole output when absent; `/text` for llm-family steps). With `parse_json: true`, a string `value` is re-parsed as JSON first. |
+| `output` | `dyn` | the whole step output payload. |
+| `step_type` | `string` | the producing step's type (`"llm"`, `"tool"`, …). |
+
+The predicate must be boolean, enforced at **compile time** (pre-flight, a
+permanent config error) exactly as `when`/`condition` are. But unlike an edge
+predicate — where a runtime evaluation error is a step failure — a `cel`
+validator's runtime error (a missing field on *this* output) is a **fail
+verdict** (`cel_eval_error`), not a transport failure: it is deterministic in
+the content and repairable by the semantic retry (M11.4). Example:
+`size(value) > 200` requires the answer to exceed 200 characters;
+`value.score > 0.5` requires a `score` field above 0.5.

@@ -6109,3 +6109,84 @@ and cache-hit re-validation (provider once, validator twice).
 11.2); no semantic-retry loop (a failing verdict dead-letters on the first
 attempt — 11.4); no `llm_judge` / overhead cost (11.5); no quality metrics
 (11.6).
+
+### 11.2 — Deterministic validators ✅
+
+**What shipped.** The five built-in deterministic validators that fill 11.1's
+empty `validate.NewBuiltins()` — `json_schema`, `regex`, `contains`, `cel`,
+`numeric_range` — plus the pre-flight compilation gate and compile cache that
+make "bad config → permanent before spend" and "compiled once, reused across
+attempts" framework guarantees. No migration, no config var, no metric, no
+engine or `internal/dag` change: the 11.1 validate stage runs the built-ins
+unchanged, and both deployables already call `NewBuiltins()`, so the five
+validators appear on `GET /v1/plugins` with zero wiring change.
+
+**The validators** (one file each in `internal/validate`, all `cacheable`-only
+at `1.0.0`, config schema generated from the Go config struct):
+
+- `json_schema` (`{schema}`): compiles the author's JSON Schema with
+  `santhosh-tekuri/jsonschema/v6` and reports **one issue per violating
+  instance location**, the RFC 6901 pointer in `Path` and a keyword-derived
+  code (`type_mismatch`, `required`, `additional_properties`, `below_minimum`,
+  `pattern_no_match`, …). A **string** target — the `/text` default for
+  llm-family steps — is re-parsed as JSON (LLM JSON arrives as text); a string
+  that is not JSON is an `invalid_json` **fail verdict**, never a panic.
+- `regex` (`{pattern, negate?}`): RE2 match over the target's string form.
+- `contains` (`{substring, case_insensitive?, negate?}`): substring scan.
+  (`regex`/`contains` stringify a non-string target as compact JSON — grep-like
+  semantics rather than an outright failure.)
+- `cel` (`{expr, parse_json?}`): a CEL boolean predicate over a **distinct**
+  environment `value` (targeted sub-tree) / `output` (whole payload) /
+  `step_type`. Bool-ness is enforced at compile time (pre-flight, permanent),
+  but a **runtime** eval error (a missing field on *this* output) is a
+  `cel_eval_error` fail verdict, not a transport failure — deterministic in the
+  content, repairable by the semantic retry.
+- `numeric_range` (`{min?, max?, exclusive_min?, exclusive_max?}`): accepts a
+  JSON number or a numeric string (`"42"`, `" 3.14 "`); NaN/±Inf are
+  `not_a_number`.
+
+**The pre-flight gate & compile cache.** New optional SPI interface
+`ConfigCompiler` (`CompileConfig(config json.RawMessage) error`). The
+registry's `ValidateConfig` calls it after the config-schema check, so a
+validator can reject content the JSON Schema cannot express — an unparseable
+regex, a non-boolean/ill-typed CEL expression, a JSON Schema that will not
+compile, a `numeric_range` with no bound or an inverted/unsatisfiable one — as
+a permanent `*ConfigValidationError` fired at claim **before any spend**,
+exactly like a schema violation. `json_schema`/`regex`/`cel` each hold a
+generic `compileCache[T]` keyed on the **SHA-256 of the config bytes**;
+`CompileConfig` warms it and `Validate` reads it, so an artifact compiles
+**once per distinct config per worker process** and is reused across every
+attempt, retry, takeover, and run of the definition (materialized policy bytes
+are byte-stable). The cache is bounded (clear-on-overflow) and race-safe
+(compile outside the lock; a duplicate racing compile is harmless).
+
+**Tests.** Table tests per validator (good/bad outputs, negate, case-folding,
+`parse_json`, numeric strings, boundary conditions), a malformed-JSON case for
+every validator asserting a structured verdict and no panic, a path-level
+schema-issue test; `TestPreflightRejectsBadConfig` proving each bad artifact is
+a permanent `*ConfigValidationError` through the public `Resolve` path;
+in-package `compileCount` assertions that each compiling validator compiles a
+config exactly once across 100 `Validate` calls (and a concurrent
+coalescing test); warm/cold benchmarks (warm `json_schema` ~943ns vs cold
+~19.8µs — ~21×, and ~16× fewer allocs); api `TestListPluginsWithValidators`
+(kind `validator`, cacheable-only, non-empty self-describing config schema —
+the "UI-ready" criterion); and engine integration on the **real** built-ins —
+a `contains` chain that passes on the mock's echoed output (verdict persisted,
+run succeeds) and a `json_schema` chain over the non-JSON `/text` that records
+`validation_failed` with a structured `invalid_json` issue and dead-letters.
+
+**Non-obvious decisions.** (1) `json_schema` auto-parses a string target as
+JSON (no knob) because its purpose is structural JSON and the `/text` default
+hands it a JSON string; `cel` opts into the same re-parse via `parse_json`
+because a predicate may want the raw string. (2) CEL runtime errors are fail
+verdicts, not transport failures — the opposite of `dag`'s edge predicates,
+where a runtime error is a step failure; for a validator the retry can repair
+the output, so the content problem stays a verdict. (3) The compile cache lives
+in the leaf validators keyed on config bytes, not in an engine-side chain
+cache, so reuse spans runs (not just attempts) with zero engine change. (4) The
+`cel` validator builds its own `cel.Env` (`value`/`output`/`step_type`),
+separate from `dag`'s edge-predicate env (`output`/`run`).
+
+**Deferred:** the semantic-retry loop (a failing verdict still dead-letters on
+the first attempt — 11.4); JSON repair & structured-output modes (11.3); the
+`llm_judge` validator + overhead cost (11.5); quality metrics (11.6).

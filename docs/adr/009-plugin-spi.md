@@ -490,6 +490,32 @@ and 11.5 adds `llm_judge`. `cmd/worker` wires the (empty) registry via
 so the kind is listed. The engine's validate stage, verdict persistence, and
 `validation_failed` routing are documented in ADR-013.
 
+### Validator built-ins & flag table (as built, 11.2)
+
+11.2 fills `NewBuiltins()` with the five deterministic validators. Each is a
+pure function of output + config, so `cacheable` and nothing else; the
+`llm_judge` (11.5) will add `cost_bearing`. The validator flag table:
+
+| Plugin (validator) | Version | side_effectful | cacheable | cost_bearing |
+|---|---|---|---|---|
+| `json_schema` | 1.0.0 | – | ✓ | – |
+| `regex` | 1.0.0 | – | ✓ | – |
+| `contains` | 1.0.0 | – | ✓ | – |
+| `cel` | 1.0.0 | – | ✓ | – |
+| `numeric_range` | 1.0.0 | – | ✓ | – |
+
+No validator is ever `side_effectful` (a mutating validator would break
+re-validation on retry and on cache hit). Validators that compile an artifact
+whose *content* the config JSON Schema cannot vet (an RE2 pattern, a CEL
+predicate, a JSON Schema document, a `numeric_range`'s cross-field bounds)
+implement the optional `ConfigCompiler` (`CompileConfig(config) error`): the
+`Registry.ValidateConfig` pre-flight gate calls it after the schema check, so a
+bad artifact is a permanent config error before any spend, and the successful
+call warms the validator's compile cache (compiled once per distinct config per
+process — the tools-args-schema precedent, but for the artifact rather than the
+schema). Config shapes, the string-vs-JSON target rules, and the issue-code
+vocabulary are in ADR-013's "Built-in deterministic validators" section.
+
 ## Consequences
 
 Easier:

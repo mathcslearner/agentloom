@@ -47,16 +47,6 @@ func NewRegistry(vs ...Validator) (*Registry, error) {
 	return r, nil
 }
 
-// NewBuiltins returns the registry of built-in validators. In 11.1 it is
-// empty — the SPI ships with no built-ins; 11.2 registers json_schema,
-// regex, contains, cel, and numeric_range, and 11.5 adds llm_judge. It
-// exists now so cmd/worker and cmd/api wire the same constructor across the
-// milestone, and the empty registry is a valid one (a step naming a
-// validator then fails permanent at resolve time, ADR-013).
-func NewBuiltins() (*Registry, error) {
-	return NewRegistry()
-}
-
 // Register adds one validator under its manifest's name, rejecting a nil
 // validator, a manifest that fails validation or does not declare kind
 // validator, a missing or uncompilable config schema, and a duplicate name
@@ -126,6 +116,17 @@ func (r *Registry) ValidateConfig(name string, config []byte) error {
 	}
 	if err := e.schema.Validate(inst); err != nil {
 		return &ConfigValidationError{Validator: name, Detail: validationDetail(err)}
+	}
+	// Deeper pre-flight gate (ticket 11.2): a validator whose config compiles
+	// into an artifact the JSON Schema cannot fully vet (a regex that will not
+	// parse, a CEL expression that will not typecheck, a numeric_range with no
+	// bound) implements ConfigCompiler. A compile failure here is a permanent
+	// config error, reported before any spend and before Validate is reached —
+	// and the successful path warms the validator's compile cache.
+	if cc, ok := e.validator.(ConfigCompiler); ok {
+		if err := cc.CompileConfig(raw); err != nil {
+			return &ConfigValidationError{Validator: name, Detail: err.Error()}
+		}
 	}
 	return nil
 }

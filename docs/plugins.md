@@ -209,3 +209,30 @@ so nothing is spent. A failing verdict records the `validation_failed`
 outcome (the verdict persisted on the attempt, visible on
 `GET /v1/runs/{id}`) and dead-letters the step; M11.4 adds the semantic-retry
 loop that re-attempts with a feedback-augmented prompt before giving up.
+
+### Built-in validators (11.2)
+
+The fleet ships five deterministic validators — pure, fast, `cacheable`-only:
+
+| Name | Config | What it checks |
+|---|---|---|
+| `json_schema` | `{schema}` | the target (a JSON string is re-parsed as JSON) satisfies a JSON Schema; path-level issues |
+| `regex` | `{pattern, negate?}` | the target's string form matches an RE2 pattern |
+| `contains` | `{substring, case_insensitive?, negate?}` | the target's string form contains a substring |
+| `cel` | `{expr, parse_json?}` | a CEL boolean predicate over `value` / `output` / `step_type` |
+| `numeric_range` | `{min?, max?, exclusive_min?, exclusive_max?}` | the target (a numeric string is accepted) is a number within bounds |
+
+The default `target` for an llm-family step is `/text` (the model's answer),
+so `json_schema`/`regex`/`cel` judge the answer rather than the `{model,
+stop_reason, text}` envelope.
+
+**`ConfigCompiler` (optional).** A validator whose config compiles into an
+artifact the config JSON Schema cannot fully vet — an unparseable regex, a CEL
+expression that will not typecheck, a `numeric_range` with no bound —
+implements `CompileConfig(config json.RawMessage) error`. The framework calls
+it at claim (pre-flight, after the schema check), so a bad artifact is a
+permanent config error before any spend, and a compile cache keyed on the
+config bytes means the artifact is built once per distinct config, not per
+attempt. A *runtime* failure over a particular output (a `cel` predicate
+referencing a missing field) is instead a **fail verdict**, not a config
+error — repairable by the semantic retry.
