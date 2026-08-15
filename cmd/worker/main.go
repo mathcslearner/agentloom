@@ -33,6 +33,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/engine"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/exec/steplog"
+	"github.com/mathcslearner/agentloom/internal/limits"
 	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/obs/metrics"
@@ -164,6 +165,19 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	if err != nil {
 		return fmt.Errorf("configuring retrievers: %w", err)
 	}
+	// Fleet-wide resource limits (ticket 9.1, ADR-010): the named external
+	// resources whose request/token throughput the M9 limiter middleware
+	// governs. Parsed and validated here so a bad limit config fails boot,
+	// not the first throttled step. An empty set (neither env source given)
+	// leaves every resource unlimited. The 9.2 middleware consumes this set;
+	// for now the worker only loads and reports it.
+	resourceLimits, err := limits.Load(cfg.Resources.Inline, cfg.Resources.File)
+	if err != nil {
+		return err
+	}
+	logger.InfoContext(ctx, "resource limits loaded",
+		slog.Int("resources", resourceLimits.Len()),
+		slog.Any("names", resourceLimits.Names()))
 	// Production workers register the core set; the filesystem-writing
 	// test executors (counter, effectful_echo) are opt-in via
 	// AGENTLOOM_WORKER_TEST_EXECUTORS (ticket 6.2) — the compose dev

@@ -408,6 +408,56 @@ func TestLoadToolsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestLoadResourcesOverrides(t *testing.T) {
+	t.Parallel()
+
+	// Default: neither source set — the worker treats every resource as
+	// unlimited (ADR-010, ticket 9.1).
+	cfg, err := config.Load(lookupFrom(nil))
+	if err != nil {
+		t.Fatalf("Load with empty env: %v", err)
+	}
+	if cfg.Resources != (config.ResourcesConfig{}) {
+		t.Errorf("default Resources config = %+v, want zero value", cfg.Resources)
+	}
+
+	// Inline source.
+	inline := `{"resources": [{"name": "anthropic:claude-sonnet-5", "requests": {"per_minute": 60}}]}`
+	cfg, err = config.Load(lookupFrom(map[string]string{config.EnvResources: inline}))
+	if err != nil {
+		t.Fatalf("Load inline resources: %v", err)
+	}
+	if cfg.Resources.Inline != inline || cfg.Resources.File != "" {
+		t.Errorf("Resources = %+v, want inline set only", cfg.Resources)
+	}
+
+	// File source.
+	cfg, err = config.Load(lookupFrom(map[string]string{config.EnvResourcesFile: "/etc/agentloom/resources.json"}))
+	if err != nil {
+		t.Fatalf("Load file resources: %v", err)
+	}
+	if cfg.Resources.File != "/etc/agentloom/resources.json" || cfg.Resources.Inline != "" {
+		t.Errorf("Resources = %+v, want file set only", cfg.Resources)
+	}
+}
+
+func TestLoadResourcesMutualExclusion(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.Load(lookupFrom(map[string]string{
+		config.EnvResources:     `{"resources": []}`,
+		config.EnvResourcesFile: "/etc/agentloom/resources.json",
+	}))
+	if err == nil {
+		t.Fatal("Load with both resource sources: want error, got nil")
+	}
+	for _, env := range []string{config.EnvResources, config.EnvResourcesFile} {
+		if !strings.Contains(err.Error(), env) {
+			t.Errorf("error %q does not mention %s", err, env)
+		}
+	}
+}
+
 func TestLoadRedisAddrOverride(t *testing.T) {
 	t.Parallel()
 

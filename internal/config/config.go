@@ -23,15 +23,16 @@ type LookupFunc func(key string) (string, bool)
 // Config is the root configuration for agentloom binaries, composed of one
 // typed sub-config per component.
 type Config struct {
-	Log      LogConfig
-	Postgres PostgresConfig
-	Redis    RedisConfig
-	Queue    QueueConfig
-	Worker   WorkerConfig
-	API      APIConfig
-	Obs      ObsConfig
-	LLM      LLMConfig
-	Tools    ToolsConfig
+	Log       LogConfig
+	Postgres  PostgresConfig
+	Redis     RedisConfig
+	Queue     QueueConfig
+	Worker    WorkerConfig
+	API       APIConfig
+	Obs       ObsConfig
+	LLM       LLMConfig
+	Tools     ToolsConfig
+	Resources ResourcesConfig
 }
 
 // Load builds a Config by applying environment overrides from lookup on top
@@ -39,15 +40,16 @@ type Config struct {
 // the returned Config is the zero value in that case.
 func Load(lookup LookupFunc) (Config, error) {
 	cfg := Config{
-		Log:      defaultLogConfig(),
-		Postgres: defaultPostgresConfig(),
-		Redis:    defaultRedisConfig(),
-		Queue:    defaultQueueConfig(),
-		Worker:   defaultWorkerConfig(),
-		API:      defaultAPIConfig(),
-		Obs:      defaultObsConfig(),
-		LLM:      defaultLLMConfig(),
-		Tools:    defaultToolsConfig(),
+		Log:       defaultLogConfig(),
+		Postgres:  defaultPostgresConfig(),
+		Redis:     defaultRedisConfig(),
+		Queue:     defaultQueueConfig(),
+		Worker:    defaultWorkerConfig(),
+		API:       defaultAPIConfig(),
+		Obs:       defaultObsConfig(),
+		LLM:       defaultLLMConfig(),
+		Tools:     defaultToolsConfig(),
+		Resources: defaultResourcesConfig(),
 	}
 	var errs []error
 	errs = append(errs, cfg.Log.applyEnv(lookup)...)
@@ -59,6 +61,7 @@ func Load(lookup LookupFunc) (Config, error) {
 	errs = append(errs, cfg.Obs.applyEnv(lookup)...)
 	errs = append(errs, cfg.LLM.applyEnv(lookup)...)
 	errs = append(errs, cfg.Tools.applyEnv(lookup)...)
+	errs = append(errs, cfg.Resources.applyEnv(lookup)...)
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration:\n%w", err)
 	}

@@ -25,3 +25,4 @@ are reserved and appear here once the ADR is written.
 | [007](007-authn-authz-and-api-rate-limiting.md) | Authentication, authorization & API rate limiting | Accepted | 2026-08-12 |
 | [008](008-observability-conventions.md) | Observability conventions | Accepted | 2026-08-12 |
 | [009](009-plugin-spi.md) | Plugin SPI — kinds, registration, config schemas, capability flags | Accepted | 2026-08-14 |
+| [010](010-rate-limiting-and-backpressure.md) | Fleet-wide rate limiting & backpressure | Accepted | 2026-08-14 |

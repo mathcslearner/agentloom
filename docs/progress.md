@@ -4723,3 +4723,144 @@ and M8 is complete.
   ticket 8.7 — errcheck on `w.Write`, revive unused-parameter, unparam on
   `transientf`); those files have zero diff in this ticket, so they are out
   of scope for 8.8. Every package 8.8 touched is lint-clean.
+
+## Milestone 9 — Distributed rate limiting & response caching
+
+### 9.1 — ADR-010 & resource limit configuration ✅
+
+**Delivered.** The design for fleet-wide rate limiting and backpressure
+(ADR-010) plus the config half it needs: the resource-limit
+configuration is parsed and validated at worker boot. No migration, no
+middleware, and no runtime behavior change — those land in 9.2/9.3. This
+ticket decides the semantics the rest of M9 implements against and ships
+the leaf package that loads the limits.
+
+**ADR-010 (Accepted).** The decisions:
+
+- **Named resources, keyed by the resolved provider.** A resource is a
+  shared external-capacity pool named `<provider>:<identifier>`:
+  `anthropic:<model>`, `openai:<model>`, `mock:<model>` — named by the
+  provider 8.4's routing *resolves* the model to, so `model: "mock/sim-1"`
+  binds to resource `mock:sim-1` and `model: "claude-sonnet-5"` to
+  `anthropic:claude-sonnet-5` — plus custom `tool:<name>` resources. The
+  limiter keys off what the provider meters, not how the author spelled
+  the model.
+- **Resolution: exact → `<provider>:*` wildcard → not-found = unlimited.**
+  The unknown-resource policy is the deliberate mirror of 6.4's fail-open:
+  limits are protective opt-in, and fail-closed (unknown = zero capacity)
+  would brick the fleet the first time a workflow used a new model name
+  before an operator added its limit. `*` is admissible in config only as
+  a trailing `:*` segment.
+- **Dual buckets per resource, acquired atomically.** Each resource
+  carries up to two 6.3 token buckets — requests (cost 1) and tokens (cost
+  = the pre-call estimate) — acquired **all-or-nothing in one two-key Lua
+  script**. This is exactly the two-key script 6.3 deferred; M9 is where
+  it stops being deferrable, because M9 denials are *steady-state under
+  load* (not 6.4's rare abuse), so a sequential acquire's no-refund skew
+  would systematically leak a request token on every token-bucket denial
+  and drift the two ledgers. The script itself lands in 9.2 (the
+  `ratelimit` library stays tenant-agnostic — the caller supplies both
+  buckets and costs).
+- **The `throttled` backpressure contract.** A denial is not a failure: it
+  records a **second administrative attempt outcome, `throttled`**,
+  alongside `lost` and likewise outside the ADR-006 error-class taxonomy.
+  It is never counted against the retry budget (`CountCountedFailures`
+  already counts `transient`/`timeout` only — *zero query change*), never
+  in `retry_on`, and decided structurally by the middleware before the
+  executor runs. It reuses 5.2's retry machinery **wholesale** — the
+  claim-fenced `running → retrying` CAS (with `steps_failed` un-bumped),
+  the `next_attempt_at ≤ now` claim guard, and the overdue-retrying
+  reconciler scan (status-keyed, so it heals a throttle's commit-then-
+  schedule gap with **no new reconciler duty**) — re-dispatched through the
+  delayed ZSET under a new reason `throttle` (added by 9.2, as `retry`/
+  `unpark`/`dlq_requeue` were added by their tickets). The worker slot is
+  released immediately; nothing anywhere waits in-process for tokens.
+- **Requeue math.** `delay = clamp(retry_after, floor, cap) + U[0,
+  jitter_frac × clamped]`, defaults floor 500ms / cap 5m / jitter 20%.
+  Deliberately *additive-partial* jitter, not ADR-006's AWS full jitter:
+  `retry_after` is a real refill deadline, so `U[0, computed]` would wake a
+  fan-out of siblings *before* the tokens exist, guaranteeing a second
+  denial. The floor guards a hot requeue loop on a near-zero `retry_after`.
+- **Wait-vs-never.** `ratelimit.ErrCostExceedsCapacity` (estimate > token
+  bucket capacity) and `RetryAfterNever` (rate-zero bucket) are denials no
+  wait can lift → force-classified `permanent`, dead-lettered — the 6.3
+  contract edges consumed exactly as 6.3 anticipated ("M9 must perm-fail
+  those instead of scheduling a delayed requeue").
+- **The 9.2 executor hook.** A step binds to a resource + estimate through
+  a new optional `ResourceClaimer` interface (designed in-ADR, implemented
+  9.2); executors that don't implement it bypass the limiter. The estimator
+  (chars/4 + declared `max_tokens`) and 9.3's post-call reconciliation are
+  forward-pointed so those tickets build against decided semantics.
+- **Fairness stance (documented, deferred to M19).** Global buckets +
+  fire-time-ordered requeue let one huge fan-out starve a small
+  concurrent run of the same resource. The remedy — a per-run throttle cap
+  that parks the run under a new `resource_starved` reason (5.6's park
+  primitive, which holds no lease or slot) — is deferred until load tests
+  demand it, because the *hard* limit (the provider's budget) is always
+  respected by the global bucket; only the throughput *distribution* is
+  unfair, and only under contention.
+
+**ADR-006 cross-update.** `throttled` added to the outcome-vocabulary
+note (a second administrative outcome after `lost`); taxonomy **rows 16**
+(limiter denial → `throttled`, delayed requeue, no budget, no DLQ) and
+**17** (cost-exceeds-capacity / never-refilling → `permanent` → DLQ); the
+retry-budget section notes the exclusion; the Enforcement-points section
+gained an M9 line. The `throttled` CHECK-constraint migration is 9.2's
+(the 5.1→5.2 design-then-migration split precedent).
+
+**Config half (shipped in 9.1).**
+
+- **`internal/limits`** — a leaf package (stdlib only; imports neither
+  `ratelimit` nor any engine package, so the SPI/enforcement split holds).
+  `Rate{PerMinute, Burst}` with `RefillPerSec()` (= per_minute/60) and
+  `Capacity()` (= burst, or `ceil(per_minute)` when unset) mapping helpers
+  the 9.2 middleware hands to `ratelimit.Bucket`; `Resource{Name, Requests,
+  Tokens}`; `Set` with `Lookup` (exact → wildcard → not-found), `Names`
+  (sorted copy), `Len`, all nil-safe. `Parse` does strict
+  `DisallowUnknownFields` decode + a trailing-content check, then validates
+  with **every error joined at once** (the config package's house style):
+  name required / no whitespace / `*` only trailing `:*` / unique; at least
+  one of requests|tokens; `per_minute` strictly positive and finite (no
+  rate-zero fixed-quota buckets in v1 — a `RetryAfterNever` brick, exactly
+  as 6.4 forbids rate-zero API buckets); `burst` non-negative. `Load(inline,
+  file)` is inline **XOR** file **XOR** empty (= unlimited); the file read
+  lives here so the config package stays env-pure.
+- **`config.ResourcesConfig`** — `AGENTLOOM_RESOURCES` (inline JSON) /
+  `AGENTLOOM_RESOURCES_FILE` (path), mutual exclusion rejected at
+  `config.Load` (so a both-set mistake fails before any backend opens;
+  `limits.Load` also rejects it defensively).
+- **`cmd/worker`** loads the set via `limits.Load` at boot (a bad config
+  fails boot, not the first throttled step) and logs the resource count +
+  names, holding the set for 9.2's middleware. `cmd/api` is untouched — it
+  never executes steps.
+- **`.env.example`** documents both sources with a worked inline example.
+
+**Non-obvious decisions.**
+
+- **The two-key atomic script is promoted from "deferred" to
+  "mandatory".** 6.3 and 6.4 both punted it as a micro-optimization; the
+  real reason it matters is correctness under *sustained* denial, which is
+  M9's normal operating regime, not a latency concern. Recorded in ADR-010
+  and its alternatives.
+- **`throttled` needs no store/query changes to be budget-exempt** — the
+  budget counter was already scoped to `transient`/`timeout` since 5.2, so
+  a third excluded outcome is free. This is why the whole backpressure path
+  reuses 5.2/5.6 machinery with no new primitive.
+- **No dead code in 9.1.** The `ResourceClaimer` hook and the two-key
+  script are *described* in the ADR, not stubbed into `exec`/`ratelimit` —
+  9.1 stays free of unused interfaces; `limits`'s `RefillPerSec`/`Capacity`
+  helpers are the only forward-looking code, and they are pure, tested, and
+  the natural home for the per-minute→per-second mapping the ADR pins.
+
+**Tests.** `internal/limits` unit matrix: valid golden config,
+exact/wildcard/unlimited resolution (incl. exact-wins, bare-name-never-
+wildcards), `Rate` helpers (explicit burst vs. ceil default), every
+validation-error path individually, all-errors-at-once, JSON overflow
+rejection, `Load` inline/file/both/missing-file/empty/whitespace, invalid
+inline, and nil-`Set` safety. `config`: resources overrides (default
+zero-value, inline-only, file-only) and the mutual-exclusion load error.
+
+**Verified.** `go build ./...`, `go test -race
+./internal/limits/ ./internal/config/`, and the full `go test -race
+./...` green; no integration tests — 9.1 crosses no process or datastore
+boundary (both new surfaces are pure).

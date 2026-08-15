@@ -75,7 +75,12 @@ vocabulary `succeeded | transient | permanent | timeout | cancelled`
 (plus the pre-existing administrative `lost`, which stays deliberately
 *outside* the taxonomy — it records a lease-expiry takeover closing a
 dead holder's dangling attempt, not a judged failure). M5.2's migration
-adds the CHECK constraint ADR-004 postponed. The bare outcome `failed`
+adds the CHECK constraint ADR-004 postponed. **M9 reserves a second
+administrative outcome, `throttled`** (ADR-010): a rate-limit denial
+recorded *before* the executor runs, likewise outside the taxonomy and
+excluded from the retry budget — 9.2's migration adds it to the CHECK,
+exactly as 5.2 added the classed vocabulary, and the taxonomy table
+below (rows 16–17) records its disposition. The bare outcome `failed`
 (written by 2.6–4.x) is retired by that migration in favor of the
 classed vocabulary; existing rows are backfilled to `permanent` (under
 pre-M5 semantics every failure was terminal, which is what `permanent`
@@ -129,6 +134,8 @@ means the dead-letter path (5.4).
 | 13 | Malformed / unknown-version envelope (consumer decode) | *none* | no ACK; delivery count → poison → DLQ (source `poison`) |
 | 14 | `ResolveEdge` graph-integrity error mid-completion (counter/resolution corruption) | *none* | deliberate redeliver-to-poison (post-M4 audit: bookkeeping corruption is not step content; a `FailStep` over the same corrupt rows is no safer) → DLQ (source `poison`) |
 | 15 | Template rendering failure pre-execution (ticket 8.2: strict reference did not resolve — missing output path, skipped/unfinished referenced step, unsubmitted param — or the stored config's templates no longer parse) (`Engine.renderConfig`) | `permanent` | no retry; DLQ. A run's recorded state is immutable, so a re-render fails identically. Transport failures during the pre-render reads are row 11, not this row: nothing was decided, the delivery redelivers |
+| 16 | Rate-limit denial from the M9 limiter middleware before the provider call (ticket 9.2, ADR-010) | `throttled` (administrative, outside the taxonomy) | **not a failure**: no retry-budget consumption, no DLQ. The step goes `running → retrying` (5.2's CAS, `steps_failed` un-bumped) and is re-dispatched through the delayed ZSET (reason `throttle`) at `retry_after` + jitter; the worker slot is released immediately |
+| 17 | Limiter denial that no wait can lift — token estimate exceeds the token bucket's capacity (`ratelimit.ErrCostExceedsCapacity`), or a never-refilling bucket (`ratelimit.RetryAfterNever`) (ticket 9.2, ADR-010) | `permanent` | no retry; DLQ (source `permanent`). Deterministic function of the estimate and the config — re-execution is provably futile, like rows 4–7/15 |
 
 Rows 4–7 and 15 are the force-classified `permanent` set: they are
 deterministic functions of stored state, so re-execution is provably
@@ -143,7 +150,11 @@ failure modes and never mix:
   failures — outcomes `transient` and `timeout`. `lost` attempts do not
   count: a crashed host recorded no judgment about the step, and
   letting infrastructure churn silently eat a step's budget would make
-  retry behavior depend on where the step happened to run.
+  retry behavior depend on where the step happened to run. `throttled`
+  attempts (M9, ADR-010) do not count either, and for the same reason: a
+  rate-limit denial is backpressure, not a judgment about the step's
+  content — `CountCountedFailures` already counts only `transient`/`timeout`,
+  so both administrative outcomes are excluded by construction.
 - The **delivery count** (poison threshold, ADR-005) bounds
   crash-loops: a step that keeps killing its workers (row 9/10
   repeating) never records a failure, but its entry's delivery count
@@ -702,6 +713,11 @@ misuse, `effectful_echo`. **5.6** — the `cancelled` class for run-control
 cancellation: run statuses `parked`/`cancelling`/`cancelled`, the cancel
 sweep + in-flight settlement + reconciler heal, park/unpark with reason
 `unpark`, and the `max_wall_clock` deadline (as-built section above).
+**M9** (ADR-010) — adds the administrative `throttled` outcome (rows
+16–17): 9.1 reserves it in this taxonomy; 9.2's migration adds it to the
+`step_attempts.outcome` CHECK, the limiter middleware records it and
+re-dispatches through the delayed ZSET (reason `throttle`), reusing 5.2's
+`running → retrying` CAS and overdue-retrying reconciler scan unchanged.
 **M11** — unlocks `validation_failed` in `retry_on` and
 as an outcome. ADR-004's transition matrix and ADR-005's reason
 vocabulary are extended by those tickets exactly as both ADRs
