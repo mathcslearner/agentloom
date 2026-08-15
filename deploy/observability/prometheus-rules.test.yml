@@ -123,3 +123,39 @@ tests:
                 their caps and parking. Check the Cost row on the Engine
                 dashboard for spend rate by resource, and raise budgets (PATCH
                 /v1/runs/{id}/budget) or add model_fallbacks to resume them.
+
+  # ValidationFailureRatioHigh: verdicts flowing at 2/min with half failing
+  # (>30%), sustained — fires after the 5m hold.
+  - interval: 1m
+    input_series:
+      - series: 'engine_validate_verdicts_total{status="fail", step_type="llm", resource="mock:sim-1", job="worker", instance="w1"}'
+        values: "0+1x30"
+      - series: 'engine_validate_verdicts_total{status="pass", step_type="llm", resource="mock:sim-1", job="worker", instance="w1"}'
+        values: "0+1x30"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ValidationFailureRatioHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Output-validation failure ratio is high"
+              description: >-
+                Over 30% of output-validation verdicts are failing, sustained
+                for 5 minutes with real verdict flow. Check the Output-quality
+                row on the Engine dashboard: the failure ratio by resource
+                points at the offending model, the validator-results panel at
+                which validator is rejecting, and the semantic-retry depth at
+                whether the feedback loop is converging. A rising unrepairable
+                share on the repair panel is malformed output at the source.
+
+  # Negative: verdicts flowing but all passing — the ratio is zero, so the
+  # rule stays quiet despite real verdict traffic.
+  - interval: 1m
+    input_series:
+      - series: 'engine_validate_verdicts_total{status="pass", step_type="llm", resource="mock:sim-1", job="worker", instance="w1"}'
+        values: "0+1x30"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ValidationFailureRatioHigh
+        exp_alerts: []

@@ -99,6 +99,35 @@ type Metrics interface {
 	// ModelDowngraded records one claim routed to a cheaper model (ticket
 	// 10.5) by trigger (budget_threshold/budget_projection).
 	ModelDowngraded(trigger string)
+	// ValidationVerdict records one output-validation chain verdict (ticket
+	// 11.6, ADR-013) by step type, the resolved resource that produced the
+	// output (the model or "none" for a non-cost-bearing step), and the
+	// overall status (pass/fail). Recorded post-commit, once per validation
+	// that ran — a miss's validate stage or a cache hit's re-validation — so
+	// the failure rate reads by step type and model.
+	ValidationVerdict(stepType, resource, status string)
+	// ValidatorResult records one validator's contribution to a chain
+	// verdict (ticket 11.6) by validator name and per-validator status
+	// (pass/fail/skipped/error). One per configured validator per verdict, so
+	// the per-validator failure rate and on_error:skip degradations are
+	// visible.
+	ValidatorResult(validator, status string)
+	// SemanticRetryDepth records one terminated semantic-retry loop (ticket
+	// 11.6, ADR-013) by terminal outcome (succeeded/validation_failed) and
+	// the number of semantic attempts it took (1 = passed/failed first try).
+	// Recorded once per loop end — a pass verdict or an exhaustion
+	// dead-letter — never on an intermediate feedback-augmented re-attempt.
+	SemanticRetryDepth(outcome string, attempts int)
+	// OutputRepair records one structured-output shaping result (ticket
+	// 11.6, ADR-013) by provenance status (native/raw/repaired/unrepairable).
+	// One per productive llm attempt that declared an output_format; cache
+	// hits are excluded (the provenance was counted at the miss), so the
+	// repair rate reads over real provider calls.
+	OutputRepair(status string)
+	// JudgeScore records one cost-bearing validator's quality score (ticket
+	// 11.6, ADR-013) by validator name, as a [0,1] ratio — the llm_judge's
+	// score distribution in bounded buckets.
+	JudgeScore(validator string, score float64)
 }
 
 // nopMetrics is the default Metrics: every test layer runs with recording
@@ -130,3 +159,8 @@ func (nopMetrics) CostSaved(string, int64)                    {}
 func (nopMetrics) CostTokens(string, int64, int64)            {}
 func (nopMetrics) BudgetExceeded(string, string)              {}
 func (nopMetrics) ModelDowngraded(string)                     {}
+func (nopMetrics) ValidationVerdict(string, string, string)   {}
+func (nopMetrics) ValidatorResult(string, string)             {}
+func (nopMetrics) SemanticRetryDepth(string, int)             {}
+func (nopMetrics) OutputRepair(string)                        {}
+func (nopMetrics) JudgeScore(string, float64)                 {}

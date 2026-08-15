@@ -92,6 +92,19 @@ by limit, downgrades by trigger) — empty is the healthy state, so
 `make smoke-dashboards` allowlists it. `BudgetParkRateSpike` alerts when
 budgeted runs park in a sustained flow.
 
+**Output quality row (ticket 11.6).** Validation verdicts/s by step type &
+status, the failure ratio by resource (the quality-health headline — a
+rising line is a model or step producing more invalid output), validator
+results/s by validator & status (which validator in a chain is rejecting,
+and `on_error:skip` degradations as the `error` status), semantic-retry
+depth p50/p95 by outcome (a rising `validation_failed` depth means the
+feedback loop is not converging), the repair-status share (native/raw/
+repaired/unrepairable — a rising unrepairable line is malformed output at
+the source), and the llm-judge score p50/p90 by validator. The judge-score
+panel is empty on the offline smoke (the unscripted mock emits no parseable
+judge verdict) and is allowlisted; `ValidationFailureRatioHigh` alerts when
+a large fraction of verdicts fail while verdicts are actually flowing.
+
 **Fleet row.** Active workers (consumer-group members recently active),
 scrape-target health, and `engine_build_info` per instance.
 
@@ -117,7 +130,7 @@ ADR-007).
 
 ## Alert rules
 
-Four **example** rules in
+Six **example** rules in
 [`prometheus-rules.yml`](../deploy/observability/prometheus-rules.yml),
 loaded by the compose Prometheus (see them under
 `http://localhost:9090/alerts`). Thresholds are dev-scale on purpose —
@@ -130,6 +143,8 @@ against real traffic.
 | `DeadLetterRateSpike` | dead-letter rate > 0.01/s over 5m, for 2m | terminal step failures — split by `source` on the Engine dashboard, requeue after fixing the cause |
 | `ReclaimRateSpike` | reclaim rate > 0.01/s over 5m, for 2m | workers dying or stalling past the lease TTL |
 | `OutboxDispatchLag` | oldest pending outbox row > 30s, for 2m | the Postgres→Redis drain is stalled; runs are frozen (critical) |
+| `BudgetParkRateSpike` | budget-park rate > 0.01/s over 5m, for 5m | budgeted runs are hitting their caps and parking on cost (ticket 10.5) |
+| `ValidationFailureRatioHigh` | >30% of verdicts failing **and** verdict rate > 0.02/s, for 5m | a model or validation chain is producing mostly invalid output (ticket 11.6) |
 
 Because the gauges behind `QueueDepthGrowing` and `OutboxDispatchLag`
 come from the worker sampler, a fully dead fleet silences them instead

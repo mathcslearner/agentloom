@@ -62,13 +62,16 @@ Rules, following Prometheus upstream conventions:
   `api` subsystem (`engine_api_requests_total`), not a second namespace.
 - Subsystem vocabulary (extended only by ADR amendment): `build`,
   `queue`, `outbox`, `dispatch`, `reconcile`, `step`, `steplog` (7.4),
-  `run`, `api`, `worker`, `ratelimit` (9.2), `cache` (9.5), `cost` (10.5).
+  `run`, `api`, `worker`, `ratelimit` (9.2), `cache` (9.5), `cost` (10.5),
+  `validate` (11.6).
 - Base units and suffixes: durations in seconds (`_seconds`), sizes in
   bytes (`_bytes`), token counts in tokens (`_tokens`, 9.3's
-  estimate-error histogram), money in USD (`_usd`, 10.5's cost counters —
-  the base unit; the ledger keeps the exact integer nano-USD, a rate
-  counter tolerates the float), counters end `_total`, gauges carry no
-  suffix (`engine_queue_ready_depth`). Histograms are the default for
+  estimate-error histogram), attempt counts in `_attempts` and
+  dimensionless ratios in `_ratio` (11.6's semantic-depth and judge-score
+  histograms), money in USD (`_usd`, 10.5's cost counters — the base unit;
+  the ledger keeps the exact integer nano-USD, a rate counter tolerates the
+  float), counters end `_total`, gauges carry no suffix
+  (`engine_queue_ready_depth`). Histograms are the default for
   latency/duration (M19 needs percentiles) and for the signed token-cost
   estimate error; summaries are banned (not aggregatable across the fleet).
 - `engine_build_info{service, version} 1` is the conventional info gauge,
@@ -91,8 +94,8 @@ requires amending this table first, and must be a closed vocabulary.
 | `service` | `agentloom-api`, `agentloom-worker` | 2 |
 | `version` | build version (one per deployed build) | ~1 per rollout |
 | `step_type` | the dag catalog: `noop`, `echo`, `sleep`, `fail_n_times`, `join`, `branch`, `counter`, `effectful_echo`, `llm`, `tool`, `retrieve`, … | ~12, grows by catalog ticket |
-| `outcome` | attempt outcomes: `succeeded`, `lost`, `transient`, `permanent`, `timeout`, `cancelled` | 6 |
-| `status` | run/step status vocabularies (ADR-004) | ≤ 8 each |
+| `outcome` | attempt outcomes: `succeeded`, `lost`, `transient`, `permanent`, `timeout`, `cancelled`, `throttled` (9.2), `budget_exceeded` (10.3), `validation_failed` (11.1); 11.6's semantic-depth histogram labels by the terminal outcome `succeeded`/`validation_failed` | ≤ 9 |
+| `status` | run/step status vocabularies (ADR-004); 11.6's verdict counters reuse it for the verdict status `pass`/`fail` | ≤ 8 each |
 | `reason` | outbox reasons: `step_ready`, `retry`, `reconcile_ready`, `reconcile_running`, `reconcile_retry`, `dlq_requeue`, `unpark` | 7 |
 | `class` | error classes (ADR-006) or rate-limit classes (`submit`, `read`, `admin`, `global`) | ≤ 5 |
 | `source` | dead-letter sources: `retries_exhausted`, `permanent`, `poison` | 3 |
@@ -105,6 +108,7 @@ requires amending this table first, and must be a closed vocabulary.
 | `decision` | rate-limit decision (7.2): `allowed`, `denied` | 2 |
 | `resource` | fleet-limit resource name (9.2) and cost resource (10.5): the resolved ADR-010 name (`anthropic:*`, `mock:sim-1`, `tool:http_request`) — the pricing catalog + limiter config, bounded | ~config size |
 | `plugin` | response-cache concrete plugin (9.5): `<kind>:<name>` of the provider/tool/retriever (`model_provider:anthropic`, `tool:json_transform`, `retriever:pg_fulltext`) — the compiled-in catalog | ~ catalog size |
+| `validator` | validator plugin name (11.6): `json_schema`, `regex`, `contains`, `cel`, `numeric_range`, `llm_judge` — the compiled-in validator catalog | ~ catalog size |
 | `limit` | budget limit crossed (10.5): `run`, `step_usd`, `step_tokens` | 3 |
 | `action` | budget action taken (10.5): `park`, `fail` | 2 |
 | `trigger` | model-downgrade trigger (10.5): `budget_threshold`, `budget_projection` | 2 |
@@ -170,6 +174,11 @@ from the allowlist above.
 | `engine_cost_output_tokens_total` | counter | `resource` | cost ledger (10.5): billed output tokens by resource |
 | `engine_cost_budget_exceeded_total` | counter | `limit`, `action` | budget check (10.5): claims terminated by the claim-time budget, by limit crossed and action (park/fail) |
 | `engine_cost_downgrades_total` | counter | `trigger` | budget check (10.5): claims routed to a cheaper model, by trigger |
+| `engine_validate_verdicts_total` | counter | `step_type`, `resource`, `status` | validate stage (11.6): output-validation chain verdicts (pass/fail), by step type and the resolved resource that produced the output; recorded post-commit, one per validation run (miss or cache-hit re-validation) |
+| `engine_validate_validator_results_total` | counter | `validator`, `status` | validate stage (11.6): per-validator contributions (pass/fail/skipped/error), one per configured validator per verdict |
+| `engine_validate_semantic_depth_attempts` | histogram | `outcome` | validate stage (11.6): semantic-retry loop depth, observed once per terminated loop by terminal outcome (succeeded/validation_failed) |
+| `engine_validate_repairs_total` | counter | `status` | validate stage (11.6): structured-output shaping results (native/raw/repaired/unrepairable), one per productive `output_format` llm attempt (cache hits excluded) |
+| `engine_validate_judge_score_ratio` | histogram | `validator` | validate stage (11.6): llm-judge quality-score distribution, one per cost-bearing validator score |
 
 The `cost` counters label only by the pricing-catalog `resource` (or the
 tiny `limit`/`action`/`trigger` vocabularies) — never by run/step — so the

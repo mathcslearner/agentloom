@@ -684,6 +684,82 @@ now imports `internal/llm` and `internal/jsonrepair`, no cycle). ADR-012 rule 4
 and ADR-009's validator flag table are amended; ADR-010 gains the judge-bypass
 note.
 
+### Quality signals & metrics (as built, 11.6)
+
+The whole M11 substrate produces one durable artifact per validated attempt —
+the verdict — plus the structured-output provenance (11.3) and the semantic
+depth implicit in the attempt history. 11.6 surfaces those as Prometheus
+metrics and a per-step status-API roll-up, closing the milestone. It is purely
+additive: **no migration, no config var, no store change, no new outcome or
+class** — every signal is read off state 11.1–11.5 already persist.
+
+**Five instruments, one new `validate` subsystem** (ADR-008's subsystem
+vocabulary and label allowlist amended — `validator` is the one new label key;
+`_attempts` and `_ratio` join the histogram unit suffixes):
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `engine_validate_verdicts_total` | counter | `step_type`, `resource`, `status` | one per chain verdict (pass/fail), by step type and the resolved resource that produced the output — the failure-rate numerator/denominator by step and model |
+| `engine_validate_validator_results_total` | counter | `validator`, `status` | one per configured validator per verdict (pass/fail/skipped/error) — per-validator failure rate and `on_error:skip` degradations |
+| `engine_validate_semantic_depth_attempts` | histogram (buckets 1..10) | `outcome` | one per terminated semantic loop (succeeded or validation_failed), observing the number of semantic attempts it took |
+| `engine_validate_repairs_total` | counter | `status` | one per productive llm attempt declaring an `output_format`, by provenance (native/raw/repaired/unrepairable) — the repair rate |
+| `engine_validate_judge_score_ratio` | histogram (buckets 0.1..1.0) | `validator` | one per cost-bearing validator score — the llm-judge score distribution |
+
+**Where they record.** All are recorded **post-commit**, on the completion
+paths, guarded exactly like the 10.5 cost metrics — a fenced or rolled-back
+completion records nothing. The verdict, per-validator, and judge-score signals
+fire from `recordVerdictQuality` in `completeSuccess` (a passing verdict, or a
+cache-hit re-validation) and in `completeValidationFailure` (a failing verdict,
+on both the semantic-retry and the terminal routes — the attempt happened
+either way). The repair signal fires from `recordRepairQuality` on those same
+routes and on `completeFailure` (a validator-transport error under
+`on_error:fail` can carry a shaped output from a successful executor call);
+**cache hits are excluded** (`out.Usage.CacheHit`) since the provenance was
+counted at the miss that produced it. The semantic-depth histogram is observed
+**once per loop end**: on the passing `completeSuccess` (outcome `succeeded`,
+depth = the attempt's semantic number) and at the exhaustion dead-letter in
+`completeValidationFailure` (outcome `validation_failed`), never on an
+intermediate feedback-augmented re-attempt. `resource` is the pricing-catalog
+name (a model or `tool:<name>`) or the constant `none` for a step that named no
+external resource — so the label stays bounded to the catalog plus one.
+
+**Two deliberate counting decisions.** (1) A cache-hit re-validation that
+*fails* is a bypass-and-re-execute, not a persisted verdict, so it is **not**
+counted — the fresh execution's verdict is. (2) A validator's own **transport
+error** (`on_error:fail`, or a ctx cancel) is already visible via
+`engine_step_retries_total{class}` / `engine_step_dead_letters_total`, so 11.6
+adds **no** separate counter for it — the verdict counters count *judgments*,
+not stage failures.
+
+**Status API.** `StepView` gains a `validation` object
+(`ValidationSummaryView`): a pure read-time roll-up of the step's attempt
+verdicts — `{attempts, passed, failed, last_attempt, last_status, last_score?,
+last_issue_count, validators[]{name, passed, failed, skipped, errored,
+last_status, last_score?}}`. `summarizeVerdicts` unmarshals `attempts[].verdict`
+(ascending attempt order, so the highest-numbered verdict is "last"; a corrupt
+verdict row is skipped, never a 500) and orders the per-validator roll-up by the
+latest verdict's chain order. Present only when at least one attempt carried a
+verdict; absent for every unvalidated step. OpenAPI gains `ValidationSummary` +
+`ValidatorSummary` (spec still lints 100/100).
+
+**Observability surface.** A Grafana **Output quality** row on the Engine board
+(verdicts/s by step type & status, failure ratio by resource, validator
+results/s, semantic-depth p50/p95 by outcome, repair status share, judge score
+p50/p90) with the anti-drift audit green; a dev-scale `ValidationFailureRatioHigh`
+example alert (guarded by a minimum verdict rate so an idle stack cannot fire it)
++ promtool unit tests; `make smoke-metrics`/`smoke-dashboards` drive a
+mixed-quality offline workload (a `contains` pass; a `contains` fail under a
+3-attempt budget → DLQ; an `output_format: json` native echo; a `repair_only`
+prose → unrepairable) asserting the verdict/validator/depth/repair series
+non-empty. **Accepted limitation:** the unscripted compose mock cannot emit a
+parseable judge verdict, so the judge-score panel is allowlisted quiet in the
+dashboard smoke and the judge-score histogram is exercised by the engine
+integration test (`TestQualityMetricsJudgeScore`) instead.
+
+ADR-008 is amended (subsystem `validate`, label `validator`, the `_attempts`/
+`_ratio` histogram units, the five inventory rows). No semantics of 11.1–11.5
+changed during 11.6 — the tickets left exactly the artifacts these metrics read.
+
 ## Consequences
 
 Positive:

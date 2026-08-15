@@ -279,4 +279,25 @@ func TestSemanticRetryVisibleInStatusAPI(t *testing.T) {
 	if fb2.Text == "" || fb2.Text == fb3.Text {
 		t.Error("wire feedback text must be present and diffable across attempts")
 	}
+
+	// Ticket 11.6 acceptance: the per-step validation summary is on the wire,
+	// rolled up from the three attempt verdicts (fail, fail, pass).
+	if gen.Validation == nil {
+		t.Fatal("step carries no validation summary on the wire")
+	}
+	vs := gen.Validation
+	if vs.Attempts != 3 || vs.Passed != 1 || vs.Failed != 2 {
+		t.Errorf("summary attempts/passed/failed = %d/%d/%d, want 3/1/2",
+			vs.Attempts, vs.Passed, vs.Failed)
+	}
+	if vs.LastAttempt != 3 || vs.LastStatus != "pass" {
+		t.Errorf("summary last = attempt %d status %q, want 3 pass", vs.LastAttempt, vs.LastStatus)
+	}
+	if len(vs.Validators) != 1 || vs.Validators[0].Name != "api_gate" {
+		t.Fatalf("summary validators = %+v, want one api_gate", vs.Validators)
+	}
+	if v0 := vs.Validators[0]; v0.Passed != 1 || v0.Failed != 2 || v0.LastStatus != "pass" {
+		t.Errorf("validator roll-up = passed %d failed %d last %q, want 1/2/pass",
+			v0.Passed, v0.Failed, v0.LastStatus)
+	}
 }

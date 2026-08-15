@@ -119,12 +119,56 @@ cost_miss_id="$(submit "$cost_def")"
 cost_hit_id="$(submit "$cost_def")"
 note "cost runs: miss $cost_miss_id, hit $cost_hit_id"
 
+# Output-quality signals (ticket 11.6): a mixed-quality validated workload on
+# the offline mock. qual_pass clears a contains check (verdict pass); qual_fail
+# fails a contains check under a 3-attempt semantic budget then dead-letters
+# (verdict fail + semantic depth under validation_failed); qual_native's
+# output_format json echoes native structured JSON (repair provenance native,
+# passing the implicit schema); qual_unrep's repair_only prose is unrepairable
+# and validation-fails. The unscripted mock cannot emit a parseable judge
+# verdict, so the judge-score histogram is exercised by the engine integration
+# test (TestQualityMetricsJudgeScore), not here.
+qual_pass_id="$(submit '{
+  "schema_version": 1, "name": "smoke-qual-pass",
+  "steps": [{"id": "gen", "type": "llm",
+             "config": {"model": "mock/sim-1", "prompt": "hello quality", "temperature": 0},
+             "validation": {"validators": [{"name": "contains", "config": {"substring": "[mock]"}}]}}],
+  "edges": []
+}')"
+qual_fail_id="$(submit '{
+  "schema_version": 1, "name": "smoke-qual-fail",
+  "steps": [{"id": "gen", "type": "llm",
+             "config": {"model": "mock/sim-1", "prompt": "hello quality", "temperature": 0},
+             "validation": {"validators": [{"name": "contains", "config": {"substring": "NEVER_APPEARS_ZZZ"}}],
+                            "max_attempts": 3}}],
+  "edges": []
+}')"
+qual_native_id="$(submit '{
+  "schema_version": 1, "name": "smoke-qual-native",
+  "steps": [{"id": "gen", "type": "llm",
+             "config": {"model": "mock/sim-1", "prompt": "hello native", "temperature": 0,
+                        "output_format": {"type": "json"}}}],
+  "edges": []
+}')"
+qual_unrep_id="$(submit '{
+  "schema_version": 1, "name": "smoke-qual-unrep",
+  "steps": [{"id": "gen", "type": "llm",
+             "config": {"model": "mock/sim-1", "prompt": "hello prose", "temperature": 0,
+                        "output_format": {"type": "json", "mode": "repair_only"}}}],
+  "edges": []
+}')"
+note "quality runs: pass $qual_pass_id, fail $qual_fail_id, native $qual_native_id, unrep $qual_unrep_id"
+
 say "waiting for terminal states"
 for id in "${fanout_ids[@]}"; do wait_terminal "$id" succeeded; done
 wait_terminal "$retry_id" succeeded
 wait_terminal "$doomed_id" failed
 wait_terminal "$cost_miss_id" succeeded
 wait_terminal "$cost_hit_id" succeeded
+wait_terminal "$qual_pass_id" succeeded
+wait_terminal "$qual_fail_id" failed
+wait_terminal "$qual_native_id" succeeded
+wait_terminal "$qual_unrep_id" failed
 note "all runs terminal"
 
 # Two scrape intervals (5s each) plus the 10s gauge-sample interval, so
@@ -211,6 +255,17 @@ must_be_positive 'engine_api_ratelimit_decisions_total{decision="allowed"}'
 must_be_positive 'engine_cost_spent_usd_total{resource="mock:sim-1"}'
 must_be_positive 'engine_cost_output_tokens_total{resource="mock:sim-1"}'
 must_be_positive 'engine_cost_saved_usd_total{resource="mock:sim-1"}'
+# Output-quality metrics (ticket 11.6): the mixed-quality workload drives
+# verdict pass/fail, per-validator results, the semantic-depth histogram under
+# both terminal outcomes, and native/unrepairable repair provenance.
+must_be_positive 'engine_validate_verdicts_total{status="pass"}'
+must_be_positive 'engine_validate_verdicts_total{status="fail"}'
+must_be_positive 'engine_validate_validator_results_total{validator="contains",status="pass"}'
+must_be_positive 'engine_validate_validator_results_total{validator="contains",status="fail"}'
+must_be_positive 'engine_validate_semantic_depth_attempts_count{outcome="succeeded"}'
+must_be_positive 'engine_validate_semantic_depth_attempts_count{outcome="validation_failed"}'
+must_be_positive 'engine_validate_repairs_total{status="native"}'
+must_be_positive 'engine_validate_repairs_total{status="unrepairable"}'
 
 if [ "$failures" -gt 0 ]; then
   fail "$failures metric check(s) failed"

@@ -216,6 +216,29 @@ for _ in $(seq 6); do
 done
 note "6 cost runs submitted (1 miss + 5 cache hits)"
 
+# Output-quality signal (ticket 11.6): a mixed-quality validated workload on
+# the offline mock, paced 2s so the verdict/validator/repair counters move
+# across scrapes and the Output-quality row's rate() panels are non-empty.
+# qual_pass clears a contains check, qual_fail fails one under a 3-attempt
+# semantic budget (verdict fails + semantic depth), qual_native echoes native
+# structured JSON, qual_unrep's repair_only prose is unrepairable. The judge
+# score panel is allowlisted below — the unscripted mock cannot emit a
+# parseable judge verdict offline (covered by the engine integration test).
+say "submitting the output-quality workload (mixed pass/fail/native/unrepairable, paced 2s)"
+qual_pass_def='{"schema_version":1,"name":"smoke-qual-pass","steps":[{"id":"gen","type":"llm","config":{"model":"mock/sim-1","prompt":"hello quality","temperature":0},"validation":{"validators":[{"name":"contains","config":{"substring":"[mock]"}}]}}],"edges":[]}'
+qual_fail_def='{"schema_version":1,"name":"smoke-qual-fail","steps":[{"id":"gen","type":"llm","config":{"model":"mock/sim-1","prompt":"hello quality","temperature":0},"validation":{"validators":[{"name":"contains","config":{"substring":"NEVER_APPEARS_ZZZ"}}],"max_attempts":3}}],"edges":[]}'
+qual_native_def='{"schema_version":1,"name":"smoke-qual-native","steps":[{"id":"gen","type":"llm","config":{"model":"mock/sim-1","prompt":"hello native","temperature":0,"output_format":{"type":"json"}}}],"edges":[]}'
+qual_unrep_def='{"schema_version":1,"name":"smoke-qual-unrep","steps":[{"id":"gen","type":"llm","config":{"model":"mock/sim-1","prompt":"hello prose","temperature":0,"output_format":{"type":"json","mode":"repair_only"}}}],"edges":[]}'
+qual_pass_ids=(); qual_fail_ids=(); qual_native_ids=(); qual_unrep_ids=()
+for _ in $(seq 3); do
+  qual_pass_ids+=("$(submit "$qual_pass_def")")
+  qual_fail_ids+=("$(submit "$qual_fail_def")")
+  qual_native_ids+=("$(submit "$qual_native_def")")
+  qual_unrep_ids+=("$(submit "$qual_unrep_def")")
+  sleep 2
+done
+note "quality runs submitted (3 each: pass/fail/native/unrepairable)"
+
 say "429 storm — admin class (capacity 10, refill 2/s)"
 got_429=0
 for _ in $(seq 30); do
@@ -229,6 +252,10 @@ say "waiting for terminal states"
 for id in "${doomed_ids[@]}"; do wait_terminal "$id" failed; done
 for id in "${fanout_ids[@]}"; do wait_terminal "$id" succeeded; done
 for id in "${cost_ids[@]}"; do wait_terminal "$id" succeeded; done
+for id in "${qual_pass_ids[@]}"; do wait_terminal "$id" succeeded; done
+for id in "${qual_native_ids[@]}"; do wait_terminal "$id" succeeded; done
+for id in "${qual_fail_ids[@]}"; do wait_terminal "$id" failed; done
+for id in "${qual_unrep_ids[@]}"; do wait_terminal "$id" failed; done
 wait_terminal "$retry_id" succeeded
 note "all runs terminal"
 
@@ -254,6 +281,7 @@ allowlisted() {
     *'code=~"5.."'*) return 0 ;;  # no server errors driven, by design
     *engine_cost_budget_exceeded_total*) return 0 ;;  # no budgeted runs in the workload (ticket 10.5)
     *engine_cost_downgrades_total*) return 0 ;;  # no model_fallbacks in the workload (ticket 10.5)
+    *engine_validate_judge_score_ratio*) return 0 ;;  # unscripted mock emits no parseable judge verdict (ticket 11.6)
   esac
   return 1
 }
@@ -284,7 +312,7 @@ check_dashboard deploy/observability/grafana/dashboards/api.json
 
 say "checking the alert rules loaded in Prometheus"
 rules_json="$(curl -fsS "$PROM_URL/api/v1/rules")"
-for alert in QueueDepthGrowing DeadLetterRateSpike ReclaimRateSpike OutboxDispatchLag BudgetParkRateSpike; do
+for alert in QueueDepthGrowing DeadLetterRateSpike ReclaimRateSpike OutboxDispatchLag BudgetParkRateSpike ValidationFailureRatioHigh; do
   if [ "$(jq -r --arg a "$alert" '[.data.groups[].rules[] | select(.name==$a)] | length' <<<"$rules_json")" = 1 ]; then
     note "loaded ✓  $alert"
   else

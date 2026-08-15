@@ -235,7 +235,9 @@ func fanOut(ctx context.Context, q store.Querier, runID uuid.UUID, now time.Time
 // the plan reroutes to completeFailure per ADR-003 (a step-level failure,
 // never a false predicate). The returned error follows the Handle/ACK
 // contract: nil = committed, ACK; non-nil = nothing decided, redeliver.
-func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec.Output, verdict *validate.Verdict) error {
+// semanticAttempt is this attempt's 1-based semantic-retry number (ticket
+// 11.6), recorded as the terminal depth of a validated step's semantic loop.
+func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec.Output, verdict *validate.Verdict, semanticAttempt int) error {
 	logger := log.From(ctx)
 
 	// The pre-transaction reads: run params and the out-edge rows are
@@ -437,6 +439,18 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 	}
 	for _, oh := range overheadRows {
 		e.recordCost(oh)
+	}
+	// Output-quality signals (ticket 11.6, ADR-013): the passing verdict, its
+	// per-validator breakdown, any judge scores, the structured-output
+	// provenance (excluding cache hits, whose provenance was counted at the
+	// miss), and the terminal semantic-retry depth. Recorded post-commit like
+	// the cost metrics, so a fenced completion (which returned above) records
+	// nothing. A step with no chain (verdict nil) records only its repair
+	// provenance, if any.
+	e.recordVerdictQuality(step, out, verdict)
+	e.recordRepairQuality(out)
+	if verdict != nil {
+		e.metrics.SemanticRetryDepth(store.StepStatusSucceeded, semanticAttempt)
 	}
 	logger.InfoContext(ctx, "step succeeded",
 		slog.Int("edges_resolved", len(verdicts)),
@@ -688,6 +702,11 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, out exec
 	if scheduled {
 		e.metrics.RetryScheduled(string(class))
 		e.recordCostRows(costRow, overheadRows)
+		// Structured-output provenance (ticket 11.6): a validation-stage
+		// transport error (a judge under on_error:fail) can carry a shaped
+		// output from a successful executor call — count its repair provenance.
+		// A mechanical executor failure carries an empty output (no-op).
+		e.recordRepairQuality(out)
 		e.scheduleRetry(ctx, step, fireAt, runTrace)
 		logger.WarnContext(ctx, "step attempt failed; retry scheduled",
 			slog.Any("error", execErr),
@@ -697,6 +716,7 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, out exec
 	}
 	e.metrics.DeadLetter(dlqSource)
 	e.recordCostRows(costRow, overheadRows)
+	e.recordRepairQuality(out)
 	if runFailed {
 		e.recordRunCompleted(store.RunStatusFailed, run.StartedAt, now)
 	}

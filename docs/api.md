@@ -113,8 +113,37 @@ curl -s http://127.0.0.1:8080/v1/runs/$RUN_ID \
 
 The full response carries the run rollup, every step with its complete
 attempt history (outcomes `succeeded`, `transient`, `timeout`,
-`permanent`, `cancelled`, `lost` — ADR-006), every edge with its
-resolution, and the run's `dead_letters` (see the DLQ flow below).
+`permanent`, `cancelled`, `lost` — ADR-006, plus `validation_failed` for a
+step with a validation chain — ADR-013), every edge with its resolution,
+and the run's `dead_letters` (see the DLQ flow below).
+
+A step carrying an output-validation chain (ADR-013) also gets a
+`validation` summary — a read-time roll-up of its attempt verdicts, so you
+read a step's output-quality health without parsing each attempt's raw
+`verdict`:
+
+```bash
+curl -s http://127.0.0.1:8080/v1/runs/$RUN_ID \
+  -H "Authorization: Bearer $API_KEY" \
+  | jq '.steps[] | select(.validation) | {id, validation}'
+```
+
+```json
+{
+  "id": "gen",
+  "validation": {
+    "attempts": 3, "passed": 1, "failed": 2,
+    "last_attempt": 3, "last_status": "pass", "last_issue_count": 0,
+    "validators": [
+      {"name": "llm_judge", "passed": 1, "failed": 2, "skipped": 0, "errored": 0,
+       "last_status": "pass", "last_score": 0.9}
+    ]
+  }
+}
+```
+
+`transport_failures` and `validation_failures` on each step count the two
+disjoint retry budgets separately (ADR-006 transport vs ADR-013 semantic).
 
 A definition that fails validation is a `400` with path-qualified
 issues:

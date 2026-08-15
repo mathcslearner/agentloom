@@ -18,6 +18,7 @@ import (
 	obstrace "github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
+	"github.com/mathcslearner/agentloom/internal/validate"
 )
 
 // IdempotencyKeyHeader carries the submission idempotency token (ticket
@@ -382,6 +383,96 @@ func failureCounts(attempts []AttemptView) (transport, validation int) {
 	return transport, validation
 }
 
+// summarizeVerdicts rolls a step's attempt verdicts into a compact
+// per-step validation summary (ticket 11.6, ADR-013). It is a pure read-time
+// projection of attempts[].verdict — no stored state — returning nil when no
+// attempt carried a verdict (an unvalidated step). Attempts are taken in
+// ascending attempt order, so the highest-numbered verdict is "last"; a
+// verdict that fails to decode is skipped (a corrupt row never 500s the status
+// API), and the per-validator roll-up follows the latest decodable verdict's
+// chain order so a client sees the current chain shape.
+func summarizeVerdicts(attempts []AttemptView) *ValidationSummaryView {
+	var summary ValidationSummaryView
+	// Per-validator counts keyed by name, plus the latest verdict's results
+	// (for last-status/score and stable ordering).
+	counts := make(map[string]*ValidatorSummaryView)
+	var lastResults []validate.ValidatorResult
+	for _, a := range attempts {
+		if len(a.Verdict) == 0 {
+			continue
+		}
+		var v validate.Verdict
+		if err := json.Unmarshal(a.Verdict, &v); err != nil {
+			continue
+		}
+		summary.Attempts++
+		if v.Status == validate.StatusPass {
+			summary.Passed++
+		} else {
+			summary.Failed++
+		}
+		// Attempts arrive ascending, so each decodable verdict overwrites the
+		// "last" fields — the final one wins.
+		summary.LastAttempt = a.Attempt
+		summary.LastStatus = string(v.Status)
+		summary.LastScore = v.Score
+		summary.LastIssueCount = len(v.Issues)
+		for _, r := range v.Results {
+			c := counts[r.Name]
+			if c == nil {
+				c = &ValidatorSummaryView{Name: r.Name}
+				counts[r.Name] = c
+			}
+			switch r.Status {
+			case validate.StatusPass:
+				c.Passed++
+			case validate.StatusFail:
+				c.Failed++
+			case validate.StatusSkipped:
+				c.Skipped++
+			case validate.StatusError:
+				c.Errored++
+			}
+		}
+		lastResults = v.Results
+	}
+	if summary.Attempts == 0 {
+		return nil
+	}
+	// Order the per-validator roll-up by the latest verdict's chain order; any
+	// validator seen only in earlier verdicts (chain changed across attempts)
+	// is appended in first-seen order after those.
+	seen := make(map[string]bool, len(counts))
+	for _, r := range lastResults {
+		c := counts[r.Name]
+		if c == nil || seen[r.Name] {
+			continue
+		}
+		c.LastStatus = string(r.Status)
+		c.LastScore = r.Score
+		summary.Validators = append(summary.Validators, *c)
+		seen[r.Name] = true
+	}
+	for _, a := range attempts {
+		if len(a.Verdict) == 0 {
+			continue
+		}
+		var v validate.Verdict
+		if err := json.Unmarshal(a.Verdict, &v); err != nil {
+			continue
+		}
+		for _, r := range v.Results {
+			if seen[r.Name] {
+				continue
+			}
+			c := counts[r.Name]
+			summary.Validators = append(summary.Validators, *c)
+			seen[r.Name] = true
+		}
+	}
+	return &summary
+}
+
 // buildRunView projects one run row onto the wire.
 func buildRunView(run gen.Run) RunView {
 	v := RunView{
@@ -467,6 +558,7 @@ func buildRunResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge, att
 			StartedAt:          s.StartedAt,
 			FinishedAt:         s.FinishedAt,
 			Attempts:           byStep[s.StepID],
+			Validation:         summarizeVerdicts(byStep[s.StepID]),
 		})
 	}
 	for _, e := range edges {

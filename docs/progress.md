@@ -6521,3 +6521,94 @@ amended; `docs/plugins.md` updated.
 validator, semantic-retry depth histogram, repair rate, judge score
 distribution, per-step verdict summaries, the Grafana "output quality" panel
 (11.6, closing M11).
+
+### 11.6 — Quality signals & metrics ✅
+
+Surfaced the output-validation health M11 had been persisting all along —
+verdicts, structured-output provenance (11.3), semantic depth (11.4), and judge
+scores (11.5) — as Prometheus metrics, a per-step status-API roll-up, and a
+Grafana "Output quality" row. **Closes M11.** Purely additive: **no migration,
+no config var, no store change, no new outcome/class** — every signal reads off
+state 11.1–11.5 already record.
+
+**Five instruments, one new `validate` subsystem.** In
+`internal/obs/metrics/instruments.go` on the 7.2 instance registry, added to
+`engine.Metrics` (+ `nopMetrics`): `engine_validate_verdicts_total`
+`{step_type,resource,status}` (pass/fail chain verdicts, by step and the
+resolved resource — the failure-rate signal by step & model);
+`engine_validate_validator_results_total{validator,status}` (per-validator
+pass/fail/skipped/error, one per configured validator per verdict);
+`engine_validate_semantic_depth_attempts{outcome}` (histogram, buckets 1..10 =
+`MaxSemanticAttempts`, observed once per terminated loop under `succeeded` or
+`validation_failed`); `engine_validate_repairs_total{status}` (native/raw/
+repaired/unrepairable, one per productive `output_format` llm attempt);
+`engine_validate_judge_score_ratio{validator}` (histogram, buckets 0.1..1.0 =
+the judge score distribution). `resource` is the pricing-catalog name or the
+constant `none`; `validator` is the compiled-in validator catalog — both
+bounded. ADR-008 amended: subsystem `validate`, label `validator`, the new
+`_attempts`/`_ratio` histogram unit suffixes, five inventory rows; the
+conformance `exercise` and unit-suffix rule extended, the stale `outcome` row
+corrected (it was missing throttled/budget_exceeded/validation_failed).
+
+**Engine recording** (`engine/validate.go` helpers `recordVerdictQuality` +
+`recordRepairQuality` + `qualityResource`, all **post-commit** like the 10.5
+cost metrics, so a fenced/rolled-back completion records nothing).
+`completeSuccess` (its signature grew `semanticAttempt`; both callers —
+`claim.go` and the cache-hit path in `cache.go` — pass it) records the passing
+verdict, per-validator results, judge scores, repair provenance (skipped on a
+cache hit — the miss counted it), and one `succeeded` depth sample.
+`completeValidationFailure` records the failing verdict + results + scores +
+repair on **both** the semantic-retry and terminal routes, and the
+`validation_failed` depth sample **only** at the terminal dead-letter (not on an
+intermediate re-attempt). `completeFailure` records repair provenance on its
+retry/DLQ branches (the 11.5 judge-under-`on_error:fail` case carries a shaped
+output from a successful executor call). **Two deliberate counting decisions,
+documented in ADR-013:** a cache-hit re-validation that *fails* is a bypass +
+re-execute (the fresh execution's verdict is counted, not the stale one); a
+validator *transport* error is already visible via
+`engine_step_retries_total`/`dead_letters_total`, so no separate counter — the
+verdict counters count judgments, not stage failures.
+
+**Status API.** `StepView.validation` (`ValidationSummaryView` +
+`ValidatorSummaryView`): `summarizeVerdicts` in `internal/api/runs.go` rolls the
+step's `attempts[].verdict` (ascending order, last-wins; a corrupt verdict row
+is skipped, never a 500) into `{attempts, passed, failed, last_attempt,
+last_status, last_score?, last_issue_count, validators[]{name, passed, failed,
+skipped, errored, last_status, last_score?}}`, ordered by the latest verdict's
+chain order. Present only when a step carried a chain. `internal/api` now imports
+the `internal/validate` leaf in production (no cycle). OpenAPI gained
+`ValidationSummary` + `ValidatorSummary` (spec still lints 100/100);
+`docs/api.md` gained the walkthrough.
+
+**Observability.** Engine dashboard **Output quality** row (verdicts/s by step
+type & status, failure ratio by resource, validator results/s, semantic-depth
+p50/p95 by outcome, repair status share, judge score p50/p90) — anti-drift
+audit green (`normalizeMetricRef` already strips `_bucket`). Dev-scale
+`ValidationFailureRatioHigh` alert (guarded by a minimum verdict rate so an idle
+stack cannot fire it) + promtool unit tests (positive + all-passing negative),
+`make obs-lint` green. `make smoke-metrics`/`smoke-dashboards` drive a
+mixed-quality offline workload (a `contains` pass; a `contains` fail under a
+3-attempt budget → DLQ; an `output_format: json` native echo; a `repair_only`
+prose → unrepairable) asserting the verdict/validator/depth/repair series
+non-empty; the judge-score panel is allowlisted quiet (the unscripted mock
+emits no parseable judge verdict).
+
+**Tests.** `internal/engine/quality_metrics_integration_test.go` — a reusable
+metered fixture over four scenarios: the fail→fail→pass semantic loop (verdicts
+pass=1/fail=2, per-validator results, one `succeeded` depth sample of 3);
+exhaustion (one `validation_failed` depth sample of 2); a repaired
+`output_format` step (`repairs_total{repaired}`=1, implicit-schema pass); and a
+scripted llm_judge (two `judge_score_ratio` samples at 0.2/0.9, per-validator
+fail+pass). `internal/api/validation_summary_test.go` — the pure summarizer
+(nil when unvalidated, roll-up, score + skipped/error statuses, corrupt-row
+skip). `TestSemanticRetryVisibleInStatusAPI` extended to assert the wire
+`validation` summary — the "run status shows verdict summary per step" contract
+test. Conformance + anti-drift audits extended. `make lint`, `make
+openapi-lint` (100/100), `make obs-lint`, and — against the compose DB at
+schema 20 — the store/engine/api integration suites green.
+
+**Accepted limitation (documented, ADR-013):** the unscripted compose mock
+cannot emit a parseable judge verdict offline, so the judge-score histogram is
+exercised only by `TestQualityMetricsJudgeScore`, and its dashboard panel is
+allowlisted quiet in the dashboard smoke. ADR-013 §"Quality signals & metrics
+(as built, 11.6)"; ADR-008 amended. **M11 complete.**

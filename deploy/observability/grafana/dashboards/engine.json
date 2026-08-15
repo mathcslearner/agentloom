@@ -1033,12 +1033,281 @@
     },
     {
       "type": "row",
-      "title": "Fleet",
+      "title": "Output quality",
+      "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 85
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Validation verdicts/s by step type & status",
+      "description": "Output-validation chain verdicts per second (ticket 11.6, ADR-013), by step type and pass/fail. The base output-quality throughput signal.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 86
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (step_type, status) (rate(engine_validate_verdicts_total[5m]))",
+          "legendFormat": "{{step_type}} {{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Validation failure ratio by resource",
+      "description": "Fraction of chain verdicts that failed, by resolved resource/model (ticket 11.6). The quality-health headline: a rising line means a model or step is producing more invalid output.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 86
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (resource) (rate(engine_validate_verdicts_total{status=\"fail\"}[5m])) / clamp_min(sum by (resource) (rate(engine_validate_verdicts_total[5m])), 1e-9)",
+          "legendFormat": "{{resource}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Validator results/s by validator & status",
+      "description": "Per-validator contributions per second (ticket 11.6), by validator and status (pass/fail/skipped/error). Surfaces which validator in a chain is rejecting output, and on_error=skip degradations.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 86
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (validator, status) (rate(engine_validate_validator_results_total[5m]))",
+          "legendFormat": "{{validator}} {{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Semantic-retry depth p50/p95 by outcome",
+      "description": "How many semantic attempts a validated step took to terminate (ticket 11.6, ADR-013), split by terminal outcome. A rising validation_failed depth means the feedback loop is not converging.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 94
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le, outcome) (rate(engine_validate_semantic_depth_attempts_bucket[5m])))",
+          "legendFormat": "p50 {{outcome}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, outcome) (rate(engine_validate_semantic_depth_attempts_bucket[5m])))",
+          "legendFormat": "p95 {{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Repair status share",
+      "description": "Structured-output shaping results per second by provenance (ticket 11.6): native/raw/repaired/unrepairable. The repair rate is repaired over the total; a rising unrepairable line is output the semantic loop must catch.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 94
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (rate(engine_validate_repairs_total[5m]))",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Judge score p50/p90 by validator",
+      "description": "LLM-judge quality score distribution (ticket 11.6, ADR-013): the [0,1] score quantiles by validator. A drifting p50 is a shift in output quality as the judge grades it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 94
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le, validator) (rate(engine_validate_judge_score_ratio_bucket[5m])))",
+          "legendFormat": "p50 {{validator}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.9, sum by (le, validator) (rate(engine_validate_judge_score_ratio_bucket[5m])))",
+          "legendFormat": "p90 {{validator}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Fleet",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 102
       },
       "collapsed": false,
       "panels": []
@@ -1055,7 +1324,7 @@
         "h": 6,
         "w": 6,
         "x": 0,
-        "y": 86
+        "y": 103
       },
       "fieldConfig": {
         "defaults": {
@@ -1092,7 +1361,7 @@
         "h": 6,
         "w": 6,
         "x": 6,
-        "y": 86
+        "y": 103
       },
       "fieldConfig": {
         "defaults": {
@@ -1129,7 +1398,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 86
+        "y": 103
       },
       "fieldConfig": {
         "defaults": {},

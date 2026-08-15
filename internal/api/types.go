@@ -175,6 +175,56 @@ type StepView struct {
 	StartedAt          *time.Time    `json:"started_at,omitempty"`
 	FinishedAt         *time.Time    `json:"finished_at,omitempty"`
 	Attempts           []AttemptView `json:"attempts,omitempty"`
+	// Validation is the per-step output-validation summary (ticket 11.6,
+	// ADR-013): a compact roll-up of the step's attempt verdicts (pass/fail
+	// counts, the latest verdict, and a per-validator breakdown), so a client
+	// reads a step's quality health without parsing every attempt's raw
+	// verdict. Present only when at least one attempt carried a verdict;
+	// absent for every unvalidated step.
+	Validation *ValidationSummaryView `json:"validation,omitempty"`
+}
+
+// ValidationSummaryView is a step's per-attempt verdict roll-up (ticket 11.6,
+// ADR-013). It is derived from the step's attempt verdicts at read time — a
+// pure projection of attempts[].verdict, no stored state — and is present only
+// when the step carried a validation chain.
+type ValidationSummaryView struct {
+	// Attempts is how many of the step's attempts carried a verdict.
+	Attempts int `json:"attempts"`
+	// Passed and Failed count those verdicts by overall status.
+	Passed int `json:"passed"`
+	Failed int `json:"failed"`
+	// LastAttempt is the attempt number of the most recent verdict, and
+	// LastStatus its overall status (pass/fail).
+	LastAttempt int    `json:"last_attempt"`
+	LastStatus  string `json:"last_status"`
+	// LastScore is the most recent verdict's overall score (the chain minimum),
+	// when one was reported; nil otherwise.
+	LastScore *float64 `json:"last_score,omitempty"`
+	// LastIssueCount is the number of issues on the most recent verdict.
+	LastIssueCount int `json:"last_issue_count"`
+	// Validators is the per-validator roll-up across the step's attempts, in
+	// the latest verdict's chain order.
+	Validators []ValidatorSummaryView `json:"validators,omitempty"`
+}
+
+// ValidatorSummaryView is one validator's roll-up across a step's attempts
+// (ticket 11.6): how it judged the output over the semantic-retry loop.
+type ValidatorSummaryView struct {
+	// Name is the validator's plugin name.
+	Name string `json:"name"`
+	// Passed, Failed, Skipped, and Errored count this validator's per-attempt
+	// results by status (skipped: a cheaper validator already failed; errored:
+	// a cost-bearing validator under on_error:skip).
+	Passed  int `json:"passed"`
+	Failed  int `json:"failed"`
+	Skipped int `json:"skipped"`
+	Errored int `json:"errored"`
+	// LastStatus is this validator's status on the step's most recent verdict.
+	LastStatus string `json:"last_status"`
+	// LastScore is this validator's most recent reported score (nil when it
+	// reports none — every deterministic validator).
+	LastScore *float64 `json:"last_score,omitempty"`
 }
 
 // AttemptView is one execution try of a step.

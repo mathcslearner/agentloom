@@ -426,7 +426,7 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	if cacheWB != nil {
 		e.cacheWrite(ctx, cacheWB, out)
 	}
-	return e.completeSuccess(ctx, step, out, verdict)
+	return e.completeSuccess(ctx, step, out, verdict, semanticAttempt)
 }
 
 // reconcileBinding carries what the middleware needs, after a granted

@@ -28,7 +28,7 @@ var (
 // allowedSubsystems is ADR-008's subsystem vocabulary; extending it is an
 // ADR amendment first.
 var allowedSubsystems = []string{
-	"build", "queue", "outbox", "dispatch", "reconcile", "step", "steplog", "run", "api", "worker", "ratelimit", "cache", "cost",
+	"build", "queue", "outbox", "dispatch", "reconcile", "step", "steplog", "run", "api", "worker", "ratelimit", "cache", "cost", "validate",
 }
 
 // allowedLabels is ADR-008's label allowlist. run_id, step_id, attempt,
@@ -42,6 +42,7 @@ var allowedLabels = map[string]bool{
 	"duty": true, "result": true, "bucket": true, "decision": true,
 	"resource": true, "plugin": true,
 	"limit": true, "action": true, "trigger": true,
+	"validator": true,
 }
 
 // exercise touches every instrument at least once so vec children exist
@@ -81,6 +82,11 @@ func exercise(w *metrics.WorkerMetrics, a *metrics.APIMetrics) {
 	w.CostTokens("mock:sim-1", 1000, 500)
 	w.BudgetExceeded("run", "park")
 	w.ModelDowngraded("budget_threshold")
+	w.ValidationVerdict("llm", "mock:sim-1", "fail")
+	w.ValidatorResult("json_schema", "pass")
+	w.SemanticRetryDepth("succeeded", 3)
+	w.OutputRepair("repaired")
+	w.JudgeScore("llm_judge", 0.9)
 	a.Request("/v1/runs", "POST", 200, 20*time.Millisecond)
 	a.RequestStarted()
 	a.RequestFinished()
@@ -134,10 +140,12 @@ func TestInstrumentConformance(t *testing.T) {
 			}
 		case "HISTOGRAM":
 			// ADR-008 unit suffixes: durations in _seconds, token counts in
-			// _tokens (the 9.3 estimate-error histogram). A new unit is an ADR
-			// amendment first.
-			if !strings.HasSuffix(name, "_seconds") && !strings.HasSuffix(name, "_tokens") {
-				t.Errorf("histogram %q must carry its unit suffix (ADR-008: durations _seconds, token counts _tokens)", name)
+			// _tokens (the 9.3 estimate-error histogram), attempt counts in
+			// _attempts and dimensionless ratios in _ratio (11.6's quality
+			// histograms). A new unit is an ADR amendment first.
+			if !strings.HasSuffix(name, "_seconds") && !strings.HasSuffix(name, "_tokens") &&
+				!strings.HasSuffix(name, "_attempts") && !strings.HasSuffix(name, "_ratio") {
+				t.Errorf("histogram %q must carry its unit suffix (ADR-008: durations _seconds, token counts _tokens, attempt counts _attempts, ratios _ratio)", name)
 			}
 		case "GAUGE":
 			if strings.HasSuffix(name, "_total") {

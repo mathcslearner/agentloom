@@ -1497,6 +1497,75 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AttemptView"
+        validation:
+          $ref: "#/components/schemas/ValidationSummary"
+    ValidationSummary:
+      type: object
+      description: >
+        A step's output-validation roll-up (ticket 11.6, ADR-013): a compact
+        summary derived at read time from the step's attempt verdicts. Present
+        only when at least one attempt carried a verdict; absent for every
+        unvalidated step.
+      required: [attempts, passed, failed, last_attempt, last_status, last_issue_count]
+      properties:
+        attempts:
+          type: integer
+          description: How many of the step's attempts carried a verdict.
+        passed:
+          type: integer
+          description: Verdicts with overall status pass.
+        failed:
+          type: integer
+          description: Verdicts with overall status fail.
+        last_attempt:
+          type: integer
+          description: Attempt number of the most recent verdict.
+        last_status:
+          type: string
+          enum: [pass, fail]
+          description: Overall status of the most recent verdict.
+        last_score:
+          type: number
+          format: double
+          description: >
+            The most recent verdict's overall score (the chain minimum), when
+            one was reported; absent otherwise.
+        last_issue_count:
+          type: integer
+          description: Number of issues on the most recent verdict.
+        validators:
+          type: array
+          description: Per-validator roll-up in the latest verdict's chain order.
+          items:
+            $ref: "#/components/schemas/ValidatorSummary"
+    ValidatorSummary:
+      type: object
+      description: One validator's roll-up across a step's attempts (ticket 11.6).
+      required: [name, passed, failed, skipped, errored, last_status]
+      properties:
+        name:
+          type: string
+          description: The validator's plugin name.
+        passed:
+          type: integer
+        failed:
+          type: integer
+        skipped:
+          type: integer
+          description: Results where a cheaper validator already failed (cheap-first ordering).
+        errored:
+          type: integer
+          description: Results where a cost-bearing validator errored under on_error=skip.
+        last_status:
+          type: string
+          enum: [pass, fail, skipped, error]
+          description: This validator's status on the step's most recent verdict.
+        last_score:
+          type: number
+          format: double
+          description: >
+            This validator's most recent reported score; absent when it reports
+            none (every deterministic validator).
     AttemptView:
       type: object
       description: One execution try of a step.

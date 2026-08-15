@@ -385,6 +385,14 @@ func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep
 		for _, oh := range overheadRows {
 			e.recordCost(oh)
 		}
+		// Output-quality signals (ticket 11.6): the fail verdict, its
+		// per-validator breakdown, any judge scores, and the structured-output
+		// provenance — recorded on both the semantic-retry and terminal routes
+		// (the failing attempt happened and spent either way). The
+		// semantic-depth sample is recorded only at the terminal dead-letter
+		// below, when the loop actually ended.
+		e.recordVerdictQuality(step, out, &verdict)
+		e.recordRepairQuality(out)
 	}
 	if cancelSettled {
 		logger.InfoContext(ctx, "step output invalid but run is cancelling — settled cancelled, not judged",
@@ -408,6 +416,10 @@ func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep
 			slog.Int("issue_count", len(verdict.Issues)))
 		return nil
 	}
+	// The semantic loop terminated at exhaustion (ticket 11.6): record its
+	// depth under the validation_failed outcome. semanticAttempt is this
+	// failing attempt's semantic number — the number of attempts the loop took.
+	e.metrics.SemanticRetryDepth(store.AttemptOutcomeValidationFailed, semanticAttempt)
 	e.metrics.DeadLetter(store.DeadLetterSourceRetriesExhausted)
 	if runFailed {
 		e.recordRunCompleted(store.RunStatusFailed, run.StartedAt, now)
@@ -436,6 +448,55 @@ func marshalRepair(ctx context.Context, logger *slog.Logger, repair *exec.Repair
 		return nil
 	}
 	return rb
+}
+
+// qualityResource returns the bounded resource label for a step output's
+// quality metrics (ticket 11.6): the resolved ADR-012 resource (a model or
+// "tool:<name>") when the output was cost-bearing, or the constant "none" for
+// a step that named no external resource (echo, join, an unpriced tool). This
+// keeps the `resource` label bounded to the pricing catalog plus "none".
+func qualityResource(out exec.Output) string {
+	if out.Resource == "" {
+		return "none"
+	}
+	return out.Resource
+}
+
+// recordVerdictQuality records a committed chain verdict's quality signals
+// (ticket 11.6, ADR-013): the overall verdict by step type and resource, the
+// per-validator breakdown, and any llm_judge scores. Called post-commit from
+// the success and validation-failure routes only, so a fenced or rolled-back
+// completion records nothing (the recordCost discipline). A nil verdict (a
+// step with no chain) records nothing.
+func (e *Engine) recordVerdictQuality(step gen.RunStep, out exec.Output, verdict *validate.Verdict) {
+	if verdict == nil {
+		return
+	}
+	e.metrics.ValidationVerdict(step.StepType, qualityResource(out), string(verdict.Status))
+	for _, r := range verdict.Results {
+		e.metrics.ValidatorResult(r.Name, string(r.Status))
+		if r.Score != nil {
+			// Only cost-bearing validators (the llm_judge) report a score; the
+			// deterministic validators leave it nil, so this is the judge
+			// score distribution keyed by validator name.
+			e.metrics.JudgeScore(r.Name, *r.Score)
+		}
+	}
+}
+
+// recordRepairQuality records a productive attempt's structured-output
+// provenance (ticket 11.6): native/raw/repaired/unrepairable. Cache hits are
+// excluded — the provenance was already counted at the miss that produced it —
+// so the repair rate reads over real provider calls. A step that declared no
+// output_format carries no Repair and records nothing.
+func (e *Engine) recordRepairQuality(out exec.Output) {
+	if out.Repair == nil {
+		return
+	}
+	if out.Usage != nil && out.Usage.CacheHit {
+		return
+	}
+	e.metrics.OutputRepair(out.Repair.Status)
 }
 
 // validationFailureMessage renders a short, structure-only summary of a

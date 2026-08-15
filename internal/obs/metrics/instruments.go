@@ -40,6 +40,15 @@ var (
 	// (positive — extra debits) are visible and a systematic bias in the
 	// estimator shows as a skewed distribution.
 	estimateErrorBuckets = []float64{-65536, -16384, -4096, -1024, -256, -64, 0, 64, 256, 1024, 4096, 16384, 65536}
+	// semanticDepthBuckets covers the semantic-retry depth (ticket 11.6): the
+	// number of feedback-augmented attempts a validated llm step took to reach
+	// a terminal verdict. Bounded by dag.MaxSemanticAttempts (10), so one
+	// linear bucket per attempt makes the whole distribution legible.
+	semanticDepthBuckets = prometheus.LinearBuckets(1, 1, 10)
+	// judgeScoreBuckets covers the llm_judge quality score (ticket 11.6): a
+	// [0,1] ratio in ten linear buckets, so the score distribution and the
+	// pass/fail threshold band are both visible.
+	judgeScoreBuckets = prometheus.LinearBuckets(0.1, 0.1, 10)
 )
 
 // Claim results — the `result` label vocabulary (ADR-008), mirroring the
@@ -108,6 +117,12 @@ type WorkerMetrics struct {
 	costOutputTokens *prometheus.CounterVec
 	costBudgetExceed *prometheus.CounterVec
 	costDowngrades   *prometheus.CounterVec
+
+	validateVerdicts *prometheus.CounterVec
+	validatorResults *prometheus.CounterVec
+	semanticDepth    *prometheus.HistogramVec
+	outputRepairs    *prometheus.CounterVec
+	judgeScore       *prometheus.HistogramVec
 }
 
 // NewWorkerMetrics registers the worker instrument set on reg (ADR-008:
@@ -286,6 +301,28 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 			Namespace: Namespace, Subsystem: "cost", Name: "downgrades_total",
 			Help: "Claims routed to a cheaper model in a model_fallbacks chain (ticket 10.5, ADR-012), by trigger (budget_threshold/budget_projection).",
 		}, []string{"trigger"}),
+		validateVerdicts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "validate", Name: "verdicts_total",
+			Help: "Output-validation chain verdicts (ticket 11.6, ADR-013), by step type, the resolved resource that produced the output (model or \"none\"), and status (pass/fail). Recorded post-commit — one per validation run (a miss's validate stage or a cache-hit re-validation).",
+		}, []string{"step_type", "resource", "status"}),
+		validatorResults: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "validate", Name: "validator_results_total",
+			Help: "Per-validator contributions to chain verdicts (ticket 11.6), by validator name and status (pass/fail/skipped/error). One per configured validator per verdict.",
+		}, []string{"validator", "status"}),
+		semanticDepth: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: Namespace, Subsystem: "validate", Name: "semantic_depth_attempts",
+			Help:    "Semantic-retry loop depth (ticket 11.6, ADR-013): the number of semantic attempts a validated step took to terminate, by terminal outcome (succeeded/validation_failed). Recorded once per loop end, never on an intermediate re-attempt.",
+			Buckets: semanticDepthBuckets,
+		}, []string{"outcome"}),
+		outputRepairs: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "validate", Name: "repairs_total",
+			Help: "Structured-output shaping results (ticket 11.6), by provenance status (native/raw/repaired/unrepairable). One per productive llm attempt declaring an output_format; cache hits excluded.",
+		}, []string{"status"}),
+		judgeScore: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: Namespace, Subsystem: "validate", Name: "judge_score_ratio",
+			Help:    "LLM-judge quality score distribution (ticket 11.6, ADR-013): the cost-bearing validator's [0,1] score, by validator name.",
+			Buckets: judgeScoreBuckets,
+		}, []string{"validator"}),
 	}
 	reg.MustRegister(
 		m.queueReadyDepth, m.queueStreamLength, m.queuePELSize, m.queueDelayedDepth,
@@ -303,6 +340,8 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 		m.cacheHits, m.cacheMisses, m.cacheBypass, m.cacheStores, m.cacheFailOpens,
 		m.costSpent, m.costSaved, m.costInputTokens, m.costOutputTokens,
 		m.costBudgetExceed, m.costDowngrades,
+		m.validateVerdicts, m.validatorResults, m.semanticDepth,
+		m.outputRepairs, m.judgeScore,
 	)
 	return m
 }
@@ -439,6 +478,37 @@ func (m *WorkerMetrics) BudgetExceeded(limit, action string) {
 // by trigger.
 func (m *WorkerMetrics) ModelDowngraded(trigger string) {
 	m.costDowngrades.WithLabelValues(trigger).Inc()
+}
+
+// The methods below are ticket 11.6's output-quality signals (ADR-013).
+
+// ValidationVerdict records one chain verdict by step type, resource, and
+// status (pass/fail).
+func (m *WorkerMetrics) ValidationVerdict(stepType, resource, status string) {
+	m.validateVerdicts.WithLabelValues(stepType, resource, status).Inc()
+}
+
+// ValidatorResult records one validator's contribution to a chain verdict by
+// validator name and status (pass/fail/skipped/error).
+func (m *WorkerMetrics) ValidatorResult(validator, status string) {
+	m.validatorResults.WithLabelValues(validator, status).Inc()
+}
+
+// SemanticRetryDepth records one terminated semantic-retry loop by outcome and
+// the number of semantic attempts it took.
+func (m *WorkerMetrics) SemanticRetryDepth(outcome string, attempts int) {
+	m.semanticDepth.WithLabelValues(outcome).Observe(float64(attempts))
+}
+
+// OutputRepair records one structured-output shaping result by provenance
+// status.
+func (m *WorkerMetrics) OutputRepair(status string) {
+	m.outputRepairs.WithLabelValues(status).Inc()
+}
+
+// JudgeScore records one llm_judge quality score by validator name.
+func (m *WorkerMetrics) JudgeScore(validator string, score float64) {
+	m.judgeScore.WithLabelValues(validator).Observe(score)
 }
 
 // The setters below are the cmd/worker sampler's surface — point-in-time

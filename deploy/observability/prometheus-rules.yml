@@ -101,3 +101,27 @@ groups:
             their caps and parking. Check the Cost row on the Engine
             dashboard for spend rate by resource, and raise budgets (PATCH
             /v1/runs/{id}/budget) or add model_fallbacks to resume them.
+
+      - alert: ValidationFailureRatioHigh
+        # A large fraction of output-validation verdicts are failing (ticket
+        # 11.6). Guarded by a minimum verdict rate so a single failure on an
+        # otherwise-idle stack does not fire; at dev scale >30% failing while
+        # verdicts are actually flowing means a model or a chain is producing
+        # bad output the semantic loop is straining to repair.
+        expr: |
+          (sum(rate(engine_validate_verdicts_total{status="fail"}[5m]))
+           / clamp_min(sum(rate(engine_validate_verdicts_total[5m])), 1e-9)) > 0.3
+          and sum(rate(engine_validate_verdicts_total[5m])) > 0.02
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Output-validation failure ratio is high"
+          description: >-
+            Over 30% of output-validation verdicts are failing, sustained
+            for 5 minutes with real verdict flow. Check the Output-quality
+            row on the Engine dashboard: the failure ratio by resource
+            points at the offending model, the validator-results panel at
+            which validator is rejecting, and the semantic-retry depth at
+            whether the feedback loop is converging. A rising unrepairable
+            share on the repair panel is malformed output at the source.
