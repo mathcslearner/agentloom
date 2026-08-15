@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"regexp"
@@ -103,6 +104,11 @@ type MockOutcome struct {
 	// Blocks is the full response content (e.g. tool_use scripting).
 	// Overrides Text when non-empty.
 	Blocks []Block
+	// Structured, when set, makes this outcome a provider-native structured
+	// response (ticket 11.3): the JSON is returned on ChatResponse.Structured
+	// (not as text or a tool call), simulating Anthropic forced tool-use /
+	// OpenAI response_format. Overrides Text/Blocks for the response content.
+	Structured json.RawMessage
 	// StopReason is the response stop reason; empty defaults to "end_turn"
 	// (or "tool_use" when the blocks carry a tool call).
 	StopReason string
@@ -415,12 +421,33 @@ func scriptedError(o MockOutcome) *Error {
 }
 
 // buildResponse assembles the ChatResponse for a successful outcome. A
-// zero outcome (the built-in default) echoes the last user text.
+// zero outcome (the built-in default) echoes the last user text — as native
+// structured JSON when the request carried a ResponseFormat, so a chained
+// structured-output step gets a well-formed answer with zero scripting.
 func buildResponse(req ChatRequest, prompt string, o MockOutcome) ChatResponse {
+	// Scripted native structured output (ticket 11.3): the JSON rides on
+	// Structured, and the completion carries no text/tool blocks.
+	if len(o.Structured) > 0 {
+		usage := estimateUsage(prompt, []Block{TextBlock(string(o.Structured))})
+		if o.Usage != nil {
+			usage = *o.Usage
+		}
+		stop := o.StopReason
+		if stop == "" {
+			stop = "end_turn"
+		}
+		return ChatResponse{Model: req.Model, StopReason: stop, Structured: append(json.RawMessage(nil), o.Structured...), Usage: usage}
+	}
 	blocks := o.Blocks
 	if len(blocks) == 0 {
 		text := o.Text
 		if text == "" {
+			// Default echo. Under a structured-output request, answer with a
+			// well-formed JSON object natively (mirroring a real provider's
+			// forced-tool-use / response_format) instead of "[mock] ..." text.
+			if req.ResponseFormat != nil {
+				return echoStructured(req, prompt, o)
+			}
 			text = "[mock] " + lastUserText(req)
 		}
 		blocks = []Block{TextBlock(text)}
@@ -440,6 +467,22 @@ func buildResponse(req ChatRequest, prompt string, o MockOutcome) ChatResponse {
 		usage = *o.Usage
 	}
 	return ChatResponse{Model: req.Model, StopReason: stop, Blocks: blocks, Usage: usage}
+}
+
+// echoStructured is the default structured-output echo: a JSON object
+// {"echo": "<last user text>"} on Structured, so a chained structured-output
+// step against the mock flows well-formed JSON through templating.
+func echoStructured(req ChatRequest, prompt string, o MockOutcome) ChatResponse {
+	payload, err := json.Marshal(map[string]string{"echo": lastUserText(req)})
+	if err != nil {
+		// map[string]string always marshals; unreachable, but never panic.
+		payload = json.RawMessage(`{"echo":""}`)
+	}
+	usage := estimateUsage(prompt, []Block{TextBlock(string(payload))})
+	if o.Usage != nil {
+		usage = *o.Usage
+	}
+	return ChatResponse{Model: req.Model, StopReason: "end_turn", Structured: payload, Usage: usage}
 }
 
 // estimateUsage produces plausible, deterministic token counts (~4 chars

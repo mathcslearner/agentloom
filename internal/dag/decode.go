@@ -301,6 +301,13 @@ func decodeStepConfig(st StepType, raw json.RawMessage, path string, errs *errLi
 	switch c := cfg.(type) {
 	case *ToolConfig:
 		compactRaw(&c.Input)
+	case *LLMConfig:
+		// The structured-output schema (ticket 11.3) is opaque JSON; compact
+		// it so the in-memory value is canonical and the definition round-trips
+		// losslessly (the ToolConfig.Input / validator-config precedent).
+		if c.OutputFormat != nil {
+			compactRaw(&c.OutputFormat.Schema)
+		}
 	case *BranchConfig:
 		compactRaw(&c.Input)
 	case *EchoConfig:

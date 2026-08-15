@@ -1,0 +1,118 @@
+{
+  "description": "Messy-output corpus for ticket 11.3. Each case is a raw model text output and the expected repair outcome. `value` is the expected compacted JSON (omitted when unrepairable). `steps` lists the passes expected to have changed the text. The repair rate asserted by TestCorpusRepairRate is (raw+repaired)/total.",
+  "cases": [
+    {
+      "name": "already_valid_object",
+      "input": "{\"a\":1,\"b\":\"two\"}",
+      "status": "raw",
+      "value": "{\"a\":1,\"b\":\"two\"}",
+      "steps": []
+    },
+    {
+      "name": "already_valid_pretty",
+      "input": "{\n  \"a\": 1,\n  \"b\": [1, 2, 3]\n}",
+      "status": "raw",
+      "value": "{\"a\":1,\"b\":[1,2,3]}",
+      "steps": []
+    },
+    {
+      "name": "valid_array",
+      "input": "[1, 2, 3]",
+      "status": "raw",
+      "value": "[1,2,3]",
+      "steps": []
+    },
+    {
+      "name": "valid_string_scalar",
+      "input": "\"just a string\"",
+      "status": "raw",
+      "value": "\"just a string\"",
+      "steps": []
+    },
+    {
+      "name": "code_fence_json",
+      "input": "```json\n{\"ok\": true}\n```",
+      "status": "repaired",
+      "value": "{\"ok\":true}",
+      "steps": ["strip_code_fence"]
+    },
+    {
+      "name": "code_fence_bare",
+      "input": "```\n{\"n\": 42}\n```",
+      "status": "repaired",
+      "value": "{\"n\":42}",
+      "steps": ["strip_code_fence"]
+    },
+    {
+      "name": "prose_wrapped",
+      "input": "Sure! Here is the result:\n{\"answer\": 7}\nHope that helps.",
+      "status": "repaired",
+      "value": "{\"answer\":7}",
+      "steps": ["extract_first_json"]
+    },
+    {
+      "name": "trailing_comma_object",
+      "input": "{\"a\": 1, \"b\": 2,}",
+      "status": "repaired",
+      "value": "{\"a\":1,\"b\":2}",
+      "steps": ["trailing_commas"]
+    },
+    {
+      "name": "trailing_comma_array",
+      "input": "[1, 2, 3, ]",
+      "status": "repaired",
+      "value": "[1,2,3]",
+      "steps": ["trailing_commas"]
+    },
+    {
+      "name": "unquoted_keys",
+      "input": "{name: \"ada\", age: 36}",
+      "status": "repaired",
+      "value": "{\"name\":\"ada\",\"age\":36}",
+      "steps": ["unquoted_keys"]
+    },
+    {
+      "name": "fence_and_trailing_comma",
+      "input": "```json\n{\"a\": 1, \"b\": 2,}\n```",
+      "status": "repaired",
+      "value": "{\"a\":1,\"b\":2}",
+      "steps": ["strip_code_fence", "trailing_commas"]
+    },
+    {
+      "name": "prose_fence_unquoted_trailing",
+      "input": "The JSON is:\n```json\n{title: \"hi\", tags: [\"a\", \"b\",],}\n```\nDone.",
+      "status": "repaired",
+      "value": "{\"title\":\"hi\",\"tags\":[\"a\",\"b\"]}",
+      "steps": ["extract_first_json", "trailing_commas", "unquoted_keys"]
+    },
+    {
+      "name": "comma_inside_string_untouched",
+      "input": "{\"csv\": \"a,b,c,\"}",
+      "status": "raw",
+      "value": "{\"csv\":\"a,b,c,\"}",
+      "steps": []
+    },
+    {
+      "name": "brace_inside_string_untouched",
+      "input": "Result: {\"expr\": \"f(x) = {y}\"} end",
+      "status": "repaired",
+      "value": "{\"expr\":\"f(x) = {y}\"}",
+      "steps": ["extract_first_json"]
+    },
+    {
+      "name": "unrepairable_prose",
+      "input": "I'm sorry, I cannot answer that question.",
+      "status": "unrepairable"
+    },
+    {
+      "name": "unrepairable_truncated",
+      "input": "{\"a\": 1, \"b\": [1, 2, 3",
+      "status": "unrepairable"
+    },
+    {
+      "name": "unrepairable_empty",
+      "input": "",
+      "status": "unrepairable"
+    }
+  ]
+}

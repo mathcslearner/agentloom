@@ -187,6 +187,40 @@ func TestOpenAIChatToolCalls(t *testing.T) {
 	}
 }
 
+// TestOpenAIStructuredOutput asserts the ticket 11.3 native structured path:
+// a ResponseFormat with a schema is encoded as a strict json_schema
+// response_format (golden request), and a valid-JSON content string is lifted
+// onto ChatResponse.Structured.
+func TestOpenAIStructuredOutput(t *testing.T) {
+	t.Parallel()
+
+	var captured []byte
+	provider := newOpenAIProvider(t, testKey(),
+		serveFixture(t, http.StatusOK, openaiFixture(t, "success_structured.json"), nil, &captured))
+
+	req := llm.ChatRequest{
+		Model:     "gpt-4o",
+		MaxTokens: 256,
+		Messages:  []llm.Message{llm.UserText("Extract the title.")},
+		ResponseFormat: &llm.ResponseFormat{
+			Name:   "structured_output",
+			Schema: json.RawMessage(`{"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}`),
+		},
+	}
+	resp, err := provider.Chat(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Chat: unexpected error: %v", err)
+	}
+	requireJSONEqual(t, captured, openaiFixture(t, "request_structured.json"))
+
+	if string(resp.Structured) != `{"title":"Hello"}` {
+		t.Errorf("Structured = %q, want the JSON content", resp.Structured)
+	}
+	if resp.Text() != `{"title":"Hello"}` {
+		t.Errorf("Text() = %q, want the content mirrored", resp.Text())
+	}
+}
+
 // TestOpenAIChatRefusal pins that a refusal is surfaced as the
 // completion's text, not dropped into an empty response.
 func TestOpenAIChatRefusal(t *testing.T) {

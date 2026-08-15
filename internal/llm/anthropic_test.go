@@ -225,6 +225,43 @@ func TestAnthropicChatToolUse(t *testing.T) {
 	}
 }
 
+// TestAnthropicStructuredOutput asserts the ticket 11.3 native structured
+// path: a ResponseFormat with a schema is encoded as a forced synthetic tool
+// (golden request), and the matching tool_use response is lifted onto
+// ChatResponse.Structured rather than surfaced as a user-visible tool call.
+func TestAnthropicStructuredOutput(t *testing.T) {
+	t.Parallel()
+
+	var captured []byte
+	provider := newProvider(t, testKey(),
+		serveFixture(t, http.StatusOK, fixture(t, "success_structured.json"), nil, &captured))
+
+	req := llm.ChatRequest{
+		Model:     "claude-sonnet-5",
+		MaxTokens: 256,
+		Messages:  []llm.Message{llm.UserText("Extract the title.")},
+		ResponseFormat: &llm.ResponseFormat{
+			Schema: json.RawMessage(`{"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}`),
+		},
+	}
+	resp, err := provider.Chat(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Chat: unexpected error: %v", err)
+	}
+	requireJSONEqual(t, captured, fixture(t, "request_structured.json"))
+
+	if string(resp.Structured) == "" {
+		t.Fatal("Structured is empty; forced tool_use was not lifted")
+	}
+	requireJSONEqual(t, resp.Structured, []byte(`{"title": "Hello"}`))
+	if len(resp.ToolUses()) != 0 {
+		t.Errorf("structured tool leaked as a user-visible tool call: %+v", resp.ToolUses())
+	}
+	if resp.Text() != "" {
+		t.Errorf("Text() = %q, want empty for a pure structured response", resp.Text())
+	}
+}
+
 // TestAnthropicErrorMapping is the ticket's taxonomy matrix: every
 // recorded provider error shape mapped onto its ADR-006 class, code,
 // retry-after, and request id.

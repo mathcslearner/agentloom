@@ -164,6 +164,7 @@ type StepAttempt struct {
 	FinishedAt *time.Time
 	Usage      json.RawMessage
 	Verdict    json.RawMessage
+	Repair     json.RawMessage
 }
 
 type StepLog struct {

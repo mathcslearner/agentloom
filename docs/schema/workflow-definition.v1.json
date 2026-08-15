@@ -275,6 +275,9 @@
             "$ref": "#/$defs/ModelFallback"
           },
           "type": "array"
+        },
+        "output_format": {
+          "$ref": "#/$defs/OutputFormat"
         }
       },
       "additionalProperties": false,
@@ -318,6 +321,19 @@
     },
     "NoopConfig": {
       "properties": {},
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "OutputFormat": {
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "schema": true,
+        "mode": {
+          "type": "string"
+        }
+      },
       "additionalProperties": false,
       "type": "object"
     },

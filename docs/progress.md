@@ -6190,3 +6190,117 @@ separate from `dag`'s edge-predicate env (`output`/`run`).
 **Deferred:** the semantic-retry loop (a failing verdict still dead-letters on
 the first attempt — 11.4); JSON repair & structured-output modes (11.3); the
 `llm_judge` validator + overhead cost (11.5); quality metrics (11.6).
+
+### 11.3 — JSON repair & structured-output modes ✅
+
+**What shipped.** The `output_format` step option — deterministic JSON repair
+and provider-native structured output — that shapes an `llm` step's completion
+into structured JSON before the validate stage judges it, so bad-JSON failures
+are fixed at the source (or turned into a clean `validation_failed` verdict for
+11.4's semantic retry) rather than flowing on malformed. One migration (0019),
+one new stdlib-only leaf (`internal/jsonrepair`), no new config var, no new
+metric, and no new engine hook interface — the repair happens inside the llm
+executor and the enforcement reuses the 11.1/11.2 validate stage unchanged.
+
+**Contract (`internal/dag`).** `LLMConfig` gains an optional `OutputFormat`
+block (llm-only, like `model_fallbacks`): `type` (`json` | `json_schema`),
+`schema` (required iff `json_schema`, a JSON object), `mode` (`auto` default |
+`repair_only`). Validated under `config_field_invalid`/`config_field_required`
+(type required + known; json_schema requires a JSON-object schema; a plain json
+type takes no schema; mode known) via `checkOutputFormat`. Schema
+*compilability* is deliberately not a submit-time check (the tool-args /
+validator-config precedent — a runtime artifact) but a claim pre-flight one via
+the implicit validator below. `decodeStepConfig` compacts the schema RawMessage
+(the ToolConfig.Input precedent) so the definition round-trips losslessly.
+Regenerated JSON Schema, both kitchen sinks carry an `output_format` (construct
+pin extended), and `output_format_bad.json` covers the six invalid cases.
+
+**JSON repair (`internal/jsonrepair`, a stdlib-only leaf).** `Repair(text)`
+runs a fixed sequence of conservative, cumulative passes — `strip_code_fence`,
+`extract_first_json` (first balanced JSON value, string/escape aware),
+`trailing_commas`, `unquoted_keys` — never touching string contents,
+short-circuiting the moment the working text parses, and compacting the result.
+The outcome is `raw` (already valid), `repaired` (a pass fixed it, with the
+changed passes named and the raw text kept), or `unrepairable`. A
+fixture-driven `testdata/corpus.json` with an **exact asserted repair rate**
+(14 of 17 cases recover — three deliberately unrepairable), per-pass table
+tests, an idempotence test (a repaired value re-repairs to itself), and a fuzz
+target asserting no panic and "non-unrepairable ⇒ valid JSON".
+
+**Provider-native structured output (`internal/llm`).** `ChatRequest` gains
+`ResponseFormat` (nil = free text; `Schema` nil = any JSON object, set =
+schema-conforming) and `ChatResponse` gains `Structured` (the provider's native
+payload, kept out of `Blocks`). Anthropic offers a forced synthetic tool
+(`agentloom_structured_output`, `tool_choice` forced, its input lifted onto
+`Structured` and never surfaced as a user tool call); OpenAI sets
+`response_format` (`json_object` for a schemaless request, a strict named
+`json_schema` otherwise) and lifts a valid-JSON content onto `Structured`; the
+mock answers `{"echo": <last user text>}` natively under a `ResponseFormat`
+request and honors a scripted `MockOutcome.Structured`. Golden request +
+response fixtures both directions per provider (`request_structured.json` /
+`success_structured.json`), plus gated live structured smokes.
+
+**Executor (`internal/exec/llmexec.go`).** `buildChatRequest` sets
+`ResponseFormat` for `mode: auto` (nil for `repair_only`, so that mode leaves
+the request byte-identical). Post-call, `marshalLLMOutput` shapes the output
+when an `output_format` is present: native → `json` = the structured payload,
+`text` = its canonical compact form, provenance `native`; else `jsonrepair`
+over the text → `raw`/`repaired` (`json` = the value, `text` = canonical) or
+`unrepairable` (`text` = the raw model output kept, no `json`). The persisted
+`llmOutput` gains a `json` field so `${{ steps.<id>.output.json.<field> }}`
+flows structured data; `exec.Output.Repair` carries the provenance. The
+`output_format` block joins the cache key (`cache.LLMRequest.OutputFormat`,
+appended only when present — no `KeySchemaVersion` bump, existing entries stay
+valid) and the input-token estimate (schema bytes).
+
+**Implicit validator (engine).** `resolveChain` prepends a synthetic
+`json_schema` validator to an llm step's chain whenever it declares an
+`output_format` — the author's schema for a `json_schema` type, an empty `{}`
+(parseability only) for a plain `json` type — targeting the `/text` default. So
+an unrepairable output is a proper `invalid_json` **fail verdict** (routing to
+`validation_failed` and, from 11.4, the semantic retry) instead of a silent
+success with a missing `json` field, and an uncompilable schema is a permanent
+config error at claim before spend (11.2's `ConfigCompiler`) — all reusing the
+existing validate machinery with **zero `internal/validate` changes**. The
+schema is read off the materialized config (`output_format` is never
+templated), so `resolveChain` needs no rendered config.
+
+**Provenance persistence.** Migration 0019 adds `step_attempts.repair` (nullable
+JSONB, the usage/verdict precedent — no new outcome or class). `finishAttempt`
+threads a `repair` param through all eight call sites; `SucceedStepArgs` and
+`DeadLetterStepArgs` gain `Repair`, so both the success and the
+validation_failed paths persist it. A cache **hit** carries the miss's
+provenance (`cacheEntry.repair`). The API surfaces `attempts[].repair`
+(`RepairProvenance` OpenAPI component — `status: native|raw|repaired|
+unrepairable`, `steps?`, `raw_text?`; spec still lints 100/100).
+
+**Tests.** The `internal/jsonrepair` corpus/table/fuzz suite; the executor unit
+suite (native / repaired / unrepairable / repair_only paths + an
+output-format-changes-cache-key assertion); the provider golden fixtures; the
+engine integration suite `structured_output_integration_test.go` (a
+fenced-and-trailing-comma completion repaired to a succeeded run whose repaired
+`.json` flows into a downstream step; a prose completion dead-lettered
+`validation_failed` with an `invalid_json` verdict and unrepairable provenance;
+a native-echo success with native provenance) — all green on the compose stack;
+the migrate round-trip bumped to 19. New canonical
+`examples/definitions/structured_extract.json` (corpus-pinned), whose schema
+matches the mock's native echo so it runs offline-green.
+
+**Non-obvious decisions.** (1) The **implicit `json_schema` validator** is the
+one scope judgment beyond the ticket's literal text — without it, a declared
+`output_format` would not actually *enforce* structure (an unrepairable output
+would succeed silently), defeating "reduce failures at the source"; it costs
+~30 lines in `resolveChain` and reuses 11.1/11.2 wholesale. (2) **Append-only
+cache-key component** rather than a `KeySchemaVersion` bump, so pre-11.3 entries
+stay valid (a bump would invalidate the whole fleet's cache). (3) `text` is
+overwritten with the canonical JSON (not left as the raw model output) so the
+`/text` default target — the implicit validator and any author-supplied
+validator — sees the repaired structure; the raw text survives as
+`repair.raw_text` on the `repaired` provenance. (4) JSONB storage normalizes the
+nested `json` field's whitespace, so the integration test compares it
+semantically, not byte-wise.
+
+**Deferred:** the semantic-retry loop that consumes a failing verdict to
+rebuild the prompt (11.4 — a failing verdict still dead-letters on the first
+attempt); the `llm_judge` validator + overhead cost (11.5); quality metrics
+including repair rate (11.6).

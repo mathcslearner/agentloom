@@ -346,6 +346,94 @@ carries each validator's generated config schema (UI-ready). No migration, no
 config var, no metric, no engine change — the 11.1 stage runs the built-ins
 unchanged.
 
+### JSON repair & structured-output modes (as built, 11.3)
+
+11.3 adds a repair pass ahead of the chain and provider-native structured
+output, both authored on the llm step's config as an optional `output_format`
+block (llm-only, like `model_fallbacks`):
+
+```jsonc
+"output_format": {
+  "type": "json" | "json_schema",   // json = any JSON; json_schema enforces `schema`
+  "schema": { ... },                 // required iff json_schema; a JSON object
+  "mode": "auto" | "repair_only"     // auto (default) = native + repair; repair_only = repair only
+}
+```
+
+Validation (`config_field_invalid` / `config_field_required`): `type` is
+required and one of the two values; a `json_schema` type requires a
+JSON-object `schema`; a plain `json` type must carry no schema; `mode` (when
+present) is one of the two values. The schema's *compilability* is not checked
+at submit — it is a runtime artifact (the tool-args / validator-config
+precedent) checked at claim pre-flight by the implicit validator below.
+
+**Three mechanisms, no change to the verdict shape or the routing table:**
+
+1. **Deterministic JSON repair (`internal/jsonrepair`, a stdlib-only leaf).**
+   `Repair(text)` runs a fixed sequence of conservative, cumulative passes —
+   strip a Markdown code fence, extract the first balanced JSON value from
+   surrounding prose, drop trailing commas, quote bare object keys — never
+   touching string contents, short-circuiting the moment the working text
+   parses. The result is `raw` (already valid), `repaired` (a pass fixed it,
+   with the passes named), or `unrepairable`. The llm executor runs it over a
+   completion's text when the step declared an `output_format` and the provider
+   did not answer natively.
+
+2. **Provider-native structured output.** `mode: auto` asks the provider for
+   structured output through its native mechanism — Anthropic via a forced
+   synthetic tool (`agentloom_structured_output`, `tool_choice` forced, the
+   tool's input lifted onto `ChatResponse.Structured` and kept out of the
+   user-visible tool calls); OpenAI via `response_format` (`json_object` for a
+   plain json format, a strict named `json_schema` otherwise), a valid-JSON
+   content lifted onto `Structured`; the mock echoes `{"echo": <text>}`
+   natively under a `ResponseFormat` request. `mode: repair_only` leaves the
+   provider request byte-identical to a plain-text step and only post-processes
+   — the escape hatch for models whose native structured mode suppresses
+   reasoning the workflow needs.
+
+3. **An implicit `json_schema` validator enforces the declared shape.** At
+   `resolveChain`, an llm step with an `output_format` gets a `json_schema`
+   entry **prepended** to its authored chain (the author's schema for a
+   `json_schema` type, an empty `{}` — parseability only — for a plain `json`
+   type), targeting the `/text` default. Consequences: an unrepairable output
+   is a proper `invalid_json` **fail verdict** (routing to `validation_failed`
+   and, from 11.4, the semantic retry) rather than a silent success with a
+   missing `json` field; an uncompilable schema is a permanent
+   `*ConfigValidationError` at claim before any spend (11.2's `ConfigCompiler`);
+   the author never duplicates the schema in `validation`. This reuses the
+   whole 11.1/11.2 machinery unchanged — no new code inside `internal/validate`.
+
+**The persisted output** gains a `json` field alongside `text` when a
+structured-output step's output parsed (native or repaired), so
+`${{ steps.<id>.output.json.field }}` flows structured data downstream; `text`
+is overwritten with the canonical compact JSON so the `/text` default target
+(the implicit and any author-supplied validator) sees the repaired structure.
+An unrepairable output leaves `text` as the raw model output (so the verdict's
+`invalid_json` issue reports the real problem) and omits `json`.
+
+**Repair provenance** is recorded per attempt on `step_attempts.repair`
+(migration 0019, the `usage`/`verdict` precedent — one nullable JSONB column,
+no new outcome or class): `{schema_version, status, steps?, raw_text?}` where
+status is `native | raw | repaired | unrepairable`. `raw_text` (the pre-repair
+model text) is kept only on `repaired` so the repair is diffable. It rides
+onto the attempt inside the completion transaction (both the success and the
+validation_failed paths), is carried across a response-cache hit (the
+`cacheEntry` gained a `repair` field), and is surfaced as `attempts[].repair`
+in `GET /v1/runs/{id}` (`RepairProvenance` OpenAPI component).
+
+**Cache key.** The `output_format` block is a cache-key component (appended to
+`cache.LLMRequest` only when present, so a step with no format keys exactly as
+it did pre-11.3 and existing entries stay valid): the same request yields a
+different output under a different format (native vs. repaired vs. raw), and a
+`repair_only` format changes the output without changing the provider request,
+so the format must re-key the entry. No `KeySchemaVersion` bump — the trailing
+component keeps every existing key stable (ADR-011 amended).
+
+No new config var and no new metric (the repair-rate metric is 11.6). One
+migration (0019), a single new leaf package (`internal/jsonrepair`), and no
+new engine hook interface — the repair happens inside the llm executor and the
+enforcement reuses the existing validate stage.
+
 ## Consequences
 
 Positive:

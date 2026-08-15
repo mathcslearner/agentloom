@@ -12,10 +12,12 @@ RETURNING *;
 -- 8.6); NULL for every other outcome and step type. Verdict is the
 -- output-validation chain verdict (ticket 11.1, ADR-013), present on a
 -- succeeded or validation_failed attempt of a step carrying a validation
--- chain; NULL otherwise.
+-- chain; NULL otherwise. Repair is the structured-output provenance
+-- (ticket 11.3), present on an attempt of an llm step that declared an
+-- output_format; NULL otherwise.
 -- name: FinishStepAttempt :execrows
 UPDATE step_attempts
-SET outcome = @outcome, error = @error, usage = @usage, verdict = @verdict, finished_at = @finished_at::timestamptz
+SET outcome = @outcome, error = @error, usage = @usage, verdict = @verdict, repair = @repair, finished_at = @finished_at::timestamptz
 WHERE run_id = @run_id AND step_id = @step_id AND attempt_no = @attempt_no;
 
 -- name: ListStepAttempts :many

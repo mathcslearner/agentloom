@@ -31,12 +31,19 @@ const (
 
 // The built-in validator names — the values a chain entry's `name` selects.
 const (
-	jsonSchemaName   = "json_schema"
+	jsonSchemaName   = NameJSONSchema
 	regexName        = "regex"
 	containsName     = "contains"
 	celName          = "cel"
 	numericRangeName = "numeric_range"
 )
+
+// NameJSONSchema is the built-in json_schema validator's registered name,
+// exported so the engine can synthesize the implicit output-format validator
+// (ticket 11.3): an llm step declaring an output_format prepends a
+// json_schema entry to its chain, enforcing the declared shape over the
+// (possibly repaired) completion.
+const NameJSONSchema = "json_schema"
 
 // deterministicCaps is the ADR-009 flag set every deterministic built-in
 // carries: a pure function of output and config, so cacheable and nothing

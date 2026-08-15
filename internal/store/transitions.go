@@ -269,7 +269,7 @@ func TakeoverStep(ctx context.Context, q Querier, args TakeoverStepArgs) (gen.Ru
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeLost, nil, nil, nil, args.Now); err != nil {
+	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeLost, nil, nil, nil, nil, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
 	if err := appendEvent(ctx, gq, op, args.RunID, EventStepReclaimed, stepClaimedPayload{
@@ -301,6 +301,10 @@ type SucceedStepArgs struct {
 	// on a validated step whose output passed; nil (the common case — no
 	// chain) stores NULL.
 	Verdict json.RawMessage
+	// Repair is the structured-output provenance (ticket 11.3, ADR-013) on an
+	// llm step that declared an output_format; nil (the common case) stores
+	// NULL.
+	Repair json.RawMessage
 	// Now is the injected current time. Required.
 	Now time.Time
 }
@@ -331,7 +335,7 @@ func SucceedStep(ctx context.Context, q Querier, args SucceedStepArgs) (gen.RunS
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := finishAttempt(ctx, gq, op, step, StepStatusSucceeded, nil, args.Usage, args.Verdict, args.Now); err != nil {
+	if err := finishAttempt(ctx, gq, op, step, StepStatusSucceeded, nil, args.Usage, args.Verdict, args.Repair, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DSucceeded: 1}); err != nil {
@@ -375,6 +379,11 @@ type DeadLetterStepArgs struct {
 	// dead-letter (ticket 11.1, ADR-013) — the evidence of why the output
 	// was rejected, carried onto the attempt row. nil otherwise.
 	Verdict json.RawMessage
+	// Repair is the structured-output provenance (ticket 11.3, ADR-013) on a
+	// validation_failed dead-letter of an llm step that declared an
+	// output_format — the shaping that produced the rejected output. nil
+	// otherwise.
+	Repair json.RawMessage
 	// Now is the injected current time. Required.
 	Now time.Time
 }
@@ -416,7 +425,7 @@ func DeadLetterStep(ctx context.Context, q Querier, args DeadLetterStepArgs) (ge
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := finishAttempt(ctx, gq, op, step, args.Outcome, args.Error, args.Usage, args.Verdict, args.Now); err != nil {
+	if err := finishAttempt(ctx, gq, op, step, args.Outcome, args.Error, args.Usage, args.Verdict, args.Repair, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DFailed: 1}); err != nil {
@@ -500,7 +509,7 @@ func PoisonDeadLetterStep(ctx context.Context, q Querier, args PoisonDeadLetterS
 		return gen.RunStep{}, wrapErr(op, err)
 	}
 	if wasRunning {
-		if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeLost, args.Error, nil, nil, args.Now); err != nil {
+		if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeLost, args.Error, nil, nil, nil, args.Now); err != nil {
 			return gen.RunStep{}, err
 		}
 	}
@@ -647,7 +656,7 @@ func CancelRunningStep(ctx context.Context, q Querier, args CancelRunningStepArg
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeCancelled, args.Error, nil, nil, args.Now); err != nil {
+	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeCancelled, args.Error, nil, nil, nil, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DCancelled: 1}); err != nil {
@@ -821,7 +830,7 @@ func RetryStep(ctx context.Context, q Querier, args RetryStepArgs) (gen.RunStep,
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := finishAttempt(ctx, gq, op, step, args.Outcome, args.Error, nil, nil, args.Now); err != nil {
+	if err := finishAttempt(ctx, gq, op, step, args.Outcome, args.Error, nil, nil, nil, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
 	if err := appendEvent(ctx, gq, op, args.RunID, EventStepRetryScheduled, stepRetryPayload{
@@ -900,7 +909,7 @@ func ThrottleStep(ctx context.Context, q Querier, args ThrottleStepArgs) (gen.Ru
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeThrottled, errPayload, nil, nil, args.Now); err != nil {
+	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeThrottled, errPayload, nil, nil, nil, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
 	if err := appendEvent(ctx, gq, op, args.RunID, EventStepThrottled, stepThrottlePayload{
@@ -1484,12 +1493,13 @@ func appendEvent(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUI
 // The attempt must exist — ClaimStep created it — so zero rows is a
 // data-integrity error, not a race. usage is the provider's token
 // accounting on a successful llm attempt (ticket 8.6); verdict is the
-// output-validation chain verdict (ticket 11.1); both nil for every
-// outcome and step type that has neither.
-func finishAttempt(ctx context.Context, gq *gen.Queries, op string, step gen.RunStep, outcome string, errPayload, usage, verdict json.RawMessage, now time.Time) error {
+// output-validation chain verdict (ticket 11.1); repair is the
+// structured-output provenance (ticket 11.3); all nil for every outcome and
+// step type that has none.
+func finishAttempt(ctx context.Context, gq *gen.Queries, op string, step gen.RunStep, outcome string, errPayload, usage, verdict, repair json.RawMessage, now time.Time) error {
 	rows, err := gq.FinishStepAttempt(ctx, gen.FinishStepAttemptParams{
 		RunID: step.RunID, StepID: step.StepID, AttemptNo: step.AttemptCount,
-		Outcome: &outcome, Error: errPayload, Usage: usage, Verdict: verdict, FinishedAt: now,
+		Outcome: &outcome, Error: errPayload, Usage: usage, Verdict: verdict, Repair: repair, FinishedAt: now,
 	})
 	if err != nil {
 		return wrapErr(op+": finish attempt", err)

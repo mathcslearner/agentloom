@@ -184,7 +184,11 @@ type AttemptView struct {
 	// present on a succeeded or validation_failed attempt of a step carrying
 	// a validation chain: {schema_version, status, score?, issues[],
 	// results[]}. Absent for every unvalidated step.
-	Verdict    json.RawMessage `json:"verdict,omitempty"`
+	Verdict json.RawMessage `json:"verdict,omitempty"`
+	// Repair is the structured-output provenance (ticket 11.3, ADR-013),
+	// present on an attempt of an llm step that declared an output_format:
+	// {schema_version, status, steps?, raw_text?}. Absent otherwise.
+	Repair     json.RawMessage `json:"repair,omitempty"`
 	StartedAt  *time.Time      `json:"started_at,omitempty"`
 	FinishedAt *time.Time      `json:"finished_at,omitempty"`
 }

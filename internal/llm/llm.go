@@ -147,6 +147,34 @@ type ChatRequest struct {
 	// default. Range checking is the provider API's (ranges differ per
 	// vendor; an out-of-range value comes back as a permanent error).
 	Temperature *float64
+	// ResponseFormat requests provider-native structured output (ticket
+	// 11.3, ADR-013): nil leaves the completion as free text; non-nil asks
+	// the provider for a JSON (or schema-conforming JSON) answer through its
+	// native mechanism (Anthropic forced tool-use, OpenAI response_format).
+	// A provider that honors it sets ChatResponse.Structured; the llm
+	// executor's deterministic JSON-repair pass is the fallback when it does
+	// not.
+	ResponseFormat *ResponseFormat
+}
+
+// ResponseFormat is a request for provider-native structured output (ticket
+// 11.3). Schema nil requests a plain JSON object (no shape constraint);
+// Schema non-nil requests JSON matching that JSON Schema. Name labels the
+// schema for providers that require one (OpenAI's json_schema mode); the
+// executor supplies a stable default.
+type ResponseFormat struct {
+	// Schema is the JSON Schema (2020-12) the output should match; nil
+	// requests a plain JSON object.
+	Schema json.RawMessage
+	// Name is the schema label some providers require. Empty is tolerated
+	// (providers substitute a default).
+	Name string
+}
+
+// HasSchema reports whether the format constrains the output to a specific
+// schema (json_schema mode) rather than any JSON object (json mode).
+func (f *ResponseFormat) HasSchema() bool {
+	return f != nil && len(f.Schema) > 0
 }
 
 // Validate checks the request's shape client-side: the rules every
@@ -262,6 +290,13 @@ type ChatResponse struct {
 	StopReason string
 	// Blocks is the completion's content.
 	Blocks []Block
+	// Structured is the provider's native structured-output payload (ticket
+	// 11.3), set only when the request carried a ResponseFormat the provider
+	// honored (Anthropic forced tool-use JSON, OpenAI response_format). It is
+	// the verbatim JSON the model produced; nil when the provider answered in
+	// free text (the executor then repairs Blocks' text instead). It is not
+	// included in Blocks, so it never appears as a user-visible tool call.
+	Structured json.RawMessage
 	// Usage is the call's token accounting. Always set on success.
 	Usage Usage
 }

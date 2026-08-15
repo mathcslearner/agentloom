@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -225,6 +226,7 @@ func (v *validator) checkSteps(def *Definition) map[string]int {
 		}
 		v.checkStepConfig(path, s)
 		v.checkModelFallbacks(def, path, s)
+		v.checkOutputFormat(path, s)
 		v.checkRetry(path, s.Retry)
 		v.checkTimeout(path, s.Timeout)
 		v.checkCache(path, s.Cache)
@@ -615,6 +617,73 @@ func (v *validator) checkModelFallbacks(def *Definition, path string, s Step) {
 		}
 		prevFrac, havePrev = frac, true
 	}
+}
+
+// checkOutputFormat validates an llm step's structured-output block (ADR-013,
+// ticket 11.3). Like model_fallbacks it is llm-only — only the llm config
+// carries the field, so a non-llm step could reach it only via a hand-built
+// config the decoder would already reject; the guard keeps the invariant
+// explicit. Within the block: type is required and one of the known values,
+// a json_schema type requires a JSON-object `schema` (its *compilability* is
+// a claim-time pre-flight check, not a submit-time one — the tool-args
+// precedent), a plain json type must not carry a schema (an authoring
+// mistake), and mode (when present) is one of the known values. The
+// codec already rejected unknown keys and mistyped values.
+func (v *validator) checkOutputFormat(path string, s Step) {
+	if s.Type != StepLLM {
+		if cfg[LLMConfig](s).OutputFormat != nil {
+			v.add(CodeConfigFieldInvalid, path+".config.output_format",
+				"applies only to llm steps, not %q", string(s.Type))
+		}
+		return
+	}
+	of := cfg[LLMConfig](s).OutputFormat
+	if of == nil {
+		return
+	}
+	fp := path + ".config.output_format"
+	switch of.Type {
+	case "":
+		v.add(CodeConfigFieldRequired, fp+".type", "required field is missing")
+	case OutputFormatJSON:
+		if len(of.Schema) > 0 {
+			v.add(CodeConfigFieldInvalid, fp+".schema",
+				`applies only to type %q; a plain "json" format takes no schema`, OutputFormatJSONSchema)
+		}
+	case OutputFormatJSONSchema:
+		if len(of.Schema) == 0 {
+			v.add(CodeConfigFieldRequired, fp+".schema", "required when type is %q", OutputFormatJSONSchema)
+		} else if jsonTypeOf(of.Schema) != "object" {
+			v.add(CodeConfigFieldInvalid, fp+".schema", "must be a JSON object")
+		}
+	default:
+		v.add(CodeConfigFieldInvalid, fp+".type", "unknown output format %q (expected one of %s)",
+			string(of.Type), joinOutputFormatTypes())
+	}
+	switch of.Mode {
+	case "", OutputFormatAuto, OutputFormatRepairOnly:
+	default:
+		v.add(CodeConfigFieldInvalid, fp+".mode", "unknown mode %q (expected one of %s)",
+			string(of.Mode), joinOutputFormatModes())
+	}
+}
+
+// joinOutputFormatTypes renders the valid output-format types for an error.
+func joinOutputFormatTypes() string {
+	parts := make([]string, len(outputFormatTypes))
+	for i, t := range outputFormatTypes {
+		parts[i] = fmt.Sprintf("%q", string(t))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// joinOutputFormatModes renders the valid output-format modes for an error.
+func joinOutputFormatModes() string {
+	parts := make([]string, len(outputFormatModes))
+	for i, m := range outputFormatModes {
+		parts[i] = fmt.Sprintf("%q", string(m))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // checkLLMConfig enforces the shared llm/planner requirement: model plus

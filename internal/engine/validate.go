@@ -41,16 +41,78 @@ import (
 // authored) resolves to (nil, nil); the caller then does zero validation
 // work. A returned error is always permanent (the caller records it so).
 func (e *Engine) resolveChain(step gen.RunStep) (*validate.Chain, error) {
-	if len(step.ValidationPolicy) == 0 {
-		return nil, nil // no chain authored — the common case, zero work
+	var authored *dag.ValidationPolicy
+	if len(step.ValidationPolicy) > 0 {
+		var policy dag.ValidationPolicy
+		if err := json.Unmarshal(step.ValidationPolicy, &policy); err != nil {
+			// Corrupt materialized policy — deterministic stored-state failure,
+			// like a corrupt retry policy or timeout: permanent.
+			return nil, err
+		}
+		authored = &policy
 	}
-	var policy dag.ValidationPolicy
-	if err := json.Unmarshal(step.ValidationPolicy, &policy); err != nil {
-		// Corrupt materialized policy — deterministic stored-state failure,
-		// like a corrupt retry policy or timeout: permanent.
+	// The implicit structured-output validator (ticket 11.3, ADR-013): an llm
+	// step declaring an output_format prepends a json_schema entry that
+	// enforces the declared shape over the (possibly repaired) completion, so
+	// an unrepairable output is a validation_failed verdict (feeding 11.4's
+	// semantic retry) rather than a silent success. Prepending keeps the
+	// cheap structural check ahead of any author-supplied validators.
+	implicit, ierr := implicitOutputFormatSpec(step)
+	if ierr != nil {
+		return nil, ierr
+	}
+	policy := mergeValidationPolicy(implicit, authored)
+	if policy == nil {
+		return nil, nil // no chain authored and no output_format — zero work
+	}
+	return validate.Resolve(e.validators, policy, dag.StepType(step.StepType))
+}
+
+// implicitOutputFormatSpec builds the synthetic json_schema validator an llm
+// step's output_format implies (ticket 11.3), or nil when the step declares
+// none. A json_schema format enforces the author's schema; a plain json
+// format enforces parseability (an empty `{}` schema matches any JSON, so
+// only a non-JSON output — an unrepairable completion — fails, as
+// invalid_json). The schema is read off the materialized config (output_format
+// is never templated), so this needs no rendered config.
+func implicitOutputFormatSpec(step gen.RunStep) (*dag.ValidatorSpec, error) {
+	if dag.StepType(step.StepType) != dag.StepLLM || len(step.Config) == 0 {
+		return nil, nil
+	}
+	cfg, err := dag.DecodeStepConfig(dag.StepLLM, step.Config)
+	if err != nil {
+		// Corrupt materialized config — deterministic, permanent (the render
+		// stage lands the same class independently).
 		return nil, err
 	}
-	return validate.Resolve(e.validators, &policy, dag.StepType(step.StepType))
+	llmCfg, ok := cfg.(*dag.LLMConfig)
+	if !ok || llmCfg.OutputFormat == nil {
+		return nil, nil
+	}
+	schema := llmCfg.OutputFormat.Schema
+	if len(schema) == 0 {
+		// Plain json format: any JSON accepted, so an empty schema — the
+		// parseability-only check.
+		schema = json.RawMessage(`{}`)
+	}
+	config, err := json.Marshal(map[string]json.RawMessage{"schema": schema})
+	if err != nil {
+		return nil, err
+	}
+	return &dag.ValidatorSpec{Name: validate.NameJSONSchema, Config: config}, nil
+}
+
+// mergeValidationPolicy prepends the implicit validator (if any) to the
+// authored chain (if any), returning nil when there is nothing to run.
+func mergeValidationPolicy(implicit *dag.ValidatorSpec, authored *dag.ValidationPolicy) *dag.ValidationPolicy {
+	if implicit == nil {
+		return authored
+	}
+	merged := &dag.ValidationPolicy{Validators: []dag.ValidatorSpec{*implicit}}
+	if authored != nil {
+		merged.Validators = append(merged.Validators, authored.Validators...)
+	}
+	return merged
 }
 
 // runChain runs a resolved chain over a step's output (ADR-013's chain
@@ -134,6 +196,11 @@ func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep
 			usage = u
 		}
 	}
+	// The structured-output provenance (ticket 11.3): a validation_failed
+	// output of a structured-output step carries how it was shaped (repaired /
+	// unrepairable), the evidence 11.4's feedback builder reads alongside the
+	// verdict. Best-effort like usage — the verdict is the load-bearing record.
+	repairJSON := marshalRepair(ctx, logger, out.Repair)
 
 	now := e.now()
 	// The attempt's cost row (ADR-012): a validation_failed attempt spent
@@ -172,7 +239,7 @@ func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep
 		if _, err := store.DeadLetterStep(ctx, q, store.DeadLetterStepArgs{
 			RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
 			Source: store.DeadLetterSourceRetriesExhausted, Outcome: store.AttemptOutcomeValidationFailed,
-			Error: payload, Usage: usage, Verdict: verdictJSON, Now: now,
+			Error: payload, Usage: usage, Verdict: verdictJSON, Repair: repairJSON, Now: now,
 		}); err != nil {
 			errors.As(err, &fenced)
 			return err
@@ -227,6 +294,23 @@ func (e *Engine) completeValidationFailure(ctx context.Context, step gen.RunStep
 		slog.Int("steps_cancelled", len(cancelledSteps)),
 		slog.Bool("run_failed", runFailed))
 	return nil
+}
+
+// marshalRepair marshals a step's structured-output provenance (ticket 11.3)
+// for the attempt row, or returns nil when the step had none. A marshal
+// failure of this fixed struct is logged and dropped (NULL), never fatal —
+// the output payload is the truth, provenance is diagnostic.
+func marshalRepair(ctx context.Context, logger *slog.Logger, repair *exec.Repair) json.RawMessage {
+	if repair == nil {
+		return nil
+	}
+	rb, merr := json.Marshal(repair)
+	if merr != nil {
+		logger.WarnContext(ctx, "marshaling repair provenance failed; recording none",
+			slog.Any("error", merr))
+		return nil
+	}
+	return rb
 }
 
 // validationFailureMessage renders a short, structure-only summary of a

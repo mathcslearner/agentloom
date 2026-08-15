@@ -58,6 +58,10 @@ type cacheEntry struct {
 	Output   json.RawMessage `json:"output"`
 	Usage    *exec.Usage     `json:"usage,omitempty"`
 	Resource string          `json:"cost_resource,omitempty"`
+	// Repair is the structured-output provenance of the cached miss (ticket
+	// 11.3), carried so a hit records the same provenance on its attempt.
+	// omitempty so a pre-11.3 entry decodes cleanly to nil.
+	Repair *exec.Repair `json:"repair,omitempty"`
 }
 
 // cacheWriteBinding carries what a miss needs to write its result through
@@ -200,7 +204,7 @@ func (e *Engine) cacheRead(ctx context.Context, step gen.RunStep, executor exec.
 // request, so even a later-fenced completion wrote a correct entry.
 func (e *Engine) cacheWrite(ctx context.Context, wb *cacheWriteBinding, out exec.Output) {
 	logger := log.From(ctx)
-	val, err := json.Marshal(cacheEntry{Output: out.Data, Usage: out.Usage, Resource: out.Resource})
+	val, err := json.Marshal(cacheEntry{Output: out.Data, Usage: out.Usage, Resource: out.Resource, Repair: out.Repair})
 	if err != nil {
 		// A marshal failure on the fixed entry shape is not worth failing a
 		// succeeded step over — skip the write.
@@ -252,7 +256,7 @@ func decodeCacheEntry(raw []byte) (exec.Output, error) {
 	if err := json.Unmarshal(raw, &ent); err != nil {
 		return exec.Output{}, err
 	}
-	return exec.Output{Data: ent.Output, Usage: ent.Usage, Resource: ent.Resource}, nil
+	return exec.Output{Data: ent.Output, Usage: ent.Usage, Resource: ent.Resource, Repair: ent.Repair}, nil
 }
 
 // markCacheHit returns the usage a cache-served attempt records: the stored

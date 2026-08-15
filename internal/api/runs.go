@@ -405,6 +405,7 @@ func buildRunResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge, att
 			Error:      a.Error,
 			Usage:      a.Usage,
 			Verdict:    a.Verdict,
+			Repair:     a.Repair,
 			StartedAt:  a.StartedAt,
 			FinishedAt: a.FinishedAt,
 		}

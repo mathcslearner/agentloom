@@ -88,10 +88,25 @@ type openaiRequest struct {
 	Model string `json:"model"`
 	// MaxCompletionTokens is the current field name; the older max_tokens
 	// is deprecated and rejected by o-series reasoning models.
-	MaxCompletionTokens int             `json:"max_completion_tokens"`
-	Messages            []openaiMessage `json:"messages"`
-	Tools               []openaiTool    `json:"tools,omitempty"`
-	Temperature         *float64        `json:"temperature,omitempty"`
+	MaxCompletionTokens int                   `json:"max_completion_tokens"`
+	Messages            []openaiMessage       `json:"messages"`
+	Tools               []openaiTool          `json:"tools,omitempty"`
+	Temperature         *float64              `json:"temperature,omitempty"`
+	ResponseFormat      *openaiResponseFormat `json:"response_format,omitempty"`
+}
+
+// openaiResponseFormat is the Chat Completions structured-output request
+// (ticket 11.3): type json_object for any JSON, or json_schema with a named,
+// strict schema for a specific shape.
+type openaiResponseFormat struct {
+	Type       string                `json:"type"`
+	JSONSchema *openaiJSONSchemaSpec `json:"json_schema,omitempty"`
+}
+
+type openaiJSONSchemaSpec struct {
+	Name   string          `json:"name"`
+	Schema json.RawMessage `json:"schema"`
+	Strict bool            `json:"strict"`
 }
 
 type openaiMessage struct {
@@ -271,7 +286,7 @@ func (o *OpenAI) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 			cause:     err,
 		}
 	}
-	out, err := decodeOpenAIResponse(wire)
+	out, err := decodeOpenAIResponse(wire, req.ResponseFormat != nil)
 	if err != nil {
 		return ChatResponse{}, &Error{
 			Provider:  ProviderOpenAI,
@@ -328,6 +343,24 @@ func encodeOpenAIRequest(req ChatRequest) (openaiRequest, error) {
 				Parameters:  td.InputSchema,
 			},
 		})
+	}
+	// Native structured output (ticket 11.3): json_object for any JSON, or a
+	// named strict json_schema for a specific shape. The executor's implicit
+	// validator enforces the schema regardless; response_format reduces
+	// failures at the source.
+	if req.ResponseFormat != nil {
+		if req.ResponseFormat.HasSchema() {
+			name := req.ResponseFormat.Name
+			if name == "" {
+				name = "structured_output"
+			}
+			out.ResponseFormat = &openaiResponseFormat{
+				Type:       "json_schema",
+				JSONSchema: &openaiJSONSchemaSpec{Name: name, Schema: req.ResponseFormat.Schema, Strict: true},
+			}
+		} else {
+			out.ResponseFormat = &openaiResponseFormat{Type: "json_object"}
+		}
 	}
 	return out, nil
 }
@@ -390,8 +423,10 @@ func encodeOpenAIMessage(m Message) ([]openaiMessage, error) {
 // decodeOpenAIResponse maps the wire response onto the unified shape,
 // enforcing the 8.3 contract that usage is present on every success and
 // normalizing the finish reason onto the Anthropic stop-reason
-// vocabulary the unified type documents.
-func decodeOpenAIResponse(wire openaiResponse) (ChatResponse, error) {
+// vocabulary the unified type documents. structured reports whether the
+// request carried a response_format, in which case a valid-JSON content
+// string is lifted onto ChatResponse.Structured (ticket 11.3).
+func decodeOpenAIResponse(wire openaiResponse, structured bool) (ChatResponse, error) {
 	if wire.Usage == nil {
 		return ChatResponse{}, errors.New("response carries no usage")
 	}
@@ -411,6 +446,13 @@ func decodeOpenAIResponse(wire openaiResponse) (ChatResponse, error) {
 	}
 	if choice.Message.Content != nil && *choice.Message.Content != "" {
 		out.Blocks = append(out.Blocks, TextBlock(*choice.Message.Content))
+		// Native structured output (ticket 11.3): under a response_format
+		// request, a content string that is already valid JSON is the
+		// structured answer. A non-JSON content (e.g. a refusal folded into
+		// content) leaves Structured nil for the executor's repair pass.
+		if structured && json.Valid([]byte(*choice.Message.Content)) {
+			out.Structured = json.RawMessage(*choice.Message.Content)
+		}
 	}
 	for i, tc := range choice.Message.ToolCalls {
 		if tc.Type != "" && tc.Type != "function" {

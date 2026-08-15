@@ -236,3 +236,42 @@ config bytes means the artifact is built once per distinct config, not per
 attempt. A *runtime* failure over a particular output (a `cel` predicate
 referencing a missing field) is instead a **fail verdict**, not a config
 error — repairable by the semantic retry.
+
+### Structured output & JSON repair (11.3)
+
+An `llm` step can declare an `output_format` on its config to get
+structured output with repair and validation built in
+([ADR-013](adr/013-output-validation-and-semantic-retries.md)):
+
+```jsonc
+"config": {
+  "model": "anthropic/claude-sonnet-5",
+  "prompt": "Extract the fields as JSON: ${{ run.params.doc }}",
+  "output_format": {
+    "type": "json_schema",              // or "json" for any-JSON (parseability)
+    "schema": { "type": "object", "properties": { "title": {"type":"string"} }, "required": ["title"] },
+    "mode": "auto"                      // or "repair_only" to leave the request untouched
+  }
+}
+```
+
+What the engine does with it:
+
+- **Native structured output** (`mode: auto`) — asks the provider for
+  structured output through its native mechanism (Anthropic forced tool-use,
+  OpenAI `response_format`); the mock answers `{"echo": <text>}` natively.
+- **Deterministic JSON repair** — when the model answers in text anyway, a
+  cheap pass strips code fences, extracts the first JSON value from prose,
+  removes trailing commas, and quotes bare keys before declaring failure.
+- **An implicit `json_schema` validator** — prepended to the step's chain,
+  enforcing the declared shape over the (repaired) output, so an output that
+  cannot be shaped into schema-conforming JSON dead-letters as
+  `validation_failed` rather than flowing on malformed.
+
+The persisted output gains a `json` field (the structured value) alongside
+`text` (the canonical compact JSON), so downstream steps read
+`${{ steps.<id>.output.json.<field> }}`. Each attempt records repair
+provenance — `attempts[].repair` = `{status: native|raw|repaired|unrepairable,
+steps?, raw_text?}` — in `GET /v1/runs/{id}`. See
+[`examples/definitions/structured_extract.json`](../examples/definitions/structured_extract.json)
+for the canonical workflow.

@@ -103,7 +103,7 @@ func BudgetParkStep(ctx context.Context, q Querier, args BudgetParkStepArgs) (ge
 	args.Event.AttemptNo = step.AttemptCount
 	args.Event.Action = "park"
 	errPayload, _ := json.Marshal(args.Event) // small fixed struct; cannot fail
-	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeBudgetExceeded, errPayload, nil, nil, args.Now); err != nil {
+	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeBudgetExceeded, errPayload, nil, nil, nil, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
 	if err := appendEvent(ctx, gq, op, args.RunID, EventBudgetExceeded, args.Event); err != nil {

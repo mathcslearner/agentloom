@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "name": "structured-extract",
+  "description": "The ticket 11.3 canonical structured-output workflow (ADR-013). An `llm` extract step declares an `output_format` with a JSON Schema: the engine asks the mock provider for native structured output, deterministically JSON-repairs the completion when it arrives as text instead, and runs an implicit `json_schema` validator over the result — so an output that cannot be shaped into schema-conforming JSON dead-letters as validation_failed rather than flowing on malformed. The structured `.json` then flows into a downstream `record` step through `${{ steps.extract.output.json.echo }}`. It runs entirely offline on the mock (model `mock/sim-1`), whose native structured answer is a JSON object `{\"echo\": <text>}` matching the schema; swapping the model id and schema for a real provider makes it a live extraction workflow unchanged.",
+  "params": {
+    "document": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "extract",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Extract the salient text from this document as JSON: ${{ run.params.document }}",
+        "max_tokens": 256,
+        "temperature": 0,
+        "output_format": {
+          "type": "json_schema",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "echo": {"type": "string"}
+            },
+            "required": ["echo"],
+            "additionalProperties": true
+          },
+          "mode": "auto"
+        }
+      }
+    },
+    {
+      "id": "record",
+      "type": "echo",
+      "config": {
+        "input": {
+          "extracted": "${{ steps.extract.output.json.echo }}"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "extract",
+      "to": "record"
+    }
+  ]
+}

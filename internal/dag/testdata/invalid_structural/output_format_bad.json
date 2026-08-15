@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "output-format-bad",
+  "steps": [
+    {"id": "a", "type": "llm", "config": {"model": "m", "prompt": "p", "output_format": {}}},
+    {"id": "b", "type": "llm", "config": {"model": "m", "prompt": "p", "output_format": {"type": "json_schema"}}},
+    {"id": "c", "type": "llm", "config": {"model": "m", "prompt": "p", "output_format": {"type": "json_schema", "schema": [1, 2]}}},
+    {"id": "d", "type": "llm", "config": {"model": "m", "prompt": "p", "output_format": {"type": "json", "schema": {"type": "object"}}}},
+    {"id": "e", "type": "llm", "config": {"model": "m", "prompt": "p", "output_format": {"type": "xml"}}},
+    {"id": "f", "type": "llm", "config": {"model": "m", "prompt": "p", "output_format": {"type": "json", "mode": "sometimes"}}}
+  ],
+  "edges": [
+    {"from": "a", "to": "b"},
+    {"from": "b", "to": "c"},
+    {"from": "c", "to": "d"},
+    {"from": "d", "to": "e"},
+    {"from": "e", "to": "f"}
+  ]
+}

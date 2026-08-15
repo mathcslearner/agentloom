@@ -1,0 +1,20 @@
+{
+  "model": "claude-sonnet-5",
+  "max_tokens": 256,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "Extract the title."}
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "agentloom_structured_output",
+      "description": "Return the final answer as structured JSON matching the required schema.",
+      "input_schema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}
+    }
+  ],
+  "tool_choice": {"type": "tool", "name": "agentloom_structured_output"}
+}

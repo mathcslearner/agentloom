@@ -1,0 +1,15 @@
+{
+  "model": "gpt-4o",
+  "max_completion_tokens": 256,
+  "messages": [
+    {"role": "user", "content": "Extract the title."}
+  ],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "structured_output",
+      "schema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
+      "strict": true
+    }
+  }
+}

@@ -94,13 +94,28 @@ func (a *Anthropic) Manifest() plugin.Manifest {
 // shape: the field sets are disjoint per type, and omitempty keeps each
 // encoded block minimal.
 type anthropicRequest struct {
-	Model       string             `json:"model"`
-	MaxTokens   int                `json:"max_tokens"`
-	System      string             `json:"system,omitempty"`
-	Messages    []anthropicMessage `json:"messages"`
-	Tools       []anthropicTool    `json:"tools,omitempty"`
-	Temperature *float64           `json:"temperature,omitempty"`
+	Model       string               `json:"model"`
+	MaxTokens   int                  `json:"max_tokens"`
+	System      string               `json:"system,omitempty"`
+	Messages    []anthropicMessage   `json:"messages"`
+	Tools       []anthropicTool      `json:"tools,omitempty"`
+	ToolChoice  *anthropicToolChoice `json:"tool_choice,omitempty"`
+	Temperature *float64             `json:"temperature,omitempty"`
 }
+
+// anthropicToolChoice forces the model to call a specific tool — the
+// mechanism behind provider-native structured output (ticket 11.3): a
+// synthetic tool whose input_schema is the desired output shape, forced, so
+// the model emits schema-conforming JSON as the tool's input.
+type anthropicToolChoice struct {
+	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
+}
+
+// structuredToolName is the synthetic tool the Anthropic provider forces for
+// native structured output (ticket 11.3). Its tool_use input is lifted onto
+// ChatResponse.Structured and never surfaced as a user-visible tool call.
+const structuredToolName = "agentloom_structured_output"
 
 type anthropicMessage struct {
 	Role    string           `json:"role"`
@@ -279,6 +294,23 @@ func encodeAnthropicRequest(req ChatRequest) anthropicRequest {
 	for _, td := range req.Tools {
 		out.Tools = append(out.Tools, anthropicTool(td))
 	}
+	// Native structured output (ticket 11.3): offer a synthetic tool whose
+	// input_schema is the requested shape and force it, so the model returns
+	// schema-conforming JSON as the tool's input. A plain-json request (no
+	// schema) forces a permissive object schema — the parseability the
+	// executor's implicit validator then enforces.
+	if req.ResponseFormat != nil {
+		schema := req.ResponseFormat.Schema
+		if len(schema) == 0 {
+			schema = json.RawMessage(`{"type":"object"}`)
+		}
+		out.Tools = append(out.Tools, anthropicTool{
+			Name:        structuredToolName,
+			Description: "Return the final answer as structured JSON matching the required schema.",
+			InputSchema: schema,
+		})
+		out.ToolChoice = &anthropicToolChoice{Type: "tool", Name: structuredToolName}
+	}
 	return out
 }
 
@@ -320,6 +352,13 @@ func decodeAnthropicResponse(wire anthropicResponse) (ChatResponse, error) {
 		case string(BlockText):
 			out.Blocks = append(out.Blocks, TextBlock(wb.Text))
 		case string(BlockToolUse):
+			if wb.Name == structuredToolName {
+				// The forced structured-output tool (ticket 11.3): its input is
+				// the native structured answer, lifted onto Structured and kept
+				// out of Blocks so it is never a user-visible tool call.
+				out.Structured = wb.Input
+				continue
+			}
 			out.Blocks = append(out.Blocks, Block{
 				Type:    BlockToolUse,
 				ToolUse: &ToolUse{ID: wb.ID, Name: wb.Name, Input: wb.Input},

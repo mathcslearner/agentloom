@@ -2,6 +2,7 @@ package llm_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -66,6 +67,54 @@ func TestMockDefaultEcho(t *testing.T) {
 	}
 	if resp.StopReason != "end_turn" {
 		t.Errorf("stop reason = %q, want end_turn", resp.StopReason)
+	}
+}
+
+// TestMockStructuredEcho: under a ResponseFormat request the default echo
+// answers with native structured JSON (ticket 11.3), not "[mock] ..." text.
+func TestMockStructuredEcho(t *testing.T) {
+	t.Parallel()
+	m, err := llm.NewMock(llm.MockConfig{})
+	if err != nil {
+		t.Fatalf("NewMock: %v", err)
+	}
+	req := mockReq("hello world")
+	req.ResponseFormat = &llm.ResponseFormat{}
+	resp, err := m.Chat(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if len(resp.Structured) == 0 {
+		t.Fatal("Structured is empty; expected a native structured echo under a ResponseFormat request")
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(resp.Structured, &payload); err != nil {
+		t.Fatalf("Structured is not valid JSON: %v (%s)", err, resp.Structured)
+	}
+	if payload["echo"] != "hello world" {
+		t.Errorf("structured echo = %+v, want echo of the prompt", payload)
+	}
+	if resp.Text() != "" {
+		t.Errorf("Text() = %q, want empty for a native structured response", resp.Text())
+	}
+}
+
+// TestMockScriptedStructured: an explicit Structured outcome returns native
+// structured JSON.
+func TestMockScriptedStructured(t *testing.T) {
+	t.Parallel()
+	m, err := llm.NewMock(llm.MockConfig{
+		Default: &llm.MockOutcome{Structured: json.RawMessage(`{"title":"scripted"}`)},
+	})
+	if err != nil {
+		t.Fatalf("NewMock: %v", err)
+	}
+	resp, err := m.Chat(context.Background(), mockReq("anything"))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if string(resp.Structured) != `{"title":"scripted"}` {
+		t.Errorf("Structured = %q, want the scripted JSON", resp.Structured)
 	}
 }
 

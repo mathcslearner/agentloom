@@ -48,6 +48,34 @@ type Output struct {
 	// carries it across a hit so a cache-served attempt still prices its
 	// counterfactual "saved" figure.
 	Resource string
+	// Repair is the output provenance of a structured-output llm step
+	// (ticket 11.3, ADR-013): whether the completion arrived as native
+	// structured JSON, was already valid, was deterministically repaired, or
+	// could not be repaired. Nil for every step without an output_format. The
+	// engine persists it on the attempt row (step_attempts.repair) and the
+	// cache middleware carries it across a hit.
+	Repair *Repair
+}
+
+// Repair is the structured-output provenance recorded on an attempt (ticket
+// 11.3, ADR-013). It mirrors Usage: a small, fixed JSON object the engine
+// persists so the run-status API and 11.6's metrics can read how an output
+// was shaped, without re-deriving it.
+type Repair struct {
+	// SchemaVersion is the record version (1).
+	SchemaVersion int `json:"schema_version"`
+	// Status is the provenance: "native" (the provider emitted structured
+	// output directly), "raw" (the text was already valid JSON), "repaired"
+	// (a deterministic pass fixed it), or "unrepairable" (no pass produced
+	// valid JSON — the output is left to the semantic-retry loop, 11.4).
+	Status string `json:"status"`
+	// Steps names the repair passes that changed the text, in order (empty
+	// for native/raw). Structure only — never instance values.
+	Steps []string `json:"steps,omitempty"`
+	// RawText is the model's pre-repair text, kept only when Status is
+	// "repaired" so the repair is diffable (output provenance, 11.3). Empty
+	// otherwise.
+	RawText string `json:"raw_text,omitempty"`
 }
 
 // Usage is one attempt's token accounting, mirroring llm.Usage but kept

@@ -171,6 +171,14 @@ var structuralCases = map[string][]issueRef{
 	"validation_too_many.json": {
 		{dag.CodeValidationFieldInvalid, "steps[0].validation.validators"},
 	},
+	"output_format_bad.json": {
+		{dag.CodeConfigFieldRequired, "steps[0].config.output_format.type"},
+		{dag.CodeConfigFieldRequired, "steps[1].config.output_format.schema"},
+		{dag.CodeConfigFieldInvalid, "steps[2].config.output_format.schema"},
+		{dag.CodeConfigFieldInvalid, "steps[3].config.output_format.schema"},
+		{dag.CodeConfigFieldInvalid, "steps[4].config.output_format.type"},
+		{dag.CodeConfigFieldInvalid, "steps[5].config.output_format.mode"},
+	},
 	"name_too_long.json": {{dag.CodeLimitExceeded, "name"}},
 	"expr_too_long.json": {{dag.CodeLimitExceeded, "edges[0].when"}},
 	"when_syntax_error.json": {

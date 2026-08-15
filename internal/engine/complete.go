@@ -299,6 +299,13 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		}
 	}
 
+	// The structured-output provenance (ticket 11.3), set only by an llm step
+	// with an output_format; persisted on the attempt row so the run-status
+	// API and 11.6's metrics can read how the output was shaped. A marshal
+	// failure of this fixed struct is not worth failing a succeeded step over
+	// — log and store NULL.
+	repairJSON := marshalRepair(ctx, logger, out.Repair)
+
 	now := e.now()
 	// The attempt's cost row (ticket 10.2, ADR-012), priced before the
 	// transaction — pure, no database reads. Nil when the attempt ledgers
@@ -325,7 +332,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		cancelling = status == store.RunStatusCancelling
 		if _, err := store.SucceedStep(ctx, q, store.SucceedStepArgs{
 			RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
-			Output: out.Data, Usage: usage, Verdict: verdictJSON, Now: now,
+			Output: out.Data, Usage: usage, Verdict: verdictJSON, Repair: repairJSON, Now: now,
 		}); err != nil {
 			// A typed conflict on the terminal CAS is the fence firing:
 			// this worker's claim is no longer current (zombie write,

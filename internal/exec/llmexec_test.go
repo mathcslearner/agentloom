@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/mathcslearner/agentloom/internal/cache"
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/plugin"
@@ -291,6 +292,186 @@ func TestLLMExecutorMissingModelInvalidConfig(t *testing.T) {
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Errorf("error = %v, want ErrInvalidConfig", err)
 	}
+}
+
+// TestLLMExecutorStructuredNative asserts that an output_format request sets
+// the provider ResponseFormat and that a native structured response is
+// persisted as json + text with "native" provenance.
+func TestLLMExecutorStructuredNative(t *testing.T) {
+	t.Parallel()
+	p := &recordingProvider{resp: llm.ChatResponse{
+		Model: "sim-1", StopReason: "end_turn",
+		Structured: json.RawMessage(`{"title":"hi"}`),
+		Usage:      llm.Usage{InputTokens: 3, OutputTokens: 2},
+	}}
+	e := recExecutor(t, p)
+
+	out, err := e.Execute(context.Background(), llmStep(t, map[string]any{
+		"model": "rec/sim-1", "prompt": "make json", "max_tokens": 50,
+		"output_format": map[string]any{"type": "json_schema", "schema": map[string]any{"type": "object"}},
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if p.gotReq.ResponseFormat == nil || !p.gotReq.ResponseFormat.HasSchema() {
+		t.Fatalf("request ResponseFormat = %+v, want a schema", p.gotReq.ResponseFormat)
+	}
+	var got llmOutput
+	if err := json.Unmarshal(out.Data, &got); err != nil {
+		t.Fatalf("unmarshaling output: %v", err)
+	}
+	if string(got.JSON) != `{"title":"hi"}` || got.Text != `{"title":"hi"}` {
+		t.Errorf("output json=%s text=%q, want native structured", got.JSON, got.Text)
+	}
+	if out.Repair == nil || out.Repair.Status != "native" {
+		t.Errorf("Repair = %+v, want status native", out.Repair)
+	}
+}
+
+// TestLLMExecutorStructuredRepaired asserts that a text response wrapped in a
+// code fence is repaired into json + canonical text, with the repair passes
+// recorded and the raw text kept as provenance.
+func TestLLMExecutorStructuredRepaired(t *testing.T) {
+	t.Parallel()
+	p := &recordingProvider{resp: llm.ChatResponse{
+		Model: "sim-1", StopReason: "end_turn",
+		Blocks: []llm.Block{llm.TextBlock("```json\n{\"title\": \"hi\",}\n```")},
+		Usage:  llm.Usage{InputTokens: 3, OutputTokens: 2},
+	}}
+	e := recExecutor(t, p)
+
+	out, err := e.Execute(context.Background(), llmStep(t, map[string]any{
+		"model": "rec/sim-1", "prompt": "make json", "max_tokens": 50,
+		"output_format": map[string]any{"type": "json"},
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// A plain json format sends response_format with no schema.
+	if p.gotReq.ResponseFormat == nil || p.gotReq.ResponseFormat.HasSchema() {
+		t.Fatalf("request ResponseFormat = %+v, want a schemaless json request", p.gotReq.ResponseFormat)
+	}
+	var got llmOutput
+	if err := json.Unmarshal(out.Data, &got); err != nil {
+		t.Fatalf("unmarshaling output: %v", err)
+	}
+	if string(got.JSON) != `{"title":"hi"}` || got.Text != `{"title":"hi"}` {
+		t.Errorf("output json=%s text=%q, want repaired structured", got.JSON, got.Text)
+	}
+	if out.Repair == nil || out.Repair.Status != "repaired" || len(out.Repair.Steps) == 0 {
+		t.Fatalf("Repair = %+v, want status repaired with steps", out.Repair)
+	}
+	if out.Repair.RawText == "" {
+		t.Error("repaired provenance should retain the raw text")
+	}
+}
+
+// TestLLMExecutorStructuredUnrepairable asserts that a prose completion under
+// an output_format leaves no json field and records unrepairable provenance,
+// with the raw text preserved as the output text (so the implicit validator
+// reports invalid_json over the real output).
+func TestLLMExecutorStructuredUnrepairable(t *testing.T) {
+	t.Parallel()
+	p := &recordingProvider{resp: llm.ChatResponse{
+		Model: "sim-1", StopReason: "end_turn",
+		Blocks: []llm.Block{llm.TextBlock("I cannot answer that.")},
+		Usage:  llm.Usage{InputTokens: 3, OutputTokens: 2},
+	}}
+	e := recExecutor(t, p)
+
+	out, err := e.Execute(context.Background(), llmStep(t, map[string]any{
+		"model": "rec/sim-1", "prompt": "make json", "max_tokens": 50,
+		"output_format": map[string]any{"type": "json"},
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got llmOutput
+	if err := json.Unmarshal(out.Data, &got); err != nil {
+		t.Fatalf("unmarshaling output: %v", err)
+	}
+	if len(got.JSON) != 0 {
+		t.Errorf("unrepairable output should carry no json, got %s", got.JSON)
+	}
+	if got.Text != "I cannot answer that." {
+		t.Errorf("text = %q, want the raw model output", got.Text)
+	}
+	if out.Repair == nil || out.Repair.Status != "unrepairable" {
+		t.Errorf("Repair = %+v, want status unrepairable", out.Repair)
+	}
+}
+
+// TestLLMExecutorRepairOnlyKeepsRequest asserts a repair_only format does not
+// alter the provider request (no ResponseFormat) but still repairs the output.
+func TestLLMExecutorRepairOnlyKeepsRequest(t *testing.T) {
+	t.Parallel()
+	p := &recordingProvider{resp: llm.ChatResponse{
+		Model: "sim-1", StopReason: "end_turn",
+		Blocks: []llm.Block{llm.TextBlock("{\"a\": 1,}")},
+		Usage:  llm.Usage{InputTokens: 3, OutputTokens: 2},
+	}}
+	e := recExecutor(t, p)
+
+	out, err := e.Execute(context.Background(), llmStep(t, map[string]any{
+		"model": "rec/sim-1", "prompt": "make json", "max_tokens": 50,
+		"output_format": map[string]any{"type": "json", "mode": "repair_only"},
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if p.gotReq.ResponseFormat != nil {
+		t.Errorf("repair_only should not set ResponseFormat, got %+v", p.gotReq.ResponseFormat)
+	}
+	var got llmOutput
+	if err := json.Unmarshal(out.Data, &got); err != nil {
+		t.Fatalf("unmarshaling output: %v", err)
+	}
+	if string(got.JSON) != `{"a":1}` {
+		t.Errorf("output json = %s, want {\"a\":1}", got.JSON)
+	}
+	if out.Repair == nil || out.Repair.Status != "repaired" {
+		t.Errorf("Repair = %+v, want repaired", out.Repair)
+	}
+}
+
+// TestLLMExecutorOutputFormatChangesCacheKey asserts declaring an
+// output_format re-keys the response cache (the request differs), so a
+// structured run cannot read a plain-text run's cached entry.
+func TestLLMExecutorOutputFormatChangesCacheKey(t *testing.T) {
+	t.Parallel()
+	p := &recordingProvider{resp: okResponse()}
+	e := recExecutor(t, p)
+
+	plain := llmStep(t, map[string]any{"model": "rec/sim-1", "prompt": "hi", "max_tokens": 10})
+	structured := llmStep(t, map[string]any{
+		"model": "rec/sim-1", "prompt": "hi", "max_tokens": 10,
+		"output_format": map[string]any{"type": "json"},
+	})
+	kPlain := cacheKeyFor(t, e, plain)
+	kStructured := cacheKeyFor(t, e, structured)
+	if kPlain == kStructured {
+		t.Fatal("output_format did not change the cache key")
+	}
+}
+
+// cacheKeyFor builds the cache key the executor's binding would produce.
+func cacheKeyFor(t *testing.T, e LLMExecutor, sc StepContext) string {
+	t.Helper()
+	b, err := e.CacheBinding(sc)
+	if err != nil {
+		t.Fatalf("CacheBinding: %v", err)
+	}
+	key, err := cache.Key(cache.KeyInput{
+		SchemaVersion: dag.CurrentSchemaVersion,
+		Executor:      b.Executor,
+		Plugin:        b.Plugin,
+		RunID:         "r",
+		Request:       b.Request,
+	})
+	if err != nil {
+		t.Fatalf("cache.Key: %v", err)
+	}
+	return key
 }
 
 // isPermanent reports whether err carries a permanent ClassifiedError.

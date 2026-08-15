@@ -53,6 +53,43 @@ func TestAnthropicLiveSmoke(t *testing.T) {
 		resp.Model, resp.StopReason, resp.Usage, resp.Text())
 }
 
+// TestAnthropicLiveStructured is the optional live structured-output smoke
+// (ticket 11.3): one real forced-tool-use call, asserting the provider returns
+// native structured JSON on ChatResponse.Structured. Gated identically.
+func TestAnthropicLiveStructured(t *testing.T) {
+	if os.Getenv("LIVE_LLM_TESTS") != "1" {
+		t.Skip("live provider tests disabled; set LIVE_LLM_TESTS=1 to enable")
+	}
+	key := os.Getenv("AGENTLOOM_ANTHROPIC_API_KEY")
+	if key == "" {
+		key = os.Getenv("ANTHROPIC_API_KEY")
+	}
+	if key == "" {
+		t.Skip("LIVE_LLM_TESTS=1 but no AGENTLOOM_ANTHROPIC_API_KEY / ANTHROPIC_API_KEY in the environment")
+	}
+	provider, err := llm.NewAnthropic(llm.AnthropicConfig{APIKey: key})
+	if err != nil {
+		t.Fatalf("NewAnthropic: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	resp, err := provider.Chat(ctx, llm.ChatRequest{
+		Model:     "claude-haiku-4-5",
+		MaxTokens: 64,
+		Messages:  []llm.Message{llm.UserText("The city is Paris. Return the city.")},
+		ResponseFormat: &llm.ResponseFormat{
+			Schema: []byte(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if len(resp.Structured) == 0 {
+		t.Errorf("live structured completion returned no Structured payload (blocks=%d)", len(resp.Blocks))
+	}
+	t.Logf("live structured: %s", resp.Structured)
+}
+
 // TestOpenAILiveSmoke is the OpenAI counterpart: one tiny real Chat
 // Completions call, gated identically and in no CI job.
 //

@@ -82,7 +82,15 @@ axis that can change the output. `internal/cache.Key(KeyInput)` builds it from:
      need no key-format bump. Because the resolved model is a key component,
      M10.4's budget-driven downgrade to a cheaper model automatically yields a
      **different cache key** — a downgraded claim never reads (or writes) the
-     primary model's cache entry (asserted in 10.4).
+     primary model's cache entry (asserted in 10.4). **11.3 amendment:** an
+     llm step's `output_format` block (structured-output policy) is a trailing
+     key component appended **only when present**, so a plain-text step keys
+     exactly as it did pre-11.3 (existing entries stay valid) while a format
+     re-keys the entry. It must be a component because the same request yields
+     a different output under a different format (native structured vs.
+     repaired vs. raw text), and a `repair_only` format changes the output
+     without changing the provider request. No `KeySchemaVersion` bump — the
+     append-when-present rule keeps every existing key stable.
    - **tool** — the rendered tool arguments.
    - **retrieve** — the rendered query and `top_k`.
 

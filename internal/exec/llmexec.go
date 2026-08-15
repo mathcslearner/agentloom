@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/mathcslearner/agentloom/internal/cache"
 	"github.com/mathcslearner/agentloom/internal/dag"
+	"github.com/mathcslearner/agentloom/internal/jsonrepair"
 	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/plugin"
 )
@@ -112,15 +114,20 @@ func (e LLMExecutor) Execute(ctx context.Context, sc StepContext) (Output, error
 	if served == "" {
 		served = model
 	}
-	out, err := marshalLLMOutput(resp, provider.Manifest().Name+":"+served)
+	out, err := marshalLLMOutput(resp, cfg.OutputFormat, provider.Manifest().Name+":"+served)
 	if err != nil {
 		return Output{}, err
 	}
-	sc.logger().InfoContext(ctx, "llm step completed",
+	logAttrs := []any{
 		slog.String("model", resp.Model),
 		slog.String("stop_reason", resp.StopReason),
 		slog.Int64("input_tokens", resp.Usage.InputTokens),
-		slog.Int64("output_tokens", resp.Usage.OutputTokens))
+		slog.Int64("output_tokens", resp.Usage.OutputTokens),
+	}
+	if out.Repair != nil {
+		logAttrs = append(logAttrs, slog.String("output_provenance", out.Repair.Status))
+	}
+	sc.logger().InfoContext(ctx, "llm step completed", logAttrs...)
 	return out, nil
 }
 
@@ -186,16 +193,28 @@ func (e LLMExecutor) CacheBinding(sc StepContext) (*CacheBinding, error) {
 	}
 	m := provider.Manifest()
 	deterministic := cfg.Temperature != nil && *cfg.Temperature == 0
+	// The structured-output policy re-keys the entry (ticket 11.3): the same
+	// request yields different output under a different format. Marshaled from
+	// the authored block so the key covers type, schema, and mode.
+	var outputFormat json.RawMessage
+	if cfg.OutputFormat != nil {
+		of, merr := json.Marshal(cfg.OutputFormat)
+		if merr != nil {
+			return nil, fmt.Errorf("marshaling output_format: %w", merr)
+		}
+		outputFormat = of
+	}
 	return &CacheBinding{
 		Executor:      cache.PluginRef{Kind: plugin.KindExecutor, Name: string(dag.StepLLM), Version: llmVersion},
 		Plugin:        cache.PluginRef{Kind: m.Kind, Name: m.Name, Version: m.Version},
 		Caps:          m.Capabilities,
 		Deterministic: deterministic,
 		Request: cache.LLMRequest{
-			Model:       model,
-			Temperature: cfg.Temperature,
-			MaxTokens:   req.MaxTokens,
-			Messages:    msgs,
+			Model:        model,
+			Temperature:  cfg.Temperature,
+			MaxTokens:    req.MaxTokens,
+			Messages:     msgs,
+			OutputFormat: outputFormat,
 		},
 	}, nil
 }
@@ -284,6 +303,12 @@ func estimateLLMInputTokens(cfg *dag.LLMConfig) int64 {
 	for _, m := range cfg.Messages {
 		inputChars += len(m.Content)
 	}
+	// A structured-output schema (ticket 11.3) rides in the request (native
+	// tool_use / response_format), so its bytes count toward the input
+	// estimate the M9 limiter and M10 budget price.
+	if cfg.OutputFormat != nil {
+		inputChars += len(cfg.OutputFormat.Schema)
+	}
 	return int64((inputChars + 3) / 4)
 }
 
@@ -325,10 +350,27 @@ func buildChatRequest(cfg *dag.LLMConfig) (llm.ChatRequest, error) {
 		maxTokens = llmDefaultMaxTokens
 	}
 	return llm.ChatRequest{
-		Messages:    msgs,
-		MaxTokens:   maxTokens,
-		Temperature: cfg.Temperature,
+		Messages:       msgs,
+		MaxTokens:      maxTokens,
+		Temperature:    cfg.Temperature,
+		ResponseFormat: responseFormatFor(cfg.OutputFormat),
 	}, nil
+}
+
+// responseFormatFor maps the step's authored output_format onto the provider
+// request's ResponseFormat (ticket 11.3). Returns nil for a plain-text step
+// or a repair_only format (repair_only never changes the request — only the
+// post-call processing), so the provider request is byte-identical to today's
+// unless native structured output is requested.
+func responseFormatFor(of *dag.OutputFormat) *llm.ResponseFormat {
+	if of == nil || of.Mode == dag.OutputFormatRepairOnly {
+		return nil
+	}
+	rf := &llm.ResponseFormat{Name: "structured_output"}
+	if of.Type == dag.OutputFormatJSONSchema {
+		rf.Schema = of.Schema
+	}
+	return rf
 }
 
 // buildMessages turns the config's prompt XOR messages into the unified
@@ -367,37 +409,91 @@ type llmToolCall struct {
 // llmOutput is the llm step's persisted output shape, read by downstream
 // steps through templating (`${{ steps.<id>.output.text }}`) and CEL. Text
 // is always present (empty when the completion carried no text blocks) so
-// a downstream text reference never misses; ToolCalls appears only when
-// the model called tools.
+// a downstream text reference never misses; JSON appears only for a
+// structured-output step whose output parsed (native or repaired), so
+// `${{ steps.<id>.output.json.field }}` flows structured data downstream;
+// ToolCalls appears only when the model called tools.
 type llmOutput struct {
-	Model      string        `json:"model"`
-	StopReason string        `json:"stop_reason"`
-	Text       string        `json:"text"`
-	ToolCalls  []llmToolCall `json:"tool_calls,omitempty"`
-	Usage      Usage         `json:"usage"`
+	Model      string          `json:"model"`
+	StopReason string          `json:"stop_reason"`
+	Text       string          `json:"text"`
+	JSON       json.RawMessage `json:"json,omitempty"`
+	ToolCalls  []llmToolCall   `json:"tool_calls,omitempty"`
+	Usage      Usage           `json:"usage"`
 }
 
 // marshalLLMOutput renders the provider response into the persisted output
-// and lifts usage onto the Output for the attempt row. resource is the
-// ADR-012 cost key (provider:served-model) carried onto Output.Resource for
-// M10's ledger.
-func marshalLLMOutput(resp llm.ChatResponse, resource string) (Output, error) {
+// and lifts usage onto the Output for the attempt row. When the step
+// declared an output_format (ticket 11.3), the completion is shaped into
+// structured JSON — natively when the provider supplied it, otherwise through
+// a deterministic JSON-repair pass over the text — and the shaping is
+// recorded as Output.Repair provenance. resource is the ADR-012 cost key
+// (provider:served-model) carried onto Output.Resource for M10's ledger.
+func marshalLLMOutput(resp llm.ChatResponse, of *dag.OutputFormat, resource string) (Output, error) {
 	var calls []llmToolCall
 	for _, tu := range resp.ToolUses() {
 		calls = append(calls, llmToolCall{ID: tu.ID, Name: tu.Name, Input: tu.Input})
 	}
 	usage := Usage{InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens}
-	data, err := json.Marshal(llmOutput{
+	out := llmOutput{
 		Model:      resp.Model,
 		StopReason: resp.StopReason,
 		Text:       resp.Text(),
 		ToolCalls:  calls,
 		Usage:      usage,
-	})
+	}
+	var provenance *Repair
+	if of != nil {
+		out.Text, out.JSON, provenance = shapeStructured(resp)
+	}
+	data, err := json.Marshal(out)
 	if err != nil {
 		return Output{}, fmt.Errorf("marshaling llm output: %w", err)
 	}
-	return Output{Data: data, Usage: &usage, Resource: resource}, nil
+	return Output{Data: data, Usage: &usage, Resource: resource, Repair: provenance}, nil
+}
+
+// shapeStructured resolves a structured-output completion (ticket 11.3) into
+// the persisted (text, json) pair and its repair provenance:
+//
+//   - the provider emitted native structured JSON → status "native", text is
+//     the compact JSON, json is that value;
+//   - otherwise the completion text is run through the deterministic repair
+//     pass → status raw/repaired (text becomes the canonical JSON, json is
+//     the value) or unrepairable (text is left as the raw model output, json
+//     is absent so the implicit json_schema validator raises invalid_json).
+//
+// The default target for the engine's validate stage is /text, so overwriting
+// text with the canonical JSON makes both the implicit validator and any
+// author-supplied /text validator see the repaired structure.
+func shapeStructured(resp llm.ChatResponse) (text string, structured json.RawMessage, prov *Repair) {
+	if len(resp.Structured) > 0 {
+		canonical := compactJSON(resp.Structured)
+		return string(canonical), canonical, &Repair{SchemaVersion: 1, Status: "native"}
+	}
+	raw := resp.Text()
+	r := jsonrepair.Repair(raw)
+	switch r.Status {
+	case jsonrepair.StatusRaw:
+		return string(r.Value), r.Value, &Repair{SchemaVersion: 1, Status: string(r.Status)}
+	case jsonrepair.StatusRepaired:
+		return string(r.Value), r.Value, &Repair{SchemaVersion: 1, Status: string(r.Status), Steps: r.Steps, RawText: raw}
+	default:
+		// Unrepairable: keep the raw text so the implicit validator reports a
+		// structural issue over the actual model output (better feedback for
+		// the semantic retry, 11.4) and downstream `.json` misses.
+		return raw, nil, &Repair{SchemaVersion: 1, Status: string(r.Status), Steps: r.Steps}
+	}
+}
+
+// compactJSON returns the compact form of raw JSON, or raw unchanged if it is
+// not compactable (already validated upstream in practice).
+func compactJSON(raw json.RawMessage) json.RawMessage {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return raw
+	}
+	return json.RawMessage(buf.Bytes())
 }
 
 // classifyProviderError maps a provider failure onto the executor's

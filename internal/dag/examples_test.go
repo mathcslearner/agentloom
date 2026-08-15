@@ -27,6 +27,7 @@ var exampleFiles = []string{
 	"echo_pipeline.json",
 	"mock_pipeline.json",
 	"rag_lite.json",
+	"structured_extract.json",
 }
 
 // readExample loads one example definition document.
@@ -329,6 +330,23 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	}
 	if !hasValidationTarget {
 		t.Error("no validation chain entry with an explicit target in kitchen_sink.json")
+	}
+
+	// Ticket 11.3 construct (ADR-013): an llm step with a structured-output
+	// block — a json_schema type carrying a schema, so a schema edit that
+	// dropped output_format handling would fail here.
+	var hasOutputFormat bool
+	for _, s := range def.Steps {
+		if s.Type != dag.StepLLM {
+			continue
+		}
+		of := s.Config.(*dag.LLMConfig).OutputFormat
+		if of != nil && of.Type == dag.OutputFormatJSONSchema && len(of.Schema) > 0 {
+			hasOutputFormat = true
+		}
+	}
+	if !hasOutputFormat {
+		t.Error("no llm step with a json_schema output_format in kitchen_sink.json")
 	}
 }
 

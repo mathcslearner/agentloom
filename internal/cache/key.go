@@ -75,6 +75,14 @@ type LLMRequest struct {
 	// Tools is the tool definitions offered to the model, marshaled to
 	// JSON; nil/empty when the step offers none.
 	Tools json.RawMessage
+	// OutputFormat is the step's structured-output policy (ticket 11.3),
+	// marshaled to JSON; nil/empty when the step declares none. It must be a
+	// key component because the same request yields a different output under
+	// a different format (native structured vs. repaired vs. raw text), and a
+	// repair_only format changes the output without changing the request.
+	// Appended only when present, so a step with no output_format keys
+	// exactly as it did before 11.3 (existing entries stay valid).
+	OutputFormat json.RawMessage
 }
 
 // noTemperature is the key component standing in for an absent temperature.
@@ -95,14 +103,26 @@ func (r LLMRequest) components() ([][]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("canonicalizing tools: %w", err)
 	}
-	return [][]byte{
+	comps := [][]byte{
 		[]byte(r.Model),
 		[]byte(r.System),
 		[]byte(temp),
 		[]byte(strconv.Itoa(r.MaxTokens)),
 		msgs,
 		tools,
-	}, nil
+	}
+	// The structured-output policy (ticket 11.3) is a trailing component
+	// appended only when present, so a step with no output_format produces
+	// exactly the pre-11.3 key (existing cache entries remain valid) while a
+	// format — including a repair_only one — re-keys the entry.
+	if len(r.OutputFormat) > 0 {
+		of, err := canonicalJSON(r.OutputFormat)
+		if err != nil {
+			return nil, fmt.Errorf("canonicalizing output_format: %w", err)
+		}
+		comps = append(comps, of)
+	}
+	return comps, nil
 }
 
 // ToolRequest is the cache-key body of a tool step: the rendered tool

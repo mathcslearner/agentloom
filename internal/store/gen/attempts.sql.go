@@ -44,7 +44,7 @@ const createStepAttempt = `-- name: CreateStepAttempt :one
 
 INSERT INTO step_attempts (run_id, step_id, attempt_no, claim_id, started_at)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict
+RETURNING run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair
 `
 
 type CreateStepAttemptParams struct {
@@ -77,14 +77,15 @@ func (q *Queries) CreateStepAttempt(ctx context.Context, arg CreateStepAttemptPa
 		&i.FinishedAt,
 		&i.Usage,
 		&i.Verdict,
+		&i.Repair,
 	)
 	return i, err
 }
 
 const finishStepAttempt = `-- name: FinishStepAttempt :execrows
 UPDATE step_attempts
-SET outcome = $1, error = $2, usage = $3, verdict = $4, finished_at = $5::timestamptz
-WHERE run_id = $6 AND step_id = $7 AND attempt_no = $8
+SET outcome = $1, error = $2, usage = $3, verdict = $4, repair = $5, finished_at = $6::timestamptz
+WHERE run_id = $7 AND step_id = $8 AND attempt_no = $9
 `
 
 type FinishStepAttemptParams struct {
@@ -92,6 +93,7 @@ type FinishStepAttemptParams struct {
 	Error      json.RawMessage
 	Usage      json.RawMessage
 	Verdict    json.RawMessage
+	Repair     json.RawMessage
 	FinishedAt time.Time
 	RunID      uuid.UUID
 	StepID     string
@@ -104,13 +106,16 @@ type FinishStepAttemptParams struct {
 // 8.6); NULL for every other outcome and step type. Verdict is the
 // output-validation chain verdict (ticket 11.1, ADR-013), present on a
 // succeeded or validation_failed attempt of a step carrying a validation
-// chain; NULL otherwise.
+// chain; NULL otherwise. Repair is the structured-output provenance
+// (ticket 11.3), present on an attempt of an llm step that declared an
+// output_format; NULL otherwise.
 func (q *Queries) FinishStepAttempt(ctx context.Context, arg FinishStepAttemptParams) (int64, error) {
 	result, err := q.db.Exec(ctx, finishStepAttempt,
 		arg.Outcome,
 		arg.Error,
 		arg.Usage,
 		arg.Verdict,
+		arg.Repair,
 		arg.FinishedAt,
 		arg.RunID,
 		arg.StepID,
@@ -123,7 +128,7 @@ func (q *Queries) FinishStepAttempt(ctx context.Context, arg FinishStepAttemptPa
 }
 
 const listRunStepAttempts = `-- name: ListRunStepAttempts :many
-SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict FROM step_attempts
+SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair FROM step_attempts
 WHERE run_id = $1
 ORDER BY step_id, attempt_no
 `
@@ -150,6 +155,7 @@ func (q *Queries) ListRunStepAttempts(ctx context.Context, runID uuid.UUID) ([]S
 			&i.FinishedAt,
 			&i.Usage,
 			&i.Verdict,
+			&i.Repair,
 		); err != nil {
 			return nil, err
 		}
@@ -162,7 +168,7 @@ func (q *Queries) ListRunStepAttempts(ctx context.Context, runID uuid.UUID) ([]S
 }
 
 const listStepAttempts = `-- name: ListStepAttempts :many
-SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict FROM step_attempts
+SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair FROM step_attempts
 WHERE run_id = $1 AND step_id = $2
 ORDER BY attempt_no
 `
@@ -192,6 +198,7 @@ func (q *Queries) ListStepAttempts(ctx context.Context, arg ListStepAttemptsPara
 			&i.FinishedAt,
 			&i.Usage,
 			&i.Verdict,
+			&i.Repair,
 		); err != nil {
 			return nil, err
 		}

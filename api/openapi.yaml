@@ -1525,12 +1525,42 @@ components:
                 spend. Absent on every real (non-cached) attempt.
         verdict:
           $ref: "#/components/schemas/Verdict"
+        repair:
+          $ref: "#/components/schemas/RepairProvenance"
         started_at:
           type: string
           format: date-time
         finished_at:
           type: string
           format: date-time
+    RepairProvenance:
+      type: object
+      description: >
+        Structured-output provenance for an attempt of an llm step that
+        declared an output_format (ticket 11.3, ADR-013): how the completion
+        was shaped into structured JSON before the validate stage. Absent for
+        every step without an output_format.
+      required: [schema_version, status]
+      properties:
+        schema_version:
+          type: integer
+          description: Repair record version (1).
+        status:
+          type: string
+          enum: [native, raw, repaired, unrepairable]
+          description: >
+            native = the provider emitted structured output directly; raw =
+            the completion text was already valid JSON; repaired = a
+            deterministic pass fixed it; unrepairable = no pass produced valid
+            JSON (left to the semantic-retry loop).
+        steps:
+          type: array
+          description: The repair passes that changed the text, in order (structure only).
+          items:
+            type: string
+        raw_text:
+          type: string
+          description: The model's pre-repair text, present only when status is `repaired`.
     Verdict:
       type: object
       description: >
