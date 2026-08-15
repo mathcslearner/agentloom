@@ -1,0 +1,11 @@
+{
+  "name": "json_payload",
+  "provider": "anthropic",
+  "model": "claude-sonnet-5",
+  "recorded_input_tokens": 0,
+  "source": "pending",
+  "note": "Filled by the gated recorder; skipped in the accuracy assertion until then.",
+  "messages": [
+    {"role": "user", "text": "{\"name\":\"Ada\",\"age\":37,\"tags\":[\"math\",\"code\"]}"}
+  ]
+}

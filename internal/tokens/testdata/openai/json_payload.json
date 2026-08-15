@@ -1,0 +1,11 @@
+{
+  "name": "json_payload",
+  "provider": "openai",
+  "model": "gpt-5",
+  "recorded_input_tokens": 22,
+  "source": "reference",
+  "note": "gpt-5 uses o200k_base; count = 3 reply + (3 perMessage + 16 JSON).",
+  "messages": [
+    {"role": "user", "text": "{\"name\":\"Ada\",\"age\":37,\"tags\":[\"math\",\"code\"]}"}
+  ]
+}

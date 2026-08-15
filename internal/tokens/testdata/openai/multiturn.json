@@ -1,0 +1,13 @@
+{
+  "name": "multiturn",
+  "provider": "openai",
+  "model": "gpt-4o",
+  "recorded_input_tokens": 29,
+  "source": "reference",
+  "note": "count = 3 reply + (3+4) + (3+7) + (3+6).",
+  "messages": [
+    {"role": "user", "text": "Hello, world!"},
+    {"role": "assistant", "text": "The capital of France is Paris."},
+    {"role": "user", "text": "You are a helpful assistant."}
+  ]
+}

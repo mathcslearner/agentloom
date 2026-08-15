@@ -6612,3 +6612,135 @@ cannot emit a parseable judge verdict offline, so the judge-score histogram is
 exercised only by `TestQualityMetricsJudgeScore`, and its dashboard panel is
 allowlisted quiet in the dashboard smoke. ADR-013 §"Quality signals & metrics
 (as built, 11.6)"; ADR-008 amended. **M11 complete.**
+
+## Milestone 12 — Context & memory management
+
+### 12.1 — ADR-014 & token counting ✅
+
+Opened M12 with **ADR-014** (context & memory model) and the token-counting
+primitive `internal/tokens` the rest of the milestone rests on. Like the other
+milestone-opener contract tickets (9.1/10.1/11.1), this is deliberately narrow:
+a new leaf package + ADR, **no migration, no config var, no engine/executor
+change**. The M9.2 chars/4 estimator stays in place — 12.6 swaps it for these
+counters ("refines M9.2's token estimator with real counts").
+
+**Why counting comes first.** You cannot set a context budget, assemble-to-a-
+cap (12.3), compact-until-under (12.4/12.5), or guard a provider window (12.6)
+without knowing, *before the call*, how many tokens a request will cost. A
+chars/4 heuristic is 20–40% off on code/JSON — far outside the ±5% the
+milestone demands, and a single under-count is a hard `400
+context_length_exceeded` that 12.6 exists to prevent. So the counter is a
+pre-execution primitive, model-aware, deterministic, and offline.
+
+**Package shape.** `internal/tokens` is a leaf: it imports `internal/llm` (for
+the unified `ChatRequest`/`Message`/`Block`/`ToolDef` shapes it counts) plus
+stdlib and the tiktoken library, and no other agentloom package — so
+`exec`/`engine` and the coming `internal/contextmgr` can depend on it without a
+cycle (the `internal/cost`, `internal/cache`, `internal/limits` precedent).
+`Counter` is `ID() string` + `Count(text string) int` + `CountRequest(req
+llm.ChatRequest) int`; every method is pure — no clock, no network, and no
+logging on the count path (selection logs a fallback once).
+
+**Four families.**
+- **openai** (`openai.go`) — exact BPE via `github.com/pkoukk/tiktoken-go`. The
+  rank tables come from `github.com/pkoukk/tiktoken-go-loader`'s `go:embed`'d
+  offline loader, installed once via `tiktoken.SetBpeLoader` in `bpe.go`
+  (`offlineLoaderOnce`); the default network loader is never used. Encoding is
+  chosen by model prefix (`bpe.go` `openAIEncodingFor`): `o200k_base` for the
+  current families (gpt-4o/4.1/4.5, gpt-5, o1/o3/o4), `cl100k_base` for legacy
+  gpt-4/gpt-3.5, defaulting o200k for an unrecognized OpenAI model. For text
+  this is OpenAI's real tokenizer; only the chat framing is an approximation.
+- **anthropic** (`anthropic.go`) — an *estimate*, because Claude publishes no
+  tokenizer: counts with the o200k BPE (the closest public reference) ×
+  `AnthropicCalibrationFactor` (a pinned constant, default seed 1.15), rounded,
+  never below 1 for non-empty text. The gated recorder re-derives the factor by
+  Σrecorded/Σbase over the corpus; `TestAnthropicCalibrationFactorMatchesCorpus`
+  guards >0.5% drift (skips while the corpus is pending). Optional
+  `count_tokens` API use is a documented, off-by-default, *not-yet-implemented*
+  seam — the default path is pure and offline.
+- **mock** (`mock.go`) — mirrors `internal/llm`'s mock provider input estimator
+  **exactly**: `len(mockFlattenPrompt(req))/4 + 1`, where `mockFlattenPrompt`
+  replicates the mock's (unexported) `flattenPrompt` (system + each message's
+  text and tool_result content, each with a trailing newline). So a mock-driven
+  request's counted total equals the mock's reported `Usage.InputTokens` —
+  asserted by `TestMockCounterMatchesProviderUsage`. That equality is what lets
+  M12's mock-driven exit fixture run offline in CI with *real* accuracy
+  assertions rather than a fudge factor.
+- **fallback** (`fallback.go`) — `ceil(len(text)/4)`, ≥1 for non-empty. The
+  last resort for an unknown model; approximate but better than refusing to
+  count.
+
+**CountRequest framing.** The shared `countRequest` walk (`tokens.go`) frames
+the whole request, not bare text: reply priming (once) + per-message role
+framing + text / tool_use-input-JSON / tool_result-content blocks + per-tool
+(name + description + input-schema JSON + a constant) + the structured-output
+schema when present. Counting concatenated text alone would miss ~3–15 tokens
+of framing per message and drift a multi-turn conversation past ±5%. The
+constants are family-scoped (`openAIFraming` = perMessage 3 / perTool 8 / reply
+3, following the documented OpenAI chat accounting; `anthropicFraming` the same
+shape, with the calibration factor absorbing the aggregate difference).
+
+**Selection & once-logged fallback.** `Registry.Select(provider, model)`
+(`registry.go`) takes the **resolved** provider — the one `llm.Registry.Resolve`
+returns; routing is not re-implemented here — and returns the counter plus a
+`Selection` (family, provider, model, fallback bool). An unknown model gets the
+chars/4 fallback, warned **once per (provider, model) per process** via a
+`sync.Map` of `sync.Once` (never per call, ADR-014). A nil logger disables the
+warning; the counters themselves never log. An internal encoding-load failure
+(a programming error, not a runtime condition) also falls back rather than
+panicking, so counting can never crash a step.
+
+**Determinism & fingerprints.** Counters are pure functions of their input and
+embedded tables. `ID()` is a stable fingerprint (`openai/o200k_base@1`,
+`openai/cl100k_base@1`, `anthropic/estimate@1;factor=1.15`, `mock/estimate@1`,
+`fallback/chars4@1`), changing only when the tokenization changes (encoding
+swap, calibration re-derivation, or a framing-constant change bumps the `@N`).
+12.2/12.3 will persist `(token_count, counter_id)` and recompute on mismatch —
+so a stored count is never silently stale.
+
+**Non-obvious decisions.**
+- *Ground truth without a separate endpoint.* The recorder uses the provider's
+  own `Usage.InputTokens` on a tiny real Chat call as ground truth — exactly
+  what the provider billed for the prompt — so it needs no Anthropic
+  `count_tokens` endpoint and works uniformly for both vendors.
+- *OpenAI ±5% is genuinely offline.* tiktoken *is* OpenAI's tokenizer, so the
+  six framed fixtures' reference counts (tiktoken content + documented framing)
+  equal the API's; the accuracy test passes offline, backed by hand-verified
+  exact small cases (`TestOpenAICountRequestExact`) and an independent framing
+  walk (`refCount`).
+- *Anthropic ±5% is honestly pending.* Claude has no public tokenizer, so the
+  three Anthropic fixtures ship `source: "pending"` (count 0) and the accuracy
+  assertion skips-with-notice until the gated recorder fills them; the ADR's
+  default-budget headroom (5%) is sized to absorb the calibration slop.
+- *Offline proven, not assumed.* `TestCountersAreOffline` clears the encoding
+  cache and installs an `http.DefaultTransport` tripwire, forcing a cold rank
+  reload that must not touch the network (the 8.5 mock-provider precedent).
+
+**Tests.** `internal/tokens/*_test.go` — exact tiktoken cross-checks and
+hand-verified framed totals; tools/schema framing vs an independent walk;
+Anthropic scale-by-factor; fallback arithmetic; determinism under 64 concurrent
+counts; stable-ID pins; the ±5% accuracy suite over the fixture corpus (OpenAI
+green, Anthropic skip-until-recorded) + aggregate-error check; the calibration
+drift guard; counter selection by (provider, model) incl. legacy vs current
+OpenAI encodings and unknown→fallback; fallback-logged-once (serial + 100-way
+concurrent + nil-logger); the mock-matches-provider-usage property; the offline
+tripwire; a `BenchmarkCountRequest`; and the gated `TestRecordTokenCorpus`
+(LIVE_LLM_TESTS=1 + key + `-record`). `make lint` green (two `#nosec G304`
+test-only fixture reads); full `go test ./...` + `-race` on `internal/tokens`
+green.
+
+**New deps:** `github.com/pkoukk/tiktoken-go` v0.1.8 + `.../tiktoken-go-loader`
+v0.0.2 (~6.7 MB embedded BPE tables in the binary; `dlclark/regexp2` pulled in
+transitively). **Accepted cost, documented in ADR-014:** exact OpenAI counting
+is worth it, and the tables are embedded so there is no runtime download.
+
+**Deferred to later M12 tickets (contract fixed in ADR-014, code later):** the
+blackboard store with `token_count` columns (12.2), declarative context
+assembly + the byte-identical-assembly goldens (12.3), the deterministic
+compaction strategies + `context_revision` audit (12.4), summarization
+compaction billed as overhead (12.5), and the provider-window guardrail that
+swaps the M9.2 estimator for these counters + the `context_utilization` metric
+(12.6). ADR-014 §Decision fixes sources/precedence/pinning, the default budget
+(`window − max_tokens − headroom`), the strategy-pipeline semantics and hard
+≤-budget guarantee, and the determinism/audit requirements those tickets
+conform to, with worked compaction examples.

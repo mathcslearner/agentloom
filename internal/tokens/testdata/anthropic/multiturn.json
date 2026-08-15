@@ -1,0 +1,13 @@
+{
+  "name": "multiturn",
+  "provider": "anthropic",
+  "model": "claude-sonnet-5",
+  "recorded_input_tokens": 0,
+  "source": "pending",
+  "note": "Filled by the gated recorder; skipped in the accuracy assertion until then.",
+  "messages": [
+    {"role": "user", "text": "Hello, world!"},
+    {"role": "assistant", "text": "The capital of France is Paris."},
+    {"role": "user", "text": "Explain, in one paragraph, why token counting matters for long agent workflows."}
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "short_qa",
+  "provider": "openai",
+  "model": "gpt-4o",
+  "recorded_input_tokens": 22,
+  "source": "reference",
+  "note": "tiktoken o200k_base is OpenAI's real tokenizer; count = 3 reply + (3+6 system) + (3+7 user).",
+  "system": "You are a helpful assistant.",
+  "messages": [
+    {"role": "user", "text": "The capital of France is Paris."}
+  ]
+}

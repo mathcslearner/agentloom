@@ -1,0 +1,11 @@
+{
+  "name": "legacy_gpt4",
+  "provider": "openai",
+  "model": "gpt-4",
+  "recorded_input_tokens": 21,
+  "source": "reference",
+  "note": "gpt-4 uses cl100k_base; count = 3 reply + (3 perMessage + 15 JSON under cl100k).",
+  "messages": [
+    {"role": "user", "text": "{\"name\":\"Ada\",\"age\":37,\"tags\":[\"math\",\"code\"]}"}
+  ]
+}

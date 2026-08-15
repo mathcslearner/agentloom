@@ -1,0 +1,11 @@
+{
+  "name": "hello",
+  "provider": "openai",
+  "model": "gpt-4o",
+  "recorded_input_tokens": 7,
+  "source": "reference",
+  "note": "count = 3 reply + (3 perMessage + 1 'Hello').",
+  "messages": [
+    {"role": "user", "text": "Hello"}
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "short_qa",
+  "provider": "anthropic",
+  "model": "claude-sonnet-5",
+  "recorded_input_tokens": 0,
+  "source": "pending",
+  "note": "Anthropic publishes no tokenizer; recorded_input_tokens is filled by the gated recorder (LIVE_LLM_TESTS=1 ... -run TestRecordTokenCorpus -record) via the free count_tokens API. Until then the accuracy assertion skips this fixture.",
+  "system": "You are a helpful assistant.",
+  "messages": [
+    {"role": "user", "text": "The capital of France is Paris."}
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "unicode",
+  "provider": "openai",
+  "model": "gpt-4o",
+  "recorded_input_tokens": 15,
+  "source": "reference",
+  "note": "count = 3 reply + (3 perMessage + 9 CJK).",
+  "messages": [
+    {"role": "user", "text": "日本語のトークンは長い"}
+  ]
+}
