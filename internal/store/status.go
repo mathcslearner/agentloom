@@ -235,4 +235,10 @@ const (
 	// EventRunCancelled: the cancel finalized — every step terminal
 	// (ticket 5.6).
 	EventRunCancelled = "run_cancelled"
+	// EventCostUnknownModel: a cost-bearing attempt named a model with no
+	// catalog entry and was priced at the fallback rate (ticket 10.2,
+	// ADR-012). Appended by ApplyAttemptCost in the attempt-completion
+	// transaction; the payload is cost.UnknownModelWarning. Mirrors
+	// cost.EventTypeUnknownModel — the value the 10.1 contract fixed.
+	EventCostUnknownModel = "cost_unknown_model"
 )

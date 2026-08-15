@@ -22,6 +22,22 @@ type ApiKey struct {
 	RevokedAt *time.Time
 }
 
+type CostLedger struct {
+	RunID        uuid.UUID
+	StepID       string
+	Attempt      int32
+	Entry        string
+	Resource     string
+	Usage        json.RawMessage
+	Rate         json.RawMessage
+	RateSource   string
+	CacheHit     bool
+	Overhead     bool
+	CostNanoUsd  int64
+	SavedNanoUsd int64
+	CreatedAt    time.Time
+}
+
 type DeadLetter struct {
 	RunID           uuid.UUID
 	StepID          string
@@ -74,6 +90,8 @@ type Run struct {
 	IdempotencyFingerprint *string
 	TraceParent            *string
 	TraceState             *string
+	SpentNanoUsd           int64
+	SavedNanoUsd           int64
 }
 
 type RunEdge struct {

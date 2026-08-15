@@ -107,7 +107,7 @@ SET status        = 'cancelling',
     cancel_reason = $1,
     park_reason   = NULL
 WHERE id = $2 AND status IN ('running', 'parked')
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd
 `
 
 type CancelRunParams struct {
@@ -146,6 +146,8 @@ func (q *Queries) CancelRun(ctx context.Context, arg CancelRunParams) (Run, erro
 		&i.IdempotencyFingerprint,
 		&i.TraceParent,
 		&i.TraceState,
+		&i.SpentNanoUsd,
+		&i.SavedNanoUsd,
 	)
 	return i, err
 }
@@ -156,7 +158,7 @@ SET status      = 'cancelled',
     finished_at = $1::timestamptz
 WHERE id = $2 AND status = 'cancelling'
   AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled = steps_total
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd
 `
 
 type CancelRunRollupParams struct {
@@ -195,6 +197,8 @@ func (q *Queries) CancelRunRollup(ctx context.Context, arg CancelRunRollupParams
 		&i.IdempotencyFingerprint,
 		&i.TraceParent,
 		&i.TraceState,
+		&i.SpentNanoUsd,
+		&i.SavedNanoUsd,
 	)
 	return i, err
 }
@@ -451,7 +455,7 @@ SET status      = 'failed',
     park_reason = NULL,
     finished_at = $1::timestamptz
 WHERE id = $2 AND status IN ('running', 'parked') AND steps_failed >= 1
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd
 `
 
 type FailRunParams struct {
@@ -489,6 +493,8 @@ func (q *Queries) FailRun(ctx context.Context, arg FailRunParams) (Run, error) {
 		&i.IdempotencyFingerprint,
 		&i.TraceParent,
 		&i.TraceState,
+		&i.SpentNanoUsd,
+		&i.SavedNanoUsd,
 	)
 	return i, err
 }
@@ -500,7 +506,7 @@ SET status      = 'failed',
     finished_at = $1::timestamptz
 WHERE id = $2 AND status IN ('running', 'parked') AND steps_failed >= 1
   AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled = steps_total
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd
 `
 
 type FailRunRollupParams struct {
@@ -541,6 +547,8 @@ func (q *Queries) FailRunRollup(ctx context.Context, arg FailRunRollupParams) (R
 		&i.IdempotencyFingerprint,
 		&i.TraceParent,
 		&i.TraceState,
+		&i.SpentNanoUsd,
+		&i.SavedNanoUsd,
 	)
 	return i, err
 }
@@ -577,7 +585,7 @@ UPDATE runs
 SET status      = 'parked',
     park_reason = $1
 WHERE id = $2 AND status = 'running'
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd
 `
 
 type ParkRunParams struct {
@@ -615,6 +623,8 @@ func (q *Queries) ParkRun(ctx context.Context, arg ParkRunParams) (Run, error) {
 		&i.IdempotencyFingerprint,
 		&i.TraceParent,
 		&i.TraceState,
+		&i.SpentNanoUsd,
+		&i.SavedNanoUsd,
 	)
 	return i, err
 }
@@ -823,7 +833,7 @@ UPDATE runs
 SET status      = 'running',
     finished_at = NULL
 WHERE id = $1 AND status = 'failed'
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd
 `
 
 // Requeue revival: failed → running (ticket 5.4). An operator requeueing
@@ -856,6 +866,8 @@ func (q *Queries) ResumeRun(ctx context.Context, runID uuid.UUID) (Run, error) {
 		&i.IdempotencyFingerprint,
 		&i.TraceParent,
 		&i.TraceState,
+		&i.SpentNanoUsd,
+		&i.SavedNanoUsd,
 	)
 	return i, err
 }
@@ -1023,7 +1035,7 @@ SET status      = 'succeeded',
     finished_at = $1::timestamptz
 WHERE id = $2 AND status IN ('running', 'parked')
   AND steps_failed = 0 AND steps_succeeded + steps_skipped = steps_total
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd
 `
 
 type SucceedRunParams struct {
@@ -1066,6 +1078,8 @@ func (q *Queries) SucceedRun(ctx context.Context, arg SucceedRunParams) (Run, er
 		&i.IdempotencyFingerprint,
 		&i.TraceParent,
 		&i.TraceState,
+		&i.SpentNanoUsd,
+		&i.SavedNanoUsd,
 	)
 	return i, err
 }
@@ -1188,7 +1202,7 @@ UPDATE runs
 SET status      = 'running',
     park_reason = NULL
 WHERE id = $1 AND status = 'parked'
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd
 `
 
 // Unpark: parked → running (ticket 5.6). Re-outboxing the run's ready
@@ -1220,6 +1234,8 @@ func (q *Queries) UnparkRun(ctx context.Context, runID uuid.UUID) (Run, error) {
 		&i.IdempotencyFingerprint,
 		&i.TraceParent,
 		&i.TraceState,
+		&i.SpentNanoUsd,
+		&i.SavedNanoUsd,
 	)
 	return i, err
 }

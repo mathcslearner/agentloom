@@ -357,8 +357,32 @@ through the journal protocol in `internal/exec/effects`; a `done` row is
 immutable. Deliberately no event appends — journal rows are not step
 state transitions, and the table itself is the audit record.
 
+**`cost_ledger`** (since 10.2, migration 0016) — the cost ledger (ADR-012).
+One row per cost-bearing attempt completion, keyed
+`(run_id, step_id, attempt, entry)` with an FK to `runs` (`ON DELETE
+CASCADE`) — `entry` discriminates the charge kind (`attempt` in M10; the
+`judge`/`compaction` overhead rows ADR-012 rule 4 reserves attach to the
+same attempt in M11/M12 without a schema change). `resource` (the ADR-010
+name — a model or `tool:<name>`), `usage` (JSONB token snapshot, NULL for a
+tool row), `rate` (JSONB rate snapshot — the price that priced the row, kept
+for auditability independent of later catalog edits), `rate_source`
+(`exact | wildcard | fallback`), `cache_hit`, `overhead`, `cost_nano_usd`
+(≥ 0), `saved_nano_usd` (≥ 0, the cache counterfactual), `created_at`.
+Written exclusively by `store.ApplyAttemptCost` inside the success
+completion transaction, after the fenced CAS and under the run lock — a
+fenced zombie completion never lands a row, and the claim-fenced CAS
+guarantees at most one `attempt` row per attempt. `runs` gained
+`spent_nano_usd` / `saved_nano_usd` (`BIGINT`, default 0), the materialized
+aggregate bumped in the same transaction so it always equals the exact
+integer sum of the run's ledger rows (money is nano-USD `int64`, ADR-012);
+by-step and by-model breakdowns are read-time `GROUP BY` over the ledger,
+not materialized.
+
 **`events`** — `(run_id, seq)` PK, `type`, `payload` (JSONB),
-`created_at`. Append-only.
+`created_at`. Append-only. Since 10.2 the vocabulary includes
+`cost_unknown_model` (payload `{model, fallback}`): a cost-bearing attempt
+priced at the catalog fallback because its model had no entry, appended by
+`ApplyAttemptCost` in the same completion transaction.
 
 **`task_outbox`** — the transactional Postgres→Redis dispatch buffer
 (ADR-002). `id` (identity, drain order), `run_id`, `step_id`, `reason`

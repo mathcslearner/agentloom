@@ -283,6 +283,12 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 	}
 
 	now := e.now()
+	// The attempt's cost row (ticket 10.2, ADR-012), priced before the
+	// transaction — pure, no database reads. Nil when the attempt ledgers
+	// nothing (pricing disabled, not cost-bearing, unpriced tool, no usage).
+	// A cache hit prices its counterfactual "saved" figure here too, since it
+	// completes through this same path with Usage.CacheHit set.
+	costRow := e.priceAttempt(ctx, step, out, now)
 	var fanned fanOutResult
 	var fenced *store.TransitionError
 	var terminalRun *gen.Run
@@ -310,6 +316,16 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 			// still rolls the transaction back.
 			errors.As(err, &fenced)
 			return err
+		}
+		// The cost ledger row + run-aggregate bump (ticket 10.2), atomic with
+		// the success CAS: it runs only after SucceedStep landed (a fenced
+		// zombie completion returns above, so it never ledgers), and under the
+		// run lock SucceedStep already holds, so the aggregate stays exactly
+		// the sum of the rows even under concurrent completions.
+		if costRow != nil {
+			if err := store.ApplyAttemptCost(ctx, q, *costRow); err != nil {
+				return err
+			}
 		}
 		if err := failpoint(stageAfterStepTransition); err != nil {
 			return err

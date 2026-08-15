@@ -33,7 +33,7 @@ INSERT INTO runs (id, definition_id, definition, status, params,
                   steps_total, started_at, deadline_at,
                   trace_parent, trace_state)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd
 `
 
 type CreateRunParams struct {
@@ -95,6 +95,8 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 		&i.IdempotencyFingerprint,
 		&i.TraceParent,
 		&i.TraceState,
+		&i.SpentNanoUsd,
+		&i.SavedNanoUsd,
 	)
 	return i, err
 }
@@ -112,7 +114,7 @@ func (q *Queries) DeleteRun(ctx context.Context, id uuid.UUID) (int64, error) {
 }
 
 const getRun = `-- name: GetRun :one
-SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state FROM runs WHERE id = $1
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd FROM runs WHERE id = $1
 `
 
 func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (Run, error) {
@@ -142,12 +144,14 @@ func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (Run, error) {
 		&i.IdempotencyFingerprint,
 		&i.TraceParent,
 		&i.TraceState,
+		&i.SpentNanoUsd,
+		&i.SavedNanoUsd,
 	)
 	return i, err
 }
 
 const getRunByIdempotencyToken = `-- name: GetRunByIdempotencyToken :one
-SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state FROM runs WHERE idempotency_token = $1::text
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd FROM runs WHERE idempotency_token = $1::text
 `
 
 func (q *Queries) GetRunByIdempotencyToken(ctx context.Context, token string) (Run, error) {
@@ -177,6 +181,8 @@ func (q *Queries) GetRunByIdempotencyToken(ctx context.Context, token string) (R
 		&i.IdempotencyFingerprint,
 		&i.TraceParent,
 		&i.TraceState,
+		&i.SpentNanoUsd,
+		&i.SavedNanoUsd,
 	)
 	return i, err
 }
@@ -197,7 +203,7 @@ func (q *Queries) GetRunStatus(ctx context.Context, id uuid.UUID) (string, error
 }
 
 const listRuns = `-- name: ListRuns :many
-SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state FROM runs ORDER BY created_at DESC, id LIMIT $1
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd FROM runs ORDER BY created_at DESC, id LIMIT $1
 `
 
 func (q *Queries) ListRuns(ctx context.Context, limit int32) ([]Run, error) {
@@ -233,6 +239,8 @@ func (q *Queries) ListRuns(ctx context.Context, limit int32) ([]Run, error) {
 			&i.IdempotencyFingerprint,
 			&i.TraceParent,
 			&i.TraceState,
+			&i.SpentNanoUsd,
+			&i.SavedNanoUsd,
 		); err != nil {
 			return nil, err
 		}
@@ -245,7 +253,7 @@ func (q *Queries) ListRuns(ctx context.Context, limit int32) ([]Run, error) {
 }
 
 const listRunsByStatus = `-- name: ListRunsByStatus :many
-SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state FROM runs WHERE status = $1 ORDER BY created_at DESC, id LIMIT $2
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd FROM runs WHERE status = $1 ORDER BY created_at DESC, id LIMIT $2
 `
 
 type ListRunsByStatusParams struct {
@@ -286,6 +294,8 @@ func (q *Queries) ListRunsByStatus(ctx context.Context, arg ListRunsByStatusPara
 			&i.IdempotencyFingerprint,
 			&i.TraceParent,
 			&i.TraceState,
+			&i.SpentNanoUsd,
+			&i.SavedNanoUsd,
 		); err != nil {
 			return nil, err
 		}
@@ -298,7 +308,7 @@ func (q *Queries) ListRunsByStatus(ctx context.Context, arg ListRunsByStatusPara
 }
 
 const listRunsPage = `-- name: ListRunsPage :many
-SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state FROM runs
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd FROM runs
 WHERE ($1::text IS NULL OR status = $1::text)
   AND ($2::uuid IS NULL OR definition_id = $2::uuid)
   AND ($3::timestamptz IS NULL OR created_at >= $3::timestamptz)
@@ -365,6 +375,8 @@ func (q *Queries) ListRunsPage(ctx context.Context, arg ListRunsPageParams) ([]R
 			&i.IdempotencyFingerprint,
 			&i.TraceParent,
 			&i.TraceState,
+			&i.SpentNanoUsd,
+			&i.SavedNanoUsd,
 		); err != nil {
 			return nil, err
 		}

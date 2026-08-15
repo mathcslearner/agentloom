@@ -26,6 +26,7 @@ import (
 	"go.opentelemetry.io/otel"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/mathcslearner/agentloom/internal/cost"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/exec/effects"
 	"github.com/mathcslearner/agentloom/internal/queue"
@@ -157,6 +158,12 @@ type Engine struct {
 	// step opts in without its own `cache.ttl` (ticket 9.5). Only consulted
 	// when cache is non-nil.
 	cacheDefaultTTL time.Duration
+	// pricing, when set, is the ADR-012 pricing catalog the cost middleware
+	// (ticket 10.2) meters cost-bearing attempts against — writing a
+	// cost_ledger row and folding it into the run aggregate inside the
+	// completion transaction. Nil disables the ledger entirely (the default
+	// for every test layer that doesn't opt in): completions record no cost.
+	pricing *cost.Catalog
 }
 
 // Option customizes an Engine.
@@ -276,6 +283,14 @@ func WithResponseCache(c ResponseCache, defaultTTL time.Duration) Option {
 		e.cache = c
 		e.cacheDefaultTTL = defaultTTL
 	}
+}
+
+// WithPricing sets the ADR-012 pricing catalog the cost middleware meters
+// cost-bearing attempts against (ticket 10.2) — cmd/worker wires the catalog
+// it boot-loads (cost.Load) here. Nil (the default) disables the cost ledger:
+// completions write no cost_ledger rows and run aggregates stay zero.
+func WithPricing(cat *cost.Catalog) Option {
+	return func(e *Engine) { e.pricing = cat }
 }
 
 // New builds an Engine over the given store and executor registry.

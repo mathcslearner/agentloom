@@ -381,6 +381,7 @@ func buildRunView(run gen.Run) RunView {
 		StartedAt:      run.StartedAt,
 		FinishedAt:     run.FinishedAt,
 		DeadlineAt:     run.DeadlineAt,
+		Cost:           costSummary(run.SpentNanoUsd, run.SavedNanoUsd),
 	}
 	if run.DefinitionID != nil {
 		v.DefinitionID = run.DefinitionID.String()

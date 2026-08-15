@@ -45,13 +45,18 @@ type ResponseCache interface {
 	Set(ctx context.Context, plugin cache.PluginRef, key string, val []byte, ttl time.Duration) error
 }
 
-// cacheEntry is the stored value (ADR-011): the step's output payload plus
-// the usage snapshot the original miss recorded. On a hit the usage becomes
-// the attempt's counterfactual "would-have-cost" accounting (M10), marked
-// cache_hit; the output is served verbatim.
+// cacheEntry is the stored value (ADR-011): the step's output payload, the
+// usage snapshot the original miss recorded, and the cost resource that miss
+// billed to. On a hit the usage becomes the attempt's counterfactual
+// "would-have-cost" accounting (M10), marked cache_hit; the resource lets the
+// hit price that counterfactual into a "saved" figure (ticket 10.2); the
+// output is served verbatim. Resource is omitempty so a pre-10.2 entry
+// (written before the field existed) decodes cleanly to "" — the hit still
+// serves, it just ledgers no saved figure.
 type cacheEntry struct {
-	Output json.RawMessage `json:"output"`
-	Usage  *exec.Usage     `json:"usage,omitempty"`
+	Output   json.RawMessage `json:"output"`
+	Usage    *exec.Usage     `json:"usage,omitempty"`
+	Resource string          `json:"cost_resource,omitempty"`
 }
 
 // cacheWriteBinding carries what a miss needs to write its result through
@@ -174,7 +179,7 @@ func (e *Engine) cacheRead(ctx context.Context, step gen.RunStep, executor exec.
 // request, so even a later-fenced completion wrote a correct entry.
 func (e *Engine) cacheWrite(ctx context.Context, wb *cacheWriteBinding, out exec.Output) {
 	logger := log.From(ctx)
-	val, err := json.Marshal(cacheEntry{Output: out.Data, Usage: out.Usage})
+	val, err := json.Marshal(cacheEntry{Output: out.Data, Usage: out.Usage, Resource: out.Resource})
 	if err != nil {
 		// A marshal failure on the fixed entry shape is not worth failing a
 		// succeeded step over — skip the write.
@@ -226,7 +231,7 @@ func decodeCacheEntry(raw []byte) (exec.Output, error) {
 	if err := json.Unmarshal(raw, &ent); err != nil {
 		return exec.Output{}, err
 	}
-	return exec.Output{Data: ent.Output, Usage: ent.Usage}, nil
+	return exec.Output{Data: ent.Output, Usage: ent.Usage, Resource: ent.Resource}, nil
 }
 
 // markCacheHit returns the usage a cache-served attempt records: the stored

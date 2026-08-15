@@ -97,7 +97,7 @@ type cacheFixture struct {
 	mreg *prometheus.Registry
 }
 
-func newCacheFixture(t *testing.T) *cacheFixture {
+func newCacheFixture(t *testing.T, extra ...engine.Option) *cacheFixture {
 	t.Helper()
 	ctx := t.Context()
 	s := store.NewFromPool(storetest.NewDB(t))
@@ -124,11 +124,13 @@ func newCacheFixture(t *testing.T) *cacheFixture {
 	mreg := metrics.NewRegistry(metrics.ServiceWorker)
 	wm := metrics.NewWorkerMetrics(mreg)
 	d := startDispatcher(t, s, h.Queue())
-	eng, err := engine.New(s, reg, "cache-worker",
+	opts := append([]engine.Option{
 		engine.WithDispatchNudge(d.Nudge),
 		engine.WithResourceLimiter(limiter),
 		engine.WithMetrics(wm),
-		engine.WithResponseCache(cacheStore, time.Hour))
+		engine.WithResponseCache(cacheStore, time.Hour),
+	}, extra...)
+	eng, err := engine.New(s, reg, "cache-worker", opts...)
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
 	}

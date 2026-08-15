@@ -297,6 +297,76 @@ The contract half shipped in `internal/cost` and `config`:
   check, downgrade chains, the physical `cost_unknown_model` append, and the
   cost metrics are 10.2–10.5.
 
+### As built (10.2)
+
+The cost ledger and aggregation — a `cost_ledger` row per cost-bearing attempt
+priced against the 10.1 catalog, written in the same transaction as the
+success CAS, with run-level aggregates and a cost API on top.
+
+- **The resource channel.** Attribution keys off the ADR-010 resource name, but
+  the *resolved* provider is known only inside the executor, so `exec.Output`
+  gained a `Resource` field. The llm executor sets
+  `<provider>:<served-model>` — the model that actually served the call
+  (`resp.Model`, so a dated variant a step never named prices via the provider
+  wildcard, and 10.4's downgrade will price the actual model); the tool
+  executor sets `tool:<name>`. Empty means the attempt is not cost-bearing.
+  The engine's cache middleware carries the resource across a hit (a new
+  `cost_resource` field on the stored `cacheEntry`, `omitempty` so a pre-10.2
+  entry decodes to `""` and simply ledgers no saved figure).
+
+- **Pricing is a pure pre-transaction function.** `engine/cost.go`'s
+  `priceAttempt` reads no database: given the attempt's resource, usage, and
+  the catalog effective at completion time it returns a `store.AttemptCostArgs`
+  (or nil when the attempt ledgers nothing — pricing disabled, no resource, an
+  unpriced/free tool, or a model attempt with no usage). It always passes
+  `PolicyEstimate` (post-call pricing never fails a succeeded attempt), so an
+  unknown model is priced at the fallback with the `cost_unknown_model` warning
+  attached — **except on a cache hit**, which spent nothing and whose original
+  miss already warned. `complete.go` computes the row before the transaction
+  and calls `store.ApplyAttemptCost` *after* `SucceedStep` landed (a fenced
+  zombie completion returns before it, so it never ledgers) under the run lock
+  the CAS already holds.
+
+- **Migration 0016.** The `cost_ledger` table keyed `(run_id, step_id, attempt,
+  entry)` — `entry` discriminates the charge kind (`attempt` in 10.2; ADR-012
+  rule 4's `judge`/`compaction` overhead rows are the same-attempt slot M11/M12
+  fill without a schema change), with the `resource`, `usage`, `rate` snapshot,
+  `rate_source`, `cache_hit`, `overhead`, `cost_nano_usd`, and `saved_nano_usd`
+  columns. The claim-fenced success CAS lands at most one attempt-completion per
+  attempt, so the productive row can never conflict. Run aggregates are two
+  scalar `BIGINT` columns on `runs` (`spent_nano_usd`, `saved_nano_usd`)
+  incremented in the same transaction — the exact-sum property is then an
+  integer `spent == SUM(cost_nano_usd)`, proven by the concurrent-fan-out
+  property test. **By-step and by-model breakdowns are `GROUP BY` reads over
+  `cost_ledger` at API time**, not materialized: the ledger rows commit in the
+  same transaction as the aggregate, so a read-time group is exactly
+  consistent and adds no write contention. (The columns carry the nano unit in
+  their names — `spent_nano_usd`, not the roadmap's shorthand `spent_usd` —
+  matching the ADR-008 units-in-name convention; the derived `*_usd` display
+  strings live only on the wire.)
+
+- **Store surface.** `store.ApplyAttemptCost` (transition-style, `ErrNoTx`
+  guarded, called inside the completion tx) inserts the row, bumps the
+  aggregate, and appends `cost_unknown_model` when a warning rides along;
+  `store.CostRepo` (`Ledger()`) reads the ledger and its two breakdowns for the
+  API and the property test's independent sum. `store.EventCostUnknownModel`
+  joins the event vocabulary (mirroring `cost.EventTypeUnknownModel`).
+
+- **API.** `GET /v1/runs/{id}` gained a `cost` summary on the run view;
+  `GET /v1/runs/{id}/cost` returns the summary plus `by_step`, `by_resource`
+  (per-model / per-tool, with token sums), and the full per-attempt `entries`.
+  Money is integer nano-USD on the wire; the `*_usd` strings are rendered by
+  exact integer division (never float). `cmd/api` never prices — it reads the
+  ledger rows Postgres already holds.
+
+- **Attribution corners realized.** A cache hit ledgers a $0 row with
+  `cache_hit=true` and the counterfactual `saved_nano_usd`; a priced tool
+  ledgers a flat row (its rate snapshot is the per-call nano cost); an
+  **unpriced tool writes no row** (free, ADR-012 rule 3 — keeps the ledger from
+  a row per `json_transform`); a no-usage or non-cost-bearing attempt writes
+  nothing. `overhead` is always `false` in 10.2 (the flag and its PK slot are
+  pre-wired for M11/M12).
+
 ## Consequences
 
 **Easier.**

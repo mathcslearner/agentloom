@@ -237,6 +237,9 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/runs", h.handleSubmitRun)
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/runs", h.handleListRuns)
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/runs/{runID}", h.handleGetRun)
+		// Cost ledger & breakdown (ticket 10.2, ADR-012): summary + per-step
+		// and per-model breakdowns + the full per-attempt ledger.
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/runs/{runID}/cost", h.handleRunCost)
 		// Run lifecycle (ticket 6.5): steering work is the submit scope
 		// (ADR-007), so these mount per-route — the /runs subtree mixes
 		// read and submit.

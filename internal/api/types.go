@@ -134,6 +134,20 @@ type RunView struct {
 	StartedAt      *time.Time `json:"started_at,omitempty"`
 	FinishedAt     *time.Time `json:"finished_at,omitempty"`
 	DeadlineAt     *time.Time `json:"deadline_at,omitempty"`
+	// Cost is the run's materialized cost summary (ticket 10.2, ADR-012):
+	// cumulative spend and cache savings. Always present; zero for a run with
+	// no cost-bearing attempts.
+	Cost CostSummaryView `json:"cost"`
+}
+
+// CostSummaryView is a run's cumulative cost (ticket 10.2, ADR-012). Money is
+// integer nano-USD on the wire (the exact source of truth); the *_usd strings
+// are the human-readable USD rendering derived from the integers.
+type CostSummaryView struct {
+	SpentNanoUSD int64  `json:"spent_nano_usd"`
+	SavedNanoUSD int64  `json:"saved_nano_usd"`
+	SpentUSD     string `json:"spent_usd"`
+	SavedUSD     string `json:"saved_usd"`
 }
 
 // StepView is one run step with its attempt history.
@@ -184,6 +198,59 @@ type DeadLetterView struct {
 	Error           json.RawMessage `json:"error,omitempty"`
 	AttemptsAtDeath int             `json:"attempts_at_death"`
 	CreatedAt       time.Time       `json:"created_at"`
+}
+
+// RunCostResponse answers GET /v1/runs/{id}/cost (ticket 10.2, ADR-012): the
+// run's cumulative cost plus per-step and per-resource (per-model / per-tool)
+// breakdowns and the full per-attempt ledger. Money is integer nano-USD on
+// the wire; the *_usd strings are the derived USD rendering.
+type RunCostResponse struct {
+	RunID      string               `json:"run_id"`
+	Summary    CostSummaryView      `json:"summary"`
+	ByStep     []CostByStepView     `json:"by_step"`
+	ByResource []CostByResourceView `json:"by_resource"`
+	Entries    []CostEntryView      `json:"entries"`
+}
+
+// CostByStepView is one step's spend/savings roll-up.
+type CostByStepView struct {
+	StepID       string `json:"step_id"`
+	Entries      int64  `json:"entries"`
+	SpentNanoUSD int64  `json:"spent_nano_usd"`
+	SavedNanoUSD int64  `json:"saved_nano_usd"`
+	SpentUSD     string `json:"spent_usd"`
+	SavedUSD     string `json:"saved_usd"`
+}
+
+// CostByResourceView is one model's or tool's spend/savings roll-up: the
+// resource is the model name ("mock:sim-1") or "tool:<name>", with summed
+// input/output tokens across its attempts (zero for tool rows).
+type CostByResourceView struct {
+	Resource     string `json:"resource"`
+	Entries      int64  `json:"entries"`
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+	SpentNanoUSD int64  `json:"spent_nano_usd"`
+	SavedNanoUSD int64  `json:"saved_nano_usd"`
+	SpentUSD     string `json:"spent_usd"`
+	SavedUSD     string `json:"saved_usd"`
+}
+
+// CostEntryView is one cost_ledger row: what a single attempt cost, at what
+// rate, with what provenance. CacheHit rows carry cost 0 and a Saved figure.
+type CostEntryView struct {
+	StepID       string          `json:"step_id"`
+	Attempt      int             `json:"attempt"`
+	Entry        string          `json:"entry"`
+	Resource     string          `json:"resource"`
+	Usage        json.RawMessage `json:"usage,omitempty"`
+	Rate         json.RawMessage `json:"rate"`
+	RateSource   string          `json:"rate_source"`
+	CacheHit     bool            `json:"cache_hit"`
+	Overhead     bool            `json:"overhead"`
+	SpentNanoUSD int64           `json:"spent_nano_usd"`
+	SavedNanoUSD int64           `json:"saved_nano_usd"`
+	CreatedAt    time.Time       `json:"created_at"`
 }
 
 // StepLogLineView is one captured executor log line (ticket 7.4).

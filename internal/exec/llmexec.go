@@ -102,7 +102,17 @@ func (e LLMExecutor) Execute(ctx context.Context, sc StepContext) (Output, error
 		return Output{}, classifyProviderError(err)
 	}
 
-	out, err := marshalLLMOutput(resp)
+	// The cost/rate-limit resource name (ADR-010/ADR-012): keyed by the
+	// resolved provider and the model that actually SERVED the call
+	// (resp.Model — a dated variant a step never named prices via the
+	// provider wildcard, and 10.4's downgrade prices the actual model). Empty
+	// resp.Model falls back to the routed model so the row is never keyed on
+	// a bare provider prefix.
+	served := resp.Model
+	if served == "" {
+		served = model
+	}
+	out, err := marshalLLMOutput(resp, provider.Manifest().Name+":"+served)
 	if err != nil {
 		return Output{}, err
 	}
@@ -278,9 +288,11 @@ type llmOutput struct {
 	Usage      Usage         `json:"usage"`
 }
 
-// marshalLLMOutput renders the provider response into the persisted
-// output and lifts usage onto the Output for the attempt row.
-func marshalLLMOutput(resp llm.ChatResponse) (Output, error) {
+// marshalLLMOutput renders the provider response into the persisted output
+// and lifts usage onto the Output for the attempt row. resource is the
+// ADR-012 cost key (provider:served-model) carried onto Output.Resource for
+// M10's ledger.
+func marshalLLMOutput(resp llm.ChatResponse, resource string) (Output, error) {
 	var calls []llmToolCall
 	for _, tu := range resp.ToolUses() {
 		calls = append(calls, llmToolCall{ID: tu.ID, Name: tu.Name, Input: tu.Input})
@@ -296,7 +308,7 @@ func marshalLLMOutput(resp llm.ChatResponse) (Output, error) {
 	if err != nil {
 		return Output{}, fmt.Errorf("marshaling llm output: %w", err)
 	}
-	return Output{Data: data, Usage: &usage}, nil
+	return Output{Data: data, Usage: &usage, Resource: resource}, nil
 }
 
 // classifyProviderError maps a provider failure onto the executor's

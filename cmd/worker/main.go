@@ -198,7 +198,6 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		slog.Int("tools", pricing.ToolCount()),
 		slog.String("override_source", pricingOverrideSource(cfg.Cost)),
 		slog.String("unknown_model_policy", cfg.Cost.UnknownModelPolicy))
-	_ = pricing // consumed by the 10.2 ledger; loaded here to fail boot early.
 	// The fleet-wide rate limiter (ticket 9.2, ADR-010): built over the same
 	// Redis client the queue uses (the shared coordination Redis, ADR-002 —
 	// Postgres stays the API's only hard dependency, but the worker already
@@ -242,6 +241,10 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		engine.WithStrictEffects(cfg.Worker.EffectsStrict),
 		engine.WithCancelPollInterval(cfg.Worker.CancelPollInterval),
 		engine.WithMetrics(engineMetrics),
+		// The cost ledger (ticket 10.2, ADR-012): meters cost-bearing
+		// attempts against the boot-loaded catalog, writing a cost_ledger
+		// row + run-aggregate bump in each success completion transaction.
+		engine.WithPricing(pricing),
 	}
 	if resourceLimiter != nil {
 		engineOpts = append(engineOpts,

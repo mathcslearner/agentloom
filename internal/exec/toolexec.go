@@ -95,7 +95,10 @@ func (e ToolExecutor) Execute(ctx context.Context, sc StepContext) (Output, erro
 	if err != nil {
 		return Output{}, classifyToolError(err)
 	}
-	return Output{Data: result}, nil
+	// The cost/rate-limit resource name (ADR-010/ADR-012): "tool:<name>",
+	// the same key ResourceClaim uses. M10 prices it against a tool: catalog
+	// entry if one exists; an unpriced tool is free (no ledger row).
+	return Output{Data: result, Resource: "tool:" + cfg.Tool}, nil
 }
 
 // ResourceClaim implements ResourceClaimer (ADR-010): a tool step's

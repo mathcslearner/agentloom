@@ -38,6 +38,16 @@ type Output struct {
 	// M10's cost ledger — output payloads carry it too, but the attempt
 	// row is the durable per-try record a retry re-creates.
 	Usage *Usage
+	// Resource is the ADR-010/ADR-012 resource name this attempt's external
+	// call bills to — "<resolved-provider>:<served-model>" for an llm call
+	// (the model that actually served it, keyed like the rate limiter), or
+	// "tool:<name>" for a tool invocation. Empty means the attempt is not
+	// cost-bearing (no provider/tool call, or a step type that never bills):
+	// M10's cost ledger (ticket 10.2) prices only attempts that name one.
+	// Set by the metered executors on success; the engine's cache middleware
+	// carries it across a hit so a cache-served attempt still prices its
+	// counterfactual "saved" figure.
+	Resource string
 }
 
 // Usage is one attempt's token accounting, mirroring llm.Usage but kept

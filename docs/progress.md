@@ -5563,3 +5563,102 @@ unknown-model policy matrix (estimate → fallback+warning, fail → typed error
 no-fallback → typed error), arithmetic goldens incl. a genuine half-up case and
 the exact-sum property, and the `config` env matrix (defaults, overrides, bad
 policy, mutual exclusion).
+
+### 10.2 — Cost ledger & aggregation ✅
+
+The runtime half of the cost model: a `cost_ledger` row per cost-bearing
+attempt, priced against 10.1's catalog and written in the same transaction as
+the success CAS, with run-level aggregates and a cost API on top. Money stays
+integer nano-USD end to end, so a run's materialized spend equals the exact sum
+of its ledger rows — proven under concurrent completions.
+
+**The resource channel — `exec.Output.Resource`.** ADR-012 attributes cost by
+the ADR-010 resource name, but the *resolved* provider is known only inside the
+executor, so `exec.Output` gained a `Resource` field (alongside `Usage`, the
+same shape). The llm executor sets `<provider>:<served-model>` — the model that
+*actually served* the call (`resp.Model`, so a served-model-id variant a step
+never named prices via the provider wildcard, and 10.4's downgrade will price
+the real model); the tool executor sets `tool:<name>`; every other step type
+leaves it empty (not cost-bearing). The engine's cache middleware carries it
+across a hit via a new `cost_resource` field on the stored `cacheEntry`
+(`omitempty`, so a pre-10.2 entry decodes to `""` and simply ledgers no saved
+figure — the hit still serves).
+
+**Pricing is a pure pre-transaction function.** `engine/cost.go`'s
+`priceAttempt` reads no database: given the attempt's resource, usage, and the
+catalog effective at completion time, it returns a `*store.AttemptCostArgs` or
+nil when the attempt ledgers nothing (pricing disabled, no resource, an
+unpriced/free tool, or a model attempt with no usage). It always passes
+`cost.PolicyEstimate` — post-call pricing never fails a succeeded attempt — so
+an unknown model is priced at the catalog fallback with the `cost_unknown_model`
+warning attached, **except on a cache hit** (which spent nothing, and whose
+original miss already warned). `complete.go` computes the row before the
+completion transaction and calls `store.ApplyAttemptCost` *after* `SucceedStep`
+landed (a fenced zombie completion returns before it, so it never ledgers),
+under the run lock the CAS already holds — which is what makes the aggregate
+bump serialize with every other run mutation and the exact-sum property hold.
+
+**Migration 0016.** `cost_ledger` keyed `(run_id, step_id, attempt, entry)`:
+`entry` discriminates the charge kind (`attempt` in 10.2; ADR-012 rule 4's
+`judge`/`compaction` overhead rows are the same-attempt slot M11/M12 fill
+without a schema change — so `entry` is in the PK now). Columns: `resource`,
+`usage` (JSONB token snapshot, NULL for tool rows), `rate` (JSONB rate
+snapshot for auditability), `rate_source` (`exact|wildcard|fallback`),
+`cache_hit`, `overhead`, `cost_nano_usd` (≥0), `saved_nano_usd` (≥0),
+`created_at`. The claim-fenced success CAS lands at most one attempt-completion
+per attempt, so the productive row never conflicts. Run aggregates are two
+scalar `BIGINT` columns on `runs` (`spent_nano_usd`, `saved_nano_usd`) bumped
+in the same transaction. **By-step and by-model breakdowns are read-time
+`GROUP BY` over the ledger, not materialized** — the rows commit in the same
+transaction as the aggregate, so a read-time group is exactly consistent with
+zero write contention (the deliberate alternative to per-model JSONB on the run
+row).
+
+**Store surface.** `store.ApplyAttemptCost` (transition-style, `ErrNoTx`-
+guarded, called inside the completion tx) inserts the row, bumps the aggregate,
+and appends `cost_unknown_model` when a warning rides along; `store.CostRepo`
+(`Ledger()`) reads the ledger and its two breakdowns for the API and the
+property test's independent sum. `store.EventCostUnknownModel` joins the event
+vocabulary (mirroring `cost.EventTypeUnknownModel`).
+
+**API.** `GET /v1/runs/{id}` gained a `cost` summary on the run view;
+`GET /v1/runs/{id}/cost` (read scope/class) returns the summary plus `by_step`,
+`by_resource` (per-model / per-tool with token sums), and the full per-attempt
+`entries`. Money is integer nano-USD on the wire; the `*_usd` strings are
+rendered by exact integer division (`nanoUSDString`, never float). `openapi.yaml`
+gained the path + `RunCostResponse`/`CostSummaryView`/`CostByStepView`/
+`CostByResourceView`/`CostEntryView` schemas + `cost` on `RunView` (route-scope,
+rate-class, and route-coverage tables extended; spec still lints 100/100).
+`cmd/worker` wires `engine.WithPricing(pricing)` from the boot-loaded catalog;
+`cmd/api` is untouched (it only reads ledger rows).
+
+**Attribution corners realized.** Cache hit → $0 row with `cache_hit=true` and
+the counterfactual `saved_nano_usd`; priced tool → flat row (rate snapshot is
+the per-call nano cost); **unpriced tool → no row** (free, ADR-012 rule 3 —
+keeps the ledger from a row per `json_transform`); no-usage or non-cost-bearing
+attempt → nothing; `overhead` always false (the flag and PK slot are pre-wired
+for M11/M12).
+
+**Non-obvious decisions.** (1) `exec.Output.Resource` rather than a new hook
+interface — the executor already computes the resource for rate limiting, and
+lifting it onto the output mirrors how `Usage` already flows. (2) Scalar
+aggregate + read-time breakdowns rather than materialized per-model JSONB —
+exact consistency for free (same tx), no write contention, no drift. (3)
+Columns named with the nano unit (`spent_nano_usd`), deviating from the
+roadmap's shorthand `spent_usd`, per ADR-008's units-in-name convention; USD is
+a display-only derivation at the wire edge. (4) The `entry` discriminator is in
+the PK from the start so M11/M12 overhead rows never force a PK rebuild. (5)
+Cache hits stay silent on unknown models — the money wasn't spent and the miss
+already warned.
+
+**Verified.** `go build ./...`, `bin/golangci-lint fmt`, `make lint`
+(0 issues), `make openapi-lint` (100/100), all unit tests green, and the full
+integration suites for `store`/`engine`/`api` green against the compose stack
+(migration bumped to 16). New tests: the concurrent-fan-out exact-sum property
+test (`TestCostLedgerExactSumUnderConcurrency` — 8 mock llm leaves, 4 workers,
+`run.spent_nano_usd == SumByRun == Σ Cost(usage, mock-rate)`), the two-run
+cache-hit saved test, the unknown-model fallback+event test, the `priceAttempt`
+unit matrix (nil catalog / no resource / llm / cache-hit / no-usage / unknown /
+priced tool / free tool), the `ApplyAttemptCost` store test (aggregate == sum,
+event append, `ErrNoTx` guard), and the API `/cost` per-step/per-model contract
+test (plus zero-summary and 404 cases).

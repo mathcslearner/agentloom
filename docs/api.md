@@ -271,6 +271,66 @@ curl -s -X POST http://127.0.0.1:8080/v1/runs/$RUN_ID/steps/flaky-fetch/requeue 
 Requeueing a step that is not dead-lettered — or any step of a
 cancelled run — is a `409`.
 
+## Cost
+
+Every cost-bearing attempt (an LLM call or a priced tool invocation) is
+priced against the versioned pricing catalog (ADR-012) and ledgered in the
+same transaction that records the attempt's success, so a run's cumulative
+cost is always exactly the sum of its ledger rows. Money is integer
+**nano-USD** on the wire (1 USD = 1e9); the `*_usd` strings are the derived
+human-readable rendering.
+
+`GET /v1/runs/{id}` carries the cumulative summary on the run view:
+
+```json
+{
+  "run": {
+    "id": "018f3b1c-…",
+    "status": "succeeded",
+    "cost": {"spent_nano_usd": 2100000, "saved_nano_usd": 0, "spent_usd": "0.0021", "saved_usd": "0"}
+  }
+}
+```
+
+`GET /v1/runs/{id}/cost` returns the full breakdown — the summary plus
+per-step and per-model roll-ups and the per-attempt ledger:
+
+```bash
+curl -s "http://127.0.0.1:8080/v1/runs/$RUN_ID/cost" \
+  -H "Authorization: Bearer $API_KEY" | jq
+```
+
+```json
+{
+  "run_id": "018f3b1c-…",
+  "summary": {"spent_nano_usd": 2100000, "saved_nano_usd": 0, "spent_usd": "0.0021", "saved_usd": "0"},
+  "by_step": [
+    {"step_id": "synthesize", "entries": 1, "spent_nano_usd": 1400000, "saved_nano_usd": 0, "spent_usd": "0.0014", "saved_usd": "0"},
+    {"step_id": "brainstorm", "entries": 1, "spent_nano_usd": 700000, "saved_nano_usd": 0, "spent_usd": "0.0007", "saved_usd": "0"}
+  ],
+  "by_resource": [
+    {"resource": "mock:sim-1", "entries": 2, "input_tokens": 340, "output_tokens": 880,
+     "spent_nano_usd": 2100000, "saved_nano_usd": 0, "spent_usd": "0.0021", "saved_usd": "0"}
+  ],
+  "entries": [
+    {"step_id": "brainstorm", "attempt": 1, "entry": "attempt", "resource": "mock:sim-1",
+     "usage": {"input_tokens": 120, "output_tokens": 260},
+     "rate": {"input_per_mtok": 1, "output_per_mtok": 2}, "rate_source": "wildcard",
+     "cache_hit": false, "overhead": false,
+     "spent_nano_usd": 700000, "saved_nano_usd": 0, "created_at": "2026-08-15T12:00:00Z"}
+  ]
+}
+```
+
+A **cache hit** ledgers a `$0` row with `cache_hit: true` and a
+`saved_nano_usd` figure — what the call would have cost had it not been
+served from cache. A **priced tool** ledgers a flat per-call charge; a tool
+with no catalog entry is free and writes no row. A model the catalog does
+not know is priced at the conservative fallback rate (`rate_source:
+"fallback"`) and emits a `cost_unknown_model` event in the run's event feed
+— the cue to add a catalog entry. A run with no cost-bearing steps answers
+with a zero summary and empty breakdowns.
+
 ## Per-step logs
 
 Everything a step's executor logs through its step logger is captured

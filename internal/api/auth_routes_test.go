@@ -26,6 +26,7 @@ var routeScopes = map[string]Scope{
 	"POST /v1/runs":                                ScopeSubmit,
 	"GET /v1/runs":                                 ScopeRead,
 	"GET /v1/runs/{runID}":                         ScopeRead,
+	"GET /v1/runs/{runID}/cost":                    ScopeRead,
 	"POST /v1/runs/{runID}/cancel":                 ScopeSubmit,
 	"POST /v1/runs/{runID}/park":                   ScopeSubmit,
 	"POST /v1/runs/{runID}/unpark":                 ScopeSubmit,

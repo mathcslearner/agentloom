@@ -35,6 +35,7 @@ type Querier interface {
 	Outbox() OutboxRepo
 	APIKeys() APIKeyRepo
 	RetrievalDocs() RetrievalDocRepo
+	Ledger() CostRepo
 }
 
 // Store is the pool-backed entry point to the persistence layer.
@@ -98,3 +99,4 @@ func (r repos) Outbox() OutboxRepo          { return outboxRepo(r) }
 func (r repos) APIKeys() APIKeyRepo         { return apiKeyRepo(r) }
 
 func (r repos) RetrievalDocs() RetrievalDocRepo { return retrievalDocRepo(r) }
+func (r repos) Ledger() CostRepo                { return costRepo(r) }
