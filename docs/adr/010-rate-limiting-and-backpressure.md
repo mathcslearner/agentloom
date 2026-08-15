@@ -303,6 +303,82 @@ requeue-math knobs (`floor`, `cap`, `jitter_frac`) are worker config
 (`AGENTLOOM_RESOURCES_THROTTLE_*`); the key prefix is
 `AGENTLOOM_RESOURCES_KEY_PREFIX`.
 
+### Token-cost reconciliation (as built, 9.3)
+
+The limiter debits a pre-call token *estimate* (chars/4 + declared
+`max_tokens`); the true usage is known only after the provider responds. A
+biased estimator — one that is systematically low — would let the fleet admit
+more real tokens than the provider's budget on every call, and the error
+compounds under sustained load. 9.3 closes the gap: after a granted,
+token-metered call returns with its real usage, the middleware corrects the
+token bucket by `delta = actual − estimate`.
+
+- **The correction is a third Lua script, `ratelimit.Adjust`**, beside the
+  single-key `Acquire` and the two-key `AcquireDual`. It refills the bucket to
+  the Redis clock exactly as the acquire scripts do (same `{tokens, ts}` hash,
+  absent-key-=-full, backwards-clock clamp, `%.17g` exact state), then applies
+  `tokens -= delta`. The asymmetry is the whole design:
+  - A **positive** delta (under-estimate) is an extra debit and is
+    **unclamped** — it may drive the balance negative. A negative balance is
+    the enforcement: the *unchanged* acquire scripts already deny while
+    `cost > tokens` and grow `retry_after` as `(cost − tokens)/rate`, so
+    subsequent acquires throttle until refill pays the debt back. No
+    acquire-script change was needed.
+  - A **negative** delta (over-estimate) is a refund and **clamps at
+    capacity** — a bucket is never fuller than full, mirroring the refill
+    clamp.
+  The TTL rule composes with a negative balance for free: time-to-full
+  `(capacity − tokens)/rate` grows past a minute of refill, so the debt
+  survives in Redis until it is actually paid off (an early expiry, absent-key
+  = full, would erase it). Rate-zero buckets `PERSIST`, unchanged.
+- **The adapter reconciles only the token bucket.** `resource.Reconcile(ctx,
+  name, est, actual)` re-resolves the name (exact → wildcard → unlimited, as
+  `Acquire` does) and `Adjust`s the tokens bucket alone — the requests cost of
+  1 is exact, never reconciled. An unlimited resource, a resource with no token
+  dimension, or a zero delta reconciles nothing and touches no Redis.
+- **Reconcile only what was debited, and only on real usage.** The
+  `resource.Decision` grew a `TokensMetered` flag (true only for a dual acquire
+  or a tokens-only single acquire). The engine middleware reconciles iff the
+  acquire was *granted and token-metered* **and** the executor returned a usage
+  report (`exec.Output.Usage != nil`). An errored call carries no usage, so its
+  estimate stays debited — deliberately conservative: a failed call's true
+  spend is unknowable, and leaving the estimate on the ledger protects the
+  provider budget. A success that raced its timeout or a cancellation still
+  reconciles — the tokens were spent regardless of how the completion is
+  routed. The shutdown-abandon path (canceled handler context, no completion)
+  skips it, matching its no-completion contract.
+- **Reconciliation happens right after the executor returns, before the
+  completion transaction.** The provider call *happened*; even a later fenced
+  completion does not un-spend the tokens. A zombie and its takeover each
+  reconcile against their own acquire, so there is no double-count.
+- **Fail-open, like everything else here.** A `Reconcile` error (Redis
+  unreachable) is logged and counted and never affects the step's outcome — a
+  rate limit is never a correctness dependency.
+
+**Metrics.** `engine_ratelimit_estimate_error_tokens{resource}` is a histogram
+of the signed error `actual − estimate` (roughly log-scaled, symmetric about
+zero), so a systematically biased estimator shows as a skewed distribution;
+this is the first histogram whose unit is `_tokens` rather than `_seconds`
+(ADR-008's unit table amended). `engine_ratelimit_reconcile_failures_total`
+counts fail-open reconciliations. Both label by the resolved config-entry name
+(the bounded `resource` label), never the raw `<provider>:<model>`.
+
+**Tests.** `ratelimit`: an `Adjust` matrix (refund clamps at capacity; debit
+crosses into negative and the debt throttles later acquires with a
+correctly-grown `retry_after`, recovering after refill; rate-zero PERSIST;
+debt-TTL outlives time-to-full) and a **conservation property test**
+(`TestReconcileConservationProp`) — random interleavings of `AcquireAt` /
+`AdjustAt` at non-decreasing injected times must match a pure-Go model's exact
+float64 balance at every step. `resource`: no-op paths (unlimited /
+requests-only / zero delta skip Redis) and the token-only debit/refund with the
+requests ledger proven untouched. `engine`: the middleware passes the exact
+`(est, actual)` and records the histogram, a non-token-metered grant is never
+reconciled, the fail-open path, and the headline
+`TestFleetActualTokensRespectResourceLimit` — 4 workers, a biased-3×-low
+estimator, cumulative *actual* tokens held within `burst + refill × elapsed +
+in-flight slack` (a bound that would be violated 3× over without
+reconciliation). No migration, no config, and no store change in 9.3.
+
 ## Consequences
 
 Positive:

@@ -71,7 +71,10 @@ type Bucket struct {
 	RefillPerSec float64
 }
 
-func (b Bucket) validate(cost int64) error {
+// validateFields checks the bucket's own configuration — everything
+// independent of a per-acquire cost. Adjust (9.3) validates only this, since
+// a reconciliation delta is signed and has no cost-vs-capacity relationship.
+func (b Bucket) validateFields() error {
 	if b.Key == "" {
 		return errors.New("ratelimit: bucket key must be non-empty")
 	}
@@ -80,6 +83,13 @@ func (b Bucket) validate(cost int64) error {
 	}
 	if b.RefillPerSec < 0 || math.IsNaN(b.RefillPerSec) || math.IsInf(b.RefillPerSec, 0) {
 		return fmt.Errorf("ratelimit: refill rate must be finite and non-negative, got %v", b.RefillPerSec)
+	}
+	return nil
+}
+
+func (b Bucket) validate(cost int64) error {
+	if err := b.validateFields(); err != nil {
+		return err
 	}
 	if cost <= 0 {
 		return fmt.Errorf("ratelimit: cost must be positive, got %d", cost)
@@ -450,6 +460,118 @@ func parseDualReply(raw any) (DualResult, float64, float64, error) {
 		res.RetryAfter = time.Duration(retryAfterUS) * time.Microsecond
 	}
 	return res, t1, t2, nil
+}
+
+// adjustScript is the post-call token-cost reconciliation of ADR-010 (ticket
+// 9.3). The M9 limiter debits a pre-call token *estimate*; once the provider
+// responds, the true usage is known, and this script corrects the bucket by
+// the signed error so a biased estimator cannot drift the fleet past the
+// provider's real tokens/min budget.
+//
+// It refills the bucket to `now` exactly as the acquire scripts do (same
+// {tokens, ts} hash, absent-key-=-full, backwards-clock clamp, %.17g exact
+// state), then applies `delta = actual − estimate`:
+//
+//   - A **positive** delta (under-estimate — actual exceeded the estimate) is
+//     an extra debit, deliberately **unclamped**: it can drive the balance
+//     negative. A negative balance is the entire enforcement mechanism — the
+//     acquire scripts already deny while `cost > tokens` and grow retry_after
+//     as `(cost − tokens)/rate`, so subsequent acquires throttle until refill
+//     pays the debt back. No acquire-script change is needed.
+//   - A **negative** delta (over-estimate — the estimate exceeded actual) is a
+//     refund and **clamps at capacity**: a bucket is never fuller than full,
+//     mirroring the refill clamp.
+//
+// The TTL rule composes with a negative balance for free: time-to-full is
+// `(capacity − tokens)/rate`, which for tokens < 0 is longer than a minute of
+// refill, so the debt survives in Redis until it is actually paid off — an
+// early expiry (absent key = full) would silently erase the debt.
+//
+// KEYS[1] = bucket hash. ARGV = capacity, refill tokens/sec, delta, and the
+// test-only now override in epoch microseconds (empty in production).
+// Returns the post-adjust balance as a %.17g string.
+var adjustScript = redis.NewScript(`
+local capacity = tonumber(ARGV[1])
+local rate = tonumber(ARGV[2])
+local delta = tonumber(ARGV[3])
+local now
+if ARGV[4] == '' then
+  local t = redis.call('TIME')
+  now = t[1] * 1000000 + t[2]
+else
+  now = tonumber(ARGV[4])
+end
+
+local tokens = capacity
+local state = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+if state[1] and state[2] then
+  tokens = tonumber(state[1])
+  local elapsed = now - tonumber(state[2])
+  if elapsed < 0 then
+    elapsed = 0
+  end
+  tokens = tokens + elapsed * rate / 1000000
+  if tokens > capacity then
+    tokens = capacity
+  end
+end
+
+tokens = tokens - delta
+if tokens > capacity then
+  tokens = capacity
+end
+
+redis.call('HSET', KEYS[1], 'tokens', string.format('%.17g', tokens), 'ts', string.format('%.0f', now))
+if rate > 0 then
+  redis.call('PEXPIRE', KEYS[1], math.ceil((capacity - tokens) / rate * 1000) + 1000)
+else
+  redis.call('PERSIST', KEYS[1])
+end
+return string.format('%.17g', tokens)
+`)
+
+// Adjust reconciles a token bucket by a signed delta = actual − estimate
+// after the metered call whose estimate was debited has returned (ADR-010,
+// ticket 9.3). A positive delta debits the shortfall (may go negative, so
+// later acquires throttle until it is refilled away); a negative delta
+// refunds the over-estimate (clamped at capacity). It returns the whole
+// tokens remaining after the adjust (negative when the bucket is in debt).
+// Time comes from the Redis server clock, so every worker sharing the bucket
+// reconciles against one ledger.
+func (l *Limiter) Adjust(ctx context.Context, b Bucket, delta int64) (int64, error) {
+	rem, _, err := l.adjust(ctx, b, delta, "")
+	return rem, err
+}
+
+// adjustAt is Adjust against an injected clock — the test seam behind the
+// injectable-time invariant, exposed only through export_test.go. It also
+// returns the exact fractional balance the accounting property test compares
+// against its model.
+func (l *Limiter) adjustAt(ctx context.Context, b Bucket, delta int64, now time.Time) (int64, float64, error) {
+	if now.IsZero() {
+		return 0, 0, errors.New("ratelimit: adjustAt: zero now — pass the injected current time")
+	}
+	return l.adjust(ctx, b, delta, strconv.FormatInt(now.UnixMicro(), 10))
+}
+
+func (l *Limiter) adjust(ctx context.Context, b Bucket, delta int64, nowArg string) (int64, float64, error) {
+	if err := b.validateFields(); err != nil {
+		return 0, 0, err
+	}
+	raw, err := adjustScript.Run(ctx, l.client, []string{b.Key},
+		strconv.FormatInt(b.Capacity, 10),
+		strconv.FormatFloat(b.RefillPerSec, 'g', -1, 64),
+		strconv.FormatInt(delta, 10),
+		nowArg,
+	).Result()
+	if err != nil {
+		return 0, 0, fmt.Errorf("ratelimit: adjusting %s: %w", b.Key, err)
+	}
+	tokens, err := parseBalance(raw)
+	if err != nil {
+		return 0, 0, err
+	}
+	return int64(math.Floor(tokens)), tokens, nil
 }
 
 // parseBalance decodes one %.17g bucket-balance string from a script reply.

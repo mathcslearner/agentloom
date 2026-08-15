@@ -251,7 +251,10 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	// denial defers the step (throttle → delayed requeue, slot released now,
 	// no counted attempt), an impossible request perm-fails, a Redis error
 	// fails open. Executors that name no resource bypass this entirely.
-	if handled, herr := e.rateLimit(ctx, step, executor, sc, origin); handled {
+	// A granted, token-metered acquire returns a binding so the middleware can
+	// reconcile the estimate against real usage after the call (ticket 9.3).
+	handled, rc, herr := e.rateLimit(ctx, step, executor, sc, origin)
+	if handled {
 		return herr
 	}
 	// The in-flight cancellation watch (ticket 5.6): polls the run's
@@ -296,6 +299,16 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	// invocation's outcome — mirroring the routing below, which the
 	// completion transactions then make durable.
 	e.metrics.StepDuration(step.StepType, executionOutcome(execErr, expired, cancelled), execDur)
+	// Post-call token-cost reconciliation (ticket 9.3, ADR-010): the provider
+	// call happened and reported real usage, so correct the token bucket by
+	// actual − estimate before the completion transaction — even when the
+	// success raced a timeout or a cancellation, the tokens were still spent.
+	// An errored call carries no usage (out.Usage nil), so the estimate stays
+	// debited, deliberately conservative. rc is non-nil only for a granted,
+	// token-metered acquire.
+	if execErr == nil && out.Usage != nil && rc != nil {
+		e.reconcileTokens(ctx, rc, out.Usage.InputTokens+out.Usage.OutputTokens)
+	}
 	if expired {
 		if execErr != nil {
 			// The engine assigns the timeout class from context state
@@ -318,6 +331,17 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	return e.completeSuccess(ctx, step, out)
 }
 
+// reconcileBinding carries what the middleware needs, after a granted
+// token-metered acquire, to reconcile the pre-call estimate against the
+// provider's real usage (ticket 9.3): the resource name to re-resolve, the
+// resolved config-entry label for the estimate-error metric, and the estimate
+// that was debited.
+type reconcileBinding struct {
+	name      string // the resource name to reconcile (re-resolved, as Acquire did)
+	resource  string // the resolved config-entry name — the bounded metric label
+	estTokens int64
+}
+
 // rateLimit is the M9 limiter middleware (ticket 9.2, ADR-010). For a
 // cost-bearing executor — one implementing exec.ResourceClaimer — it
 // acquires the step's fleet-wide resource buckets before the provider call.
@@ -329,14 +353,16 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 // may execute: no limiter wired, the executor names no resource, the claim
 // binding could not be computed, the resource is unlimited, the acquire was
 // granted, or a Redis error made it fail open (ADR-010 — a limit is never a
-// correctness dependency).
-func (e *Engine) rateLimit(ctx context.Context, step gen.RunStep, executor exec.Executor, sc exec.StepContext, origin store.ClaimOrigin) (bool, error) {
+// correctness dependency). When a granted acquire debited the token bucket,
+// it also returns a non-nil reconcileBinding so the caller can correct the
+// estimate against real usage after the executor returns (ticket 9.3).
+func (e *Engine) rateLimit(ctx context.Context, step gen.RunStep, executor exec.Executor, sc exec.StepContext, origin store.ClaimOrigin) (bool, *reconcileBinding, error) {
 	if e.limiter == nil {
-		return false, nil
+		return false, nil, nil
 	}
 	claimer, ok := executor.(exec.ResourceClaimer)
 	if !ok {
-		return false, nil // names no resource — bypasses the limiter
+		return false, nil, nil // names no resource — bypasses the limiter
 	}
 	logger := log.From(ctx)
 	resourceName, estTokens, err := claimer.ResourceClaim(sc)
@@ -346,7 +372,7 @@ func (e *Engine) rateLimit(ctx context.Context, step gen.RunStep, executor exec.
 		// own permanent failure, so the routing judgment lives in one place.
 		logger.WarnContext(ctx, "resource claim failed; skipping rate limit, executor will classify",
 			slog.Any("error", err))
-		return false, nil
+		return false, nil, nil
 	}
 	dec, err := e.limiter.Acquire(ctx, resourceName, estTokens)
 	if err != nil {
@@ -357,7 +383,7 @@ func (e *Engine) rateLimit(ctx context.Context, step gen.RunStep, executor exec.
 				slog.String("resource", resourceName),
 				slog.Int64("est_tokens", estTokens),
 				slog.Any("error", err))
-			return true, e.completeFailure(ctx, step,
+			return true, nil, e.completeFailure(ctx, step,
 				fmt.Errorf("resource %q: %w", resourceName, err), dag.ClassPermanent, origin.RunTrace)
 		}
 		// Any other error is a Redis/transport failure: fail open.
@@ -365,10 +391,16 @@ func (e *Engine) rateLimit(ctx context.Context, step gen.RunStep, executor exec.
 		logger.WarnContext(ctx, "resource limiter error; failing open (proceeding without limit)",
 			slog.String("resource", resourceName),
 			slog.Any("error", err))
-		return false, nil
+		return false, nil, nil
 	}
 	if dec.Allowed {
-		return false, nil
+		// A granted acquire that actually debited tokens gets reconciled after
+		// the call; an unlimited or requests-only grant (nothing on the token
+		// ledger) does not.
+		if dec.TokensMetered {
+			return false, &reconcileBinding{name: resourceName, resource: dec.Resource, estTokens: estTokens}, nil
+		}
+		return false, nil, nil
 	}
 	if dec.RetryAfter == resource.RetryAfterNever {
 		// Denied by a never-refilling bucket — the tokens never come back
@@ -377,12 +409,30 @@ func (e *Engine) rateLimit(ctx context.Context, step gen.RunStep, executor exec.
 		logger.ErrorContext(ctx, "resource denied by a never-refilling bucket; failing permanently",
 			slog.String("resource", resourceName),
 			slog.String("bucket", dec.Bucket))
-		return true, e.completeFailure(ctx, step,
+		return true, nil, e.completeFailure(ctx, step,
 			fmt.Errorf("resource %q bucket %q never refills — request can never be admitted", resourceName, dec.Bucket),
 			dag.ClassPermanent, origin.RunTrace)
 	}
 	// A genuine throttle: defer the step, release the slot, no attempt spent.
-	return true, e.completeThrottle(ctx, step, dec, origin.RunTrace)
+	return true, nil, e.completeThrottle(ctx, step, dec, origin.RunTrace)
+}
+
+// reconcileTokens corrects the resource's token bucket by actual − estimate
+// after a granted, token-metered call has returned (ticket 9.3, ADR-010). It
+// records the signed estimate error on the histogram (by the bounded resolved
+// resource label) and applies the correction; a limiter error is fail-open —
+// logged and counted, never affecting the step's outcome, since a rate limit
+// is never a correctness dependency.
+func (e *Engine) reconcileTokens(ctx context.Context, rc *reconcileBinding, actualTokens int64) {
+	e.metrics.EstimateError(rc.resource, actualTokens-rc.estTokens)
+	if err := e.limiter.Reconcile(ctx, rc.name, rc.estTokens, actualTokens); err != nil {
+		e.metrics.ReconcileFailure()
+		log.From(ctx).WarnContext(ctx, "token-cost reconciliation failed; estimate stays debited (fail-open)",
+			slog.String("resource", rc.resource),
+			slog.Int64("est_tokens", rc.estTokens),
+			slog.Int64("actual_tokens", actualTokens),
+			slog.Any("error", err))
+	}
 }
 
 // annotateAttemptSpan enriches the consumer's attempt span (ticket 7.3)

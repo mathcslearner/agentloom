@@ -68,6 +68,8 @@ func exercise(w *metrics.WorkerMetrics, a *metrics.APIMetrics) {
 	w.Throttled("anthropic:claude-sonnet-5", "requests")
 	w.ThrottleWait("anthropic:claude-sonnet-5", 2*time.Second)
 	w.RateLimitFailOpen()
+	w.EstimateError("anthropic:claude-sonnet-5", -128)
+	w.ReconcileFailure()
 	a.Request("/v1/runs", "POST", 200, 20*time.Millisecond)
 	a.RequestStarted()
 	a.RequestFinished()
@@ -120,8 +122,11 @@ func TestInstrumentConformance(t *testing.T) {
 				t.Errorf("counter %q must end in _total (ADR-008)", name)
 			}
 		case "HISTOGRAM":
-			if !strings.HasSuffix(name, "_seconds") {
-				t.Errorf("histogram %q must carry its unit suffix (ADR-008: durations in _seconds)", name)
+			// ADR-008 unit suffixes: durations in _seconds, token counts in
+			// _tokens (the 9.3 estimate-error histogram). A new unit is an ADR
+			// amendment first.
+			if !strings.HasSuffix(name, "_seconds") && !strings.HasSuffix(name, "_tokens") {
+				t.Errorf("histogram %q must carry its unit suffix (ADR-008: durations _seconds, token counts _tokens)", name)
 			}
 		case "GAUGE":
 			if strings.HasSuffix(name, "_total") {

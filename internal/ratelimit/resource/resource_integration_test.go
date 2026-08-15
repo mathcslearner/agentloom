@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -182,6 +183,124 @@ func TestAcquireToolRequestsOnly(t *testing.T) {
 	if dec.Allowed || dec.Bucket != "requests" {
 		t.Fatalf("second: %+v (want denied on requests)", dec)
 	}
+}
+
+// TestReconcileDebitsTokenBucketOnly is 9.3's core: after a metered acquire,
+// Reconcile corrects the token bucket by actual − estimate, and touches only
+// the token dimension — the requests bucket's cost of 1 is exact. An
+// under-estimate (positive delta) debits the shortfall; the requests balance
+// is provably unchanged.
+func TestReconcileDebitsTokenBucketOnly(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	client, prefix := newTestClient(t)
+	// No refill (per-minute rate is required, but a large burst and a short
+	// test window make refill negligible; assert with a margin below).
+	set := mustSet(t, `{"resources":[{"name":"anthropic:claude-sonnet-5","requests":{"per_minute":6000,"burst":100},"tokens":{"per_minute":60,"burst":1000}}]}`)
+	lim, _ := resource.New(client, set, prefix)
+
+	// Estimate 100 debited: tokens ~900 left, requests 99 left.
+	if dec, err := lim.Acquire(ctx, "anthropic:claude-sonnet-5", 100); err != nil || !dec.Allowed || !dec.TokensMetered {
+		t.Fatalf("acquire: %+v err=%v (want allowed, tokens metered)", dec, err)
+	}
+	// The call actually used 250 tokens: reconcile the +150 shortfall.
+	if err := lim.Reconcile(ctx, "anthropic:claude-sonnet-5", 100, 250); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// The requests bucket is untouched by reconciliation: two spent of 100,
+	// so a burst-100 requests bucket still has ~98 — a 90-cost token acquire
+	// must be denied on TOKENS (≈750 estimate-corrected balance can't take a
+	// 900 cost), proving the debit landed on tokens.
+	//
+	// Read the token balance directly to pin the correction exactly.
+	tokKey := prefix + ":anthropic:claude-sonnet-5:tokens"
+	bal, err := client.HGet(ctx, tokKey, "tokens").Result()
+	if err != nil {
+		t.Fatalf("HGet token balance: %v", err)
+	}
+	// Started at 1000, −100 (estimate) −150 (reconcile) = 750, plus a tiny
+	// refill over the test's wall-clock. Assert within a small margin.
+	got := parseFloat(t, bal)
+	if got < 750 || got > 752 {
+		t.Fatalf("token balance after reconcile = %v, want ≈750 (1000 − 100 − 150)", got)
+	}
+
+	// The requests bucket balance is exactly what the one acquire left it.
+	reqKey := prefix + ":anthropic:claude-sonnet-5:requests"
+	rbal, err := client.HGet(ctx, reqKey, "tokens").Result()
+	if err != nil {
+		t.Fatalf("HGet request balance: %v", err)
+	}
+	if r := parseFloat(t, rbal); r < 99 || r > 100 {
+		t.Fatalf("request balance moved during token reconcile = %v, want ≈99", r)
+	}
+}
+
+// TestReconcileRefundReturnsTokens: an over-estimate (negative delta) refunds
+// the difference so a later call that would have throttled can proceed.
+func TestReconcileRefundReturnsTokens(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	client, prefix := newTestClient(t)
+	set := mustSet(t, `{"resources":[{"name":"mock:sim-1","tokens":{"per_minute":60,"burst":100}}]}`)
+	lim, _ := resource.New(client, set, prefix)
+
+	// Estimate 90 debited: ~10 tokens left. A second 90-token call would deny.
+	if dec, err := lim.Acquire(ctx, "mock:sim-1", 90); err != nil || !dec.Allowed {
+		t.Fatalf("acquire: %+v err=%v", dec, err)
+	}
+	// The call actually used 20: refund 70 (delta = 20 − 90 = −70) → ~80 left.
+	if err := lim.Reconcile(ctx, "mock:sim-1", 90, 20); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	// Now a 70-token call fits where it would not have before the refund.
+	dec, err := lim.Acquire(ctx, "mock:sim-1", 70)
+	if err != nil {
+		t.Fatalf("Acquire after refund: %v", err)
+	}
+	if !dec.Allowed {
+		t.Fatalf("call denied after refund: %+v (refund did not return tokens)", dec)
+	}
+}
+
+// TestReconcileWildcardResolves: reconciliation resolves the same wildcard the
+// acquire did, correcting the shared bucket.
+func TestReconcileWildcardResolves(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	client, prefix := newTestClient(t)
+	set := mustSet(t, `{"resources":[{"name":"openai:*","tokens":{"per_minute":60,"burst":1000}}]}`)
+	lim, _ := resource.New(client, set, prefix)
+
+	if dec, err := lim.Acquire(ctx, "openai:gpt-4o", 100); err != nil || !dec.Allowed || dec.Resource != "openai:*" {
+		t.Fatalf("acquire: %+v err=%v", dec, err)
+	}
+	if err := lim.Reconcile(ctx, "openai:gpt-4o", 100, 300); err != nil {
+		t.Fatalf("Reconcile via wildcard: %v", err)
+	}
+	// The bucket is keyed by the wildcard resource name.
+	tokKey := prefix + ":openai:*:tokens"
+	bal, err := client.HGet(ctx, tokKey, "tokens").Result()
+	if err != nil {
+		t.Fatalf("HGet: %v", err)
+	}
+	if got := parseFloat(t, bal); got < 700 || got > 702 {
+		t.Fatalf("wildcard token balance = %v, want ≈700 (1000 − 100 estimate − 200 reconcile)", got)
+	}
+}
+
+// parseFloat is a tiny helper for reading %.17g bucket balances back.
+func parseFloat(t *testing.T, s string) float64 {
+	t.Helper()
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		t.Fatalf("parse balance %q: %v", s, err)
+	}
+	return f
 }
 
 // TestAcquireCostExceedsCapacity surfaces the typed error the middleware

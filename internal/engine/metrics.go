@@ -52,6 +52,16 @@ type Metrics interface {
 	// (e.g. Redis unreachable) and the step proceeded without a limit
 	// (ADR-010 — a limit is never a correctness dependency).
 	RateLimitFailOpen()
+	// EstimateError records one post-call token-cost reconciliation (ticket
+	// 9.3) by resource: the signed error actual − estimate the middleware
+	// corrected on the token bucket. A negative observation means the estimate
+	// was high (a refund), positive means it was low (an extra debit) — the
+	// distribution reveals a biased estimator.
+	EstimateError(resource string, delta int64)
+	// ReconcileFailure records one reconciliation that could not be applied
+	// (e.g. Redis unreachable): the estimate stays on the ledger and the step
+	// proceeds — reconciliation is fail-open like the acquire.
+	ReconcileFailure()
 }
 
 // nopMetrics is the default Metrics: every test layer runs with recording
@@ -71,3 +81,5 @@ func (nopMetrics) ReconcileHealed(string, int)                {}
 func (nopMetrics) Throttled(string, string)                   {}
 func (nopMetrics) ThrottleWait(string, time.Duration)         {}
 func (nopMetrics) RateLimitFailOpen()                         {}
+func (nopMetrics) EstimateError(string, int64)                {}
+func (nopMetrics) ReconcileFailure()                          {}

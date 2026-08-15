@@ -36,8 +36,13 @@ type costBearingNoop struct {
 	res   string
 	est   int64
 	calls atomic.Int64
+	// actualTokens, when > 0, is reported as the call's real usage so the 9.3
+	// reconciliation middleware corrects the token bucket by actual − est. The
+	// split across input/output is immaterial (the estimate error is their
+	// sum), so it all rides InputTokens.
+	actualTokens int64
 	// onCall, when set, is invoked inside Execute (the "provider call") —
-	// the fleet test records call timestamps through it.
+	// the fleet test records the call and its actual token cost through it.
 	onCall func()
 }
 
@@ -52,6 +57,9 @@ func (c *costBearingNoop) Execute(context.Context, exec.StepContext) (exec.Outpu
 	if c.onCall != nil {
 		c.onCall()
 	}
+	if c.actualTokens > 0 {
+		return exec.Output{Usage: &exec.Usage{InputTokens: c.actualTokens}}, nil
+	}
 	return exec.Output{}, nil
 }
 
@@ -61,10 +69,35 @@ func (c *costBearingNoop) Execute(context.Context, exec.StepContext) (exec.Outpu
 type scriptedLimiter struct {
 	acquires atomic.Int64
 	verdict  func(n int64) (resource.Decision, error)
+	// reconciles records every reconciliation the middleware applies, so
+	// 9.3's tests can assert the post-call correction. reconcileErr, when set,
+	// makes every Reconcile fail (the fail-open path).
+	reconcilesMu sync.Mutex
+	reconciles   []reconcileCall
+	reconcileErr error
+}
+
+type reconcileCall struct {
+	resource string
+	est      int64
+	actual   int64
 }
 
 func (l *scriptedLimiter) Acquire(_ context.Context, _ string, _ int64) (resource.Decision, error) {
 	return l.verdict(l.acquires.Add(1))
+}
+
+func (l *scriptedLimiter) Reconcile(_ context.Context, resourceName string, est, actual int64) error {
+	l.reconcilesMu.Lock()
+	l.reconciles = append(l.reconciles, reconcileCall{resource: resourceName, est: est, actual: actual})
+	l.reconcilesMu.Unlock()
+	return l.reconcileErr
+}
+
+func (l *scriptedLimiter) reconcileCalls() []reconcileCall {
+	l.reconcilesMu.Lock()
+	defer l.reconcilesMu.Unlock()
+	return append([]reconcileCall(nil), l.reconciles...)
 }
 
 // TestThrottleDeferAndComplete is 9.2's headline: the first acquire is denied

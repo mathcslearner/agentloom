@@ -49,6 +49,13 @@ const (
 // perm-fails, a Redis error fails open. Nil disables limiting entirely.
 type ResourceLimiter interface {
 	Acquire(ctx context.Context, resourceName string, estTokens int64) (resource.Decision, error)
+	// Reconcile corrects a resource's token bucket by actual − estimate after
+	// a granted, token-metered call has returned (ticket 9.3, ADR-010): a
+	// biased estimator cannot drift the fleet past the provider's real
+	// tokens/min budget over time. Called only when Acquire granted and
+	// metered tokens; a no-op (and no Redis) for unlimited or requests-only
+	// resources. Fail-open, like Acquire.
+	Reconcile(ctx context.Context, resourceName string, estTokens, actualTokens int64) error
 }
 
 // RetryScheduler is the engine's seam onto delayed delivery (ticket 5.2)

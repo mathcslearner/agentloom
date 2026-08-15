@@ -62,12 +62,13 @@ Rules, following Prometheus upstream conventions:
   `api` subsystem (`engine_api_requests_total`), not a second namespace.
 - Subsystem vocabulary (extended only by ADR amendment): `build`,
   `queue`, `outbox`, `dispatch`, `reconcile`, `step`, `steplog` (7.4),
-  `run`, `api`, `worker`.
+  `run`, `api`, `worker`, `ratelimit` (9.2).
 - Base units and suffixes: durations in seconds (`_seconds`), sizes in
-  bytes (`_bytes`), counters end `_total`, gauges carry no suffix
+  bytes (`_bytes`), token counts in tokens (`_tokens`, 9.3's
+  estimate-error histogram), counters end `_total`, gauges carry no suffix
   (`engine_queue_ready_depth`). Histograms are the default for
-  latency/duration (M19 needs percentiles); summaries are banned
-  (not aggregatable across the fleet).
+  latency/duration (M19 needs percentiles) and for the signed token-cost
+  estimate error; summaries are banned (not aggregatable across the fleet).
 - `engine_build_info{service, version} 1` is the conventional info gauge,
   registered by `NewRegistry` itself alongside the standard Go runtime
   and process collectors — every scrape proves the pipeline end-to-end
@@ -98,8 +99,9 @@ requires amending this table first, and must be a closed vocabulary.
 | `code` | HTTP status code | ~10 in practice |
 | `duty` | consumer duties: `consume`, `heartbeat`, `reclaim`, `janitor`, `trim`, `promote` | 6 |
 | `result` | claim decisions (7.2): `won`, `ack_drop`, `redeliver`, `takeover` | 4 |
-| `bucket` | rate-limit bucket kind (7.2): `per_key`, `global` | 2 |
+| `bucket` | API rate-limit bucket kind (7.2): `per_key`, `global`; fleet rate-limit denying dimension (9.2): `requests`, `tokens`, `both` | ≤ 5 |
 | `decision` | rate-limit decision (7.2): `allowed`, `denied` | 2 |
+| `resource` | fleet-limit resource name (9.2): the resolved config-entry name (`anthropic:*`, `mock:sim-1`, `tool:http_request`) — operator-authored, bounded | ~config size |
 
 Worst-case series count per metric is the product of its label bounds;
 any metric whose product exceeds ~1,000 needs an explicit justification
@@ -111,7 +113,8 @@ Every instrument is declared in `internal/obs/metrics/instruments.go`;
 `TestInstrumentConformance` in that package is this table's executable
 form — it gathers the full instrument set and fails on any name outside
 the subsystem vocabulary, any counter without `_total`, any histogram
-without `_seconds`, or any label key missing from the allowlist above.
+without a unit suffix (`_seconds` or `_tokens`), or any label key missing
+from the allowlist above.
 
 | Metric | Type | Labels | Recorded by |
 |---|---|---|---|
@@ -145,6 +148,11 @@ without `_seconds`, or any label key missing from the allowlist above.
 | `engine_steplog_captured_total` | counter | — | step-log capture (7.4): lines accepted into the sink's queue |
 | `engine_steplog_dropped_total` | counter | — | step-log capture (7.4): lines lost before storage — queue overflow (drop-oldest) or a failed flush; ring-cap evictions are not drops (stored, then rotated out) |
 | `engine_steplog_flush_failures_total` | counter | — | step-log capture (7.4): flush transactions that failed and dropped their batch |
+| `engine_ratelimit_throttled_total` | counter | `resource`, `bucket` | fleet limiter (9.2): steps deferred by backpressure, by resource and denying dimension |
+| `engine_ratelimit_throttle_wait_seconds` | histogram | `resource` | fleet limiter (9.2): the clamped+jittered re-dispatch delay a throttle adds |
+| `engine_ratelimit_fail_opens_total` | counter | — | fleet limiter (9.2): acquire errored (e.g. Redis down) and the step proceeded unlimited |
+| `engine_ratelimit_estimate_error_tokens` | histogram | `resource` | reconciliation (9.3): signed token-cost error `actual − estimate` corrected on the token bucket; negative = over-estimate (refund), positive = under-estimate (extra debit) |
+| `engine_ratelimit_reconcile_failures_total` | counter | — | reconciliation (9.3): correction could not be applied (e.g. Redis down); estimate stays debited, step proceeds |
 
 Gauges are sampled by a cmd/worker loop every
 `AGENTLOOM_WORKER_METRICS_SAMPLE_INTERVAL` (default 10s, under the 15s

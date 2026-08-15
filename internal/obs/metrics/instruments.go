@@ -34,6 +34,12 @@ var (
 	// runBuckets covers whole-run completion latency: sub-second chains up
 	// to multi-hour workflows.
 	runBuckets = []float64{.1, .5, 1, 2.5, 5, 15, 30, 60, 300, 900, 3600, 7200}
+	// estimateErrorBuckets covers the signed token-cost estimate error
+	// (actual − estimate, ticket 9.3): roughly log-scaled and symmetric about
+	// zero, so both over-estimates (negative — refunds) and under-estimates
+	// (positive — extra debits) are visible and a systematic bias in the
+	// estimator shows as a skewed distribution.
+	estimateErrorBuckets = []float64{-65536, -16384, -4096, -1024, -256, -64, 0, 64, 256, 1024, 4096, 16384, 65536}
 )
 
 // Claim results — the `result` label vocabulary (ADR-008), mirroring the
@@ -87,6 +93,8 @@ type WorkerMetrics struct {
 	throttled          *prometheus.CounterVec
 	throttleWait       *prometheus.HistogramVec
 	rateLimitFailOpens prometheus.Counter
+	estimateError      *prometheus.HistogramVec
+	reconcileFailures  prometheus.Counter
 }
 
 // NewWorkerMetrics registers the worker instrument set on reg (ADR-008:
@@ -212,6 +220,15 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 			Namespace: Namespace, Subsystem: "ratelimit", Name: "fail_opens_total",
 			Help: "Resource-limiter errors (e.g. Redis unreachable) after which the step proceeded without a limit (ADR-010 fail-open).",
 		}),
+		estimateError: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: Namespace, Subsystem: "ratelimit", Name: "estimate_error_tokens",
+			Help:    "Signed token-cost estimate error (actual minus estimate) reconciled onto the token bucket (ticket 9.3), by resource. Negative = over-estimate (refund), positive = under-estimate (extra debit).",
+			Buckets: estimateErrorBuckets,
+		}, []string{"resource"}),
+		reconcileFailures: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "ratelimit", Name: "reconcile_failures_total",
+			Help: "Token-cost reconciliations that could not be applied (e.g. Redis unreachable); the estimate stays debited and the step proceeds (ADR-010 fail-open).",
+		}),
 	}
 	reg.MustRegister(
 		m.queueReadyDepth, m.queueStreamLength, m.queuePELSize, m.queueDelayedDepth,
@@ -225,6 +242,7 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 		m.workerActive,
 		m.stepLogCaptured, m.stepLogDropped, m.stepLogFlushFailures,
 		m.throttled, m.throttleWait, m.rateLimitFailOpens,
+		m.estimateError, m.reconcileFailures,
 	)
 	return m
 }
@@ -299,6 +317,17 @@ func (m *WorkerMetrics) ThrottleWait(resource string, d time.Duration) {
 
 // RateLimitFailOpen records one fail-open (limiter error → proceed).
 func (m *WorkerMetrics) RateLimitFailOpen() { m.rateLimitFailOpens.Inc() }
+
+// EstimateError records one post-call token-cost reconciliation (ticket 9.3):
+// the signed error actual − estimate corrected on the token bucket, by
+// resource.
+func (m *WorkerMetrics) EstimateError(resource string, delta int64) {
+	m.estimateError.WithLabelValues(resource).Observe(float64(delta))
+}
+
+// ReconcileFailure records one reconciliation that could not be applied
+// (fail-open — the estimate stays debited and the step proceeds).
+func (m *WorkerMetrics) ReconcileFailure() { m.reconcileFailures.Inc() }
 
 // The setters below are the cmd/worker sampler's surface — point-in-time
 // gauges sampled from Redis and Postgres on an interval.

@@ -17,6 +17,15 @@ func (l *Limiter) AcquireAt(ctx context.Context, b Bucket, cost int64, now time.
 // ParseAcquireReply exposes the script-reply decoder for unit tests.
 var ParseAcquireReply = parseAcquireReply
 
+// AdjustAt exposes the injected-clock reconciliation adjust to tests: the
+// conservation property test drives the real Lua script with synthetic time,
+// interleaving acquires and adjusts, and reads back the exact fractional
+// balance to compare against its model. Production code has no path to this —
+// Adjust always uses Redis TIME.
+func (l *Limiter) AdjustAt(ctx context.Context, b Bucket, delta int64, now time.Time) (int64, float64, error) {
+	return l.adjustAt(ctx, b, delta, now)
+}
+
 // AcquireDualAt exposes the injected-clock two-key acquire to tests: the
 // dual-accounting property and retry-after tests drive the real Lua script
 // with synthetic time and read back both exact fractional balances.

@@ -56,6 +56,14 @@ type Decision struct {
 	// the call (ratelimit.RetryAfterNever if a denying bucket never
 	// refills). Zero when allowed.
 	RetryAfter time.Duration
+	// TokensMetered reports whether this acquire actually debited the token
+	// bucket by the estimate — true only when the resource configures a token
+	// dimension and the estimate was positive (a dual acquire, or a
+	// tokens-only single acquire). It is false for unlimited resources,
+	// requests-only resources, and tool claims (estTokens 0). The engine
+	// reconciles the post-call estimate error (9.3) only when this is true and
+	// the call was granted: nothing else touched the token ledger.
+	TokensMetered bool
 }
 
 // ErrCostExceedsCapacity is returned when the token estimate exceeds the
@@ -127,6 +135,38 @@ func (l *Limiter) Acquire(ctx context.Context, resourceName string, estTokens in
 	}
 }
 
+// Reconcile corrects the resource's token bucket by the post-call estimate
+// error after a metered call has returned (ADR-010, ticket 9.3): the limiter
+// debited estTokens before the call, and the provider reported actualTokens,
+// so the bucket is adjusted by delta = actualTokens − estTokens — an extra
+// debit when the estimate was low (drives the bucket toward debt, throttling
+// later calls until refill repays it) or a refund when it was high. Only the
+// token bucket is touched; the requests dimension's cost of 1 is exact.
+//
+// It resolves the name against the configured Set first (exact → wildcard →
+// unlimited). An unlimited resource, a resource with no token dimension, or a
+// zero delta reconciles nothing and touches no Redis — nothing was debited to
+// correct. The middleware calls this only for a granted, token-metered
+// acquire, so the estimate really is on the ledger to correct.
+func (l *Limiter) Reconcile(ctx context.Context, resourceName string, estTokens, actualTokens int64) error {
+	delta := actualTokens - estTokens
+	if delta == 0 {
+		return nil
+	}
+	res, ok := l.set.Lookup(resourceName)
+	if !ok {
+		return nil // unlimited — nothing was metered
+	}
+	tokBucket, hasTok := l.bucket(res.Name, "tokens", res.Tokens)
+	if !hasTok {
+		return nil // no token dimension — nothing to reconcile
+	}
+	if _, err := l.limiter.Adjust(ctx, tokBucket, delta); err != nil {
+		return err
+	}
+	return nil
+}
+
 // bucket builds the ratelimit.Bucket for one dimension of a resource, or
 // reports absent when that dimension is unconfigured (nil Rate).
 func (l *Limiter) bucket(resourceName, dimension string, rate *limits.Rate) (ratelimit.Bucket, bool) {
@@ -148,6 +188,7 @@ func (l *Limiter) acquireDual(ctx context.Context, name string, req, tok ratelim
 	return Decision{
 		Limited: true, Allowed: res.Allowed, Resource: name,
 		Bucket: res.Denied.String(), RetryAfter: res.RetryAfter,
+		TokensMetered: true,
 	}, nil
 }
 
@@ -156,7 +197,12 @@ func (l *Limiter) acquireSingle(ctx context.Context, name string, b ratelimit.Bu
 	if err != nil {
 		return Decision{}, err
 	}
-	d := Decision{Limited: true, Allowed: res.Allowed, Resource: name, RetryAfter: res.RetryAfter}
+	d := Decision{
+		Limited: true, Allowed: res.Allowed, Resource: name, RetryAfter: res.RetryAfter,
+		// A single acquire on the token dimension (a tokens-only resource with
+		// a positive estimate) debited tokens; a requests-only acquire did not.
+		TokensMetered: dim == ratelimit.DeniedTokens,
+	}
 	if !res.Allowed {
 		d.Bucket = dim.String()
 	}
