@@ -64,6 +64,15 @@ type ModelEntry struct {
 	// EffectiveFrom is the UTC calendar date this price takes effect
 	// (inclusive). Required.
 	EffectiveFrom Date `json:"effective_from"`
+	// ContextWindow is the model's maximum context window in tokens (ADR-014,
+	// ticket 12.6): the hard ceiling on assembled context + completion the
+	// provider will accept. Optional (0 = unknown); when set it must be
+	// positive. The M12 provider-window guardrail reads it to default a step's
+	// context budget (window − max_tokens − headroom) and to reject an
+	// oversize request before any provider call. A model with no window (or a
+	// resource resolving only to the fallback) is unguarded — nothing to
+	// compare against, the ADR-010 "unlimited by omission" stance.
+	ContextWindow int64 `json:"context_window,omitempty"`
 	// Rate is the price, flattened into the entry's JSON object
 	// (input_per_mtok / output_per_mtok).
 	Rate
@@ -147,6 +156,9 @@ func Parse(data []byte) (*Catalog, error) {
 		if m.EffectiveFrom.IsZero() {
 			errs = append(errs, fmt.Errorf("%s (%q): effective_from is required", path, m.Name))
 			ok = false
+		}
+		if m.ContextWindow < 0 {
+			errs = append(errs, fmt.Errorf("%s (%q): context_window must be positive when set, got %d", path, m.Name, m.ContextWindow))
 		}
 		errs = validateRate(errs, path, m.Rate)
 		if ok {

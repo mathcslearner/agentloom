@@ -338,6 +338,18 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 			return reReadErr
 		}
 	}
+	// Provider-window guardrail (ticket 12.6, ADR-014): over the final
+	// (possibly downgraded) config, count the framed request and fail the step
+	// permanently before any provider call if assembled context + max_tokens
+	// still exceeds the model context window (compaction absent/insufficient, a
+	// context-less oversize prompt, or a downgrade into a smaller window). A
+	// context-bearing step was already compacted to fit window − headroom by
+	// assembleContext, so this normally passes; it also records the
+	// context_utilization metric for every guarded claim. A cache hit above
+	// short-circuited here already ($0, no call). Unguarded models are a no-op.
+	if guarded, gerr := e.guardWindow(ctx, step, executor, sc, origin); guarded {
+		return gerr
+	}
 	// Fleet-wide rate limiting (ticket 9.2, ADR-010): before a cost-bearing
 	// executor's provider call, acquire the step's resource buckets. A
 	// denial defers the step (throttle → delayed requeue, slot released now,

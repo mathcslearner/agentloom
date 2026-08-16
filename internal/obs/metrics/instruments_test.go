@@ -28,7 +28,7 @@ var (
 // allowedSubsystems is ADR-008's subsystem vocabulary; extending it is an
 // ADR amendment first.
 var allowedSubsystems = []string{
-	"build", "queue", "outbox", "dispatch", "reconcile", "step", "steplog", "run", "api", "worker", "ratelimit", "cache", "cost", "validate",
+	"build", "queue", "outbox", "dispatch", "reconcile", "step", "steplog", "run", "api", "worker", "ratelimit", "cache", "cost", "validate", "context",
 }
 
 // allowedLabels is ADR-008's label allowlist. run_id, step_id, attempt,
@@ -87,6 +87,8 @@ func exercise(w *metrics.WorkerMetrics, a *metrics.APIMetrics) {
 	w.SemanticRetryDepth("succeeded", 3)
 	w.OutputRepair("repaired")
 	w.JudgeScore("llm_judge", 0.9)
+	w.ContextUtilization("mock:sim-1", 0.75)
+	w.ContextWindowRejection("mock:small")
 	a.Request("/v1/runs", "POST", 200, 20*time.Millisecond)
 	a.RequestStarted()
 	a.RequestFinished()

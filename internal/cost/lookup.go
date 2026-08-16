@@ -121,6 +121,29 @@ func (c *Catalog) PriceModel(name string, at time.Time, policy UnknownModelPolic
 	return Priced{Rate: fb, Source: SourceFallback, Fallback: true}, nil
 }
 
+// ContextWindow resolves a model resource's context window (in tokens)
+// effective at time at, using the same exact → "<provider>:*" wildcard → miss
+// resolution Lookup uses (ADR-014, ticket 12.6). It returns the window, the
+// source it resolved from, and whether a positive window was found: a resource
+// with no entry, a wildcard without a window, or an entry whose window is unset
+// (0) all return ok=false — the guardrail then treats the model as unguarded
+// (nothing to compare against). The catalog fallback carries a rate but no
+// window, so an unknown model is deliberately unguarded. Nil-safe.
+func (c *Catalog) ContextWindow(name string, at time.Time) (int64, Source, bool) {
+	if c == nil {
+		return 0, SourceExact, false
+	}
+	if e, ok := selectModel(c.models[name], at); ok && e.ContextWindow > 0 {
+		return e.ContextWindow, SourceExact, true
+	}
+	if i := strings.IndexByte(name, ':'); i >= 0 {
+		if e, ok := selectModel(c.models[name[:i]+":*"], at); ok && e.ContextWindow > 0 {
+			return e.ContextWindow, SourceWildcard, true
+		}
+	}
+	return 0, SourceExact, false
+}
+
 // ToolPrice resolves a priced tool's per-call cost in nano-USD, effective at
 // time at. A tool with no entry is free — false, cost zero — with no policy or
 // warning (unpriced tools are legitimately free). Nil-safe.

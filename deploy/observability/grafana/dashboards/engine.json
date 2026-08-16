@@ -1302,12 +1302,155 @@
     },
     {
       "type": "row",
-      "title": "Fleet",
+      "title": "Context",
+      "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 102
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Context window utilization p50/p95 by resource",
+      "description": "Provider-window utilization (ticket 12.6, ADR-014): (preflight + max_tokens) / context_window per guarded llm claim, by resolved resource. Compaction keeps this below 1.0 by construction; a p95 pushed against 1.0 means requests are running hot against the window.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 103
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le, resource) (rate(engine_context_utilization_ratio_bucket[5m])))",
+          "legendFormat": "p50 {{resource}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, resource) (rate(engine_context_utilization_ratio_bucket[5m])))",
+          "legendFormat": "p95 {{resource}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Context window rejections/s by resource",
+      "description": "Claims the provider-window guardrail failed before any provider call (ticket 12.6): assembled context + max_tokens exceeded the model window and compaction was absent or insufficient. A non-zero line means a workflow needs a compaction pipeline or a smaller max_tokens.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 103
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (resource) (rate(engine_context_window_rejections_total[5m]))",
+          "legendFormat": "{{resource}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Token estimate error p50/p95 by resource",
+      "description": "Signed token-cost estimate error actual \u2212 estimate reconciled onto the limiter (ticket 9.3), by resource. M12.6 swapped the chars/4 estimator for real token counters, so this distribution tightens toward zero (exact on the mock and OpenAI). A skew away from zero means a biased estimator.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 103
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le, resource) (rate(engine_ratelimit_estimate_error_tokens_bucket[5m])))",
+          "legendFormat": "p50 {{resource}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, resource) (rate(engine_ratelimit_estimate_error_tokens_bucket[5m])))",
+          "legendFormat": "p95 {{resource}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Fleet",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 111
       },
       "collapsed": false,
       "panels": []
@@ -1324,7 +1467,7 @@
         "h": 6,
         "w": 6,
         "x": 0,
-        "y": 103
+        "y": 112
       },
       "fieldConfig": {
         "defaults": {
@@ -1361,7 +1504,7 @@
         "h": 6,
         "w": 6,
         "x": 6,
-        "y": 103
+        "y": 112
       },
       "fieldConfig": {
         "defaults": {
@@ -1398,7 +1541,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 103
+        "y": 112
       },
       "fieldConfig": {
         "defaults": {},

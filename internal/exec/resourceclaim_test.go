@@ -19,12 +19,14 @@ func toolConfig(t *testing.T, v any) json.RawMessage {
 }
 
 // TestLLMResourceClaim: the llm executor names "<provider>:<model>" by the
-// resolved provider and estimates chars/4 + max_tokens.
+// resolved provider and estimates the real counter's framed-request count +
+// max_tokens (ticket 12.6 refines M9.2's chars/4).
 func TestLLMResourceClaim(t *testing.T) {
 	t.Parallel()
 	e := recExecutor(t, &recordingProvider{resp: okResponse()})
 
-	// prompt "hello" = 5 chars → (5+3)/4 = 2 input tokens; + max_tokens 100.
+	cfg := &dag.LLMConfig{Model: "rec/sim-1", Prompt: "hello", MaxTokens: 100}
+	wantInput := e.estimateInputTokens("rec", "sim-1", cfg)
 	res, est, err := e.ResourceClaim(llmStep(t, map[string]any{
 		"model": "rec/sim-1", "prompt": "hello", "max_tokens": 100,
 	}))
@@ -34,8 +36,11 @@ func TestLLMResourceClaim(t *testing.T) {
 	if res != "rec:sim-1" {
 		t.Errorf("resource = %q, want rec:sim-1", res)
 	}
-	if est != 102 {
-		t.Errorf("est tokens = %d, want 102 (2 input + 100 max)", est)
+	if est != wantInput+100 {
+		t.Errorf("est tokens = %d, want %d (%d framed input + 100 max)", est, wantInput+100, wantInput)
+	}
+	if wantInput < 1 {
+		t.Errorf("framed input estimate = %d, want at least 1", wantInput)
 	}
 }
 
@@ -44,13 +49,14 @@ func TestLLMResourceClaim(t *testing.T) {
 func TestLLMResourceClaimDefaultMaxTokens(t *testing.T) {
 	t.Parallel()
 	e := recExecutor(t, &recordingProvider{resp: okResponse()})
+	cfg := &dag.LLMConfig{Model: "rec/sim-1", Prompt: "hi"}
+	wantInput := e.estimateInputTokens("rec", "sim-1", cfg)
 	_, est, err := e.ResourceClaim(llmStep(t, map[string]any{"model": "rec/sim-1", "prompt": "hi"}))
 	if err != nil {
 		t.Fatalf("ResourceClaim: %v", err)
 	}
-	// "hi" = 2 chars → (2+3)/4 = 1; + default 1024.
-	if est != 1+llmDefaultMaxTokens {
-		t.Errorf("est = %d, want %d", est, 1+llmDefaultMaxTokens)
+	if est != wantInput+llmDefaultMaxTokens {
+		t.Errorf("est = %d, want %d", est, wantInput+llmDefaultMaxTokens)
 	}
 }
 

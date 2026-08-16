@@ -105,6 +105,19 @@ panel is empty on the offline smoke (the unscripted mock emits no parseable
 judge verdict) and is allowlisted; `ValidationFailureRatioHigh` alerts when
 a large fraction of verdicts fail while verdicts are actually flowing.
 
+**Context row (ticket 12.6).** Context-window utilization p50/p95 by
+resource (`(preflight + max_tokens) / context_window` — compaction keeps
+this below 1.0, so a p95 pressed against 1.0 means requests are running hot
+against the window), window rejections/s by resource (claims the guardrail
+failed before any provider call because the assembly plus `max_tokens`
+exceeded the model window and compaction was absent or insufficient — a
+non-zero line means a workflow needs a compaction pipeline or a smaller
+`max_tokens`), and the token estimate-error p50/p95 by resource (M12.6
+swapped `chars/4` for real token counters, so this distribution tightens
+toward zero — exact on the mock and OpenAI). The estimate-error panel is
+allowlisted quiet on the smoke (no `AGENTLOOM_RESOURCES` limits configured,
+so no token reconciliation).
+
 **Fleet row.** Active workers (consumer-group members recently active),
 scrape-target health, and `engine_build_info` per instance.
 

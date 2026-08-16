@@ -68,7 +68,10 @@ func TestLLMExecutorCostEstimate(t *testing.T) {
 	t.Parallel()
 	e := recExecutor(t, &recordingProvider{resp: okResponse()})
 
-	// "abcd" prompt is 4 chars → 1 input token; explicit max_tokens 55.
+	// The input estimate is the real counter's framed-request count (ticket
+	// 12.6), not chars/4; explicit max_tokens 55 rides through unchanged.
+	cfg := &dag.LLMConfig{Model: "rec/sim-1", Prompt: "abcd", MaxTokens: 55}
+	wantInput := e.estimateInputTokens("rec", "sim-1", cfg)
 	est, err := e.CostEstimate(llmStep(t, map[string]any{
 		"model": "rec/sim-1", "prompt": "abcd", "max_tokens": 55,
 	}))
@@ -78,8 +81,8 @@ func TestLLMExecutorCostEstimate(t *testing.T) {
 	if est.Resource != "rec:sim-1" {
 		t.Errorf("resource = %q, want rec:sim-1", est.Resource)
 	}
-	if est.InputTokens != 1 {
-		t.Errorf("input tokens = %d, want 1", est.InputTokens)
+	if est.InputTokens != wantInput || wantInput < 1 {
+		t.Errorf("input tokens = %d, want %d (framed count, ≥1)", est.InputTokens, wantInput)
 	}
 	if est.MaxTokens != 55 {
 		t.Errorf("max tokens = %d, want 55", est.MaxTokens)

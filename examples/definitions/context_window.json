@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "name": "context_window",
+  "description": "The ticket 12.6 (ADR-014) demonstration of provider-window guardrails: the same five-turn conversation as context_compaction.json, but on the small-window model `mock/small` (context_window 1024 tokens in the pricing catalog) and with NO explicit `budget_tokens`. The final `summary` step reserves a large completion (`max_tokens` 700), so the window-derived default budget — window − max_tokens − 5% headroom — is tight, and the assembled pinned-instruction-plus-five-turns context exceeds it. The engine defaults the budget from the model context window (`budget_source: window` on the context_assembled event) and runs the ordered compaction pipeline (sliding_window → truncate_oldest → drop_lowest_priority) until the framed request fits, so `assembled + max_tokens <= context_window` holds and a provider context-overflow 400 is structurally impossible — with zero per-workflow budget authoring. Runs entirely offline on the mock provider (no API key, no network). Inspect the run event log for the `context_assembled` (carrying `budget_source`, `budget_tokens`, `context_window`) and `context_revision` records.",
+  "steps": [
+    {
+      "id": "turn1",
+      "type": "llm",
+      "config": {
+        "model": "mock/small",
+        "prompt": "Turn one: we kicked off the project and agreed the north-star metric is weekly active teams, not raw signups, because activation is what predicts retention in this segment over the long run.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_1",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "turn2",
+      "type": "llm",
+      "config": {
+        "model": "mock/small",
+        "prompt": "Turn two: engineering flagged that the ingestion pipeline drops events under burst load, so we prioritized an at-least-once queue with idempotency keys before any new feature work lands.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_2",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "turn3",
+      "type": "llm",
+      "config": {
+        "model": "mock/small",
+        "prompt": "Turn three: design proposed a simplified onboarding with three steps instead of seven, and early usability sessions suggest the shorter flow roughly doubles completion for first-time teams.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_3",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "turn4",
+      "type": "llm",
+      "config": {
+        "model": "mock/small",
+        "prompt": "Turn four: we reviewed pricing and settled on usage-based tiers with a generous free allotment, betting that land-and-expand beats a high upfront wall for bottoms-up adoption in this market.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_4",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "turn5",
+      "type": "llm",
+      "config": {
+        "model": "mock/small",
+        "prompt": "Turn five: the launch checklist is green except for the status page and the incident runbook, both owned by ops and due Friday, after which we can announce to the waitlist next Monday.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_5",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "summary",
+      "type": "llm",
+      "config": {
+        "model": "mock/small",
+        "prompt": "Summarize the decisions made across the conversation above in three bullet points.",
+        "max_tokens": 700
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "name": "instructions",
+            "text": "You are the meeting scribe. Ground every claim strictly in the conversation turns provided above; do not invent decisions.",
+            "pinned": true
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_1",
+            "key": "turn_1",
+            "priority": 1
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_2",
+            "key": "turn_2",
+            "priority": 2
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_3",
+            "key": "turn_3",
+            "priority": 3
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_4",
+            "key": "turn_4",
+            "priority": 4
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_5",
+            "key": "turn_5",
+            "priority": 5
+          }
+        ],
+        "compaction": [
+          {
+            "strategy": "sliding_window",
+            "n": 3
+          },
+          {
+            "strategy": "truncate_oldest",
+            "min_tokens": 32
+          },
+          {
+            "strategy": "drop_lowest_priority"
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "turn1",
+      "to": "turn2"
+    },
+    {
+      "from": "turn2",
+      "to": "turn3"
+    },
+    {
+      "from": "turn3",
+      "to": "turn4"
+    },
+    {
+      "from": "turn4",
+      "to": "turn5"
+    },
+    {
+      "from": "turn5",
+      "to": "summary"
+    }
+  ]
+}

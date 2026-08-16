@@ -63,7 +63,7 @@ Rules, following Prometheus upstream conventions:
 - Subsystem vocabulary (extended only by ADR amendment): `build`,
   `queue`, `outbox`, `dispatch`, `reconcile`, `step`, `steplog` (7.4),
   `run`, `api`, `worker`, `ratelimit` (9.2), `cache` (9.5), `cost` (10.5),
-  `validate` (11.6).
+  `validate` (11.6), `context` (12.6).
 - Base units and suffixes: durations in seconds (`_seconds`), sizes in
   bytes (`_bytes`), token counts in tokens (`_tokens`, 9.3's
   estimate-error histogram), attempt counts in `_attempts` and
@@ -179,6 +179,8 @@ from the allowlist above.
 | `engine_validate_semantic_depth_attempts` | histogram | `outcome` | validate stage (11.6): semantic-retry loop depth, observed once per terminated loop by terminal outcome (succeeded/validation_failed) |
 | `engine_validate_repairs_total` | counter | `status` | validate stage (11.6): structured-output shaping results (native/raw/repaired/unrepairable), one per productive `output_format` llm attempt (cache hits excluded) |
 | `engine_validate_judge_score_ratio` | histogram | `validator` | validate stage (11.6): llm-judge quality-score distribution, one per cost-bearing validator score |
+| `engine_context_utilization_ratio` | histogram | `resource` | window guardrail (12.6): `(preflight + max_tokens) / context_window` per guarded llm claim, by resolved resource; recorded pre-call, stays below 1.0 by construction |
+| `engine_context_window_rejections_total` | counter | `resource` | window guardrail (12.6): claims failed before any provider call because assembled + max_tokens exceeded the model window and compaction was absent/insufficient, by resolved resource |
 
 The `cost` counters label only by the pricing-catalog `resource` (or the
 tiny `limit`/`action`/`trigger` vocabularies) — never by run/step — so the

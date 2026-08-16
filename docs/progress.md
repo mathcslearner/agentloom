@@ -7315,3 +7315,130 @@ a `context_window` column in the pricing/model catalog, the default budget
 (`window − max_tokens − headroom`) so a bare pipeline fires, the pre-flight hard
 check, the `context_utilization` histogram, and swapping M9.2's chars/4
 estimator for the real counters.
+
+---
+
+## Ticket 12.6 — Provider-window guardrails (M12 complete)
+
+**What it delivered.** The last M12 ticket makes "provider context-overflow
+400" unreachable *by construction* for every llm step — with or without a
+`context` block — and swaps M9.2's `chars/4` estimator for the real
+`internal/tokens` counters. Three mechanisms, all pre-call:
+
+1. **Model context windows in the pricing catalog.** `cost.ModelEntry` gained an
+   optional `context_window` (positive token count), resolved by
+   `Catalog.ContextWindow(name, at)` with the same exact → `<provider>:*`
+   wildcard → miss order as the rate lookup (a rate-only exact entry inherits the
+   family wildcard's window). `defaults.json` windows the real families
+   (Anthropic 200k, OpenAI gpt-5 400k / o3 200k / `openai:*` 128k) plus a
+   deliberately small `mock:small` (1024) and `mock:*` (1M) so offline fixtures
+   and compose smokes exercise the guardrail with no override. A model with no
+   window (no entry, no wildcard window; the `fallback` carries none) is
+   **unguarded** — the ADR-010 "unlimited by omission" stance.
+
+2. **Window-derived default budget** (`internal/contextmgr/budget.go`, pure).
+   `DefaultBudget(window, max_tokens) = window − max_tokens − Headroom(window)`,
+   `Headroom = max(⌈5% · window⌉, 64)`. `EffectiveBudget(explicit, default,
+   hasDefault)` combines an author's `budget_tokens` with the window default
+   under the rule *explicit may only tighten, never loosen* (`min`), reporting a
+   `BudgetSource` (`explicit` / `window` / `explicit_capped` / none). So a
+   `context` block with a compaction pipeline and **no** `budget_tokens` now
+   auto-compacts to fit the window — window-safety with zero per-workflow budget
+   authoring — while an explicit budget over the window is silently tightened.
+   `assembleContext` resolves the window from the step's `CostEstimate` resource
+   and records `budget_source` + `context_window` on the `context_assembled`
+   event; 12.4/12.5 compaction otherwise runs unchanged.
+
+3. **The hard guard** (`engine/window.go` `guardWindow`), a new pipeline stage
+   **after the budget/downgrade stage and before the rate limiter**, for every
+   llm claim over the final (possibly downgraded) config: it counts the framed
+   request and, if `preflight + max_tokens > context_window`, fails the step
+   permanently before any provider call (a `context_window_exceeded` DLQ — the
+   10.3 descriptive-dead-letter precedent, no new event) and records a rejection
+   metric. Otherwise it records `context_utilization = (preflight + max_tokens) /
+   context_window` for the claim. A context-bearing step reaching here was
+   already compacted to fit `window − headroom`, so the guard's real work is
+   context-less oversize prompts, the rare post-downgrade smaller-window case,
+   and recording utilization uniformly. A cache hit short-circuits before the
+   guard ($0, no call); an unguarded model is a no-op.
+
+**Estimator refinement.** `LLMExecutor.CostEstimate`/`ResourceClaim` now compute
+input tokens via `counter.CountRequest(buildChatRequest(cfg))` (the same counter
+the assembly and guardrail use) instead of `chars/4`. `estimateInputTokens`
+resolves the counter off the executor's token registry; `chars/4`
+(`estimateLLMInputTokensChars`) remains only as a fallback when the request
+cannot be built (a corrupt config the caller fails anyway). Before/after
+captured (`internal/exec/TestEstimatorErrorImproves`, mock ground truth): over
+three representative requests the `chars/4` aggregate abs error is **2** tokens
+and the counter's is **0** (exact by construction on the mock), so 9.3's
+`engine_ratelimit_estimate_error_tokens` histogram tightens to zero offline.
+
+**Metrics.** New ADR-008 `context` subsystem:
+`engine_context_utilization_ratio{resource}` (histogram, pre-call, one per
+guarded claim; buckets `0.1..1.5`) and
+`engine_context_window_rejections_total{resource}` (counter). Grafana Engine
+board gained a **Context** row (utilization p50/p95, rejections/s, and the
+now-tightening estimate-error quantiles — the estimate-error panel allowlisted
+quiet on the smoke since it has no `AGENTLOOM_RESOURCES` limits). Anti-drift
+audit and conformance test extended; `metrics-smoke.sh`/`dashboard-smoke.sh`
+drive an auto-compact fixture + an oversize rejection.
+
+**Non-obvious decisions.**
+- *Guard placement after downgrade, before the limiter.* After downgrade so it
+  guards the model actually called; before the limiter so a doomed request never
+  debits limiter tokens. A cache hit is not guarded — no call happens.
+- *Explicit budget capped by the window, never loosened.* Compacting to a budget
+  looser than the window would still overflow, so `EffectiveBudget` is a `min`.
+- *`DefaultBudget` not-ok ≠ hard fail in assembly.* When `max_tokens + headroom`
+  fills the window there is no sensible default budget, but a tiny context could
+  still fit the real window — so assembly skips the default and `guardWindow`
+  makes the final call against the actual window (no headroom). Only a genuinely
+  oversize request fails.
+- *`mock:small` as a default catalog entry.* A 1024-token window model in the
+  embedded defaults lets the offline fixture and compose smoke exercise the
+  guardrail (auto-compaction and rejection) without an override file.
+- *Mock provider `ContextWindow` (test-only).* `llm.MockConfig.ContextWindow`
+  makes the mock reject an oversize request with a permanent
+  `context_length_exceeded`, so `TestNoProviderContextOverflowByConstruction`
+  proves the engine's typed error fires *before* the provider's — the "by
+  construction" evidence. Not plumbed through config (no compose enforcement
+  needed; the engine guard is the authority).
+
+**Accepted/documented limitations.**
+- Anthropic windows are checked against the *calibrated* token estimate (Claude
+  publishes no tokenizer); the 5% headroom absorbs the slop until the live
+  recording pass populates the calibration factor.
+- The summarizer (12.5) and judge (11.5) provider calls are not window-guarded —
+  they are small, bounded, deterministic requests.
+
+**No migration, no new config var, no new metric beyond the two `context`
+instruments.** The window is catalog data (operators set it via the pricing
+override, `docs/ops-runbook.md`), the headroom is a constant, and the new event
+fields ride the existing `context_assembled` JSON. Canonical
+`examples/definitions/context_window.json` (offline mock on `mock/small`, no
+explicit budget → auto-compaction).
+
+**Tests.** `internal/cost` window resolution + validation + defaults guard;
+`internal/contextmgr` `Headroom`/`DefaultBudget`/`EffectiveBudget` tables;
+`internal/exec` estimator before/after (exact on the mock) + updated
+ResourceClaim/CostEstimate pins; `internal/llm` mock context-window overflow;
+engine integration `TestContextWindowAutoCompacts`,
+`TestContextWindowExceededDeadLetters`,
+`TestNoProviderContextOverflowByConstruction`,
+`TestContextWindowUnknownSkipsGuard`; metrics conformance + dashboard anti-drift.
+
+ADR-014 §"Provider-window guardrails (as built, 12.6)"; ADR-012 (`context_window`
+catalog field + unknown-window stance, estimator refinement), ADR-010 (estimator
+swapped to real counters), ADR-008 (`context` subsystem + two instruments)
+cross-amended; `docs/observability.md` (Context row) + `docs/ops-runbook.md`
+(setting model windows) updated.
+
+**Pre-existing flaky test observed (not 12.6).** `TestContextSummarizationCacheHit`
+(12.5) fails intermittently in this local environment under parallel Redis load;
+verified identical on a clean checkout (stash of all 12.6 changes) — it is a
+pre-existing test-infra flake around the shared summarizer cache, orthogonal to
+12.6, and passes in isolation with a freshly-flushed Redis. Not fixed here (out
+of scope); flagged for a future stabilization pass.
+
+**M12 (context & memory management) is complete** (12.1–12.6). Next milestone:
+M13 (dynamic DAG — planner steps & runtime expansion).

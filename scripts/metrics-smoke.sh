@@ -159,6 +159,19 @@ qual_unrep_id="$(submit '{
 }')"
 note "quality runs: pass $qual_pass_id, fail $qual_fail_id, native $qual_native_id, unrep $qual_unrep_id"
 
+# Provider-window signals (ticket 12.6): every guarded mock llm step above
+# records context utilization (mock:* carries a catalog window). An oversize
+# step on mock/small (window 1024) whose completion bound alone exceeds the
+# window and has no context block fails the window guardrail before any provider
+# call — the rejection counter moves.
+window_oversize_id="$(submit '{
+  "schema_version": 1, "name": "smoke-window-oversize",
+  "steps": [{"id": "big", "type": "llm",
+             "config": {"model": "mock/small", "prompt": "Write an essay.", "max_tokens": 2000}}],
+  "edges": []
+}')"
+note "window oversize run: $window_oversize_id"
+
 say "waiting for terminal states"
 for id in "${fanout_ids[@]}"; do wait_terminal "$id" succeeded; done
 wait_terminal "$retry_id" succeeded
@@ -169,6 +182,7 @@ wait_terminal "$qual_pass_id" succeeded
 wait_terminal "$qual_fail_id" failed
 wait_terminal "$qual_native_id" succeeded
 wait_terminal "$qual_unrep_id" failed
+wait_terminal "$window_oversize_id" failed
 note "all runs terminal"
 
 # Two scrape intervals (5s each) plus the 10s gauge-sample interval, so
@@ -266,6 +280,10 @@ must_be_positive 'engine_validate_semantic_depth_attempts_count{outcome="succeed
 must_be_positive 'engine_validate_semantic_depth_attempts_count{outcome="validation_failed"}'
 must_be_positive 'engine_validate_repairs_total{status="native"}'
 must_be_positive 'engine_validate_repairs_total{status="unrepairable"}'
+# Provider-window metrics (ticket 12.6): utilization is recorded for every
+# guarded mock llm step, and the oversize run drives one window rejection.
+must_be_positive 'engine_context_utilization_ratio_count{resource="mock:sim-1"}'
+must_be_positive 'engine_context_window_rejections_total{resource="mock:small"}'
 
 if [ "$failures" -gt 0 ]; then
   fail "$failures metric check(s) failed"

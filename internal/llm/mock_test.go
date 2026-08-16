@@ -253,6 +253,40 @@ func TestMockScriptedError(t *testing.T) {
 	}
 }
 
+// TestMockContextWindow: a mock with a configured context window rejects an
+// oversize request (input estimate + max_tokens > window) with a permanent 400
+// context_length_exceeded, and accepts a request that fits — the same overflow
+// a real provider returns, used to prove the M12.6 guardrail fires before the
+// provider (ticket 12.6).
+func TestMockContextWindow(t *testing.T) {
+	t.Parallel()
+	m, err := llm.NewMock(llm.MockConfig{ContextWindow: 100})
+	if err != nil {
+		t.Fatalf("NewMock: %v", err)
+	}
+
+	// A small prompt with max_tokens 64 fits (input ~1 + 64 < 100).
+	if _, err := m.Chat(context.Background(), mockReq("hi")); err != nil {
+		t.Fatalf("in-window request errored: %v", err)
+	}
+
+	// A large max_tokens pushes the framed request over the window.
+	big := llm.ChatRequest{Model: "sim-1", MaxTokens: 200, Messages: []llm.Message{llm.UserText("hi")}}
+	_, err = m.Chat(context.Background(), big)
+	var perr *llm.Error
+	if !errors.As(err, &perr) {
+		t.Fatalf("oversize request error = %v (%T), want *llm.Error", err, err)
+	}
+	if perr.Class != dag.ClassPermanent || perr.Code != "context_length_exceeded" {
+		t.Errorf("oversize = %+v, want permanent context_length_exceeded", perr)
+	}
+
+	// A negative window is rejected at construction.
+	if _, err := llm.NewMock(llm.MockConfig{ContextWindow: -1}); err == nil {
+		t.Error("NewMock with negative context_window: want error, got nil")
+	}
+}
+
 // TestMockLatencyDraws: fixed and per-outcome latency overrides are
 // observed through the injected sleep.
 func TestMockLatencyDraws(t *testing.T) {

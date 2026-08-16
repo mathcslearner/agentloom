@@ -126,6 +126,20 @@ names must. This keeps the two price spaces from ever colliding and makes a
 catalog self-describing. The name rules otherwise reuse ADR-010's (non-empty,
 no whitespace, `*` only as a trailing `:*`).
 
+**Model context windows (12.6).** A model entry may carry an optional
+`context_window` (positive token count) alongside its rates — the model's hard
+provider limit on assembled context + completion. `Catalog.ContextWindow(name,
+at)` resolves it with the same exact → wildcard → miss order as the rate lookup,
+so `anthropic:*` can carry a family default a specific entry inherits when it
+sets none. The catalog is the single home for windows because M12.6's guardrail
+already resolves the pricing resource for every llm step, so no second registry
+is needed. A model with **no** window (no entry, no wildcard window; the
+`fallback` rate deliberately carries none) is **unguarded** — the ADR-010
+"unlimited by omission" stance — so an operator opts a model into window safety
+by pricing it with a window, exactly as they opt into rate limits. The
+unknown-model policy governs *pricing* only; it never turns an unknown window
+into a failure.
+
 **Embedded defaults + override, merged by name.** `internal/cost` embeds a
 default catalog (`defaults.json`) compiled into the binary, carrying illustrative
 current list prices for the Anthropic/OpenAI families plus a `mock:*` entry at
@@ -224,13 +238,23 @@ estimate available before the call:
 estimate = estimated_input_tokens × input_rate + max_tokens × output_rate
 ```
 
-The input-token estimate reuses ADR-010's shape (`chars/4` over the rendered
-request, the same estimator the limiter already computes), and output is priced
-at the step's configured `max_tokens` — the ceiling, so the estimate never
-under-counts output cost. The estimate is deliberately an **upper bound**: 10.3
-checks `spent + estimate` at claim time, and post-attempt re-evaluation against
-the *actual* usage corrects the difference — the same estimate-then-reconcile
-structure 9.3 applied to the token bucket, now applied to money.
+The input-token estimate uses the same estimator the limiter computes, and
+output is priced at the step's configured `max_tokens` — the ceiling, so the
+estimate never under-counts output cost. The estimate is deliberately an **upper
+bound**: 10.3 checks `spent + estimate` at claim time, and post-attempt
+re-evaluation against the *actual* usage corrects the difference — the same
+estimate-then-reconcile structure 9.3 applied to the token bucket, now applied to
+money.
+
+*As built (12.6):* the input-token estimator swapped ADR-010's `chars/4`
+heuristic for the real `internal/tokens` counter — `counter.CountRequest` over
+the fully framed request the executor would send (the same counter M12.3
+assembly and the M12.6 window guardrail use). On the mock and OpenAI the count
+is exact against the provider's reported input usage; on Anthropic it is the
+calibrated estimate. The 9.3 reconciliation histogram
+(`engine_ratelimit_estimate_error_tokens`) therefore tightens toward zero, and
+`chars/4` remains only as a fallback for a request that cannot be built (a
+corrupt config the caller will fail anyway).
 
 ### Unknown-model policy
 

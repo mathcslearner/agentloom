@@ -69,8 +69,18 @@ type ContextAssembledEvent struct {
 	// guardrail (12.6) compares against the model context window.
 	PreflightTokens int `json:"preflight_tokens"`
 	// BudgetTokens is the context budget in force, or 0 when the step declared
-	// none (12.3 behavior — no compaction).
+	// none and no window defaulted one (12.3 behavior — no compaction).
 	BudgetTokens int `json:"budget_tokens,omitempty"`
+	// BudgetSource records how BudgetTokens was chosen (ticket 12.6): "explicit"
+	// (author's budget_tokens), "window" (defaulted from the model context
+	// window), "explicit_capped" (author's budget tightened down to the window
+	// default), or "" (no budget). Together with ContextWindow it makes the
+	// window-guardrail decision auditable.
+	BudgetSource string `json:"budget_source,omitempty"`
+	// ContextWindow is the model's context window in tokens (ticket 12.6), 0 when
+	// the model is unguarded (no catalog window). The guardrail guarantees
+	// PreflightTokens + max_tokens ≤ ContextWindow for a guarded step.
+	ContextWindow int `json:"context_window,omitempty"`
 	// RawContextTokens / RawPreflightTokens are the pre-compaction totals; equal
 	// to the final totals when no compaction ran.
 	RawContextTokens   int `json:"raw_context_tokens,omitempty"`

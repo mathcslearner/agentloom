@@ -102,11 +102,29 @@ func (e *Engine) assembleContext(ctx context.Context, step gen.RunStep, executor
 	rawContextTokens := asm.ContextTokens
 	rawPreflight := 0
 	budgetTokens := 0
+	contextWindow := 0
 	var revisions []store.ContextRevisionEvent
 	var costRows []store.AttemptCostArgs
 	var summaries []contextmgr.SummaryAction
 
-	if spec.BudgetTokens != nil {
+	// Resolve the effective context budget (ticket 12.6): the model context
+	// window (from the pricing catalog) defaults a budget when the author
+	// declared no explicit budget_tokens, and an explicit budget may only
+	// TIGHTEN the window default (never loosen it — compacting to a looser
+	// budget would still overflow the provider). A model with no catalog window
+	// is unguarded: 12.4's explicit-budget-only behavior applies, and the hard
+	// guard (guardWindow) is a no-op for it. A resolved window that leaves no
+	// room for a headroom-margined default budget yields no default; the hard
+	// guard makes the final call against the real window (a tiny context can
+	// still fit).
+	winInfo, winOK := e.resolveWindow(executor, sc)
+	if winOK {
+		contextWindow = winInfo.window
+	}
+	defBudget, hasDefault, _ := e.windowDefaultBudget(winInfo, winOK)
+	effBudget, budgetSource, budgeted := contextmgr.EffectiveBudget(spec.BudgetTokens, defBudget, hasDefault)
+
+	if budgeted {
 		// Compaction (ticket 12.4): the budget is over the whole framed request,
 		// so a PreflightCounter is required — a step type that cannot count its
 		// request cannot enforce a budget (deterministic → permanent). The
@@ -116,7 +134,7 @@ func (e *Engine) assembleContext(ctx context.Context, step gen.RunStep, executor
 		if !pcok {
 			return nil, &contextError{cause: fmt.Errorf("step type %q cannot enforce a context budget (no preflight counter)", step.StepType)}
 		}
-		budgetTokens = *spec.BudgetTokens
+		budgetTokens = effBudget
 		measure := func(candidate string) (int, error) {
 			scM := sc
 			aug, ierr := injector.WithContext(scM, candidate)
@@ -193,6 +211,8 @@ func (e *Engine) assembleContext(ctx context.Context, step gen.RunStep, executor
 		ContextTokens:      contextTokens,
 		PreflightTokens:    preflight,
 		BudgetTokens:       budgetTokens,
+		BudgetSource:       string(budgetSource),
+		ContextWindow:      contextWindow,
 		RawContextTokens:   rawContextTokens,
 		RawPreflightTokens: rawPreflight,
 		Revisions:          len(revisions),
@@ -220,6 +240,8 @@ func (e *Engine) assembleContext(ctx context.Context, step gen.RunStep, executor
 		slog.Int("summaries", len(summaries)),
 		slog.Int("context_tokens", contextTokens),
 		slog.Int("budget_tokens", budgetTokens),
+		slog.String("budget_source", string(budgetSource)),
+		slog.Int("context_window", contextWindow),
 		slog.Int("preflight_tokens", preflight))
 	return augmented, nil
 }

@@ -223,10 +223,13 @@ type ResourceClaimer interface {
 
 An executor that does not implement it (noop, echo, sleep, pure tools) bypasses
 the limiter entirely — the middleware is a no-op for steps that name no
-resource. The estimate is a **rough** chars/4 + declared `max_tokens` heuristic
-in 9.2, refined by M12's real token counters; 9.3 reconciles the post-call
-`actual − estimate` on the token bucket so a biased estimator cannot let the
-fleet drift past the provider's real budget over time.
+resource. The estimate was a **rough** chars/4 + declared `max_tokens` heuristic
+in 9.2; **12.6 replaced the input half with the real `internal/tokens` counter**
+(`CountRequest` over the fully framed request), so the debit tracks real usage
+(exact on the mock and OpenAI, calibrated on Anthropic). 9.3 still reconciles the
+post-call `actual − estimate` on the token bucket so any residual bias cannot let
+the fleet drift past the provider's real budget over time — the reconciliation
+histogram simply tightens toward zero once the estimator is exact.
 
 ### Fairness stance (documented, deferred)
 

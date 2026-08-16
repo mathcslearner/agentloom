@@ -586,6 +586,85 @@ the blackboard for the next rollup; a `compaction:0` overhead row bills the
 mock/cheap call to this step. Re-running the identical conversation hits the
 summarizer cache — the second run's `compaction:0` rows are $0 `saved` rows.
 
+### Provider-window guardrails (as built, 12.6)
+
+12.6 closes M12: it makes "context overflow 400" unreachable *by construction*
+for every llm step, whether or not the author declared a `context` block, and
+swaps M9.2's `chars/4` estimator for the real token counters.
+
+**Model context windows in the catalog.** ADR-012's pricing catalog
+(`internal/cost`) gained an optional `context_window` (positive token count) on
+each `ModelEntry`, resolved by `Catalog.ContextWindow(name, at)` with the same
+exact → `<provider>:*` wildcard → miss order as the rate lookup. The embedded
+`defaults.json` carries windows for the real families (Anthropic 200k, OpenAI
+gpt-5 400k / o3 200k / `openai:*` 128k) plus a deliberately small `mock:small`
+(1024) so the offline fixtures and compose smokes exercise the guardrail without
+an override. A model with no window (no entry, no wildcard window; the `fallback`
+carries none) is **unguarded** — the ADR-010 "unlimited by omission" stance — so
+an operator opts a model into window safety by pricing it with a window.
+
+**Window-derived default budget.** The pure `contextmgr.DefaultBudget(window,
+max_tokens) = window − max_tokens − Headroom(window)` (headroom = `max(⌈5% ·
+window⌉, 64)`) turns a window into the default context budget when the author
+declared no explicit `budget_tokens`. `contextmgr.EffectiveBudget(explicit,
+default, hasDefault)` combines the two with the rule *an explicit budget may only
+tighten the window default, never loosen it* (`min`), reporting a `BudgetSource`
+(`explicit` / `window` / `explicit_capped` / none). So a `context` block with a
+compaction pipeline and **no** `budget_tokens` now auto-compacts to fit the
+window — window-safety with zero per-workflow budget authoring — while an
+explicit budget over the window is silently tightened to it. The engine
+(`assembleContext`) resolves the window from the step's `CostEstimate` resource,
+records `budget_source`/`context_window` on the `context_assembled` event, and
+otherwise runs 12.4/12.5 unchanged.
+
+**The hard guard.** A new engine stage `guardWindow` (`engine/window.go`) runs
+for every llm claim **after the budget/downgrade stage and before the rate
+limiter**, over the final (possibly downgraded) config: it counts the framed
+request (`PreflightTokens`) and, if `preflight + max_tokens > context_window`,
+fails the step **permanently before any provider call** (a `context_window_exceeded`
+DLQ, the 10.3 descriptive-dead-letter precedent — no new event) and records a
+`context_window_rejections` metric. A context-bearing step reaching here was
+already compacted to fit `window − headroom` by `assembleContext`, so the guard's
+real work is context-less oversize prompts, the rare post-downgrade
+smaller-window case, and recording `context_utilization` =
+`(preflight + max_tokens) / context_window` uniformly for every guarded claim. A
+cache hit short-circuits before the guard ($0, no call); an unguarded model is a
+no-op. Because the guard sits after the downgrade, it guards the model that will
+actually be called; because it sits before the limiter, a doomed request never
+debits limiter tokens.
+
+**Estimator refinement.** `LLMExecutor.CostEstimate`/`ResourceClaim` now compute
+input tokens via `counter.CountRequest(buildChatRequest(cfg))` (the same counter
+the assembly and guardrail use) instead of `chars/4`, so the M9 limiter debit and
+the M10 budget projection track real usage — exact on the mock and OpenAI,
+calibrated on Anthropic. `chars/4` remains only as a fallback when the request
+cannot be built. Captured before/after (`internal/exec` `TestEstimatorErrorImproves`,
+mock ground truth): over three representative requests the `chars/4` aggregate
+absolute error is 2 tokens and the counter's is **0** (exact by construction on
+the mock), so 9.3's `engine_ratelimit_estimate_error_tokens` histogram tightens
+to zero on the offline fleet.
+
+**Metrics.** New `context` subsystem (ADR-008): `engine_context_utilization_ratio{resource}`
+(histogram, pre-call, one per guarded claim) and
+`engine_context_window_rejections_total{resource}` (counter). The Grafana Engine
+board gained a **Context** row (utilization p50/p95, rejections/s, and the
+now-tightening estimate-error quantiles).
+
+**No migration, no new config var, no new metric beyond the two above.** The
+`context_window` is catalog data (operators set it via the pricing override), the
+headroom is a constant, and the budget-source/window fields ride the existing
+`context_assembled` event JSON. Canonical `examples/definitions/context_window.json`
+(offline mock on `mock/small`, no explicit budget → auto-compaction). Tests:
+`internal/cost` window resolution + validation; `internal/contextmgr` budget
+tables; `internal/exec` estimator before/after (exact on the mock); `internal/llm`
+mock context-window overflow; engine integration `TestContextWindowAutoCompacts`
+(budget_source=window, auto-compaction, `assembled + max_tokens ≤ window`),
+`TestContextWindowExceededDeadLetters` (context-less oversize → permanent DLQ, no
+provider call), `TestNoProviderContextOverflowByConstruction` (a window-enforcing
+mock proves the engine guard fires first — the DLQ error is the engine's typed
+`context_window_exceeded`, never the provider's overflow), and
+`TestContextWindowUnknownSkipsGuard` (a windowless model is unguarded).
+
 ## Consequences
 
 **Easier.**

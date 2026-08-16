@@ -895,13 +895,13 @@ When assembly exceeds the step budget, apply the configured strategy pipeline: `
 - [x] Summarizer cost flagged overhead; cache hit on repeat compaction (asserted) *(each summarization is a `compaction:<i>` `overhead: true` ledger row priced at `mock:cheap`; `TestContextSummarizationCacheHit` runs the identical conversation twice against one shared cache and asserts the second run's `compaction:*` rows are `cache_hit` $0 saved rows.)*
 - [x] Summarizer failure falls back deterministically with a warning event *(`TestContextSummarizerFallsBack`: an unroutable summarizer model → the `summarize` revision is an unchanged fallback carrying an `error`, the next deterministic strategy runs, the step completes under budget, and no summary/overhead is written.)*
 
-#### 12.6 — Provider window guardrails
+#### 12.6 — Provider window guardrails ✅
 **Depends on:** 12.4, 9.2
 Registry of model context windows (in the pricing/model catalog); pre-flight hard check (assembled + `max_tokens` ≤ window) → auto-compact, or typed failure if compaction disabled/insufficient; `context_utilization` histogram metric; refines M9.2's token estimator with real counts.
 **Done when:**
-- [ ] Oversize scenario auto-compacts; with compaction disabled → typed error, no provider call
-- [ ] E2E suite shows zero provider context-overflow errors by construction
-- [ ] Utilization histogram visible in Grafana; estimator error metric improves (before/after captured)
+- [x] Oversize scenario auto-compacts; with compaction disabled → typed error, no provider call *(`context_window` on the ADR-012 catalog defaults a context-bearing step's budget from the window — `budget_source: window` on the `context_assembled` event — so `context_window.json` (no explicit `budget_tokens`) auto-compacts to fit `mock/small`'s 1024 window; `TestContextWindowExceededDeadLetters` shows a context-less oversize step fail permanently before any provider call.)*
+- [x] E2E suite shows zero provider context-overflow errors by construction *(the `guardWindow` engine stage — after budget/downgrade, before the limiter — hard-fails `preflight + max_tokens > window` before any call; `TestNoProviderContextOverflowByConstruction` runs a window-enforcing mock and proves the engine's typed `context_window_exceeded` fires first, never the provider's overflow.)*
+- [x] Utilization histogram visible in Grafana; estimator error metric improves (before/after captured) *(new `context` subsystem `engine_context_utilization_ratio` + `engine_context_window_rejections_total`, a Grafana Engine **Context** row, and the estimator swapped from `chars/4` to the real `internal/tokens` counter — `TestEstimatorErrorImproves` captures aggregate abs error `chars/4=2` vs `counter=0` on the mock; `engine_ratelimit_estimate_error_tokens` tightens to zero.)*
 
 ---
 

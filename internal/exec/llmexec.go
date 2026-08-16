@@ -161,7 +161,11 @@ func (e LLMExecutor) ResourceClaim(sc StepContext) (string, int64, error) {
 	if err != nil {
 		return "", 0, fmt.Errorf("resolving model %q: %w", cfg.Model, err)
 	}
-	return provider.Manifest().Name + ":" + model, estimateLLMTokens(cfg), nil
+	est := e.estimateInputTokens(provider.Manifest().Name, model, cfg) + estimateLLMMaxTokens(cfg)
+	if est < 1 {
+		est = 1 // the token bucket requires a positive cost
+	}
+	return provider.Manifest().Name + ":" + model, est, nil
 }
 
 // TokenCounter implements TokenCounterProvider (ticket 12.2, ADR-014): the
@@ -276,7 +280,7 @@ func (e LLMExecutor) CostEstimate(sc StepContext) (CostEstimate, error) {
 	}
 	return CostEstimate{
 		Resource:    provider.Manifest().Name + ":" + model,
-		InputTokens: estimateLLMInputTokens(cfg),
+		InputTokens: e.estimateInputTokens(provider.Manifest().Name, model, cfg),
 		MaxTokens:   estimateLLMMaxTokens(cfg),
 	}, nil
 }
@@ -468,16 +472,33 @@ func (e LLMExecutor) PreflightTokens(sc StepContext, counter tokens.Counter) (in
 	return counter.CountRequest(req), nil
 }
 
-// estimateLLMInputTokens is the pre-call input-token estimate: roughly four
-// characters per token over the rendered prompt and messages.
-func estimateLLMInputTokens(cfg *dag.LLMConfig) int64 {
+// estimateInputTokens is the pre-call input-token estimate for the resolved
+// (provider, model): the real token counter's count of the whole framed
+// request (ticket 12.6), refining M9.2's chars/4 heuristic. The counter frames
+// system/messages/tool blocks exactly as the provider bills them, so the
+// limiter's token debit and the budget's input-token estimate track real usage
+// (on the mock and OpenAI, exactly; on Anthropic, the calibrated estimate). A
+// request-build failure (corrupt config) falls back to the chars/4 estimate —
+// the middleware then skips the check anyway once Execute lands the failure.
+func (e LLMExecutor) estimateInputTokens(provider, model string, cfg *dag.LLMConfig) int64 {
+	req, err := buildChatRequest(cfg)
+	if err != nil {
+		return estimateLLMInputTokensChars(cfg)
+	}
+	// Select always returns a usable counter (the chars/4 fallback family when
+	// the provider/model is unknown), so no nil check is needed.
+	counter, _ := e.tokenReg.Select(provider, model)
+	return int64(counter.CountRequest(req))
+}
+
+// estimateLLMInputTokensChars is the legacy chars/4 input-token estimate,
+// retained only as a fallback when the request cannot be built for the real
+// counter (a corrupt config the caller will fail anyway).
+func estimateLLMInputTokensChars(cfg *dag.LLMConfig) int64 {
 	inputChars := len(cfg.Prompt)
 	for _, m := range cfg.Messages {
 		inputChars += len(m.Content)
 	}
-	// A structured-output schema (ticket 11.3) rides in the request (native
-	// tool_use / response_format), so its bytes count toward the input
-	// estimate the M9 limiter and M10 budget price.
 	if cfg.OutputFormat != nil {
 		inputChars += len(cfg.OutputFormat.Schema)
 	}
@@ -492,21 +513,6 @@ func estimateLLMMaxTokens(cfg *dag.LLMConfig) int64 {
 		maxTokens = llmDefaultMaxTokens
 	}
 	return int64(maxTokens)
-}
-
-// estimateLLMTokens is the ADR-010 pre-call token estimate for an llm step:
-// roughly four characters per input token over the rendered prompt/messages,
-// plus the completion's max_tokens bound (defaulted when absent). It is
-// deliberately rough — M12's real token counters refine it, and 9.3
-// reconciles the post-call actual−estimate error back onto the bucket so a
-// biased estimator cannot drift the fleet past the provider's real budget.
-// Never below 1 (the token bucket requires a positive cost).
-func estimateLLMTokens(cfg *dag.LLMConfig) int64 {
-	est := estimateLLMInputTokens(cfg) + estimateLLMMaxTokens(cfg)
-	if est < 1 {
-		est = 1
-	}
-	return est
 }
 
 // buildChatRequest maps the (already template-rendered) step config onto

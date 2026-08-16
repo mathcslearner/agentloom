@@ -55,6 +55,8 @@ type contextAssembledPayload struct {
 	ContextTokens      int    `json:"context_tokens"`
 	PreflightTokens    int    `json:"preflight_tokens"`
 	BudgetTokens       int    `json:"budget_tokens"`
+	BudgetSource       string `json:"budget_source"`
+	ContextWindow      int    `json:"context_window"`
 	RawContextTokens   int    `json:"raw_context_tokens"`
 	RawPreflightTokens int    `json:"raw_preflight_tokens"`
 	Revisions          int    `json:"revisions"`

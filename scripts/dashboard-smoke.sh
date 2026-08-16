@@ -239,6 +239,24 @@ for _ in $(seq 3); do
 done
 note "quality runs submitted (3 each: pass/fail/native/unrepairable)"
 
+# Provider-window signal (ticket 12.6): the utilization histogram is populated
+# by every guarded mock llm step above (mock:* has a catalog window), so the
+# "Context window utilization" panel is non-empty from the workload already.
+# Here we also drive the rejection path: an oversize step on mock/small (window
+# 1024) with a completion bound alone over the window and no context block to
+# compact, so the guardrail fails it before any provider call — the "Context
+# window rejections" panel is non-empty and the guard is proven end-to-end.
+say "submitting the provider-window workload (auto-compact + an oversize rejection, paced 2s)"
+window_def=$(cat examples/definitions/context_window.json)
+oversize_def='{"schema_version":1,"name":"smoke-window-oversize","steps":[{"id":"big","type":"llm","config":{"model":"mock/small","prompt":"Write an essay.","max_tokens":2000}}],"edges":[]}'
+window_ids=(); oversize_ids=()
+for _ in $(seq 3); do
+  window_ids+=("$(submit "$window_def")")
+  oversize_ids+=("$(submit "$oversize_def")")
+  sleep 2
+done
+note "provider-window runs submitted (3 auto-compact + 3 oversize rejections)"
+
 say "429 storm — admin class (capacity 10, refill 2/s)"
 got_429=0
 for _ in $(seq 30); do
@@ -256,6 +274,8 @@ for id in "${qual_pass_ids[@]}"; do wait_terminal "$id" succeeded; done
 for id in "${qual_native_ids[@]}"; do wait_terminal "$id" succeeded; done
 for id in "${qual_fail_ids[@]}"; do wait_terminal "$id" failed; done
 for id in "${qual_unrep_ids[@]}"; do wait_terminal "$id" failed; done
+for id in "${window_ids[@]}"; do wait_terminal "$id" succeeded; done
+for id in "${oversize_ids[@]}"; do wait_terminal "$id" failed; done
 wait_terminal "$retry_id" succeeded
 note "all runs terminal"
 
@@ -282,6 +302,7 @@ allowlisted() {
     *engine_cost_budget_exceeded_total*) return 0 ;;  # no budgeted runs in the workload (ticket 10.5)
     *engine_cost_downgrades_total*) return 0 ;;  # no model_fallbacks in the workload (ticket 10.5)
     *engine_validate_judge_score_ratio*) return 0 ;;  # unscripted mock emits no parseable judge verdict (ticket 11.6)
+    *engine_ratelimit_estimate_error_tokens*) return 0 ;;  # no AGENTLOOM_RESOURCES limits in the smoke, so no token reconciliation (ticket 12.6)
   esac
   return 1
 }

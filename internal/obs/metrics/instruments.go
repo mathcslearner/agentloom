@@ -49,6 +49,11 @@ var (
 	// [0,1] ratio in ten linear buckets, so the score distribution and the
 	// pass/fail threshold band are both visible.
 	judgeScoreBuckets = prometheus.LinearBuckets(0.1, 0.1, 10)
+	// contextUtilizationBuckets covers the provider-window utilization (ticket
+	// 12.6): (preflight + max_tokens) / context_window. Mostly [0,1] with a few
+	// buckets above 1.0 for the (guarded, rejected) overflow tail, so both the
+	// healthy distribution and how close it runs to the window are legible.
+	contextUtilizationBuckets = []float64{0.1, 0.25, 0.5, 0.7, 0.8, 0.9, 0.95, 1.0, 1.1, 1.5}
 )
 
 // Claim results — the `result` label vocabulary (ADR-008), mirroring the
@@ -123,6 +128,9 @@ type WorkerMetrics struct {
 	semanticDepth    *prometheus.HistogramVec
 	outputRepairs    *prometheus.CounterVec
 	judgeScore       *prometheus.HistogramVec
+
+	contextUtilization *prometheus.HistogramVec
+	contextRejections  *prometheus.CounterVec
 }
 
 // NewWorkerMetrics registers the worker instrument set on reg (ADR-008:
@@ -323,6 +331,15 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 			Help:    "LLM-judge quality score distribution (ticket 11.6, ADR-013): the cost-bearing validator's [0,1] score, by validator name.",
 			Buckets: judgeScoreBuckets,
 		}, []string{"validator"}),
+		contextUtilization: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: Namespace, Subsystem: "context", Name: "utilization_ratio",
+			Help:    "Provider-window utilization (ticket 12.6, ADR-014): (preflight_tokens + max_tokens) / context_window for each guarded llm claim, by resolved resource. Recorded pre-call; a compaction-fit request stays below 1.0.",
+			Buckets: contextUtilizationBuckets,
+		}, []string{"resource"}),
+		contextRejections: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "context", Name: "window_rejections_total",
+			Help: "Claims the provider-window guardrail failed before any provider call (ticket 12.6): assembled context + max_tokens exceeded the model context window and compaction was absent or insufficient, by resolved resource.",
+		}, []string{"resource"}),
 	}
 	reg.MustRegister(
 		m.queueReadyDepth, m.queueStreamLength, m.queuePELSize, m.queueDelayedDepth,
@@ -342,6 +359,7 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 		m.costBudgetExceed, m.costDowngrades,
 		m.validateVerdicts, m.validatorResults, m.semanticDepth,
 		m.outputRepairs, m.judgeScore,
+		m.contextUtilization, m.contextRejections,
 	)
 	return m
 }
@@ -509,6 +527,18 @@ func (m *WorkerMetrics) OutputRepair(status string) {
 // JudgeScore records one llm_judge quality score by validator name.
 func (m *WorkerMetrics) JudgeScore(validator string, score float64) {
 	m.judgeScore.WithLabelValues(validator).Observe(score)
+}
+
+// ContextUtilization records one guarded claim's provider-window utilization
+// ratio by resolved resource (ticket 12.6).
+func (m *WorkerMetrics) ContextUtilization(resource string, ratio float64) {
+	m.contextUtilization.WithLabelValues(resource).Observe(ratio)
+}
+
+// ContextWindowRejection records one claim the provider-window guardrail
+// terminated before any provider call, by resolved resource (ticket 12.6).
+func (m *WorkerMetrics) ContextWindowRejection(resource string) {
+	m.contextRejections.WithLabelValues(resource).Inc()
 }
 
 // The setters below are the cmd/worker sampler's surface — point-in-time

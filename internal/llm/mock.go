@@ -42,6 +42,8 @@ type Mock struct {
 	latency LatencySpec
 	sleep   func(ctx context.Context, d time.Duration) error
 
+	contextWindow int64 // provider context window; 0 = no window enforcement
+
 	mu    sync.Mutex
 	rng   *rand.Rand
 	calls int64 // 1-based global call ordinal, for OnCall matching
@@ -74,6 +76,14 @@ type MockConfig struct {
 	// cancellation. Nil installs a real ctx-aware timer; tests inject a
 	// recording or instantaneous implementation to keep time controlled.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// ContextWindow, when positive, makes the mock reject a request whose
+	// estimated input tokens + max_tokens exceed the window with a permanent
+	// 400 (code "context_length_exceeded") — the same overflow a real provider
+	// returns. Tests set it to the catalog window for a model so the M12.6
+	// provider-window guardrail can be proven to fire BEFORE the mock ever
+	// sees an oversize request (the "zero provider overflow by construction"
+	// criterion). 0 (default) disables the check — the mock accepts any size.
+	ContextWindow int64
 }
 
 // MockRule is one scripted response rule: a match predicate plus the
@@ -247,12 +257,16 @@ func NewMock(cfg MockConfig) (*Mock, error) {
 	if sleep == nil {
 		sleep = realSleep
 	}
+	if cfg.ContextWindow < 0 {
+		return nil, fmt.Errorf("llm: mock: context_window must not be negative, got %d", cfg.ContextWindow)
+	}
 	return &Mock{
-		rules:   rules,
-		def:     def,
-		inject:  cfg.Inject,
-		latency: cfg.Latency,
-		sleep:   sleep,
+		rules:         rules,
+		def:           def,
+		inject:        cfg.Inject,
+		latency:       cfg.Latency,
+		sleep:         sleep,
+		contextWindow: cfg.ContextWindow,
 		//nolint:gosec // G404: a seeded PRNG is the point — deterministic simulation, never security-sensitive.
 		rng:  rand.New(rand.NewPCG(uint64(cfg.Seed), uint64(cfg.Seed)^0x9e3779b97f4a7c15)),
 		seqs: make([]int, len(rules)),
@@ -313,6 +327,22 @@ func (m *Mock) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) 
 	}
 
 	prompt := flattenPrompt(req)
+
+	// Provider context-window overflow (ticket 12.6): decided before any draw,
+	// like Validate — a real provider returns a permanent 400 when the framed
+	// request plus the completion bound exceed the model window. The input
+	// estimate mirrors buildResponse's Usage so the check and the reported usage
+	// agree. Only enforced when a window is configured.
+	if m.contextWindow > 0 {
+		if inputEst := int64(len(prompt)/4) + 1; inputEst+int64(req.MaxTokens) > m.contextWindow {
+			return ChatResponse{}, &Error{
+				Provider: ProviderMock,
+				Class:    dag.ClassPermanent,
+				Code:     "context_length_exceeded",
+				Message:  fmt.Sprintf("request of ~%d input + %d max_tokens exceeds context window %d", inputEst, req.MaxTokens, m.contextWindow),
+			}
+		}
+	}
 
 	m.mu.Lock()
 	m.calls++

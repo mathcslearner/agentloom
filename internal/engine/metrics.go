@@ -128,6 +128,18 @@ type Metrics interface {
 	// 11.6, ADR-013) by validator name, as a [0,1] ratio — the llm_judge's
 	// score distribution in bounded buckets.
 	JudgeScore(validator string, score float64)
+	// ContextUtilization records one guarded llm claim's provider-window
+	// utilization (ticket 12.6, ADR-014) by resolved resource, as the ratio
+	// (preflight_tokens + max_tokens) / context_window. Recorded pre-call for
+	// every llm step whose model has a known window, so the distribution shows
+	// how close assembled requests run to the window (and that compaction keeps
+	// them below 1.0).
+	ContextUtilization(resource string, ratio float64)
+	// ContextWindowRejection records one claim the provider-window guardrail
+	// terminated (ticket 12.6): the assembled request plus max_tokens exceeded
+	// the model context window and compaction was absent or insufficient, so the
+	// step failed permanently before any provider call, by resolved resource.
+	ContextWindowRejection(resource string)
 }
 
 // nopMetrics is the default Metrics: every test layer runs with recording
@@ -164,3 +176,5 @@ func (nopMetrics) ValidatorResult(string, string)             {}
 func (nopMetrics) SemanticRetryDepth(string, int)             {}
 func (nopMetrics) OutputRepair(string)                        {}
 func (nopMetrics) JudgeScore(string, float64)                 {}
+func (nopMetrics) ContextUtilization(string, float64)         {}
+func (nopMetrics) ContextWindowRejection(string)              {}

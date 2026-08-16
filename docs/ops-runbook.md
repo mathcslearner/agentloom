@@ -117,3 +117,38 @@ Set `AGENTLOOM_CACHE_ENABLED=false` on the worker fleet to run every step
 uncached (the API's `/v1/cache/*` routes then answer `503 cache_unavailable`).
 Because the cache is fail-open, you rarely need this — a misbehaving Redis
 already degrades to uncached execution on its own.
+
+## Model context windows (ticket 12.6)
+
+The provider-window guardrail keeps an llm step's assembled context plus its
+completion `max_tokens` under the model's context window, so a provider
+`context_length_exceeded` 400 is unreachable by construction — but only for
+models the pricing catalog gives a window. Windows live in the same catalog as
+rates (ADR-012): each model entry may carry a `context_window` (a positive token
+count), resolved exact → `<provider>:*` wildcard → miss.
+
+The embedded defaults window the real families (Anthropic 200k, OpenAI gpt-5
+400k / o3 200k / `openai:*` 128k) and the mock models. A model with **no**
+window — no entry, no wildcard window — is **unguarded**: its requests are never
+window-checked, exactly as an unpriced model is never rate-limited. So the fix
+when you see a `context_window_exceeded` dead-letter (or want a private model
+guarded) is to add the window to your pricing override:
+
+```json
+{
+  "schema_version": 1,
+  "models": [
+    {"name": "anthropic:my-model", "effective_from": "2026-01-01",
+     "context_window": 200000, "input_per_mtok": 3.0, "output_per_mtok": 15.0}
+  ]
+}
+```
+
+Set it via `AGENTLOOM_PRICING` (inline) or `AGENTLOOM_PRICING_FILE` (path) on the
+worker fleet — the same override that sets rates. A larger `context_window`
+raises the default budget (window − `max_tokens` − 5% headroom) that a
+context-bearing step with no explicit `budget_tokens` auto-compacts to; an
+author who wants a tighter budget sets `context.budget_tokens` (it may only
+*tighten* the window default, never loosen it). Watch the **Context** row on the
+Engine dashboard: `engine_context_window_rejections_total` should sit at zero,
+and `engine_context_utilization_ratio` p95 should stay below 1.0.
