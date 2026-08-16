@@ -131,6 +131,24 @@
         "run"
       ]
     },
+    "CompactionStrategy": {
+      "properties": {
+        "strategy": {
+          "type": "string"
+        },
+        "n": {
+          "type": "integer"
+        },
+        "min_tokens": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "strategy"
+      ]
+    },
     "ContextMissingPolicy": {
       "type": "string",
       "enum": [
@@ -179,6 +197,9 @@
         "pinned": {
           "type": "boolean"
         },
+        "priority": {
+          "type": "integer"
+        },
         "on_missing": {
           "$ref": "#/$defs/ContextMissingPolicy"
         }
@@ -203,6 +224,15 @@
         "sources": {
           "items": {
             "$ref": "#/$defs/ContextSource"
+          },
+          "type": "array"
+        },
+        "budget_tokens": {
+          "type": "integer"
+        },
+        "compaction": {
+          "items": {
+            "$ref": "#/$defs/CompactionStrategy"
           },
           "type": "array"
         }

@@ -406,9 +406,17 @@ lock and monotonic seq), and since 12.3 `context_assembled` (payload
 `ContextAssembledEvent`: a context-bearing llm step's pre-execution assembly
 manifest — the counter fingerprint, the assembled context tokens, the
 pre-flight request total, and each source's disposition
-`included | truncated | skipped` — appended by `RecordContextAssembled` in its
-own short fenced transaction before the assembled request runs, the
-`model_downgraded` precedent).
+`included | truncated | skipped` (since 12.4 also `dropped`, plus
+`budget_tokens`/`raw_*_tokens`/`revisions`) — appended by
+`RecordContextAssembled` in its own short fenced transaction before the
+assembled request runs, the `model_downgraded` precedent), and since 12.4
+`context_revision` (payload `ContextRevisionEvent`: one deterministic
+compaction strategy's application to shrink an over-budget assembly — the
+strategy, its parameters, the framed-request tokens before/after, and the
+per-entry drop/truncate actions — appended by the *same* `RecordContextAssembled`
+call, one per strategy that ran, ahead of the `context_assembled` event, so the
+whole compaction decision is one fenced atomic write reading raw → revision* →
+assembled in seq order).
 
 **`blackboard_entries`** — the run-scoped blackboard (ticket 12.2, ADR-014):
 shared, versioned key/value memory steps read and write during a run.

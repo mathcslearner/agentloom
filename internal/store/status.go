@@ -308,4 +308,13 @@ const (
 	// request runs; it is not a state transition (the assembled content is
 	// durable on the attempt via the request the executor sends).
 	EventContextAssembled = "context_assembled"
+
+	// EventContextRevision: one deterministic compaction strategy was applied
+	// to shrink an over-budget assembled context (ticket 12.4, ADR-014). The
+	// payload (ContextRevisionEvent) carries the strategy, its parameters, the
+	// framed-request tokens before and after, and the per-entry drop/truncate
+	// actions. Appended by RecordContextAssembled in the same fenced
+	// transaction as the context_assembled event (one atomic audit under the
+	// claim fence), one event per strategy that ran, before the assembled event.
+	EventContextRevision = "context_revision"
 )

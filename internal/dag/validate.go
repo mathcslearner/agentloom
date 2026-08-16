@@ -324,6 +324,58 @@ func (v *validator) checkContext(path string, s Step) {
 		}
 		v.checkContextSource(entry, src)
 	}
+	v.checkCompaction(path, cs)
+}
+
+// checkCompaction validates the budget and the compaction strategy pipeline
+// (ADR-014, ticket 12.4): a positive budget, a bounded pipeline of known
+// strategies with their per-strategy parameters (sliding_window requires n >=
+// 1; truncate_oldest admits an optional min_tokens >= 0; a parameter on a
+// strategy it does not belong to is rejected), no duplicate strategies, and
+// the reserved `summarize` strategy rejected until 12.5. The codec already
+// rejected unknown strategy kinds; here the shape and bounds.
+func (v *validator) checkCompaction(path string, cs *ContextSpec) {
+	if cs.BudgetTokens != nil && *cs.BudgetTokens < 1 {
+		v.add(CodeContextFieldInvalid, path+".budget_tokens", "must be at least 1, got %d", *cs.BudgetTokens)
+	}
+	if len(cs.Compaction) > MaxCompactionStrategies {
+		v.add(CodeContextFieldInvalid, path+".compaction", "must have at most %d strategies, got %d", MaxCompactionStrategies, len(cs.Compaction))
+	}
+	seen := make(map[CompactionStrategyKind]int, len(cs.Compaction))
+	for i, st := range cs.Compaction {
+		entry := fmt.Sprintf("%s.compaction[%d]", path, i)
+		switch st.Strategy {
+		case "":
+			v.add(CodeContextFieldRequired, entry+".strategy", "strategy is required")
+			continue
+		case SummarizeStrategy:
+			v.add(CodeContextFieldInvalid, entry+".strategy", "the %q strategy is reserved for a later release (12.5) and not yet supported", string(SummarizeStrategy))
+		case SlidingWindow:
+			if st.N == nil {
+				v.add(CodeContextFieldRequired, entry+".n", "n is required for a sliding_window strategy")
+			} else if *st.N < 1 {
+				v.add(CodeContextFieldInvalid, entry+".n", "must be at least 1, got %d", *st.N)
+			}
+		case TruncateOldest:
+			if st.MinTokens != nil && *st.MinTokens < 0 {
+				v.add(CodeContextFieldInvalid, entry+".min_tokens", "must be non-negative, got %d", *st.MinTokens)
+			}
+		}
+		// Reject parameters set on a strategy they do not belong to.
+		if st.N != nil && st.Strategy != SlidingWindow {
+			v.add(CodeContextFieldInvalid, entry+".n", "n is not valid for a %s strategy", string(st.Strategy))
+		}
+		if st.MinTokens != nil && st.Strategy != TruncateOldest {
+			v.add(CodeContextFieldInvalid, entry+".min_tokens", "min_tokens is not valid for a %s strategy", string(st.Strategy))
+		}
+		if st.Strategy != "" {
+			if first, dup := seen[st.Strategy]; dup {
+				v.add(CodeContextFieldInvalid, entry+".strategy", "duplicate strategy %q (first at compaction[%d])", string(st.Strategy), first)
+			} else {
+				seen[st.Strategy] = i
+			}
+		}
+	}
 }
 
 // checkContextSource validates one source's per-kind required/forbidden

@@ -399,6 +399,104 @@ honest count is the one over the text actually assembled. ADR-014's
 "cache `(count, counter_id)`, recompute on mismatch" is thus trivially honored:
 the assembly count is always fresh under the current counter.
 
+### Deterministic compaction (as built, 12.4)
+
+Compaction is the shrink-to-budget half the assembly section deferred: when an
+assembled context makes the framed request exceed a step's token budget, the
+step's ordered strategy pipeline runs before the provider call, until the
+request fits or a typed failure fires. 12.4 delivers the three deterministic
+strategies, the budget guarantee, and the revision audit; the summarizer
+strategy (12.5) and the provider-window default budget (12.6) build on it.
+
+**Where the budget lives.** `budget_tokens` and `compaction` are new fields on
+the same `context` envelope block (`dag.ContextSpec`), so they materialize onto
+`run_steps.context_policy` (0022) with the sources — **no new migration**. A
+budget is an explicit positive token cap; the pipeline is an ordered list of
+strategies. In 12.4 a `compaction` pipeline with no `budget_tokens` is inert
+(nothing to compare against); 12.6 defaults the budget from the model context
+window so a bare pipeline fires. `context.Priority` on a source (default 0)
+orders `drop_lowest_priority`.
+
+**The budget is over the whole framed request, not the preamble.** ADR-014's
+arithmetic identity — "assembled ≤ budget" is the same number as "assembled +
+`max_tokens` ≤ window" — means compaction shrinks the movable part (the context
+preamble) while measuring the *whole* request each pass through the engine's
+`PreflightCounter` (the same count 12.3 records and 12.6 guards). Because BPE
+counts are not additive, every strategy re-measures the framed request after it
+acts rather than trusting a per-entry sum.
+
+**The compaction unit is a source (one entry).** A source renders to exactly
+one `<context>` block (a tag-selected blackboard source wraps several
+`<entry>`, a retrieval source several `<doc>`, but as one block), so
+`contextmgr.Render(entries)` reproduces 12.3's byte-identical preamble and the
+strategies operate at source granularity — "keep the last N messages" is the
+last N non-pinned sources, "drop lowest priority" evicts whole sources, "middle-
+out truncate the oldest" truncates a whole source's rendered content.
+
+**The three strategies (`internal/contextmgr/compact.go`), each while over
+budget:**
+
+- **`sliding_window` (n)** — one-shot: keep only the last `n` non-pinned
+  sources in message order, drop the earlier ones. Pinned sources are always
+  kept and do not count toward `n`.
+- **`drop_lowest_priority`** — evict one non-pinned source at a time, lowest
+  `priority` first (ties broken by later declaration), re-measuring after each,
+  until the request fits or no droppable source remains.
+- **`truncate_oldest` (min_tokens?)** — middle-out-truncate the oldest
+  (lowest-index) non-pinned source above the floor with a fixed
+  `…[elided]…` marker (a binary search over the rune split, guaranteed ≤ the
+  local target), moving to the next-oldest while still over, until the request
+  fits or every non-pinned source is at its `min_tokens` floor (default 0).
+
+`summarize` is a **reserved-and-rejected** strategy name (the
+`retry_on: validation_failed` precedent) until 12.5.
+
+**Pinned exemption & the hard guarantee.** No strategy ever drops or truncates a
+pinned source. After the pipeline, either the framed request is ≤ budget, or
+`Compact` returns a typed `*contextmgr.OverBudgetError` — which the engine turns
+into a **permanent** step failure *before any provider call* (ADR-006 row 21).
+The error distinguishes `PinnedOnly` (the pinned set alone exceeds the budget —
+the pins cannot be honored) from an ordinary shortfall (the non-pinned set could
+not be shrunk enough). Overflow is never sent; a context-overflow 400 is
+unreachable by construction for any budgeted step.
+
+**Determinism & audit.** Every ordering is by declaration position or an
+author-declared priority, and truncation is a deterministic binary search with a
+fixed marker, so the same store state produces byte-identical compacted output
+and identical revisions (the 12.4 property/determinism tests). Each strategy
+that *runs* (i.e. the request was still over budget at its turn — a strategy
+that no-ops because it was already under budget does not run) appends a
+**`context_revision` event** (`store.ContextRevisionEvent`): the strategy, its
+parameters, the framed-request tokens before/after, and the per-entry
+drop/truncate actions. The N revision events plus the final `context_assembled`
+event (now carrying `budget_tokens`, `raw_context_tokens`/`raw_preflight_tokens`
+= the pre-compaction totals, `revisions` = the count, and the *post*-compaction
+`sources` dispositions incl. the new `dropped`) are appended in **one fenced
+transaction** under the claim (the 12.3 `RecordContextAssembled` grew a
+`Revisions` slice), so the log reads raw → revision* → assembled in seq order,
+queryable per step attempt. A hermetic property that survives: on the mock the
+recorded post-compaction `preflight_tokens` still equals the attempt's reported
+`Usage.InputTokens` exactly. An over-budget failure's summary rides the DLQ
+reason (the descriptive dead-letter is the record; the per-revision events are
+not persisted for a failed attempt — a documented limitation).
+
+**Worked examples** (mock counter, illustrative token totals):
+
+1. *Sliding window fits.* Five turns (~90 tok each) + a pinned instruction
+   (~20 tok), budget 200, pipeline `[sliding_window n=3]`. Raw request ~370 >
+   200 → the window keeps turn₃,₄,₅ + the pin (~290)… still > 200 → with a
+   trailing `truncate_oldest`/`drop_lowest_priority` the oldest survivor is
+   truncated or dropped until ≤ 200. `context_revision`: `sliding_window`
+   (dropped turn₁,turn₂), then the trailing strategy. Result: pin + recent turns,
+   under budget, dropped turns absent from the prompt.
+2. *Pin alone too big.* Two pinned 200-token literals, budget 5, any pipeline.
+   No strategy may touch a pin → `OverBudgetError{PinnedOnly:true}` → the step
+   dead-letters permanent, zero provider calls, no `context_assembled` event.
+3. *Pure guardrail.* A budget with an **empty** pipeline and an over-budget
+   assembly → immediate `OverBudgetError{Applied:[]}` (no strategy ran) → the
+   same permanent pre-call failure. This is the shape 12.6 reuses for the
+   provider-window check.
+
 ## Consequences
 
 **Easier.**

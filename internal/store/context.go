@@ -13,6 +13,7 @@ package store
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,23 +46,78 @@ type ContextSourceRecord struct {
 }
 
 // ContextAssembledEvent is the context_assembled event payload (ticket 12.3,
-// ADR-014): the assembled sources' dispositions, the counter that measured
-// them, and the pre-flight totals.
+// ADR-014): the assembled sources' final dispositions (after any 12.4
+// compaction), the counter that measured them, and the token totals. The
+// Sources and *Tokens fields describe what is actually sent — a compacted
+// assembly reports the shrunk numbers, and the raw (pre-compaction) figures
+// ride alongside for the audit.
 type ContextAssembledEvent struct {
 	StepID    string `json:"step_id"`
 	AttemptNo int32  `json:"attempt"`
 	// CounterID is the tokens.Counter fingerprint used for every count here
 	// (e.g. "mock/estimate@1", "fallback/chars4@1").
 	CounterID string `json:"counter_id"`
-	// Sources is the per-source disposition, in declaration (precedence) order.
+	// Sources is the per-source disposition (included | truncated | skipped |
+	// dropped) in declaration (precedence) order — the final state after any
+	// compaction.
 	Sources []ContextSourceRecord `json:"sources"`
-	// ContextTokens is the assembled context's counted size (the sum of the
-	// included sources' contributions plus framing between them).
+	// ContextTokens is the (post-compaction) assembled context's counted size.
 	ContextTokens int `json:"context_tokens"`
 	// PreflightTokens is the counted size of the whole assembled request
 	// (system, messages, tools, response format) — the number the window
 	// guardrail (12.6) compares against the model context window.
 	PreflightTokens int `json:"preflight_tokens"`
+	// BudgetTokens is the context budget in force, or 0 when the step declared
+	// none (12.3 behavior — no compaction).
+	BudgetTokens int `json:"budget_tokens,omitempty"`
+	// RawContextTokens / RawPreflightTokens are the pre-compaction totals; equal
+	// to the final totals when no compaction ran.
+	RawContextTokens   int `json:"raw_context_tokens,omitempty"`
+	RawPreflightTokens int `json:"raw_preflight_tokens,omitempty"`
+	// Revisions is the number of compaction strategies that ran (each also its
+	// own context_revision event); 0 when the assembly fit the budget.
+	Revisions int `json:"revisions,omitempty"`
+}
+
+// ContextRevisionActionRecord is one entry's drop/truncate action in a
+// compaction strategy (ticket 12.4).
+type ContextRevisionActionRecord struct {
+	SourceIndex  int    `json:"source_index"`
+	Name         string `json:"name"`
+	Action       string `json:"action"` // "dropped" | "truncated"
+	TokensBefore int    `json:"tokens_before"`
+	TokensAfter  int    `json:"tokens_after"`
+}
+
+// ContextRevisionEvent is the context_revision event payload (ticket 12.4,
+// ADR-014): one deterministic compaction strategy's application to shrink an
+// over-budget assembled context — what ran, its parameters, the framed-request
+// tokens before/after, and the per-entry actions. Every strategy that runs
+// writes one, before the final context_assembled event, so the whole
+// compaction decision is reconstructable per step attempt.
+type ContextRevisionEvent struct {
+	StepID    string `json:"step_id"`
+	AttemptNo int32  `json:"attempt"`
+	// Index is the strategy's position in the pipeline.
+	Index int `json:"index"`
+	// Strategy is the strategy that ran (drop_lowest_priority | truncate_oldest
+	// | sliding_window).
+	Strategy string `json:"strategy"`
+	// N / MinTokens echo the strategy's parameters when set.
+	N         *int `json:"n,omitempty"`
+	MinTokens *int `json:"min_tokens,omitempty"`
+	// Budget is the token budget in force.
+	Budget int `json:"budget"`
+	// TokensBefore / TokensAfter are the framed-request totals around the
+	// strategy — the numbers compared to Budget.
+	TokensBefore int `json:"tokens_before"`
+	TokensAfter  int `json:"tokens_after"`
+	// Changed reports whether the strategy altered the assembly.
+	Changed bool `json:"changed"`
+	// Actions is the per-entry drop/truncate detail.
+	Actions []ContextRevisionActionRecord `json:"actions,omitempty"`
+	// Kept is the names of the entries still present after this strategy.
+	Kept []string `json:"kept,omitempty"`
 }
 
 // RecordContextAssembledArgs are the inputs to RecordContextAssembled.
@@ -74,6 +130,10 @@ type RecordContextAssembledArgs struct {
 	ClaimID uuid.UUID
 	// Event is the assembly detail recorded on the context_assembled event.
 	Event ContextAssembledEvent
+	// Revisions are the compaction strategies that ran (ticket 12.4), each
+	// appended as its own context_revision event before the assembled event, in
+	// order. Empty when the assembly fit its budget (or the step declared none).
+	Revisions []ContextRevisionEvent
 	// Now is the injected current time. Required.
 	Now time.Time
 }
@@ -103,6 +163,17 @@ func RecordContextAssembled(ctx context.Context, q Querier, args RecordContextAs
 			want: StepStatusRunning, to: StepStatusRunning, claim: &args.ClaimID,
 		})
 	}
+	// Compaction revisions first (ticket 12.4): each strategy that ran is its
+	// own event, appended before the final assembled event so the log reads
+	// raw → revision* → assembled in seq order — the whole compaction decision
+	// under one claim fence, in one transaction.
+	for i := range args.Revisions {
+		args.Revisions[i].StepID = args.StepID
+		args.Revisions[i].AttemptNo = step.AttemptCount
+		if err := appendEvent(ctx, gq, op, args.RunID, EventContextRevision, args.Revisions[i]); err != nil {
+			return err
+		}
+	}
 	args.Event.StepID = args.StepID
 	args.Event.AttemptNo = step.AttemptCount
 	if err := appendEvent(ctx, gq, op, args.RunID, EventContextAssembled, args.Event); err != nil {
@@ -110,6 +181,6 @@ func RecordContextAssembled(ctx context.Context, q Querier, args RecordContextAs
 	}
 	log.From(ctx).InfoContext(ctx, "context assembled for step",
 		log.RunID(args.RunID.String()), log.StepID(args.StepID),
-		log.Attempt(int(step.AttemptCount)))
+		log.Attempt(int(step.AttemptCount)), slog.Int("revisions", len(args.Revisions)))
 	return nil
 }

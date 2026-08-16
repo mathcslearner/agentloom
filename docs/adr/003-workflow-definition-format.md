@@ -612,6 +612,18 @@ and materialized at instantiation (`run_steps.context_policy`). The
 declarative *reads* the 12.2 blackboard section deferred are exactly these
 `blackboard` context sources.
 
+*Ticket 12.4 (ADR-014) added the compaction fields to the same block:*
+`budget_tokens` (a positive framed-request token cap; when the assembled
+request exceeds it the pipeline runs), `compaction` (an ordered list of
+`{ strategy, n?, min_tokens? }` — `sliding_window` requires `n ≥ 1`,
+`truncate_oldest` admits an optional `min_tokens ≥ 0`, `drop_lowest_priority`
+takes no parameter; `summarize` is reserved for 12.5 and rejected; at most 8,
+no duplicates), and a per-source `priority` (default 0, orders
+`drop_lowest_priority`). Same codes (`context_field_required`/
+`context_field_invalid`); a parameter set on a strategy it does not belong to
+is rejected. A `compaction` pipeline with no `budget_tokens` is admissible but
+inert until 12.6 defaults the budget from the model window.
+
 ### Enforcement points
 
 For conformance, the rules above land in specific tickets: **1.2** — strict

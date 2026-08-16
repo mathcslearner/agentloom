@@ -54,6 +54,7 @@ func TestGeneratedSchemaContent(t *testing.T) {
 		"Definition", "Step", "Edge", "ParamSpec", "RetryPolicy", "BackoffSpec",
 		"CachePolicy", "CacheMode", "CacheScope",
 		"ContextSpec", "ContextSource", "ContextSourceKind", "ContextMissingPolicy",
+		"CompactionStrategy",
 		"LLMConfig", "ToolConfig", "RetrieveConfig", "MapConfig", "PlannerConfig",
 		"AgentConfig", "HumanApprovalConfig", "JoinConfig", "BranchConfig",
 		"NoopConfig", "EchoConfig", "SleepConfig", "FailNTimesConfig", "CounterConfig",

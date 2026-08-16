@@ -206,6 +206,7 @@
             "kind": "blackboard",
             "name": "notes",
             "tags": ["draft"],
+            "priority": 1,
             "on_missing": "skip"
           },
           {
@@ -214,8 +215,15 @@
             "retriever": "pg_fulltext",
             "query": "editorial style guide",
             "top_k": 3,
+            "priority": 2,
             "on_missing": "skip"
           }
+        ],
+        "budget_tokens": 8000,
+        "compaction": [
+          {"strategy": "sliding_window", "n": 4},
+          {"strategy": "truncate_oldest", "min_tokens": 64},
+          {"strategy": "drop_lowest_priority"}
         ]
       }
     },

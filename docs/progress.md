@@ -7050,3 +7050,126 @@ cross-amended.
 `pinned` when assembly exceeds the budget (12.4), summarization compaction
 (12.5), provider-window guardrails swapping M9.2's chars/4 estimator for the
 real counters (12.6).
+
+### 12.4 — Deterministic compaction strategies ✅
+
+Delivered **deterministic context compaction**: when an assembled context
+(12.3) makes the framed request exceed a step's token budget, the step's
+ordered strategy pipeline runs in the pre-execution path — `sliding_window`,
+`truncate_oldest`, `drop_lowest_priority` — until the request fits or a typed
+`ContextOverBudget` failure fires **before any provider call**. Pinned sources
+are never dropped or truncated; every strategy application is audited as a
+`context_revision` event. The summarizer strategy (12.5) and the provider-
+window default budget (12.6) build on this. **No new migration** (the budget +
+pipeline live in the `context` spec already materialized on
+`run_steps.context_policy`), **no new config var, no new metric**
+(`context_utilization` is 12.6).
+
+**Contract (`internal/dag`).** `ContextSpec` grew `BudgetTokens *int`
+(`budget_tokens`, positive) and `Compaction []CompactionStrategy`
+(`compaction`, ≤ `MaxCompactionStrategies`=8, no duplicates);
+`CompactionStrategyKind` (`drop_lowest_priority | truncate_oldest |
+sliding_window`, plus the **reserved-and-rejected** `summarize` — the
+`retry_on: validation_failed` precedent, rejected in `checkCompaction` until
+12.5); `CompactionStrategy{Strategy, N *int, MinTokens *int}` with per-strategy
+parameter rules (`sliding_window` requires `n ≥ 1`; `truncate_oldest` admits
+`min_tokens ≥ 0`; a parameter on the wrong strategy is rejected);
+`ContextSource.Priority *int` (default 0, `EffectivePriority()`). Decode grew a
+closed-enum check for strategy kinds; validation is `checkCompaction` under the
+existing `context_field_required`/`context_field_invalid` codes. Regenerated
+`workflow-definition.v1.json` (new `CompactionStrategy` def + the three fields);
+both kitchen sinks carry a budget + all three strategies + a priority (construct
+pin extended); `testdata/invalid_structural/context_bad.json` grew seven
+compaction cases (budget<1, missing/zero `n`, forbidden `n`/`min_tokens`,
+reserved `summarize`, duplicate strategy) with exact expectations. A
+`compaction` pipeline with no `budget_tokens` is admissible but inert until 12.6
+defaults the budget.
+
+**Assembler leaf (`internal/contextmgr`).** `Assemble` now also produces
+`Assembly.Entries []Entry` (the rendered non-skipped sources — the compaction
+unit; a source maps to exactly one entry so `Render(entries)` reproduces 12.3's
+byte-identical preamble, which is how the 12.3 goldens survive unchanged). New
+`compact.go`: `Compact(asm, Policy{Budget, Pipeline}, counter, MeasureFunc) →
+Compacted` measures the **whole framed request** (`MeasureFunc`, supplied by the
+engine as inject-preamble-then-`PreflightTokens`) each pass — the same
+arithmetic 12.6's window guardrail uses, and necessary because BPE counts are
+not additive. `sliding_window` (one-shot: keep last `n` non-pinned in message
+order), `drop_lowest_priority` (evict one non-pinned at a time, lowest priority
+then later-declared, re-measuring), `truncate_oldest` (middle-out truncate the
+oldest non-pinned above the `min_tokens` floor with a fixed `…[elided]…` marker
+— a binary search over the rune split guaranteed ≤ the local target — moving to
+the next-oldest while over). Pinned entries are untouchable across every
+strategy. On failure a typed `*OverBudgetError{Budget, Tokens, PinnedTokens,
+PinnedOnly, Applied}` (`PinnedOnly` = the pins alone exceed the budget). Each
+strategy that runs yields a `Revision` (strategy, params, tokens before/after,
+per-entry actions, kept names). Tests: per-strategy tables, an
+under-budget-noop, pinned-exceeds, empty-pipeline guardrail, determinism, a
+Dropped-report check, and a **rapid property test** (arbitrary oversized
+assemblies × pipelines → `FinalTokens ≤ budget` or `*OverBudgetError`, and every
+pinned entry survives byte-identical).
+
+**Store (`internal/store`).** New `context_revision` event
+(`EventContextRevision`) + `ContextRevisionEvent` payload (strategy, params,
+budget, tokens before/after, `ContextRevisionActionRecord[]`, kept names).
+`RecordContextAssembledArgs` grew a `Revisions []ContextRevisionEvent` slice;
+`RecordContextAssembled` appends them **before** the `context_assembled` event
+in the same fenced tx (raw → revision* → assembled in seq order, one atomic
+audit under the claim fence). `ContextAssembledEvent` grew `BudgetTokens`,
+`RawContextTokens`/`RawPreflightTokens` (pre-compaction totals), and `Revisions`
+(count); the `Sources` dispositions now include `dropped`. **No migration** —
+revisions are events, the compaction spec is already on `context_policy`.
+
+**Engine (`engine/context.go`).** `assembleContext` gained the compaction stage
+after `Assemble`: if `spec.BudgetTokens != nil` it requires a `PreflightCounter`
+(else permanent — a step that cannot count its request cannot enforce a budget),
+builds the `MeasureFunc` (inject candidate preamble → `PreflightTokens`), and
+calls `Compact`. An `*OverBudgetError` (or a measure-build failure) is a
+**permanent** `contextError` → DLQ before any provider call (ADR-006 row 21),
+the DLQ reason carrying the budget/pinned/applied summary. Otherwise the
+compacted preamble is injected and the revisions + the extended
+`context_assembled` event are recorded together. The no-budget path is 12.3
+verbatim (best-effort preflight, zero revisions). The recorded post-compaction
+`preflight_tokens` still equals the attempt's reported `Usage.InputTokens`
+exactly on the mock.
+
+**Fixtures & tests.** Canonical `examples/definitions/context_compaction.json`
+(offline mock): a five-turn conversation, each turn written to the blackboard
+under `turn_N` (tag `turn`), and a `summary` step assembling a pinned scribe
+instruction + all five turns by key with `budget_tokens: 200` and the pipeline
+`[sliding_window n=3, truncate_oldest min_tokens=32, drop_lowest_priority]`.
+Integration tests (`context_integration_test.go`): `TestContextCompaction` (the
+summary output carries the pin + recent turns but not the sliding-window-dropped
+turn₁/turn₂; the event records a budget, ≥1 revision, a shrunk preflight ≤
+budget with the raw total above, ≥2 dropped sources, an untouched pin, exact
+preflight==input-tokens; the `context_revision` events are queryable per step
+attempt, start with `sliding_window`, and report non-increasing tokens — the
+audit contract test), `TestContextCompactionDeterministic` (two runs →
+byte-identical output + equal revision count), and
+`TestContextOverBudgetPinnedDeadLetters` (two pinned literals over a budget of 5
+→ DLQ permanent, no `context_assembled` event, no usage, no provider call).
+
+**Non-obvious decisions.**
+- *Budget over the whole framed request, not the preamble.* ADR-014's identity
+  "assembled ≤ budget" == "assembled + max_tokens ≤ window" requires measuring
+  the same number 12.6 guards; compaction shrinks the only movable part (the
+  preamble) and re-measures the request via the executor's `PreflightCounter`.
+- *Entry = source (1:1).* A tag/multi-doc source renders as one block, so
+  strategies operate at source granularity and `Render` reproduces the 12.3
+  byte-identical preamble unchanged (goldens survive).
+- *Re-measure each pass.* BPE counts are non-additive, so a per-entry sum would
+  be wrong; each strategy re-measures the framed request rather than trusting a
+  running total.
+- *No migration.* The budget + pipeline extend the `context` spec already
+  materialized on `context_policy`; revisions are events. Compaction adds no
+  column.
+- *Failed-attempt revisions not persisted.* An over-budget failure's summary
+  rides the DLQ reason (the dead-letter is the record); per-revision events are
+  written only for a productive attempt — a documented limitation.
+
+One ADR (§"Deterministic compaction (as built, 12.4)" + worked examples);
+ADR-003 (`context` block compaction fields), ADR-004 (`context_revision` event),
+ADR-006 (row 21) cross-amended.
+
+**Deferred to later M12 tickets:** summarization compaction billed as overhead
+(12.5), provider-window guardrails swapping M9.2's chars/4 estimator for the
+real counters + the `context_utilization` histogram (12.6).

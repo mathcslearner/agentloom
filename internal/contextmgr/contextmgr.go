@@ -48,10 +48,13 @@ type Disposition string
 const (
 	// Included is a source rendered whole into the assembly.
 	Included Disposition = "included"
-	// Truncated is a source rendered but truncated to its per-source cap.
+	// Truncated is a source rendered but truncated — either to its per-source
+	// cap (12.3) or by the truncate_oldest compaction strategy (12.4).
 	Truncated Disposition = "truncated"
 	// Skipped is a source that resolved to nothing under an on_missing: skip.
 	Skipped Disposition = "skipped"
+	// Dropped is a source evicted whole by a compaction strategy (12.4).
+	Dropped Disposition = "dropped"
 )
 
 // SourceReport is one source's disposition in an assembly — the audit record
@@ -67,14 +70,46 @@ type SourceReport struct {
 	Pinned bool
 }
 
+// Entry is one rendered (non-skipped) source in an assembly — the unit the
+// compaction strategies (12.4) drop or truncate. A source maps to exactly one
+// entry (a multi-head blackboard tag source or a multi-doc retrieval source
+// renders as a single block containing several inner elements), so entry order
+// is source declaration order (precedence and message order) and Render over
+// the entries reproduces the assembled preamble byte-for-byte.
+type Entry struct {
+	// SourceIndex is the source's position in the declared spec (the report key).
+	SourceIndex int
+	// Kind, Name, Ref mirror the source's identity for rendering and the audit.
+	Kind dag.ContextSourceKind
+	Name string
+	Ref  string
+	// Pinned exempts the entry from every compaction strategy (never dropped or
+	// truncated).
+	Pinned bool
+	// Priority orders drop_lowest_priority (lower drops first); 0 by default.
+	Priority int
+	// Content is the rendered inner text (after any per-source cap truncation).
+	Content string
+	// Tokens is Content's count under the assembly counter.
+	Tokens int
+	// truncatedByCap records that the per-source cap (12.3) already truncated
+	// this entry at assembly time, so its report stays Truncated even if no
+	// compaction touches it.
+	truncatedByCap bool
+}
+
 // Assembly is the product of Assemble: the preamble text to prepend to the
-// request, the per-source dispositions, and the counted context size.
+// request, the per-source dispositions, the rendered entries (the compaction
+// unit), and the counted context size.
 type Assembly struct {
 	// Preamble is the assembled context text, ready to prepend to the request.
 	// Empty when every source skipped.
 	Preamble string
 	// Sources is the per-source disposition in declaration (precedence) order.
 	Sources []SourceReport
+	// Entries is the rendered (non-skipped) sources in precedence order — the
+	// unit 12.4's compaction operates on. Render(Entries) == Preamble.
+	Entries []Entry
 	// ContextTokens is the counted size of Preamble under CounterID.
 	ContextTokens int
 	// CounterID is the fingerprint of the counter used throughout.
@@ -139,7 +174,6 @@ func (e *ConfigError) Error() string {
 // transport and redeliver.
 func Assemble(ctx context.Context, spec dag.ContextSpec, counter tokens.Counter, src Sources) (Assembly, error) {
 	asm := Assembly{CounterID: counter.ID()}
-	blocks := make([]string, 0, len(spec.Sources))
 	for i, s := range spec.Sources {
 		name := sourceName(s, i)
 		content, ref, missing, err := resolveSource(ctx, i, s, name, src)
@@ -158,24 +192,45 @@ func Assemble(ctx context.Context, spec dag.ContextSpec, counter tokens.Counter,
 		}
 		status := Included
 		reason := ""
+		truncatedByCap := false
 		if s.MaxTokens != nil && !s.Pinned {
 			kept, removed, cut := truncateToTokens(content, *s.MaxTokens, counter)
 			if cut {
 				content = kept
 				status = Truncated
+				truncatedByCap = true
 				reason = fmt.Sprintf("truncated %d tokens to cap %d", removed, *s.MaxTokens)
 			}
 		}
-		block := renderBlock(s.Kind, name, content)
-		blocks = append(blocks, block)
+		asm.Entries = append(asm.Entries, Entry{
+			SourceIndex: i, Kind: s.Kind, Name: name, Ref: ref,
+			Pinned: s.Pinned, Priority: s.EffectivePriority(),
+			Content: content, Tokens: counter.Count(content), truncatedByCap: truncatedByCap,
+		})
 		asm.Sources = append(asm.Sources, SourceReport{
 			Index: i, Kind: s.Kind, Name: name, Ref: ref,
 			Status: status, Reason: reason, Tokens: counter.Count(content), Pinned: s.Pinned,
 		})
 	}
-	asm.Preamble = strings.Join(blocks, "\n\n")
+	asm.Preamble = Render(asm.Entries)
 	asm.ContextTokens = counter.Count(asm.Preamble)
 	return asm, nil
+}
+
+// Render assembles the entries' rendered blocks into the preamble text, in the
+// order given (declaration/precedence order), joined by blank lines — the exact
+// byte layout Assemble produces. Compaction (12.4) re-renders the surviving
+// entries with this same function, so a compacted preamble differs from the
+// original only in the dropped/truncated entries.
+func Render(entries []Entry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	blocks := make([]string, len(entries))
+	for i, e := range entries {
+		blocks[i] = renderBlock(e.Kind, e.Name, e.Content)
+	}
+	return strings.Join(blocks, "\n\n")
 }
 
 // resolveSource resolves one source to its rendered content and a

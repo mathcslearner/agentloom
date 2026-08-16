@@ -251,6 +251,12 @@ func decodeContext(raw json.RawMessage, path string, errs *errList) *ContextSpec
 			errs.add(sp+".on_missing", "unknown missing-source policy %q (expected one of: %s)", string(p), joinEnum(contextMissingPolicies))
 		}
 	}
+	for i := range cs.Compaction {
+		if k := cs.Compaction[i].Strategy; k != "" && !slices.Contains(compactionStrategyKinds, k) {
+			errs.add(fmt.Sprintf("%s.compaction[%d].strategy", path, i),
+				"unknown compaction strategy %q (expected one of: %s)", string(k), joinEnum(compactionStrategyKinds))
+		}
+	}
 	return &cs
 }
 

@@ -32,6 +32,7 @@ var exampleFiles = []string{
 	"llm_judge.json",
 	"blackboard.json",
 	"context_assembly.json",
+	"context_compaction.json",
 }
 
 // readExample loads one example definition document.
@@ -384,22 +385,32 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 		t.Error("no step with a pinned declarative blackboard write in kitchen_sink.json")
 	}
 
-	// Ticket 12.3 construct (ADR-014): a step with a context-assembly spec
-	// exercising all four source kinds, a pinned source, a per-source cap, and
-	// a skip missing-policy — so a schema edit that dropped the context
-	// envelope block would fail here.
+	// Ticket 12.3/12.4 construct (ADR-014): a step with a context-assembly spec
+	// exercising all four source kinds, a pinned source, a per-source cap, a
+	// skip missing-policy, a source priority, a budget, and the three
+	// deterministic compaction strategies — so a schema edit that dropped the
+	// context envelope block or a compaction strategy would fail here.
 	var (
 		hasContext    bool
 		kinds         = map[dag.ContextSourceKind]bool{}
 		hasPinnedSrc  bool
 		hasSourceCap  bool
 		hasSkipPolicy bool
+		hasPriority   bool
+		hasBudget     bool
+		strategies    = map[dag.CompactionStrategyKind]bool{}
 	)
 	for _, s := range def.Steps {
 		if s.Context == nil {
 			continue
 		}
 		hasContext = true
+		if s.Context.BudgetTokens != nil {
+			hasBudget = true
+		}
+		for _, st := range s.Context.Compaction {
+			strategies[st.Strategy] = true
+		}
 		for _, src := range s.Context.Sources {
 			kinds[src.Kind] = true
 			if src.Pinned {
@@ -410,6 +421,9 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 			}
 			if src.OnMissing == dag.MissingSkip {
 				hasSkipPolicy = true
+			}
+			if src.Priority != nil {
+				hasPriority = true
 			}
 		}
 	}
@@ -429,6 +443,17 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	}
 	if !hasSkipPolicy {
 		t.Error("no context source with a skip missing-policy in kitchen_sink.json")
+	}
+	if !hasPriority {
+		t.Error("no context source with a priority in kitchen_sink.json")
+	}
+	if !hasBudget {
+		t.Error("no context spec with a budget_tokens in kitchen_sink.json")
+	}
+	for _, st := range []dag.CompactionStrategyKind{dag.SlidingWindow, dag.TruncateOldest, dag.DropLowestPriority} {
+		if !strategies[st] {
+			t.Errorf("no %q compaction strategy in kitchen_sink.json", st)
+		}
 	}
 }
 

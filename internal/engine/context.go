@@ -94,15 +94,63 @@ func (e *Engine) assembleContext(ctx context.Context, step gen.RunStep, executor
 		return nil, fmt.Errorf("engine: assembling context: %w", err) // transport
 	}
 
-	augmented, err := injector.WithContext(sc, asm.Preamble)
+	// The assembled context becomes the request preamble; the compaction stage
+	// (ticket 12.4) may shrink it below the step budget first.
+	preamble := asm.Preamble
+	reports := asm.Sources
+	contextTokens := asm.ContextTokens
+	rawContextTokens := asm.ContextTokens
+	rawPreflight := 0
+	budgetTokens := 0
+	var revisions []store.ContextRevisionEvent
+
+	if spec.BudgetTokens != nil {
+		// Compaction (ticket 12.4): the budget is over the whole framed request,
+		// so a PreflightCounter is required — a step type that cannot count its
+		// request cannot enforce a budget (deterministic → permanent). The
+		// measure closure injects a candidate preamble and counts the request,
+		// the same arithmetic 12.6's window guardrail uses.
+		pc, pcok := executor.(exec.PreflightCounter)
+		if !pcok {
+			return nil, &contextError{cause: fmt.Errorf("step type %q cannot enforce a context budget (no preflight counter)", step.StepType)}
+		}
+		budgetTokens = *spec.BudgetTokens
+		measure := func(candidate string) (int, error) {
+			scM := sc
+			aug, ierr := injector.WithContext(scM, candidate)
+			if ierr != nil {
+				return 0, ierr
+			}
+			scM.Config = aug
+			return pc.PreflightTokens(scM, counter)
+		}
+		if n, merr := measure(asm.Preamble); merr == nil {
+			rawPreflight = n
+		}
+		comp, cerr := contextmgr.Compact(asm, contextmgr.Policy{Budget: budgetTokens, Pipeline: spec.Compaction}, counter, measure)
+		if cerr != nil {
+			// An OverBudgetError (pipeline could not fit, or pins alone exceed the
+			// budget) and a measure-build failure are both deterministic — the
+			// same request assembles the same way every attempt — so the step
+			// fails permanently before any provider call (ADR-014's hard
+			// guarantee: overflow is never sent).
+			return nil, &contextError{cause: cerr}
+		}
+		preamble = comp.Preamble
+		reports = comp.Sources
+		contextTokens = comp.ContextTokens
+		revisions = toRevisionEvents(comp.Revisions)
+	}
+
+	augmented, err := injector.WithContext(sc, preamble)
 	if err != nil {
 		return nil, &contextError{cause: fmt.Errorf("injecting assembled context: %w", err)}
 	}
 
-	// Pre-flight token total over the AUGMENTED request (context already
-	// prepended), for the audit event and the 12.6 window guardrail. A build
-	// failure is non-fatal here — Execute lands any real config failure — so
-	// the count is recorded as unavailable (0) rather than failing the step.
+	// Pre-flight token total over the AUGMENTED (final) request. In the budgeted
+	// path the compaction already measured it (comp.FinalTokens == this count);
+	// otherwise it is best-effort — a build failure is non-fatal (Execute lands
+	// any real config failure), recorded as 0 rather than failing the step.
 	preflight := 0
 	if pc, pcok := executor.(exec.PreflightCounter); pcok {
 		scAug := sc
@@ -113,21 +161,37 @@ func (e *Engine) assembleContext(ctx context.Context, step gen.RunStep, executor
 			log.From(ctx).WarnContext(ctx, "context preflight token count unavailable", slog.Any("error", perr))
 		}
 	}
+	if rawPreflight == 0 {
+		rawPreflight = preflight
+	}
 
-	if err := e.recordContextAssembled(ctx, step, asm, preflight); err != nil {
+	asmEvent := store.ContextAssembledEvent{
+		CounterID:          asm.CounterID,
+		Sources:            toSourceRecords(reports),
+		ContextTokens:      contextTokens,
+		PreflightTokens:    preflight,
+		BudgetTokens:       budgetTokens,
+		RawContextTokens:   rawContextTokens,
+		RawPreflightTokens: rawPreflight,
+		Revisions:          len(revisions),
+	}
+	if err := e.recordContextAssembled(ctx, step, asmEvent, revisions); err != nil {
 		// A fenced caller (taken over) or a transport failure of the audit
 		// write decides nothing — redeliver, exactly like recordDowngrade.
 		return nil, err
 	}
 
 	logger := log.From(ctx)
-	included, skipped, truncated := tallyDispositions(asm.Sources)
+	included, skipped, truncated, dropped := tallyDispositions(reports)
 	logger.InfoContext(ctx, "assembled step context",
-		slog.Int("sources", len(asm.Sources)),
+		slog.Int("sources", len(reports)),
 		slog.Int("included", included),
 		slog.Int("skipped", skipped),
 		slog.Int("truncated", truncated),
-		slog.Int("context_tokens", asm.ContextTokens),
+		slog.Int("dropped", dropped),
+		slog.Int("revisions", len(revisions)),
+		slog.Int("context_tokens", contextTokens),
+		slog.Int("budget_tokens", budgetTokens),
 		slog.Int("preflight_tokens", preflight))
 	return augmented, nil
 }
@@ -176,43 +240,70 @@ func (e *Engine) contextSources(ctx context.Context, step gen.RunStep, spec dag.
 	return src, nil
 }
 
-// recordContextAssembled appends the context_assembled event for a claim whose
-// context spec the assembly built into the request, in its own short fenced
-// transaction (the recordDowngrade precedent). It is not a state transition,
-// so it only fences on the caller's live claim and appends the event; a fenced
-// caller surfaces a *store.TransitionError so assembleContext abandons like any
-// other fenced write, and a transport error redelivers.
-func (e *Engine) recordContextAssembled(ctx context.Context, step gen.RunStep, asm contextmgr.Assembly, preflight int) error {
+// recordContextAssembled appends the compaction revision events (ticket 12.4)
+// and the context_assembled event for a claim whose context spec the assembly
+// built into the request, in one short fenced transaction (the recordDowngrade
+// precedent). It is not a state transition, so it only fences on the caller's
+// live claim and appends the events; a fenced caller surfaces a
+// *store.TransitionError so assembleContext abandons like any other fenced
+// write, and a transport error redelivers.
+func (e *Engine) recordContextAssembled(ctx context.Context, step gen.RunStep, event store.ContextAssembledEvent, revisions []store.ContextRevisionEvent) error {
 	claimID := uuid.Nil
 	if step.ClaimID != nil {
 		claimID = *step.ClaimID
-	}
-	sources := make([]store.ContextSourceRecord, len(asm.Sources))
-	for i, r := range asm.Sources {
-		sources[i] = store.ContextSourceRecord{
-			Index: r.Index, Kind: string(r.Kind), Name: r.Name, Ref: r.Ref,
-			Status: string(r.Status), Reason: r.Reason, Tokens: r.Tokens, Pinned: r.Pinned,
-		}
-	}
-	event := store.ContextAssembledEvent{
-		CounterID:       asm.CounterID,
-		Sources:         sources,
-		ContextTokens:   asm.ContextTokens,
-		PreflightTokens: preflight,
 	}
 	now := e.now()
 	txCtx, span := e.tracer.Start(ctx, "step.context.record")
 	err := e.store.WithTx(txCtx, func(ctx context.Context, q store.Querier) error {
 		return store.RecordContextAssembled(ctx, q, store.RecordContextAssembledArgs{
-			RunID: step.RunID, StepID: step.StepID, ClaimID: claimID, Event: event, Now: now,
+			RunID: step.RunID, StepID: step.StepID, ClaimID: claimID,
+			Event: event, Revisions: revisions, Now: now,
 		})
 	})
 	endTxSpan(span, err)
 	return err
 }
 
-// tallyDispositions counts included/skipped/truncated sources for the log line.
-func tallyDispositions(reports []contextmgr.SourceReport) (included, skipped, truncated int) {
+// toSourceRecords maps the contextmgr per-source dispositions onto the store's
+// audit record shape.
+func toSourceRecords(reports []contextmgr.SourceReport) []store.ContextSourceRecord {
+	out := make([]store.ContextSourceRecord, len(reports))
+	for i, r := range reports {
+		out[i] = store.ContextSourceRecord{
+			Index: r.Index, Kind: string(r.Kind), Name: r.Name, Ref: r.Ref,
+			Status: string(r.Status), Reason: r.Reason, Tokens: r.Tokens, Pinned: r.Pinned,
+		}
+	}
+	return out
+}
+
+// toRevisionEvents maps compaction revisions onto the store's context_revision
+// event payloads (ticket 12.4).
+func toRevisionEvents(revs []contextmgr.Revision) []store.ContextRevisionEvent {
+	if len(revs) == 0 {
+		return nil
+	}
+	out := make([]store.ContextRevisionEvent, len(revs))
+	for i, r := range revs {
+		actions := make([]store.ContextRevisionActionRecord, len(r.Actions))
+		for j, a := range r.Actions {
+			actions[j] = store.ContextRevisionActionRecord{
+				SourceIndex: a.SourceIndex, Name: a.Name, Action: a.Action,
+				TokensBefore: a.TokensBefore, TokensAfter: a.TokensAfter,
+			}
+		}
+		out[i] = store.ContextRevisionEvent{
+			Index: r.Index, Strategy: r.Strategy, N: r.N, MinTokens: r.MinTokens,
+			Budget: r.Budget, TokensBefore: r.TokensBefore, TokensAfter: r.TokensAfter,
+			Changed: r.Changed, Actions: actions, Kept: r.Kept,
+		}
+	}
+	return out
+}
+
+// tallyDispositions counts included/skipped/truncated/dropped sources for the
+// log line.
+func tallyDispositions(reports []contextmgr.SourceReport) (included, skipped, truncated, dropped int) {
 	for _, r := range reports {
 		switch r.Status {
 		case contextmgr.Included:
@@ -221,7 +312,9 @@ func tallyDispositions(reports []contextmgr.SourceReport) (included, skipped, tr
 			skipped++
 		case contextmgr.Truncated:
 			truncated++
+		case contextmgr.Dropped:
+			dropped++
 		}
 	}
-	return included, skipped, truncated
+	return included, skipped, truncated, dropped
 }
