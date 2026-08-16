@@ -6,6 +6,12 @@
   "max_wall_clock": "2h",
   "budget_usd": 5,
   "on_budget_exceeded": "park",
+  "expansion": {
+    "max_added_steps": 16,
+    "max_total_steps": 500,
+    "max_expansions": 20,
+    "max_depth": 3
+  },
   "params": {
     "goal": {
       "type": "string",
@@ -35,7 +41,8 @@
       "config": {
         "model": "anthropic/claude-sonnet-5",
         "prompt": "Break this goal into concrete research and writing steps: ${{ run.params.goal }}",
-        "max_tokens": 1024
+        "max_tokens": 1024,
+        "max_added_steps": 8
       }
     },
     {

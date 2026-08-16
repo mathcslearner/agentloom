@@ -55,6 +55,13 @@ type Definition struct {
 	// is no key. Has no effect without BudgetUSD (Validate rejects that).
 	OnBudgetExceeded BudgetPolicy `json:"on_budget_exceeded,omitempty"`
 
+	// Expansion is the run's optional dynamic-expansion policy (ADR-015):
+	// the caps that bound how far planner steps (and map fan-out / loop
+	// unrolling, M13+) may grow the run's graph at runtime. Nil when the
+	// source document had no expansion key — the compiled defaults apply.
+	// Uniform across the run, so it lives at the top level, not on a step.
+	Expansion *ExpansionPolicy `json:"expansion,omitempty"`
+
 	Params map[string]ParamSpec `json:"params,omitempty"`
 	Steps  []Step               `json:"steps"`
 	Edges  []Edge               `json:"edges"`

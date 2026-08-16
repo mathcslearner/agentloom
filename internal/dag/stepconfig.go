@@ -175,14 +175,23 @@ type MapConfig struct {
 }
 
 // PlannerConfig configures a planner step: an LLM call whose validated
-// output injects steps into the running graph (executor: M13, ADR-015;
-// provisional shape — M1 requires the same keys as llm).
+// output (a PlanOutput document, ADR-015) injects steps and edges into the
+// running graph atomically with the planner's completion (executor: M13).
+// M1 requires the same keys as llm; ADR-015 adds the per-expansion cap.
 type PlannerConfig struct {
 	Model       string       `json:"model,omitempty"`
 	Prompt      string       `json:"prompt,omitempty"`
 	Messages    []LLMMessage `json:"messages,omitempty"`
 	MaxTokens   int          `json:"max_tokens,omitempty"`
 	Temperature *float64     `json:"temperature,omitempty"`
+
+	// MaxAddedSteps caps how many steps this planner's plan may inject in a
+	// single expansion (ADR-015). Zero means the key was absent — the run's
+	// resolved per-expansion cap applies (ExpansionPolicy, else the compiled
+	// default). An explicit value must be positive and may only tighten the
+	// run cap, never loosen it (enforced in Validate). Exceeding it is a
+	// plan-attributable rejection → validation_failed → semantic retry.
+	MaxAddedSteps int `json:"max_added_steps,omitempty"`
 }
 
 // AgentConfig configures an agent step: an LLM step bound to a named role

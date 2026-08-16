@@ -42,32 +42,9 @@ func JSONSchema() (*jsonschema.Schema, error) {
 		"Workflow definition format, schema_version %d (ADR-003). Unknown fields are rejected everywhere except the engine-opaque ui block.",
 		CurrentSchemaVersion)
 
-	// The per-type config structs are reachable only through the StepConfig
-	// interface, which reflection cannot see through; reflect each one
-	// explicitly into the shared $defs.
-	for _, st := range stepTypes {
-		cfgSchema := r.Reflect(stepConfigTypes[st]())
-		for name, def := range cfgSchema.Definitions {
-			root.Definitions[name] = def
-		}
+	if err := bindStepConfigs(r, root); err != nil {
+		return nil, fmt.Errorf("dag: JSONSchema: %w", err)
 	}
-
-	stepDef, ok := root.Definitions["Step"]
-	if !ok || stepDef.Properties == nil {
-		return nil, fmt.Errorf("dag: JSONSchema: reflected schema has no Step definition")
-	}
-	stepDef.Properties.Set("config", &jsonschema.Schema{
-		Type:        "object",
-		Description: "Typed per step type; Step's oneOf variants bind each type to its config shape.",
-	})
-	variants := make([]*jsonschema.Schema, 0, len(stepTypes))
-	for _, st := range stepTypes {
-		props := jsonschema.NewProperties()
-		props.Set("type", &jsonschema.Schema{Const: string(st)})
-		props.Set("config", &jsonschema.Schema{Ref: "#/$defs/" + configTypeName(st)})
-		variants = append(variants, &jsonschema.Schema{Properties: props})
-	}
-	stepDef.OneOf = variants
 
 	defDef, ok := root.Definitions["Definition"]
 	if !ok || defDef.Properties == nil {
@@ -86,7 +63,69 @@ func JSONSchema() (*jsonschema.Schema, error) {
 // generator command and the drift test both use this, so there is a single
 // rendering to keep in sync.
 func GenerateJSONSchema() ([]byte, error) {
-	schema, err := JSONSchema()
+	return generateSchema(JSONSchema)
+}
+
+// bindStepConfigs pulls the per-type config structs (reachable only through
+// the StepConfig interface, which reflection cannot see through) into the
+// root's shared $defs and binds each step type to its config shape via the
+// Step definition's oneOf. Shared by the definition schema and the PlanOutput
+// schema, whose injected steps carry the identical config shapes.
+func bindStepConfigs(r *jsonschema.Reflector, root *jsonschema.Schema) error {
+	for _, st := range stepTypes {
+		cfgSchema := r.Reflect(stepConfigTypes[st]())
+		for name, def := range cfgSchema.Definitions {
+			root.Definitions[name] = def
+		}
+	}
+	stepDef, ok := root.Definitions["Step"]
+	if !ok || stepDef.Properties == nil {
+		return fmt.Errorf("reflected schema has no Step definition")
+	}
+	stepDef.Properties.Set("config", &jsonschema.Schema{
+		Type:        "object",
+		Description: "Typed per step type; Step's oneOf variants bind each type to its config shape.",
+	})
+	variants := make([]*jsonschema.Schema, 0, len(stepTypes))
+	for _, st := range stepTypes {
+		props := jsonschema.NewProperties()
+		props.Set("type", &jsonschema.Schema{Const: string(st)})
+		props.Set("config", &jsonschema.Schema{Ref: "#/$defs/" + configTypeName(st)})
+		variants = append(variants, &jsonschema.Schema{Properties: props})
+	}
+	stepDef.OneOf = variants
+	return nil
+}
+
+// PlanOutputSchema builds the JSON Schema for a planner step's PlanOutput
+// document (ADR-015), from the same Go structs DecodePlanOutput uses. It
+// reuses the definition schema's step-config $defs, so an injected step's
+// config shape cannot drift from an authored step's. The generator command
+// writes it to docs/schema/, and it feeds the planner's implicit json_schema
+// validator (M11) and the builder UI.
+func PlanOutputSchema() (*jsonschema.Schema, error) {
+	r := &jsonschema.Reflector{Anonymous: true}
+	root := r.Reflect(&PlanOutput{})
+	root.Version = jsonschema.Version
+	root.Title = "agentloom planner PlanOutput"
+	root.Description = fmt.Sprintf(
+		"Planner expansion delta, schema_version %d (ADR-015): new steps and edges spliced into the running graph. Unknown fields are rejected.",
+		PlanSchemaVersion)
+	if err := bindStepConfigs(r, root); err != nil {
+		return nil, fmt.Errorf("dag: PlanOutputSchema: %w", err)
+	}
+	return root, nil
+}
+
+// GeneratePlanOutputSchema renders the PlanOutput JSON Schema exactly as it
+// is committed under docs/schema/: indented, trailing newline.
+func GeneratePlanOutputSchema() ([]byte, error) {
+	return generateSchema(PlanOutputSchema)
+}
+
+// generateSchema renders a schema builder's output in the committed form.
+func generateSchema(build func() (*jsonschema.Schema, error)) ([]byte, error) {
+	schema, err := build()
 	if err != nil {
 		return nil, err
 	}

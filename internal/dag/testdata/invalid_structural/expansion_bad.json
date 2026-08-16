@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "expansion-bad",
+  "expansion": {
+    "max_added_steps": 0,
+    "max_total_steps": 100000,
+    "max_depth": -1
+  },
+  "steps": [
+    {
+      "id": "plan",
+      "type": "planner",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "go",
+        "max_added_steps": 9999
+      }
+    }
+  ],
+  "edges": []
+}

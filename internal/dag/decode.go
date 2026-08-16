@@ -98,6 +98,9 @@ func Decode(data []byte) (*Definition, error) {
 			}
 		}
 	}
+	if raw, ok := fields["expansion"]; ok {
+		def.Expansion = decodeExpansion(raw, "expansion", &errs)
+	}
 	if raw, ok := fields["params"]; ok {
 		def.Params = decodeParams(raw, &errs)
 	}
@@ -122,7 +125,7 @@ func Decode(data []byte) (*Definition, error) {
 	topLevel := map[string]bool{
 		"schema_version": true, "name": true, "description": true,
 		"on_failure": true, "max_wall_clock": true, "budget_usd": true,
-		"on_budget_exceeded": true, "params": true,
+		"on_budget_exceeded": true, "expansion": true, "params": true,
 		"steps": true, "edges": true, "ui": true,
 	}
 	for _, k := range sortedKeys(fields) {
@@ -258,6 +261,16 @@ func decodeContext(raw json.RawMessage, path string, errs *errList) *ContextSpec
 		}
 	}
 	return &cs
+}
+
+// decodeExpansion decodes the run's dynamic-expansion policy (ADR-015). Like
+// decodeBudget the codec level enforces shape only — unknown fields and
+// mistyped values; the positivity and tighten-only bounds are structural
+// validation (Validate).
+func decodeExpansion(raw json.RawMessage, path string, errs *errList) *ExpansionPolicy {
+	var ep ExpansionPolicy
+	strictUnmarshal(raw, &ep, path, errs)
+	return &ep
 }
 
 // decodeValidation decodes a step's output-validation chain (ADR-013). Like

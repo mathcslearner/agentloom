@@ -262,6 +262,19 @@ budgets — this ADR overrides ADR-006's forward-looking note that M11 would
 "unlock validation_failed in retry_on": it does not; it gives validation its
 own policy instead. (ADR-006's table is amended accordingly.)
 
+**Planner steps reuse this flow (ADR-015, M13).** A `planner` is an llm-family
+step whose output must be a valid `PlanOutput` (ADR-015). It declares an
+implicit `json_schema` validator over the published PlanOutput schema (the
+`output_format`/implicit-validator mechanism of 11.3, so a non-JSON or
+structurally-wrong plan is `invalid_json`/schema-`validation_failed` and
+`jsonrepair`-able), and the engine's `dag.ValidateExpansion` is the graph-level
+gate on top: a plan that is well-formed but illegal *against this run's graph*
+(bad splice, cycle, per-expansion cap) is recorded as `validation_failed` with
+the rejection issues as feedback, so the same 11.4 semantic-retry loop
+re-prompts the planner. The one plan rejection that does **not** retry is an
+exhausted run-guard cap (`max_total_steps`/`max_expansions`/`max_depth`), which
+is permanent — a better plan cannot lift the cap (ADR-015; ADR-006 row 23).
+
 ### The routing decision table (the 11.1 deliverable)
 
 The completing worker faces four dispositions after an attempt; each is decided

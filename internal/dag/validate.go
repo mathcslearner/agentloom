@@ -74,11 +74,22 @@ const (
 	CodeBlackboardFieldInvalid  ValidationCode = "blackboard_field_invalid"
 	CodeContextFieldRequired    ValidationCode = "context_field_required"
 	CodeContextFieldInvalid     ValidationCode = "context_field_invalid"
-	CodeLimitExceeded           ValidationCode = "limit_exceeded"
-	CodeCycle                   ValidationCode = "cycle_detected"
-	CodeLoopEdgeNotAncestor     ValidationCode = "loop_edge_not_ancestor"
-	CodeExprInvalid             ValidationCode = "invalid_expression"
-	CodeExprNotBool             ValidationCode = "expression_not_boolean"
+
+	// Dynamic-expansion codes (ADR-015). ExpansionFieldInvalid covers both
+	// the definition's `expansion` block bounds and a runtime PlanOutput's
+	// shape; ExpansionAnchorInvalid covers a plan's id collisions and illegal
+	// splice points; ExpansionCapExceeded is a run-guard exhaustion — the one
+	// expansion rejection the engine routes as permanent rather than a
+	// semantic retry.
+	CodeExpansionFieldInvalid  ValidationCode = "expansion_field_invalid"
+	CodeExpansionAnchorInvalid ValidationCode = "expansion_anchor_invalid"
+	CodeExpansionCapExceeded   ValidationCode = "expansion_cap_exceeded"
+
+	CodeLimitExceeded       ValidationCode = "limit_exceeded"
+	CodeCycle               ValidationCode = "cycle_detected"
+	CodeLoopEdgeNotAncestor ValidationCode = "loop_edge_not_ancestor"
+	CodeExprInvalid         ValidationCode = "invalid_expression"
+	CodeExprNotBool         ValidationCode = "expression_not_boolean"
 
 	// Template lint codes (ticket 8.2): `${{ ... }}` expressions in step
 	// config strings must parse, and their references must resolve
@@ -136,6 +147,7 @@ func Validate(def *Definition) (issues []*ValidationIssue, err error) {
 	v.checkLimits(def)
 	v.checkMaxWallClock(def.MaxWallClock)
 	v.checkRunBudget(def)
+	v.checkExpansion(def)
 	stepIndex := v.checkSteps(def)
 	v.checkEdges(def, stepIndex)
 	v.checkGraph(def, stepIndex)
@@ -638,6 +650,55 @@ func (v *validator) checkRunBudget(def *Definition) {
 	}
 	if def.OnBudgetExceeded != "" && def.BudgetUSD == nil {
 		v.add(CodeBudgetFieldInvalid, "on_budget_exceeded", "has no effect without budget_usd")
+	}
+}
+
+// checkExpansion enforces the dynamic-expansion cap bounds (ADR-015): every
+// explicit override in the `expansion` block is positive and may only tighten
+// its default (max_total_steps never exceeds the definition ceiling; the
+// per-expansion default never exceeds max_total_steps), and each planner's
+// max_added_steps override is positive and does not exceed the resolved run
+// per-expansion cap — a planner that could inject more than the run allows is
+// an authoring mistake. The compiled defaults apply when the block is absent,
+// so the planner cross-check runs regardless.
+func (v *validator) checkExpansion(def *Definition) {
+	p := def.Expansion
+	caps := p.Resolve()
+	if p != nil {
+		checkPositive := func(field string, val *int) {
+			if val != nil && *val < 1 {
+				v.add(CodeExpansionFieldInvalid, "expansion."+field, "must be positive, got %d", *val)
+			}
+		}
+		checkPositive("max_added_steps", p.MaxAddedSteps)
+		checkPositive("max_total_steps", p.MaxTotalSteps)
+		checkPositive("max_expansions", p.MaxExpansions)
+		checkPositive("max_depth", p.MaxDepth)
+		if p.MaxTotalSteps != nil && *p.MaxTotalSteps > MaxSteps {
+			v.add(CodeExpansionFieldInvalid, "expansion.max_total_steps",
+				"must not exceed the definition ceiling %d, got %d", MaxSteps, *p.MaxTotalSteps)
+		}
+		if p.MaxAddedSteps != nil && *p.MaxAddedSteps >= 1 && *p.MaxAddedSteps > caps.MaxTotalSteps {
+			v.add(CodeExpansionFieldInvalid, "expansion.max_added_steps",
+				"cannot exceed max_total_steps %d, got %d", caps.MaxTotalSteps, *p.MaxAddedSteps)
+		}
+	}
+	for i, s := range def.Steps {
+		if s.Type != StepPlanner {
+			continue
+		}
+		c, ok := s.Config.(*PlannerConfig)
+		if !ok || c == nil || c.MaxAddedSteps == 0 {
+			continue
+		}
+		path := fmt.Sprintf("steps[%d].config.max_added_steps", i)
+		switch {
+		case c.MaxAddedSteps < 0:
+			v.add(CodeConfigFieldInvalid, path, "must be positive, got %d", c.MaxAddedSteps)
+		case c.MaxAddedSteps > caps.MaxAddedStepsPerExpansion:
+			v.add(CodeConfigFieldInvalid, path,
+				"cannot exceed the run per-expansion cap %d, got %d", caps.MaxAddedStepsPerExpansion, c.MaxAddedSteps)
+		}
 	}
 }
 

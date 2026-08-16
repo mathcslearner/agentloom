@@ -145,9 +145,10 @@ value.
 ```
 
 **`map`** — runtime-sized fan-out over a list, instances created via the
-expansion machinery (executor: M13, ADR-015; config provisional). Requires
-`items` (expression yielding the list) and `body` (the named sub-template to
-instantiate per item).
+expansion machinery (executor: 13.4; contract in ADR-015). Requires `items`
+(expression yielding the list) and `body` (the named sub-template to
+instantiate per item — ADR-015 reserves a definition-level `templates`
+section as its referent, added in 13.4).
 
 ```json
 {"id": "summarize_each", "type": "map", "config": {
@@ -156,9 +157,10 @@ instantiate per item).
 }}
 ```
 
-**`planner`** — an LLM call whose validated output injects new steps/edges
-into the running graph (executor: M13, ADR-015; config provisional). M1
-requires the same keys as `llm`.
+**`planner`** — an LLM call whose validated output (a `PlanOutput` document,
+ADR-015) injects new steps/edges into the running graph (executor: 13.3;
+contract in ADR-015). Requires the same keys as `llm`, plus an optional
+`max_added_steps` per-expansion cap (ADR-015).
 
 ```json
 {"id": "plan_research", "type": "planner", "config": {
@@ -399,7 +401,9 @@ them configurable is deferred until a concrete need appears.
 The 10k-step ceiling is deliberately at the M1 exit-criteria benchmark
 (validate + compute readiness on 10k nodes in <100ms) so the limit is backed
 by a measured performance envelope. Runtime expansion caps (`max_added_steps`,
-`max_depth`, `max_expansions`) are a separate concern owned by ADR-015 (M13).
+`max_total_steps`, `max_expansions`, `max_depth`) are a separate concern owned
+by ADR-015 (M13), which adds the optional top-level `expansion` block carrying
+them (defaults 32 / 10,000 / 100 / 4).
 
 ### Structural validation: severities, orphans, edge-field rules
 

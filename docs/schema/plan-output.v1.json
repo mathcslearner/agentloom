@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$ref": "#/$defs/Definition",
+  "$ref": "#/$defs/PlanOutput",
   "$defs": {
     "AgentConfig": {
       "properties": {
@@ -93,13 +93,6 @@
       },
       "additionalProperties": false,
       "type": "object"
-    },
-    "BudgetPolicy": {
-      "type": "string",
-      "enum": [
-        "park",
-        "fail"
-      ]
     },
     "CacheMode": {
       "type": "string",
@@ -261,64 +254,6 @@
       "additionalProperties": false,
       "type": "object"
     },
-    "Definition": {
-      "properties": {
-        "schema_version": {
-          "type": "integer"
-        },
-        "name": {
-          "type": "string"
-        },
-        "description": {
-          "type": "string"
-        },
-        "on_failure": {
-          "$ref": "#/$defs/FailurePolicy"
-        },
-        "max_wall_clock": {
-          "type": "string"
-        },
-        "budget_usd": {
-          "type": "number"
-        },
-        "on_budget_exceeded": {
-          "$ref": "#/$defs/BudgetPolicy"
-        },
-        "expansion": {
-          "$ref": "#/$defs/ExpansionPolicy"
-        },
-        "params": {
-          "additionalProperties": {
-            "$ref": "#/$defs/ParamSpec"
-          },
-          "type": "object"
-        },
-        "steps": {
-          "items": {
-            "$ref": "#/$defs/Step"
-          },
-          "type": "array"
-        },
-        "edges": {
-          "items": {
-            "$ref": "#/$defs/Edge"
-          },
-          "type": "array"
-        },
-        "ui": {
-          "type": "object",
-          "description": "Engine-opaque builder state: never validated or interpreted, round-tripped byte-for-byte."
-        }
-      },
-      "additionalProperties": false,
-      "type": "object",
-      "required": [
-        "schema_version",
-        "name",
-        "steps",
-        "edges"
-      ]
-    },
     "EchoConfig": {
       "properties": {
         "input": true
@@ -384,24 +319,6 @@
         "validation_failed"
       ]
     },
-    "ExpansionPolicy": {
-      "properties": {
-        "max_added_steps": {
-          "type": "integer"
-        },
-        "max_total_steps": {
-          "type": "integer"
-        },
-        "max_expansions": {
-          "type": "integer"
-        },
-        "max_depth": {
-          "type": "integer"
-        }
-      },
-      "additionalProperties": false,
-      "type": "object"
-    },
     "FailNTimesConfig": {
       "properties": {
         "n": {
@@ -410,13 +327,6 @@
       },
       "additionalProperties": false,
       "type": "object"
-    },
-    "FailurePolicy": {
-      "type": "string",
-      "enum": [
-        "fail_fast",
-        "continue_independent_branches"
-      ]
     },
     "FeedbackPolicy": {
       "properties": {
@@ -549,29 +459,29 @@
       "additionalProperties": false,
       "type": "object"
     },
-    "ParamSpec": {
+    "PlanOutput": {
       "properties": {
-        "type": {
-          "$ref": "#/$defs/ParamType"
+        "schema_version": {
+          "type": "integer"
         },
-        "required": {
-          "type": "boolean"
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/Step"
+          },
+          "type": "array"
+        },
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/Edge"
+          },
+          "type": "array"
         }
       },
       "additionalProperties": false,
       "type": "object",
       "required": [
-        "type"
-      ]
-    },
-    "ParamType": {
-      "type": "string",
-      "enum": [
-        "string",
-        "number",
-        "boolean",
-        "object",
-        "array"
+        "schema_version",
+        "steps"
       ]
     },
     "PlannerConfig": {
@@ -927,6 +837,6 @@
       ]
     }
   },
-  "title": "agentloom workflow definition",
-  "description": "Workflow definition format, schema_version 1 (ADR-003). Unknown fields are rejected everywhere except the engine-opaque ui block."
+  "title": "agentloom planner PlanOutput",
+  "description": "Planner expansion delta, schema_version 1 (ADR-015): new steps and edges spliced into the running graph. Unknown fields are rejected."
 }

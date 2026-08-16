@@ -116,7 +116,7 @@ The completion transaction is where scheduling happens: persist the output, CAS 
 
 ### 6. Dynamic expansion, park/resume, events
 
-- **Expansion** — planner steps (and map fan-out and loop unrolling) mutate the run's own graph copy atomically with their completion transaction (`graph_version++`). There is never observable half-expanded state. Loops are authored as marked loop edges and executed by unrolling iterations through the same machinery — the instance graph stays acyclic.
+- **Expansion** (ADR-015) — planner steps (and map fan-out and loop unrolling) mutate the run's own graph copy atomically with their completion transaction (`graph_version++`). A planner's output is a validated `PlanOutput` delta of new steps and edges, spliced in by `ExpandRun` inside the completion CAS; hard caps (`max_added_steps`/`max_total_steps`/`max_expansions`/`max_depth`) bound runaway growth, and a rejected plan is a `validation_failed` verdict M11's semantic retries repair. There is never observable half-expanded state. Loops are authored as marked loop edges and executed by unrolling iterations through the same machinery — the instance graph stays acyclic.
 - **Park/resume** — one primitive underlies manual pause, budget-exceeded halts, and human approvals. Parking ACKs the queue message: no lease or worker slot is held while a run waits, whether for minutes or days.
 - **Events** — every transition appends to a per-run, monotonically-sequenced event log in Postgres (truth), mirrored to Redis pub/sub for latency. The WebSocket protocol is snapshot → backfill from `last_seq` → live tail, so clients never miss or reorder events.
 

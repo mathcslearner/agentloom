@@ -292,6 +292,21 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 		t.Error("no llm step with a budget.max_tokens cap in kitchen_sink.json")
 	}
 
+	// Ticket 13.1 construct (ADR-015): a run-level expansion cap block and a
+	// planner carrying a per-expansion max_added_steps override.
+	if def.Expansion == nil || def.Expansion.MaxAddedSteps == nil {
+		t.Error("no expansion policy with max_added_steps in kitchen_sink.json")
+	}
+	var hasPlannerCap bool
+	for _, s := range def.Steps {
+		if c, ok := s.Config.(*dag.PlannerConfig); ok && c.MaxAddedSteps > 0 {
+			hasPlannerCap = true
+		}
+	}
+	if !hasPlannerCap {
+		t.Error("no planner with a max_added_steps override in kitchen_sink.json")
+	}
+
 	// Ticket 8.2 constructs: template expressions referencing a run param
 	// and an upstream step output somewhere in the step configs.
 	var paramRef, stepRef bool

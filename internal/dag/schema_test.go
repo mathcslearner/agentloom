@@ -12,21 +12,71 @@ import (
 // schemaPath is the committed generated artifact, relative to this package.
 const schemaPath = "../../docs/schema/workflow-definition.v1.json"
 
+// planSchemaPath is the committed PlanOutput schema (ADR-015).
+const planSchemaPath = "../../docs/schema/plan-output.v1.json"
+
 // TestGeneratedSchemaIsCommitted is the local half of the CI drift check:
-// the committed schema must match what the current structs generate.
+// the committed schemas must match what the current structs generate.
 func TestGeneratedSchemaIsCommitted(t *testing.T) {
 	t.Parallel()
 
-	want, err := dag.GenerateJSONSchema()
-	if err != nil {
-		t.Fatalf("GenerateJSONSchema: %v", err)
+	for _, tc := range []struct {
+		name string
+		path string
+		gen  func() ([]byte, error)
+	}{
+		{"workflow-definition", schemaPath, dag.GenerateJSONSchema},
+		{"plan-output", planSchemaPath, dag.GeneratePlanOutputSchema},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			want, err := tc.gen()
+			if err != nil {
+				t.Fatalf("generate: %v", err)
+			}
+			got, err := os.ReadFile(tc.path)
+			if err != nil {
+				t.Fatalf("reading committed schema (run `make generate`?): %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Error("committed JSON Schema is stale; run `make generate` and commit the result")
+			}
+		})
 	}
-	got, err := os.ReadFile(schemaPath)
+}
+
+// TestGeneratedPlanSchemaContent pins the PlanOutput schema's shape: it must
+// reuse the definition schema's step-config $defs so an injected step's config
+// cannot drift from an authored step's.
+func TestGeneratedPlanSchemaContent(t *testing.T) {
+	t.Parallel()
+
+	data, err := dag.GeneratePlanOutputSchema()
 	if err != nil {
-		t.Fatalf("reading committed schema (run `make generate`?): %v", err)
+		t.Fatalf("GeneratePlanOutputSchema: %v", err)
 	}
-	if !bytes.Equal(got, want) {
-		t.Error("committed JSON Schema is stale; run `make generate` and commit the result")
+	if !json.Valid(data) {
+		t.Fatal("generated plan schema is not valid JSON")
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("unmarshaling schema: %v", err)
+	}
+	defs, ok := schema["$defs"].(map[string]any)
+	if !ok {
+		t.Fatal("plan schema has no $defs object")
+	}
+	for _, name := range []string{
+		"PlanOutput", "Step", "Edge", "LLMConfig", "PlannerConfig", "MapConfig", "JoinConfig",
+	} {
+		if _, ok := defs[name]; !ok {
+			t.Errorf("plan schema $defs is missing %s", name)
+		}
+	}
+	for _, marker := range []string{`"additionalProperties": false`, "oneOf", `"schema_version"`} {
+		if !bytes.Contains(data, []byte(marker)) {
+			t.Errorf("generated plan schema does not contain %q", marker)
+		}
 	}
 }
 

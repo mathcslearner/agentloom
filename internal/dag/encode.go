@@ -54,6 +54,12 @@ func Encode(def *Definition) ([]byte, error) {
 			return nil, err
 		}
 	}
+	if def.Expansion != nil {
+		buf.WriteString(`,"expansion":`)
+		if err := writeJSON(&buf, def.Expansion); err != nil {
+			return nil, err
+		}
+	}
 	if len(def.Params) > 0 {
 		buf.WriteString(`,"params":`)
 		if err := writeJSON(&buf, def.Params); err != nil {

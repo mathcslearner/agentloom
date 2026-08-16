@@ -49,8 +49,8 @@ obs-lint: ## Validate the Prometheus alert rules and run their promtool unit tes
 		$(PROMETHEUS_IMAGE) test rules /obs/prometheus-rules.test.yml
 
 .PHONY: generate
-generate: ## Regenerate derived artifacts (workflow definition JSON Schema, sqlc store code)
-	go run ./internal/dag/gen -out docs/schema/workflow-definition.v1.json
+generate: ## Regenerate derived artifacts (workflow definition + PlanOutput JSON Schemas, sqlc store code)
+	go run ./internal/dag/gen -out docs/schema/workflow-definition.v1.json -plan-out docs/schema/plan-output.v1.json
 	go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION) generate
 
 .PHONY: test
