@@ -398,7 +398,23 @@ since 10.5 `cost_updated` (payload `CostUpdatedEvent`: one cost-bearing
 attempt's charge plus the run's running spend/saved totals after the bump,
 appended by `ApplyAttemptCost` under the completion transaction's run lock
 and seq, so the totals are non-decreasing in seq order — the M18 live
-meter's source).
+meter's source), and since 12.2 `blackboard_updated` (payload
+`BlackboardUpdatedEvent`: a run-scoped blackboard key gained a new version —
+key, version, tags, token_count, author step/attempt — appended by
+`PutBlackboardEntry` in the same transaction as the insert, under the run
+lock and monotonic seq).
+
+**`blackboard_entries`** — the run-scoped blackboard (ticket 12.2, ADR-014):
+shared, versioned key/value memory steps read and write during a run.
+Append-only per key (`PRIMARY KEY (run_id, key, version)`, `version`
+1-based); `value` (JSONB), `token_count` + `token_counter` (the counter
+fingerprint that produced the count), `tags` (`TEXT[]`, GIN-indexed,
+per-version immutable, carrying the reserved `pinned` tag), `author_step_id`
+/ `author_attempt` (nullable — a non-step writer is reserved), `created_at`.
+Writes go through the transition-style `PutBlackboardEntry` (run-lock →
+optional claim fence → CAS → insert → event); `run_steps.blackboard_policy`
+(nullable JSONB, migration 0021) materializes a step's declarative-write
+block like `cache_policy`. Retained past the run for audit; pruned in M21.
 
 **`task_outbox`** — the transactional Postgres→Redis dispatch buffer
 (ADR-002). `id` (identity, drain order), `run_id`, `step_id`, `reason`

@@ -188,7 +188,7 @@ func (e *Engine) cacheRead(ctx context.Context, step gen.RunStep, executor exec.
 			e.metrics.CacheHit(plabel)
 			logger.InfoContext(ctx, "response cache hit; skipping rate limiter and provider",
 				slog.String("plugin", plabel))
-			return true, nil, e.completeSuccess(ctx, step, out, verdict, semanticAttempt)
+			return true, nil, e.completeSuccess(ctx, step, out, verdict, semanticAttempt, e.stepCounter(executor, sc))
 		}
 	}
 	e.metrics.CacheMiss(plabel)

@@ -29,6 +29,64 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "BlackboardPolicy": {
+      "properties": {
+        "write": {
+          "items": {
+            "$ref": "#/$defs/BlackboardWrite"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "BlackboardWrite": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "pinned": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "key"
+      ]
+    },
+    "BlackboardWriteConfig": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "value": true,
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "expected_version": {
+          "type": "integer"
+        },
+        "read_key": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "BranchConfig": {
       "properties": {
         "input": true
@@ -594,6 +652,16 @@
               "$ref": "#/$defs/EffectfulEchoConfig"
             }
           }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "blackboard_write"
+            },
+            "config": {
+              "$ref": "#/$defs/BlackboardWriteConfig"
+            }
+          }
         }
       ],
       "properties": {
@@ -621,6 +689,9 @@
         },
         "validation": {
           "$ref": "#/$defs/ValidationPolicy"
+        },
+        "blackboard": {
+          "$ref": "#/$defs/BlackboardPolicy"
         }
       },
       "additionalProperties": false,
@@ -659,7 +730,8 @@
         "sleep",
         "fail_n_times",
         "counter",
-        "effectful_echo"
+        "effectful_echo",
+        "blackboard_write"
       ]
     },
     "ToolConfig": {

@@ -452,6 +452,49 @@ execution. When lines were lost, the response says so:
 `seq` gaps mark the same thing line-by-line: every captured line
 consumed a sequence number, stored or not.
 
+## The blackboard
+
+The **blackboard** is a run's shared, versioned key/value memory (ADR-014):
+steps read and write it during a run, and a step may publish its output to it
+declaratively via its `blackboard` envelope block. Read a run's blackboard —
+each key's head (latest version) by default:
+
+```bash
+curl -s "http://127.0.0.1:8080/v1/runs/$RUN_ID/blackboard" \
+  -H "Authorization: Bearer $API_KEY" | jq
+```
+
+```json
+{
+  "run_id": "018f3b1c-…",
+  "history": false,
+  "entries": [
+    {
+      "key": "draft_text",
+      "version": 1,
+      "value": "An opening paragraph…",
+      "token_count": 12,
+      "token_counter": "mock/estimate@1",
+      "tags": ["draft", "pinned"],
+      "author_step_id": "draft",
+      "author_attempt": 1,
+      "created_at": "2026-08-15T12:00:00Z"
+    }
+  ]
+}
+```
+
+Each entry carries its `token_count` under the `token_counter` fingerprint
+that produced it (the writing step's model tokenizer, or the chars/4 fallback
+for a non-model step) and the step that wrote it. `?history=true` returns
+every version, not just heads; `?key=` (repeatable) restricts to keys, and
+`?tag=` (repeatable) keeps only entries carrying every listed tag — a head is
+matched by its *current* tags, so a `pinned` tag dropped in a later version no
+longer surfaces the key. Entries page by an opaque `next_cursor` (limit up to
+1000, default 200). The endpoint is read-only — the blackboard is written by
+steps in the worker, never through the API. `ctl blackboard <run-id>
+[--name k --tag t --history]` wraps it.
+
 ## The plugin catalog
 
 `GET /v1/plugins` (read scope) lists every plugin compiled into the

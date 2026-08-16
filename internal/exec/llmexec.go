@@ -14,6 +14,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/jsonrepair"
 	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/plugin"
+	"github.com/mathcslearner/agentloom/internal/tokens"
 )
 
 // llmVersion is the production llm executor's plugin version (ADR-009).
@@ -38,6 +39,12 @@ const llmDefaultMaxTokens = 1024
 // errors onto.
 type LLMExecutor struct {
 	providers *llm.Registry
+	// tokenReg selects the token counter for a model's blackboard writes
+	// (ticket 12.2, TokenCounterProvider). Built internally so the many
+	// NewLLMExecutor call sites need no new argument; the counters are pure
+	// and offline, and the fallback-warning logger is left off here (the
+	// engine owns the logged selection for its own paths).
+	tokenReg *tokens.Registry
 }
 
 // NewLLMExecutor builds the llm executor over a provider registry. A nil
@@ -46,7 +53,7 @@ type LLMExecutor struct {
 // key is set) — and any llm step then fails permanent at resolve time
 // with a diagnosable ProviderUnavailable/UnknownModel error.
 func NewLLMExecutor(providers *llm.Registry) LLMExecutor {
-	return LLMExecutor{providers: providers}
+	return LLMExecutor{providers: providers, tokenReg: tokens.NewRegistry(nil)}
 }
 
 // Type implements Executor.
@@ -155,6 +162,31 @@ func (e LLMExecutor) ResourceClaim(sc StepContext) (string, int64, error) {
 		return "", 0, fmt.Errorf("resolving model %q: %w", cfg.Model, err)
 	}
 	return provider.Manifest().Name + ":" + model, estimateLLMTokens(cfg), nil
+}
+
+// TokenCounter implements TokenCounterProvider (ticket 12.2, ADR-014): the
+// counter for this step's blackboard writes is the one for its resolved
+// (provider, model), so an entry an llm step publishes is counted with the
+// same tokenizer M12.3 assembly and M12.6 guardrails will use. A resolution
+// or config failure returns an error, telling the engine to fall back to the
+// chars/4 counter and let Execute land the classified failure.
+func (e LLMExecutor) TokenCounter(sc StepContext) (tokens.Counter, error) {
+	cfg, err := configAs[*dag.LLMConfig](sc)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil || cfg.Model == "" {
+		return nil, fmt.Errorf("missing required field %q", "model")
+	}
+	if e.providers == nil {
+		return nil, fmt.Errorf("no model providers configured for model %q", cfg.Model)
+	}
+	provider, model, err := e.providers.Resolve("", cfg.Model)
+	if err != nil {
+		return nil, fmt.Errorf("resolving model %q: %w", cfg.Model, err)
+	}
+	counter, _ := e.tokenReg.Select(provider.Manifest().Name, model)
+	return counter, nil
 }
 
 // CacheBinding implements CacheBinder (ADR-011, ticket 9.5): the llm step's

@@ -93,21 +93,22 @@ type StepType string
 
 // The step-type catalog (ADR-003).
 const (
-	StepLLM           StepType = "llm"
-	StepTool          StepType = "tool"
-	StepRetrieve      StepType = "retrieve"
-	StepMap           StepType = "map"
-	StepPlanner       StepType = "planner"
-	StepAgent         StepType = "agent"
-	StepHumanApproval StepType = "human_approval"
-	StepJoin          StepType = "join"
-	StepBranch        StepType = "branch"
-	StepNoop          StepType = "noop"
-	StepEcho          StepType = "echo"
-	StepSleep         StepType = "sleep"
-	StepFailNTimes    StepType = "fail_n_times"
-	StepCounter       StepType = "counter"
-	StepEffectfulEcho StepType = "effectful_echo"
+	StepLLM             StepType = "llm"
+	StepTool            StepType = "tool"
+	StepRetrieve        StepType = "retrieve"
+	StepMap             StepType = "map"
+	StepPlanner         StepType = "planner"
+	StepAgent           StepType = "agent"
+	StepHumanApproval   StepType = "human_approval"
+	StepJoin            StepType = "join"
+	StepBranch          StepType = "branch"
+	StepNoop            StepType = "noop"
+	StepEcho            StepType = "echo"
+	StepSleep           StepType = "sleep"
+	StepFailNTimes      StepType = "fail_n_times"
+	StepCounter         StepType = "counter"
+	StepEffectfulEcho   StepType = "effectful_echo"
+	StepBlackboardWrite StepType = "blackboard_write"
 )
 
 // IsLLMFamily reports whether the step type produces a model completion —
@@ -165,6 +166,13 @@ type Step struct {
 	// output is accepted as produced). Uniform across step types, so it
 	// lives on the step envelope, not in the per-type config.
 	Validation *ValidationPolicy `json:"validation,omitempty"`
+
+	// Blackboard is the step's authored blackboard block (ADR-014, ticket
+	// 12.2): declarative writes to the run-scoped blackboard applied on the
+	// step's success. Nil when the source document had no blackboard key (no
+	// declarative writes). Uniform across step types, so it lives on the step
+	// envelope, not in the per-type config.
+	Blackboard *BlackboardPolicy `json:"blackboard,omitempty"`
 }
 
 // EdgeType distinguishes normal dependency edges from marked loop edges.

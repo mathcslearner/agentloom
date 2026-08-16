@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "blackboard-unknown-field",
+  "steps": [{"id": "a", "type": "noop", "blackboard": {"writes": [{"key": "k"}]}}],
+  "edges": []
+}

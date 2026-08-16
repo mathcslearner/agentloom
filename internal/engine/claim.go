@@ -259,6 +259,16 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		Effects:        e.effects.ForStep(step.RunID, step.StepID, int(step.AttemptCount), claimID, logger),
 		Logger:         execLogger,
 	}
+	// Blackboard handle (ticket 12.2, ADR-014): bind a step-scoped board so
+	// the executor can read and write run-scoped shared memory, attributed to
+	// this step and fenced on its claim. Entries the step writes are token-
+	// counted with the model's counter when the executor resolves one
+	// (TokenCounterProvider), else the chars/4 fallback. Nil board leaves the
+	// field nil — a step that requires it fails permanent (no board wired).
+	if e.blackboard != nil {
+		sc.Blackboard = e.blackboard.ForStep(step.RunID, step.StepID, int(step.AttemptCount), claimID,
+			e.stepCounter(executor, sc), logger)
+	}
 	// Semantic-retry feedback injection (ticket 11.4, ADR-013): if this claim
 	// carries a pending critique — a prior attempt's output failed its
 	// validation chain and the step was semantic-retried — fold it into the
@@ -426,7 +436,10 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	if cacheWB != nil {
 		e.cacheWrite(ctx, cacheWB, out)
 	}
-	return e.completeSuccess(ctx, step, out, verdict, semanticAttempt)
+	// The token counter for this step's declarative blackboard writes (ticket
+	// 12.2): the model that actually served (sc.Config reflects any downgrade
+	// or feedback augmentation), or the chars/4 fallback for a non-model step.
+	return e.completeSuccess(ctx, step, out, verdict, semanticAttempt, e.stepCounter(executor, sc))
 }
 
 // reconcileBinding carries what the middleware needs, after a granted

@@ -366,6 +366,35 @@ type StepLogsResponse struct {
 	NextCursor   string            `json:"next_cursor,omitempty"`
 }
 
+// BlackboardEntryView is one blackboard entry on the wire (ticket 12.2,
+// ADR-014): one version of one run-scoped key. Value is the stored JSON
+// verbatim; TokenCount is its size under TokenCounter (a counter
+// fingerprint). Tags is never null. AuthorStepID/AuthorAttempt name the
+// step that wrote the version (omitted for a non-step writer).
+type BlackboardEntryView struct {
+	Key           string          `json:"key"`
+	Version       int             `json:"version"`
+	Value         json.RawMessage `json:"value"`
+	TokenCount    int             `json:"token_count"`
+	TokenCounter  string          `json:"token_counter"`
+	Tags          []string        `json:"tags"`
+	AuthorStepID  string          `json:"author_step_id,omitempty"`
+	AuthorAttempt int             `json:"author_attempt,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+}
+
+// BlackboardResponse answers GET /v1/runs/{id}/blackboard (ticket 12.2): one
+// keyset page of the run's blackboard. By default it returns each key's head
+// (latest version), ordered by key; ?history=true returns every version,
+// ordered by (key, version). NextCursor, when set, fetches the next page via
+// ?cursor=; absent means this was the last page.
+type BlackboardResponse struct {
+	RunID      string                `json:"run_id"`
+	History    bool                  `json:"history"`
+	Entries    []BlackboardEntryView `json:"entries"`
+	NextCursor string                `json:"next_cursor,omitempty"`
+}
+
 // ListRunsResponse answers GET /v1/runs (ticket 6.5): one keyset page,
 // newest-first. NextCursor, when set, fetches the next page verbatim via
 // ?cursor=; absent means this was the last page.

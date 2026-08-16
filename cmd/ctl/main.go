@@ -12,6 +12,7 @@
 //	ctl keys …                   manage API keys (create/list/revoke; ticket 6.1)
 //	ctl plugins list             list the plugin catalog (ticket 8.1)
 //	ctl cache bust|stats         invalidate cache entries / show hit rates (ticket 9.6)
+//	ctl blackboard <run-id>      inspect a run's blackboard (ticket 12.2)
 //
 // The API base URL comes from --api or AGENTLOOM_API_URL (default
 // http://localhost:8080); the bearer credential from --key or
@@ -54,6 +55,6 @@ func newRootCmd(lookup func(string) (string, bool)) *cobra.Command {
 	root.PersistentFlags().String("key", defaultKey, "bearer API key (default AGENTLOOM_API_KEY)")
 	root.AddCommand(newValidateCmd(), newSubmitCmd(), newWatchCmd(), newRunsCmd(),
 		newCancelCmd(), newParkCmd(), newUnparkCmd(), newBudgetCmd(), newRequeueCmd(),
-		newKeysCmd(), newPluginsCmd(), newCacheCmd())
+		newKeysCmd(), newPluginsCmd(), newCacheCmd(), newBlackboardCmd())
 	return root
 }

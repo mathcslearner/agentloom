@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mathcslearner/agentloom/internal/blackboard/pgboard"
 	"github.com/mathcslearner/agentloom/internal/cache/redisstore"
 	"github.com/mathcslearner/agentloom/internal/config"
 	"github.com/mathcslearner/agentloom/internal/cost"
@@ -271,6 +272,15 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		// resolves and runs a step's chain against this registry.
 		engine.WithValidators(validators),
 	}
+	// Run-scoped blackboard (ticket 12.2, ADR-014): a step-scoped handle is
+	// bound onto each StepContext (programmatic reads/writes) and a step's
+	// declarative `blackboard` writes are applied in the completion
+	// transaction. Over the shared store and the engine's clock.
+	board, err := pgboard.New(st, pgboard.WithClock(time.Now))
+	if err != nil {
+		return fmt.Errorf("building blackboard: %w", err)
+	}
+	engineOpts = append(engineOpts, engine.WithBlackboard(board))
 	if resourceLimiter != nil {
 		engineOpts = append(engineOpts,
 			engine.WithResourceLimiter(resourceLimiter),

@@ -30,6 +30,7 @@ var exampleFiles = []string{
 	"structured_extract.json",
 	"semantic_retry.json",
 	"llm_judge.json",
+	"blackboard.json",
 }
 
 // readExample loads one example definition document.

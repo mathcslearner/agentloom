@@ -34,17 +34,18 @@ func (s describedStub) PluginManifest() plugin.Manifest { return s.manifest }
 // builtinCapabilities is ADR-009's flag table, pinned executable. A flag
 // change is a deliberate ADR amendment, never drift.
 var builtinCapabilities = map[string]plugin.Capabilities{
-	"noop":           {Cacheable: true},
-	"echo":           {Cacheable: true},
-	"sleep":          {},
-	"fail_n_times":   {},
-	"join":           {},
-	"branch":         {},
-	"counter":        {SideEffectful: true},
-	"effectful_echo": {SideEffectful: true},
-	"llm":            {Cacheable: true, CostBearing: true},
-	"tool":           {SideEffectful: true},
-	"retrieve":       {Cacheable: true},
+	"noop":             {Cacheable: true},
+	"echo":             {Cacheable: true},
+	"sleep":            {},
+	"fail_n_times":     {},
+	"join":             {},
+	"branch":           {},
+	"counter":          {SideEffectful: true},
+	"effectful_echo":   {SideEffectful: true},
+	"blackboard_write": {SideEffectful: true},
+	"llm":              {Cacheable: true, CostBearing: true},
+	"tool":             {SideEffectful: true},
+	"retrieve":         {Cacheable: true},
 }
 
 // stubTypes are the dev-stub executors, whose manifests carry the

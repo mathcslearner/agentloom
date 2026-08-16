@@ -14,6 +14,7 @@ var stepTypes = []StepType{
 	StepLLM, StepTool, StepRetrieve, StepMap, StepPlanner, StepAgent,
 	StepHumanApproval, StepJoin, StepBranch, StepNoop, StepEcho,
 	StepSleep, StepFailNTimes, StepCounter, StepEffectfulEcho,
+	StepBlackboardWrite,
 }
 
 // StepTypes returns the step-type catalog in documentation order. It

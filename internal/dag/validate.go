@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/mathcslearner/agentloom/internal/blackboard"
 )
 
 // Definition limits (ADR-003 "Limits"). Compiled in; making them
@@ -68,6 +70,8 @@ const (
 	CodeBudgetFieldInvalid      ValidationCode = "budget_field_invalid"
 	CodeValidationFieldRequired ValidationCode = "validation_field_required"
 	CodeValidationFieldInvalid  ValidationCode = "validation_field_invalid"
+	CodeBlackboardFieldRequired ValidationCode = "blackboard_field_required"
+	CodeBlackboardFieldInvalid  ValidationCode = "blackboard_field_invalid"
 	CodeLimitExceeded           ValidationCode = "limit_exceeded"
 	CodeCycle                   ValidationCode = "cycle_detected"
 	CodeLoopEdgeNotAncestor     ValidationCode = "loop_edge_not_ancestor"
@@ -232,8 +236,50 @@ func (v *validator) checkSteps(def *Definition) map[string]int {
 		v.checkCache(path, s.Cache)
 		v.checkStepBudget(path, s.Type, s.Budget)
 		v.checkValidation(path, s)
+		v.checkBlackboard(path, s.Blackboard)
 	}
 	return index
+}
+
+// checkBlackboard enforces the blackboard block bounds (ADR-014, ticket
+// 12.2). The codec already rejected unknown fields and mistyped values; here
+// the non-empty-writes rule, the write count bound, key uniqueness, the
+// key/tag grammar (shared with the runtime store, so they cannot drift), and
+// each From pointer's syntax. A nil block means the `blackboard` key was
+// absent, nothing to check.
+func (v *validator) checkBlackboard(path string, bp *BlackboardPolicy) {
+	if bp == nil {
+		return
+	}
+	path += ".blackboard"
+	if len(bp.Write) == 0 {
+		v.add(CodeBlackboardFieldRequired, path+".write", "at least one write is required when a blackboard block is present")
+		return
+	}
+	if len(bp.Write) > MaxBlackboardWrites {
+		v.add(CodeBlackboardFieldInvalid, path+".write", "must have at most %d writes, got %d", MaxBlackboardWrites, len(bp.Write))
+	}
+	seen := make(map[string]int, len(bp.Write))
+	for i, w := range bp.Write {
+		entry := fmt.Sprintf("%s.write[%d]", path, i)
+		if err := blackboard.ValidateKey(w.Key); err != nil {
+			v.add(CodeBlackboardFieldInvalid, entry+".key", "%v", err)
+		} else if first, dup := seen[w.Key]; dup {
+			v.add(CodeBlackboardFieldInvalid, entry+".key", "duplicate write to key %q (first at write[%d])", w.Key, first)
+		} else {
+			seen[w.Key] = i
+		}
+		if w.From != "" {
+			if err := checkJSONPointer(w.From); err != nil {
+				v.add(CodeBlackboardFieldInvalid, entry+".from", "invalid JSON pointer: %v", err)
+			}
+		}
+		if len(w.Tags) > 0 {
+			if _, err := blackboard.NormalizeTags(w.Tags); err != nil {
+				v.add(CodeBlackboardFieldInvalid, entry+".tags", "%v", err)
+			}
+		}
+	}
 }
 
 // checkValidation enforces the output-validation chain bounds (ADR-013,
@@ -590,6 +636,29 @@ func (v *validator) checkStepConfig(path string, s Step) {
 			v.add(CodeConfigFieldRequired, path+".config.path", "required field is missing")
 		case c.FailTimes < 0:
 			v.add(CodeConfigFieldInvalid, path+".config.fail_times", "must not be negative, got %d", c.FailTimes)
+		}
+	case StepBlackboardWrite:
+		c := cfg[BlackboardWriteConfig](s)
+		if c.Key == "" {
+			v.add(CodeConfigFieldRequired, path+".config.key", "required field is missing")
+		} else if err := blackboard.ValidateKey(c.Key); err != nil {
+			v.add(CodeConfigFieldInvalid, path+".config.key", "%v", err)
+		}
+		if len(c.Value) == 0 {
+			v.add(CodeConfigFieldRequired, path+".config.value", "required field is missing")
+		}
+		if c.ExpectedVersion != nil && *c.ExpectedVersion < 0 {
+			v.add(CodeConfigFieldInvalid, path+".config.expected_version", "must not be negative, got %d", *c.ExpectedVersion)
+		}
+		if len(c.Tags) > 0 {
+			if _, err := blackboard.NormalizeTags(c.Tags); err != nil {
+				v.add(CodeConfigFieldInvalid, path+".config.tags", "%v", err)
+			}
+		}
+		if c.ReadKey != "" {
+			if err := blackboard.ValidateKey(c.ReadKey); err != nil {
+				v.add(CodeConfigFieldInvalid, path+".config.read_key", "%v", err)
+			}
 		}
 	case StepBranch, StepNoop, StepEcho:
 		// No required config fields.

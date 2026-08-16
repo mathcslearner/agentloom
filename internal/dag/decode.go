@@ -217,9 +217,12 @@ func decodeStep(raw json.RawMessage, path string, errs *errList) Step {
 	if validationRaw, present := m["validation"]; present {
 		step.Validation = decodeValidation(validationRaw, path+".validation", errs)
 	}
+	if blackboardRaw, present := m["blackboard"]; present {
+		step.Blackboard = decodeBlackboard(blackboardRaw, path+".blackboard", errs)
+	}
 	for _, k := range sortedKeys(m) {
 		switch k {
-		case "id", "type", "config", "retry", "timeout", "cache", "budget", "validation":
+		case "id", "type", "config", "retry", "timeout", "cache", "budget", "validation", "blackboard":
 		default:
 			errs.add(path+"."+k, "unknown field")
 		}
@@ -242,6 +245,16 @@ func decodeValidation(raw json.RawMessage, path string, errs *errList) *Validati
 		compactRaw(&vp.Validators[i].Config)
 	}
 	return &vp
+}
+
+// decodeBlackboard decodes a step's blackboard block (ADR-014). Like
+// decodeBudget the codec level enforces shape only — unknown fields and
+// mistyped values; the non-empty-writes rule, the key/tag grammar, and the
+// From pointer syntax are structural validation (Validate).
+func decodeBlackboard(raw json.RawMessage, path string, errs *errList) *BlackboardPolicy {
+	var bp BlackboardPolicy
+	strictUnmarshal(raw, &bp, path, errs)
+	return &bp
 }
 
 // decodeBudget decodes a step's budget caps (ADR-012). Like decodeCache the
@@ -314,6 +327,8 @@ func decodeStepConfig(st StepType, raw json.RawMessage, path string, errs *errLi
 		compactRaw(&c.Input)
 	case *EffectfulEchoConfig:
 		compactRaw(&c.Input)
+	case *BlackboardWriteConfig:
+		compactRaw(&c.Value)
 	case *JoinConfig:
 		if c.Mode != "" && c.Mode != JoinAll && c.Mode != JoinAny {
 			errs.add(path+".mode", "unknown join mode %q (expected %q or %q)", string(c.Mode), JoinAll, JoinAny)

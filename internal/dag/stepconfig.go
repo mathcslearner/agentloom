@@ -15,21 +15,22 @@ type StepConfig interface {
 // (schema.go); adding a step type means adding a struct and one entry
 // here.
 var stepConfigTypes = map[StepType]func() StepConfig{
-	StepLLM:           func() StepConfig { return &LLMConfig{} },
-	StepTool:          func() StepConfig { return &ToolConfig{} },
-	StepRetrieve:      func() StepConfig { return &RetrieveConfig{} },
-	StepMap:           func() StepConfig { return &MapConfig{} },
-	StepPlanner:       func() StepConfig { return &PlannerConfig{} },
-	StepAgent:         func() StepConfig { return &AgentConfig{} },
-	StepHumanApproval: func() StepConfig { return &HumanApprovalConfig{} },
-	StepJoin:          func() StepConfig { return &JoinConfig{} },
-	StepBranch:        func() StepConfig { return &BranchConfig{} },
-	StepNoop:          func() StepConfig { return &NoopConfig{} },
-	StepEcho:          func() StepConfig { return &EchoConfig{} },
-	StepSleep:         func() StepConfig { return &SleepConfig{} },
-	StepFailNTimes:    func() StepConfig { return &FailNTimesConfig{} },
-	StepCounter:       func() StepConfig { return &CounterConfig{} },
-	StepEffectfulEcho: func() StepConfig { return &EffectfulEchoConfig{} },
+	StepLLM:             func() StepConfig { return &LLMConfig{} },
+	StepTool:            func() StepConfig { return &ToolConfig{} },
+	StepRetrieve:        func() StepConfig { return &RetrieveConfig{} },
+	StepMap:             func() StepConfig { return &MapConfig{} },
+	StepPlanner:         func() StepConfig { return &PlannerConfig{} },
+	StepAgent:           func() StepConfig { return &AgentConfig{} },
+	StepHumanApproval:   func() StepConfig { return &HumanApprovalConfig{} },
+	StepJoin:            func() StepConfig { return &JoinConfig{} },
+	StepBranch:          func() StepConfig { return &BranchConfig{} },
+	StepNoop:            func() StepConfig { return &NoopConfig{} },
+	StepEcho:            func() StepConfig { return &EchoConfig{} },
+	StepSleep:           func() StepConfig { return &SleepConfig{} },
+	StepFailNTimes:      func() StepConfig { return &FailNTimesConfig{} },
+	StepCounter:         func() StepConfig { return &CounterConfig{} },
+	StepEffectfulEcho:   func() StepConfig { return &EffectfulEchoConfig{} },
+	StepBlackboardWrite: func() StepConfig { return &BlackboardWriteConfig{} },
 }
 
 // LLMMessage is one entry of an llm step's messages array.
@@ -256,18 +257,39 @@ type EffectfulEchoConfig struct {
 	FailTimes int             `json:"fail_times,omitempty"`
 }
 
-func (*LLMConfig) stepConfig()           {}
-func (*ToolConfig) stepConfig()          {}
-func (*RetrieveConfig) stepConfig()      {}
-func (*MapConfig) stepConfig()           {}
-func (*PlannerConfig) stepConfig()       {}
-func (*AgentConfig) stepConfig()         {}
-func (*HumanApprovalConfig) stepConfig() {}
-func (*JoinConfig) stepConfig()          {}
-func (*BranchConfig) stepConfig()        {}
-func (*NoopConfig) stepConfig()          {}
-func (*EchoConfig) stepConfig()          {}
-func (*SleepConfig) stepConfig()         {}
-func (*FailNTimesConfig) stepConfig()    {}
-func (*CounterConfig) stepConfig()       {}
-func (*EffectfulEchoConfig) stepConfig() {}
+// BlackboardWriteConfig configures a blackboard_write test step (executor:
+// ticket 12.2), which writes Value to the run-scoped blackboard under Key
+// (optionally under a version compare-and-swap guard), then echoes the
+// written entry — plus, when ReadKey is set, the current head of that key —
+// as its output. It exists so the engine integration tests exercise the
+// programmatic StepContext.Blackboard read/write API and the CAS path
+// without a real llm/tool executor.
+type BlackboardWriteConfig struct {
+	Key   string          `json:"key,omitempty"`
+	Value json.RawMessage `json:"value,omitempty"`
+	Tags  []string        `json:"tags,omitempty"`
+	// ExpectedVersion, when non-nil, is the compare-and-swap guard: the write
+	// requires the current head to equal it (0 = the key must not exist). Nil
+	// writes unconditionally.
+	ExpectedVersion *int `json:"expected_version,omitempty"`
+	// ReadKey, when set, names a key whose head the step also reads and
+	// includes in its output (the programmatic-read half of the API).
+	ReadKey string `json:"read_key,omitempty"`
+}
+
+func (*LLMConfig) stepConfig()             {}
+func (*ToolConfig) stepConfig()            {}
+func (*RetrieveConfig) stepConfig()        {}
+func (*MapConfig) stepConfig()             {}
+func (*PlannerConfig) stepConfig()         {}
+func (*AgentConfig) stepConfig()           {}
+func (*HumanApprovalConfig) stepConfig()   {}
+func (*JoinConfig) stepConfig()            {}
+func (*BranchConfig) stepConfig()          {}
+func (*NoopConfig) stepConfig()            {}
+func (*EchoConfig) stepConfig()            {}
+func (*SleepConfig) stepConfig()           {}
+func (*FailNTimesConfig) stepConfig()      {}
+func (*CounterConfig) stepConfig()         {}
+func (*EffectfulEchoConfig) stepConfig()   {}
+func (*BlackboardWriteConfig) stepConfig() {}

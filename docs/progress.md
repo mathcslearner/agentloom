@@ -6744,3 +6744,166 @@ swaps the M9.2 estimator for these counters + the `context_utilization` metric
 (`window − max_tokens − headroom`), the strategy-pipeline semantics and hard
 ≤-budget guarantee, and the determinism/audit requirements those tickets
 conform to, with worked compaction examples.
+
+### 12.2 — Blackboard store ✅
+
+Delivered the run-scoped **blackboard** — the shared, versioned key/value
+memory steps read and write during a run (ADR-014). It is the source of
+12.3's `blackboard` context source, the substrate M14's multi-agent handoffs
+build a thread on, and where 12.5's summaries will land as their own
+entries. 12.2 ships the store, the executor-facing read/write API, the
+declarative write sugar, and the read API.
+
+**Package shape.** `internal/blackboard` is a **leaf** (stdlib only): the
+domain types (`Entry`, `PutArgs`, the `Board` interface), the key/tag/value
+rules (`ValidateKey`/`NormalizeTags`/`ValidateValue`, `TagPinned`), the
+typed errors (`*VersionConflictError`, `ErrFenced`, `*InvalidKeyError`,
+`*InvalidTagError`, `*ValueTooLargeError`), and the shared helpers
+`CanonicalValue` (compact JSON — the determinism the stored count rests on)
+and `ResolvePointer` (RFC-6901 into a doc). So `exec`, `engine`, and the
+coming `internal/contextmgr` depend on it without a cycle (the
+`internal/cache`, `internal/limits` precedent). The Postgres implementation
+is the subpackage `internal/blackboard/pgboard` (the only importer of
+`internal/store`), the `retrieval`/`pgfts` precedent — keeping the SPI a leaf.
+
+**Schema (migration 0021).** `blackboard_entries` is **append-only per key**:
+a write never overwrites, it inserts the next `version` (1-based per
+`(run_id, key)`), so `History` reconstructs every revision — the audit
+ADR-014 requires. A row carries `value` (JSONB), `token_count` +
+`token_counter` (the `tokens.Counter.ID()` that produced the count, stored
+together so a consumer recomputes on a fingerprint mismatch), `tags`
+(`TEXT[]`, GIN-indexed, **per-version and immutable** — re-tagging/pinning is
+a new version, so the history stays honest), and the author step + attempt.
+`run_steps.blackboard_policy` (nullable JSONB) materializes a step's
+declarative-write block at instantiation, like `cache_policy`. Retained past
+the run for audit; pruned in M21. The migrate round-trip test pins 21 and
+asserts the table/column drop.
+
+**Write protocol.** `store.PutBlackboardEntry` is a transition-style helper
+(the `ApplyAttemptCost` template): inside the caller's transaction it takes
+the run lock (existence + the uniform run→step ordering, and the
+serialization that makes version allocation collision-free), optionally
+**fences** on the authoring step's `claim_id` (a taken-over zombie's write is
+rejected — unlike the 5.5 journal's first-wins result), evaluates an optional
+compare-and-swap guard (`ExpectedVersion`, 0 = "must not exist") against the
+current head, inserts `head+1`, and appends a `blackboard_updated` event
+(`store.EventBlackboardUpdated`, payload `BlackboardUpdatedEvent`) — all
+atomically. A rejected CAS (`*store.BlackboardVersionConflict`, unwraps
+`ErrConflict`) or fence (`store.ErrBlackboardFenced`) writes nothing, burning
+no event seq. Because every writer holds the run lock, two concurrent
+**unconditional** writers of one key never collide — they serialize into v1
+and v2, no lost update (asserted end-to-end). `store.BlackboardRepo` serves
+the reads (`Head`/`History`/`ListHeads`/`ListHeadsPage`/`ListVersionsPage`);
+the heads queries use a `DISTINCT ON (key)` CTE so a tag filter applies to
+the *head*, not a superseded version.
+
+**Executor API.** `StepContext.Blackboard` is a step-scoped `blackboard.Board`
+(programmatic `Get`/`History`/`List`/`Put`), bound in `claim.go` beside
+`Effects`, attributed to the step and fenced on its claim. The `pgboard`
+handle validates against the leaf rules, canonicalizes + token-counts the
+value, routes through `store.PutBlackboardEntry` in its own short
+transaction (the effects-journal model), and **translates** the store's typed
+errors back into the leaf's so the engine's classifier sees one vocabulary. A
+CAS conflict is **transient** (the retry re-reads the head and can win at the
+next version); a fence/bad-input is **permanent**. Token counts use the
+step's counter via the new `exec.TokenCounterProvider` hook — the llm
+executor resolves the model's tokenizer (`tokens.Registry.Select` over the
+resolved provider), every other step gets `tokens.Fallback()` (chars/4); the
+engine's `stepCounter` helper picks it. `tokens.Fallback()` was exported for
+non-model contexts.
+
+**Declarative writes.** A step's `blackboard` envelope block declares
+`write: [{key, from, tags, pinned}]` — on success, the value at the `from`
+RFC-6901 pointer into the step's *own* output is published under `key`
+(`from: ""` = whole output; `/text` for an llm step). Applied **in the
+completion transaction** (`completeSuccess`), after the success CAS and under
+the run lock it holds — so a fenced zombie completion never writes, and the
+entry is durable exactly with the step's success. Planning (`planBlackboardWrites`,
+pointer resolution) is pure and pre-transaction; a pointer that does not
+resolve is a permanent step failure (ADR-006 row 15), carrying the output so
+its productive cost still ledgers. A cache-hit completion applies the writes
+too (same output). Gated on a wired board (`WithBlackboard`) so test layers
+that don't opt in see no blackboard behavior. `completeSuccess` grew a
+`tokens.Counter` param; both call sites (`claim.go`, the cache-hit path in
+`cache.go`) pass `e.stepCounter(executor, sc)`.
+
+**Cache-key note (documented).** Programmatic blackboard reads during
+execution are *not* cache-key inputs (the key is built before execution), so
+a step depending on blackboard state must be uncacheable (the
+`blackboard_write` test executor is `side_effectful`) or receive that state
+through the config (templating / 12.3 assembly, both *in* the key). ADR-014
+records this; 12.3's declarative sources are assembled pre-cache and keyed
+correctly.
+
+**dag contract.** `Step.Blackboard *BlackboardPolicy` (strict-decoded, the
+`"blackboard"` key added to the envelope switch), `checkBlackboard`
+validation (codes `blackboard_field_required`/`blackboard_field_invalid`, ≤16
+writes, keys distinct + valid grammar, `from` pointer syntax, tag grammar —
+sharing the leaf's `ValidateKey`/`NormalizeTags` so they cannot drift). New
+step type `blackboard_write` (test-only, in `Builtins` not `CoreBuiltins`,
+gated behind `AGENTLOOM_WORKER_TEST_EXECUTORS` like counter/effectful_echo) —
+config `key`/`value`/`tags`/`expected_version`/`read_key`, its executor
+exercising the programmatic read/write + CAS. Regenerated JSON Schema, both
+kitchen sinks + a bad fixture (`blackboard_bad.json`) + a decode fixture.
+**Declarative reads into a prompt are 12.3's context sources** — 12.2 ships
+writes + the programmatic API; the `blackboard.<key>` template read root is
+deferred with them (only useful once assembly consumes it), keeping this
+ticket out of the template engine.
+
+**API.** `GET /v1/runs/{id}/blackboard` (read scope/class): each key's head
+by default, `?history=true` for every version, `?key=`/`?tag=` filters (tag =
+AND), opaque keyset cursor. `BlackboardResponse`/`BlackboardEntryView`,
+OpenAPI (still lint 100/100), route→scope/route→class/auth-matrix/coverage
+tables extended. Read-only — the API never writes the blackboard (steps do,
+in the worker), so ADR-002 is untouched. `ctl blackboard <run-id> [--name
+--tag --history --limit]` (the key filter is `--name`, not `--key`, since
+`--key` is the global bearer flag).
+
+**Wiring.** `engine.WithBlackboard(*pgboard.Board)` + `WithTokenCounters`
+(built in `New` with the engine's logger so a chars/4 fallback warns once);
+`cmd/worker` builds the board over the shared store and wires it (always-on).
+
+**Tests.** Leaf unit suite (key/tag/value rules, pointer, canonicalize);
+store integration (versioning, tag queries incl. the superseded-tag case,
+CAS conflict writes-nothing, distinct-key parallel, fence); pgboard
+integration (token count on the canonical form + counter fingerprint, pinned,
+CAS-translation, invalid-inputs-permanent); exec unit (executor write/read,
+CAS→transient, no-board→permanent, the llm `TokenCounter` hook); engine
+integration (`TestBlackboardFlow` — distinct-key parallel writes both v1, a
+declarative pinned llm write counted with the model counter, a downstream
+CAS-success at v2 with `read_key`; `TestBlackboardParallelSameKey` — two
+unconditional same-key writes both land, history intact; `TestBlackboardCASConflictDeadLetters`
+— an impossible `expected_version` transient-retries then dead-letters,
+nothing written); api integration (heads/history/key/tag filters,
+pagination, 400/404). Whole `go test ./...` + the integration suites green
+against the compose stack.
+
+**Non-obvious decisions.**
+- *Fence semantics differ from the effects journal.* A blackboard write is
+  claim-fenced (a zombie must not mutate shared memory the new holder owns);
+  the 5.5 journal's *result* write is first-wins (step-level fencing already
+  rejects the zombie's outcome). Declarative writes ride the success CAS's
+  fence, so they need no fence of their own; programmatic writes fence
+  explicitly.
+- *JSONB reformats deterministically.* Postgres normalizes a stored JSONB
+  value (spaces after colons), so the returned bytes are not the canonical
+  form — but the `token_count` is computed on `CanonicalValue` before insert,
+  so it is deterministic regardless, and JSONB's reformat is itself
+  deterministic (byte-identical assembly in 12.3 still holds).
+- *`blackboard_write` is test-only.* A production deployment publishes to the
+  blackboard through the declarative envelope, not an arbitrary-write step;
+  the executor exists to drive the integration tests, so it lives in the
+  opt-in `Builtins` set (the split test became `+3`, generalized from
+  "filesystem" to "test-only").
+- *Declarative reads are 12.3.* ADR-014 assigns blackboard-as-context-source
+  to context assembly; 12.2 stays out of the template engine, delivering the
+  three done-when boxes (store tests, parallel/CAS behavior, the read
+  endpoint) without ballooning.
+
+**Deferred to later M12 tickets:** the `blackboard` context source +
+byte-identical assembly (12.3), deterministic compaction respecting `pinned`
+(12.4), summarization writing summary entries (12.5), provider-window
+guardrails (12.6). ADR-014 §"Blackboard store (as built, 12.2)"; ADR-004
+(table + `blackboard_updated` event), ADR-003 (`blackboard` envelope + reads-
+are-12.3 note), ADR-006 (CAS=transient / fence=permanent), ADR-007 (route
+row) cross-amended.

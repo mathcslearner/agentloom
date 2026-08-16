@@ -61,8 +61,8 @@ func TestListPlugins(t *testing.T) {
 	if res := doAuth(t, srv, http.MethodGet, "/v1/plugins", rootKey, nil, &resp); res.StatusCode != http.StatusOK {
 		t.Fatalf("GET /v1/plugins = %d, want 200", res.StatusCode)
 	}
-	if len(resp.Plugins) != 11 {
-		t.Fatalf("catalog has %d plugins, want the 11 builtins", len(resp.Plugins))
+	if len(resp.Plugins) != 12 {
+		t.Fatalf("catalog has %d plugins, want the 12 builtins", len(resp.Plugins))
 	}
 	if !sort.SliceIsSorted(resp.Plugins, func(i, j int) bool {
 		a, b := resp.Plugins[i], resp.Plugins[j]

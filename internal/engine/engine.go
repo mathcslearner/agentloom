@@ -26,12 +26,14 @@ import (
 	"go.opentelemetry.io/otel"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/mathcslearner/agentloom/internal/blackboard/pgboard"
 	"github.com/mathcslearner/agentloom/internal/cost"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/exec/effects"
 	"github.com/mathcslearner/agentloom/internal/queue"
 	"github.com/mathcslearner/agentloom/internal/ratelimit/resource"
 	"github.com/mathcslearner/agentloom/internal/store"
+	"github.com/mathcslearner/agentloom/internal/tokens"
 	"github.com/mathcslearner/agentloom/internal/validate"
 )
 
@@ -181,6 +183,18 @@ type Engine struct {
 	// resolve time (the named validators cannot exist) — the same convention
 	// a nil llm/tool/retrieval registry uses.
 	validators *validate.Registry
+	// blackboard, when set, is the run-scoped blackboard the M12 middleware
+	// binds onto each StepContext (programmatic reads/writes) and applies a
+	// step's declarative `blackboard` writes through in the completion
+	// transaction (ticket 12.2, ADR-014). Nil disables the blackboard: a step
+	// that reads/writes it fails permanent (no board wired), and declarative
+	// writes are a no-op — the default for every test layer that doesn't opt in.
+	blackboard *pgboard.Board
+	// tokenCounters selects the token counter for a step's blackboard writes
+	// (ticket 12.2): the llm executor's TokenCounter hook resolves the model's
+	// tokenizer; every other step gets the chars/4 fallback. Never nil after
+	// New (built with the engine's logger so the fallback warning logs once).
+	tokenCounters *tokens.Registry
 }
 
 // Option customizes an Engine.
@@ -224,6 +238,16 @@ func WithJitterRand(r func() float64) Option {
 // config.WorkerConfig.EffectsStrict here.
 func WithStrictEffects(strict bool) Option {
 	return func(e *Engine) { e.effectsStrict = strict }
+}
+
+// WithBlackboard wires the run-scoped blackboard (ticket 12.2, ADR-014): the
+// engine binds a step-scoped handle onto each StepContext (programmatic
+// reads/writes, attributed and claim-fenced) and applies a step's
+// declarative `blackboard` writes through it in the completion transaction.
+// cmd/worker builds a pgboard over the shared store and wires it here; nil
+// (the default) disables the blackboard entirely.
+func WithBlackboard(b *pgboard.Board) Option {
+	return func(e *Engine) { e.blackboard = b }
 }
 
 // WithCancelPollInterval sets how often the in-flight cancellation watch
@@ -359,6 +383,12 @@ func New(s *store.Store, r *exec.Registry, workerID string, opts ...Option) (*En
 		return nil, err
 	}
 	e.effects = j
+	// The token-counter registry selects a counter per resolved model for
+	// blackboard writes; built with the engine's logger so a chars/4 fallback
+	// warns once per model (ADR-014), never per call.
+	if e.tokenCounters == nil {
+		e.tokenCounters = tokens.NewRegistry(slog.Default())
+	}
 	// The lifecycle control surface shares the engine's store, clock, and
 	// dispatcher nudge (both read-only after New, so copying is safe).
 	e.Control = &Control{store: e.store, now: e.now, nudge: e.nudge}

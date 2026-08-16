@@ -41,7 +41,7 @@ func columnExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table, 
 // latestVersion is the highest migration in internal/store/migrations —
 // bump when adding a migration (the round-trip test below walks every
 // down migration regardless, so forgetting only fails the version check).
-const latestVersion = 20
+const latestVersion = 21
 
 func TestMigrateUpDownRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -84,22 +84,36 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 	}
 
 	// Down rolls back one step: the newest migration's additions are gone,
-	// earlier ones untouched. 0020 drops the semantic-retry feedback columns —
-	// its revert is observable by them being gone while everything below it
-	// survives: 0019's step_attempts.repair, 0018's step_attempts.verdict and
-	// run_steps.validation_policy, 0017's runs budget columns and
-	// run_steps.budget_policy, 0016's cost_ledger table and runs cost columns,
-	// 0015's run_steps.cache_policy column, 0013's retrieval_docs table, 0012's
-	// step_attempts.usage column, 0011's step_logs table, 0010's trace
-	// columns, 0009's fingerprint column, 0008's api_keys table, 0007's
-	// run-control columns, 0006's side_effects table, 0005's dead_letters
-	// table and runs columns, 0004's timeout column, 0003's retry columns,
-	// and the 0002 tables all persist.
+	// earlier ones untouched. 0021 drops the blackboard_entries table and the
+	// run_steps.blackboard_policy column — its revert is observable by them
+	// being gone while everything below it survives: 0020's semantic-retry
+	// feedback columns, 0019's step_attempts.repair, 0018's
+	// step_attempts.verdict and run_steps.validation_policy, 0017's runs
+	// budget columns and run_steps.budget_policy, 0016's cost_ledger table and
+	// runs cost columns, 0015's run_steps.cache_policy column, 0013's
+	// retrieval_docs table, 0012's step_attempts.usage column, 0011's
+	// step_logs table, 0010's trace columns, 0009's fingerprint column,
+	// 0008's api_keys table, 0007's run-control columns, 0006's side_effects
+	// table, 0005's dead_letters table and runs columns, 0004's timeout
+	// column, 0003's retry columns, and the 0002 tables all persist.
 	if err := mg.Down(); err != nil {
 		t.Fatalf("Down: %v", err)
 	}
+	if tableExists(ctx, t, pool, "blackboard_entries") {
+		t.Fatal("after one Down: blackboard_entries table was not dropped by 0021")
+	}
+	if columnExists(ctx, t, pool, "run_steps", "blackboard_policy") {
+		t.Fatal("after one Down: run_steps.blackboard_policy was not dropped by 0021")
+	}
+	if !columnExists(ctx, t, pool, "run_steps", "feedback") {
+		t.Fatal("after one Down: run_steps.feedback was dropped by the wrong migration")
+	}
+	// Roll back 0020 too so the assertions below (which predate it) hold.
+	if err := mg.Down(); err != nil {
+		t.Fatalf("Down (0020): %v", err)
+	}
 	if columnExists(ctx, t, pool, "run_steps", "feedback") {
-		t.Fatal("after one Down: run_steps.feedback was not dropped by 0020")
+		t.Fatal("after two Downs: run_steps.feedback was not dropped by 0020")
 	}
 	if columnExists(ctx, t, pool, "step_attempts", "feedback") {
 		t.Fatal("after one Down: step_attempts.feedback was not dropped by 0020")

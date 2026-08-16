@@ -3,10 +3,12 @@ package exec
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
 
+	"github.com/mathcslearner/agentloom/internal/blackboard"
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
@@ -56,7 +58,7 @@ func builtinManifest(st dag.StepType, version, description string, caps plugin.C
 // AGENTLOOM_WORKER_TEST_EXECUTORS knob (ticket 6.2).
 func Builtins(providers *llm.Registry, toolReg *tools.Registry, retrievers *retrieval.Registry) *Registry {
 	r := CoreBuiltins(providers, toolReg, retrievers)
-	for _, e := range []Executor{CounterExecutor{}, EffectfulEchoExecutor{}} {
+	for _, e := range []Executor{CounterExecutor{}, EffectfulEchoExecutor{}, BlackboardWriteExecutor{}} {
 		if err := r.Register(e); err != nil {
 			panic(err) // unreachable: a fixed set of distinct, non-empty types
 		}
@@ -354,6 +356,74 @@ func (EffectfulEchoExecutor) Execute(ctx context.Context, sc StepContext) (Outpu
 		return Output{}, Transientf("effectful_echo: deliberate failure on attempt %d of %d (effect already journaled)", sc.Attempt, c.FailTimes)
 	}
 	return Output{Data: out}, nil
+}
+
+// BlackboardWriteExecutor runs blackboard_write steps (ticket 12.2): it
+// writes a value to the run-scoped blackboard through StepContext.Blackboard
+// (optionally under a version compare-and-swap guard), then echoes the
+// written entry — plus, when read_key is set, the current head of that key —
+// as output. It exists so the engine integration tests exercise the
+// programmatic blackboard read/write API and the CAS path without a real
+// llm/tool executor. Side-effectful (it mutates shared memory), so
+// uncacheable — the blackboard write is the whole point of the step.
+type BlackboardWriteExecutor struct{}
+
+// Type implements Executor.
+func (BlackboardWriteExecutor) Type() string { return string(dag.StepBlackboardWrite) }
+
+// PluginManifest implements SelfDescribing (ticket 8.1).
+func (BlackboardWriteExecutor) PluginManifest() plugin.Manifest {
+	return builtinManifest(dag.StepBlackboardWrite, "1.0.0",
+		"Write a value to the run-scoped blackboard, then echo it.",
+		plugin.Capabilities{SideEffectful: true})
+}
+
+// blackboardWriteOutput is what a blackboard_write step returns: the written
+// entry, and (when read_key was set) the head it read back.
+type blackboardWriteOutput struct {
+	Wrote json.RawMessage `json:"wrote"`
+	Read  json.RawMessage `json:"read,omitempty"`
+}
+
+// Execute implements Executor.
+func (BlackboardWriteExecutor) Execute(ctx context.Context, sc StepContext) (Output, error) {
+	c, err := configAs[*dag.BlackboardWriteConfig](sc)
+	if err != nil {
+		return Output{}, err
+	}
+	if c == nil || c.Key == "" {
+		return Output{}, &InvalidConfigError{StepType: string(sc.StepType), cause: fmt.Errorf("missing required field %q", "key")}
+	}
+	if sc.Blackboard == nil {
+		// Requiring the board but finding none wired is a permanent wiring bug.
+		return Output{}, Permanentf("blackboard_write: no blackboard wired into StepContext")
+	}
+	entry, err := sc.Blackboard.Put(ctx, blackboard.PutArgs{
+		Key: c.Key, Value: c.Value, Tags: c.Tags, ExpectedVersion: c.ExpectedVersion,
+	})
+	if err != nil {
+		// A CAS conflict is transient (retry re-reads the head); the leaf's
+		// permanent errors (bad key/tag/value) and a fence pass through with
+		// their own classification, mapped by the engine's classifier.
+		var ce *blackboard.VersionConflictError
+		if errors.As(err, &ce) {
+			return Output{}, Transientf("blackboard_write: %v", err)
+		}
+		return Output{}, err
+	}
+	wrote, _ := json.Marshal(entry)
+	out := blackboardWriteOutput{Wrote: wrote}
+	if c.ReadKey != "" {
+		head, ok, rerr := sc.Blackboard.Get(ctx, c.ReadKey)
+		if rerr != nil {
+			return Output{}, rerr
+		}
+		if ok {
+			out.Read, _ = json.Marshal(head)
+		}
+	}
+	data, _ := json.Marshal(out)
+	return Output{Data: data}, nil
 }
 
 // FailNTimesExecutor runs fail_n_times steps: fail attempts 1..n, succeed

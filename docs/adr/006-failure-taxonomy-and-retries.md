@@ -741,6 +741,16 @@ it, and `CountCountedFailures` (transient + timeout only) is unchanged, so
 the transport and semantic budgets are disjoint by construction. ADR-004's
 transition matrix and ADR-005's reason vocabulary are otherwise extended as
 anticipated.
+**M12** (ADR-014, as built 12.2) — the blackboard adds no new outcome or
+class; it maps onto the existing taxonomy. A blackboard **version-conflict**
+(a CAS `expected_version` lost the race) is *state moved*, so an executor
+raises it **transient** — the ordinary retry re-reads the head and can win at
+the next version, counted against the transport budget like any transient. A
+blackboard **fence** rejection (a taken-over zombie's write) and an invalid
+key/tag/oversized value are **permanent** (deterministic). A declarative
+blackboard write whose `from` pointer does not resolve is a permanent step
+failure (row 15, corrupt/absent referenced data), carrying the productive
+output so its cost still ledgers.
 
 ## Consequences
 

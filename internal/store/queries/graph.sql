@@ -18,20 +18,23 @@
 -- validation_policy is the step's authored output-validation chain,
 -- materialized the same way (ticket 11.1, ADR-013); NULL means no
 -- `validation` block (the output is accepted as produced).
+-- blackboard_policy is the step's authored blackboard block (declarative
+-- writes), materialized the same way (ticket 12.2, ADR-014); NULL means no
+-- `blackboard` block (no declarative writes).
 -- name: CreateRunStep :one
 INSERT INTO run_steps (run_id, step_id, step_type, config, retry_policy,
-                       timeout, cache_policy, budget_policy, validation_policy, status, remaining_deps, fired_deps,
+                       timeout, cache_policy, budget_policy, validation_policy, blackboard_policy, status, remaining_deps, fired_deps,
                        graph_version, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 RETURNING *;
 
 -- CreateRunSteps is the batch (COPY) form for run instantiation (2.5) and
 -- expansion (M13), which write whole graphs at once.
 -- name: CreateRunSteps :copyfrom
 INSERT INTO run_steps (run_id, step_id, step_type, config, retry_policy,
-                       timeout, cache_policy, budget_policy, validation_policy, status, remaining_deps, fired_deps,
+                       timeout, cache_policy, budget_policy, validation_policy, blackboard_policy, status, remaining_deps, fired_deps,
                        graph_version, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15);
 
 -- name: GetRunStep :one
 SELECT * FROM run_steps WHERE run_id = $1 AND step_id = $2;

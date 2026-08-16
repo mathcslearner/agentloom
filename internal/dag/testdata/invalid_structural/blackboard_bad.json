@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "blackboard-bad",
+  "steps": [
+    {"id": "a", "type": "noop", "blackboard": {"write": []}},
+    {"id": "b", "type": "noop", "blackboard": {"write": [{"key": "bad key"}]}},
+    {"id": "c", "type": "noop", "blackboard": {"write": [{"key": "ok", "from": "notapointer"}]}},
+    {"id": "d", "type": "noop", "blackboard": {"write": [{"key": "ok", "tags": ["Bad Tag"]}]}},
+    {"id": "e", "type": "noop", "blackboard": {"write": [{"key": "dup"}, {"key": "dup"}]}}
+  ],
+  "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "c"}, {"from": "c", "to": "d"}, {"from": "d", "to": "e"}]
+}

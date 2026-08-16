@@ -365,6 +365,17 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 				return gen.Run{}, fmt.Errorf("marshaling validation policy of step %q: %w", step.ID, err)
 			}
 		}
+		// The authored blackboard block (declarative writes) is materialized
+		// the same way (ticket 12.2, ADR-014): the success-completion path
+		// reads it off the claimed row. NULL when the step authored no
+		// `blackboard` block — no declarative writes.
+		var blackboardPolicy json.RawMessage
+		if step.Blackboard != nil {
+			blackboardPolicy, err = json.Marshal(step.Blackboard)
+			if err != nil {
+				return gen.Run{}, fmt.Errorf("marshaling blackboard policy of step %q: %w", step.ID, err)
+			}
+		}
 		steps[i] = gen.CreateRunStepsParams{
 			RunID:            run.ID,
 			StepID:           step.ID,
@@ -375,6 +386,7 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 			CachePolicy:      cachePolicy,
 			BudgetPolicy:     budgetPolicy,
 			ValidationPolicy: validationPolicy,
+			BlackboardPolicy: blackboardPolicy,
 			Status:           status,
 			RemainingDeps:    p.remaining[step.ID],
 			GraphVersion:     1,

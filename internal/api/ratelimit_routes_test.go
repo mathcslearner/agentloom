@@ -32,6 +32,7 @@ var routeClasses = map[string]routeClass{
 	"PATCH /v1/runs/{runID}/budget":                classSubmit,
 	"POST /v1/runs/{runID}/steps/{stepID}/requeue": classSubmit,
 	"GET /v1/runs/{runID}/steps/{stepID}/logs":     classRead,
+	"GET /v1/runs/{runID}/blackboard":              classRead,
 	"POST /v1/definitions":                         classSubmit,
 	"GET /v1/definitions":                          classRead,
 	"GET /v1/definitions/{defID}":                  classRead,

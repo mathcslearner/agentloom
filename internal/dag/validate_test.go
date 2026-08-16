@@ -209,6 +209,13 @@ var structuralCases = map[string][]issueRef{
 		{dag.CodeValidationFieldInvalid, "steps[1].validation.feedback"},
 		{dag.CodeValidationFieldInvalid, "steps[2].validation.feedback.template"},
 	},
+	"blackboard_bad.json": {
+		{dag.CodeBlackboardFieldRequired, "steps[0].blackboard.write"},
+		{dag.CodeBlackboardFieldInvalid, "steps[1].blackboard.write[0].key"},
+		{dag.CodeBlackboardFieldInvalid, "steps[2].blackboard.write[0].from"},
+		{dag.CodeBlackboardFieldInvalid, "steps[3].blackboard.write[0].tags"},
+		{dag.CodeBlackboardFieldInvalid, "steps[4].blackboard.write[1].key"},
+	},
 }
 
 // TestValidateInvalidStructuralFixtures is the ticket 1.3 acceptance test:

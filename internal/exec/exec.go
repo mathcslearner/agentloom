@@ -21,9 +21,11 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/mathcslearner/agentloom/internal/blackboard"
 	"github.com/mathcslearner/agentloom/internal/cache"
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/plugin"
+	"github.com/mathcslearner/agentloom/internal/tokens"
 )
 
 // Output is what a successful execution produces. Data is the step's
@@ -140,6 +142,13 @@ type StepContext struct {
 	// contexts); executors that require it must fail with a permanent
 	// error rather than firing unjournaled effects.
 	Effects EffectJournal
+
+	// Blackboard is the run-scoped shared-memory handle bound to this step
+	// (ticket 12.2, ADR-014): executors read and write versioned entries
+	// keyed within the run, attributed to this step and fenced on its claim.
+	// Nil when no board is wired (bare unit-test contexts); executors that
+	// require it must fail with a permanent error rather than assuming it.
+	Blackboard blackboard.Board
 
 	// Logger carries the run/step/attempt log fields stamped by the
 	// worker. May be nil (executors fall back to slog.Default()).
@@ -277,6 +286,22 @@ type ModelDowngrader interface {
 	// model, leaving every other value byte-identical. The middleware calls
 	// it to build the re-targeted config it feeds back into the pipeline.
 	WithModel(sc StepContext, model string) (json.RawMessage, error)
+}
+
+// TokenCounterProvider is the optional executor hook the engine consults to
+// pick the token counter for a step's blackboard writes (ticket 12.2,
+// ADR-014). An executor with a runtime notion of "model" (the llm executor)
+// resolves the model to its tokenizer so an entry it writes is counted with
+// the same counter the M12.3 assembly and M12.6 window guardrail will use.
+// An executor that does not implement it (every non-model step) gets the
+// chars/4 fallback counter — the honest "no model tokenizer here" choice.
+//
+// An error return (an unresolvable model, a corrupt config) means the
+// counter could not be computed; the engine falls back to the chars/4
+// counter and lets Execute land the classified failure — the routing
+// judgment lives in one place, exactly like the other hooks.
+type TokenCounterProvider interface {
+	TokenCounter(sc StepContext) (tokens.Counter, error)
 }
 
 // ModelFallback is one tier in a step's downgrade chain (ADR-012, ticket

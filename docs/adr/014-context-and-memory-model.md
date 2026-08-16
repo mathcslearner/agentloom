@@ -222,6 +222,91 @@ before/after, queryable per step attempt (12.4). Summaries are visible on the
 blackboard as their own versioned entries (12.5). The whole pre-execution
 context decision is reconstructable after the fact from durable state.
 
+### Blackboard store (as built, 12.2)
+
+The run-scoped **blackboard** is the shared, versioned key/value memory steps
+read and write during a run — the source of the `blackboard` context source
+above, the substrate M14's multi-agent handoffs build a thread on, and where
+12.5's summaries land as their own entries. It is deliberately a separate
+concern from token counting; 12.2 delivers the store, its executor-facing
+API, its declarative write sugar, and its read API.
+
+**Package shape.** `internal/blackboard` is a leaf (stdlib only): the domain
+types (`Entry`, `PutArgs`, the `Board` interface), the key/tag/value rules,
+and the shared `CanonicalValue`/`ResolvePointer` helpers — so `exec`, the
+engine, and the coming `internal/contextmgr` depend on it without a cycle.
+The Postgres implementation is the subpackage `internal/blackboard/pgboard`
+(the only importer of `internal/store`), the `retrieval`/`pgfts` precedent.
+
+**Schema (migration 0021).** `blackboard_entries` is **append-only per key**:
+a write never overwrites, it inserts the next `version` (1-based per
+`(run_id, key)`), so `History` reconstructs every revision — the audit this
+milestone rests on. A row carries `value` (JSONB), `token_count` +
+`token_counter` (the `tokens.Counter.ID()` that produced the count, stored
+together so a consumer recomputes on a fingerprint mismatch), `tags`
+(`TEXT[]`, GIN-indexed), and the author step + attempt. Tags are
+**per-version and immutable**: re-tagging (including pinning) is a new
+version, so the history stays honest. `run_steps.blackboard_policy` is the
+materialized declarative-write block (like `cache_policy`). Retained for the
+life of the run and beyond for post-run audit; pruning is M21.
+
+**Write protocol.** `store.PutBlackboardEntry` is a transition-style helper:
+inside the caller's transaction it takes the run lock (existence + the
+uniform run→step ordering, and the serialization that makes version
+allocation collision-free), optionally **fences** on the authoring step's
+`claim_id`, evaluates an optional compare-and-swap guard against the current
+head, inserts `head+1`, and appends a `blackboard_updated` event — all
+atomically. A rejected CAS (`*BlackboardVersionConflict`) or fence
+(`ErrBlackboardFenced`) writes nothing, burning no event seq (the 2.6
+discipline). Because every writer holds the run lock, two concurrent
+**unconditional** writers of one key never collide — they serialize into v1
+and v2, no lost update. Two concurrent **CAS** writers (`expected_version`)
+race: one lands, the other gets a version conflict.
+
+**CAS conflict class.** A version conflict is *state moved*, so an executor
+surfaces it as a **transient** error: the M5 retry re-attempts, re-reads the
+head, and can succeed at the next version. Invalid key/tag/value and a fence
+rejection are **permanent** (deterministic). This is the disjoint-from-
+transport judgment the engine's classifier applies.
+
+**Executor API.** `StepContext.Blackboard` is a step-scoped `Board`
+(programmatic `Get`/`History`/`List`/`Put`), attributed to the step and
+fenced on its claim — a taken-over zombie's write is rejected, unlike the
+5.5 journal's first-wins result. Each `Put` is its own short transaction (the
+effects-journal model). Token counts use the step's counter: the llm
+executor's new `exec.TokenCounterProvider` hook resolves the model's
+tokenizer; every other step gets the chars/4 fallback (the honest "no model
+tokenizer here" choice).
+
+**Declarative writes.** A step's `blackboard` envelope block declares
+`write: [{key, from, tags, pinned}]`: on success, the value at the `from`
+RFC-6901 pointer into the step's *own* output is published under `key`. It is
+applied **in the completion transaction**, after the success CAS and under
+the run lock it holds — so a fenced zombie completion never writes, and the
+entry is durable exactly with the step's success. Planning (pointer
+resolution) is pure and pre-transaction; a pointer that does not resolve is a
+permanent step failure (ADR-006 row 15), carrying the output so its
+productive cost still ledgers. A cache-hit completion applies the writes too
+(the output is the same). **Declarative reads into a prompt are 12.3's
+context assembly** (the `blackboard` context source), not 12.2 — this ticket
+delivers writes + the programmatic read/write API; the `blackboard.<key>`
+template read root is deferred with them, since it is only useful once
+assembly consumes it.
+
+**Cache-key note.** Programmatic blackboard reads during execution are *not*
+cache-key inputs (the key is built before execution). A step that depends on
+blackboard state must therefore either be uncacheable (the `blackboard_write`
+test executor is `side_effectful`) or receive that state through the config
+(templating / 12.3 assembly, both of which *are* in the key). 12.3's
+declarative sources are assembled into the request pre-cache and thus keyed
+correctly.
+
+**API.** `GET /v1/runs/{id}/blackboard` (read scope) serves each key's head
+by default, or every version with `?history=true`, filterable by `?key=` and
+`?tag=` (AND), keyset-paginated. Read-only — the API never writes the
+blackboard (steps do, in the worker), so ADR-002 is untouched. `ctl
+blackboard <run-id>` mirrors it.
+
 ## Consequences
 
 **Easier.**

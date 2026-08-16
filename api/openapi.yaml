@@ -570,6 +570,72 @@ paths:
         "500":
           $ref: "#/components/responses/Internal"
 
+  /v1/runs/{run_id}/blackboard:
+    get:
+      operationId: getRunBlackboard
+      tags: [Runs]
+      summary: Get the run's blackboard entries
+      description: |
+        Scope `read`, rate-limit class `read`. The run-scoped blackboard
+        (ADR-014): versioned key/value shared memory steps read and write
+        during the run. By default each key's head (latest version) is
+        returned, ordered by key; `history=true` returns every version,
+        ordered by `(key, version)`. Filter by `key` (repeatable) and by
+        `tag` (repeatable — an entry must carry every listed tag). Each
+        entry carries its `token_count` under a `token_counter` fingerprint
+        and its author step. Results page by an opaque keyset `cursor`. A
+        missing run is `404 run_not_found`.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - name: key
+          in: query
+          description: Restrict to these keys (repeatable).
+          schema:
+            type: array
+            items:
+              type: string
+        - name: tag
+          in: query
+          description: Keep only entries carrying every listed tag (repeatable; AND).
+          schema:
+            type: array
+            items:
+              type: string
+        - name: history
+          in: query
+          description: When true, return every version, not just each key's head.
+          schema:
+            type: boolean
+            default: false
+        - name: limit
+          in: query
+          description: Maximum entries per page; an integer in [1, 1000].
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+        - $ref: "#/components/parameters/PageCursor"
+      responses:
+        "200":
+          description: One page of blackboard entries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlackboardResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
   /v1/definitions:
     post:
       operationId: createDefinition
@@ -2139,6 +2205,58 @@ components:
         next_cursor:
           type: string
           description: Opaque cursor fetching the next page of lines; absent on the last page.
+
+    # --- Blackboard (ADR-014, ticket 12.2). ---
+    BlackboardEntryView:
+      type: object
+      description: One version of one run-scoped blackboard key.
+      required: [key, version, value, token_count, token_counter, tags, created_at]
+      properties:
+        key:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        value:
+          description: The stored JSON value (any JSON — string, object, array, number).
+        token_count:
+          type: integer
+          description: The value's token size under token_counter.
+        token_counter:
+          type: string
+          description: The token counter fingerprint that produced token_count (e.g. "openai/o200k_base@1").
+        tags:
+          type: array
+          items:
+            type: string
+          description: The entry's labels; may include the reserved "pinned" tag.
+        author_step_id:
+          type: string
+          description: The step that wrote this version; absent for a non-step writer.
+        author_attempt:
+          type: integer
+          description: The 1-based attempt of the authoring step; absent for a non-step writer.
+        created_at:
+          type: string
+          format: date-time
+    BlackboardResponse:
+      type: object
+      description: One keyset page of a run's blackboard — each key's head, or every version when history is true.
+      required: [run_id, history, entries]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        history:
+          type: boolean
+          description: True when entries are the full version history; false when they are per-key heads.
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/BlackboardEntryView"
+        next_cursor:
+          type: string
+          description: Opaque cursor fetching the next page; absent on the last page.
 
     # --- Definition registry. ---
     CreateDefinitionRequest:

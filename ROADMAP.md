@@ -863,13 +863,13 @@ Surface validation health: validation failure rate by step type/model/validator,
 - [x] Counter selection by model routing tested; fallback path logged once (not per call)
 - [x] ADR reviewed with worked compaction examples
 
-#### 12.2 — Blackboard store
+#### 12.2 — Blackboard store ✅
 **Depends on:** 2.4
-`blackboard_entries`: run-scoped key/value (JSONB or text), version history, `token_count`, tags (incl. `pinned`), author step, timestamps. `StepContext` read/write API; optional CAS on version for concurrent writers; step config sugar for declarative reads/writes. Retained post-run for audit (pruning in M21).
+`blackboard_entries`: run-scoped key/value (JSONB or text), version history, `token_count`, tags (incl. `pinned`), author step, timestamps. `StepContext` read/write API; optional CAS on version for concurrent writers; step config sugar for declarative reads/writes. Retained post-run for audit (pruning in M21). *(As built: the leaf `internal/blackboard` (stdlib only — the `Entry`/`PutArgs`/`Board` types, key/tag/value rules, shared `CanonicalValue`/`ResolvePointer`) + the Postgres subpackage `internal/blackboard/pgboard` (the only importer of `internal/store`). Migration 0021 `blackboard_entries` is append-only per key (`PRIMARY KEY (run_id, key, version)`, GIN-indexed `tags`, `token_count`+`token_counter` stored together) + `run_steps.blackboard_policy`. `store.PutBlackboardEntry` is transition-style (run-lock → optional claim fence → CAS → insert → `blackboard_updated` event); a CAS conflict is `*BlackboardVersionConflict`→transient, a fence/bad-input is permanent. `StepContext.Blackboard` (programmatic reads/writes, attributed+fenced) bound in `claim.go`; entries token-counted via the new `exec.TokenCounterProvider` hook (llm executor resolves the model tokenizer, else chars/4 fallback). Declarative `blackboard.write` envelope block (`from` RFC-6901 pointer into the step's own output, `pinned` sugar) applied in the **completion transaction** after the success CAS. `blackboard_write` test executor (test-only set). `GET /v1/runs/{id}/blackboard` (read scope, heads/history, key/tag filters, keyset pages) + `ctl blackboard`. Canonical `examples/definitions/blackboard.json` (offline mock). **Declarative reads into a prompt are 12.3's context sources** — 12.2 ships writes + the programmatic read/write API; the `blackboard.<key>` template root is deferred with them. One migration, no new config var, no new metric. ADR-014 §"Blackboard store (as built, 12.2)"; ADR-004/003/006/007 cross-amended.)*
 **Done when:**
-- [ ] Store integration tests: versioning, tag queries, CAS conflict path
-- [ ] Two parallel steps writing distinct keys + same key (CAS) behave per ADR
-- [ ] Blackboard contents exposed via `GET /v1/runs/{id}/blackboard` (read scope)
+- [x] Store integration tests: versioning, tag queries, CAS conflict path
+- [x] Two parallel steps writing distinct keys + same key (CAS) behave per ADR
+- [x] Blackboard contents exposed via `GET /v1/runs/{id}/blackboard` (read scope)
 
 #### 12.3 — Context assembly
 **Depends on:** 12.2, 12.1, 8.6

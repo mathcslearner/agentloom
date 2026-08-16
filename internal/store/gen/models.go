@@ -22,6 +22,19 @@ type ApiKey struct {
 	RevokedAt *time.Time
 }
 
+type BlackboardEntry struct {
+	RunID         uuid.UUID
+	Key           string
+	Version       int32
+	Value         json.RawMessage
+	TokenCount    int32
+	TokenCounter  string
+	Tags          []string
+	AuthorStepID  *string
+	AuthorAttempt *int32
+	CreatedAt     time.Time
+}
+
 type CostLedger struct {
 	RunID        uuid.UUID
 	StepID       string
@@ -134,6 +147,7 @@ type RunStep struct {
 	BudgetPolicy     json.RawMessage
 	ValidationPolicy json.RawMessage
 	Feedback         json.RawMessage
+	BlackboardPolicy json.RawMessage
 }
 
 type SchemaBaseline struct {

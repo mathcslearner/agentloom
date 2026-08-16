@@ -322,6 +322,12 @@ the ops' outbox rows are drained on the worker fleet's dispatch cadence,
 keeping ADR-002's "the API never dispatches" intact. Wrong-state
 refusals surface as 409 with new envelope code `conflict`.
 
+Since 12.2, `GET /v1/runs/{id}/blackboard` (the run-scoped blackboard,
+ADR-014) mounts read/read like the other read endpoints, added to the
+route→scope, route→class, auth-matrix, and OpenAPI-coverage tables. It is a
+store-direct read (no `engine.Control`) — the API never writes the
+blackboard, so ADR-002 stays intact.
+
 Submission idempotency was hardened here (the post-M4 audit items):
 
 - **The token rides the `Idempotency-Key` header**, not the body — the

@@ -61,6 +61,14 @@ each example's "header comment" is its top-level `description` field.
   the ranked `{id, content, score, metadata}` results into the prompt. The
   engine integration suite seeds a corpus and executes this file
   end-to-end.
+- **[blackboard.json](blackboard.json)** — the run-scoped blackboard
+  (ticket 12.2, ADR-014): a `draft` llm step (offline mock) publishes its
+  completion to the blackboard declaratively (`blackboard.write`, `pinned`,
+  `from: /text`), a parallel `blackboard_write` step records a plan, and a
+  downstream `blackboard_write` revises the plan under a version
+  compare-and-swap (`expected_version`) and reads the pinned draft back.
+  Every entry is token-counted and retained for audit; inspect with
+  `ctl blackboard <run-id>`. Runs offline on the mock.
 - **[kitchen_sink.json](kitchen_sink.json)** — one coherent
   research-and-publish pipeline exercising every construct: all 14 step
   types, both join modes (`any` and `all`), conditioned and unconditioned

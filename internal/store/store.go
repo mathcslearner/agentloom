@@ -36,6 +36,7 @@ type Querier interface {
 	APIKeys() APIKeyRepo
 	RetrievalDocs() RetrievalDocRepo
 	Ledger() CostRepo
+	Blackboard() BlackboardRepo
 }
 
 // Store is the pool-backed entry point to the persistence layer.
@@ -100,3 +101,4 @@ func (r repos) APIKeys() APIKeyRepo         { return apiKeyRepo(r) }
 
 func (r repos) RetrievalDocs() RetrievalDocRepo { return retrievalDocRepo(r) }
 func (r repos) Ledger() CostRepo                { return costRepo(r) }
+func (r repos) Blackboard() BlackboardRepo      { return blackboardRepo(r) }

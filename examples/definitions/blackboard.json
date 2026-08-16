@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "name": "blackboard",
+  "description": "The ticket 12.2 (ADR-014) demonstration of the run-scoped blackboard: shared, versioned key/value memory steps read and write during a run. A draft `llm` step (offline mock, model `mock/sim-1`) publishes its completion text to the blackboard declaratively via its `blackboard` block — pinned so no future compaction (M12.4) can drop it — while its `from: /text` pointer selects exactly the completion text. In parallel a `blackboard_write` step records a plan under key `plan` with a `writer` tag. A join gathers both, then a `capstone` `blackboard_write` writes key `plan` again under a version compare-and-swap guard (`expected_version: 1`, so it lands at v2 only if nothing else moved the key) and reads the pinned `draft_text` head back through `read_key`. Every entry is token-counted with the writing step's counter (the llm step's model tokenizer, the chars/4 fallback for the plain writes) and retained for audit. Runs entirely offline on the mock provider — no API key, no network — so it is the workhorse blackboard fixture for CI. Inspect the result with `ctl blackboard <run-id>` or GET /v1/runs/{id}/blackboard.",
+  "steps": [
+    {
+      "id": "start",
+      "type": "noop"
+    },
+    {
+      "id": "draft",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Draft an opening paragraph.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "draft_text",
+            "from": "/text",
+            "tags": ["draft"],
+            "pinned": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "plan",
+      "type": "blackboard_write",
+      "config": {
+        "key": "plan",
+        "value": {
+          "steps": ["research", "write", "review"]
+        },
+        "tags": ["writer"]
+      }
+    },
+    {
+      "id": "gather",
+      "type": "join",
+      "config": {
+        "mode": "all"
+      }
+    },
+    {
+      "id": "capstone",
+      "type": "blackboard_write",
+      "config": {
+        "key": "plan",
+        "value": {
+          "steps": ["research", "write", "review", "publish"],
+          "revised": true
+        },
+        "expected_version": 1,
+        "read_key": "draft_text"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "draft"
+    },
+    {
+      "from": "start",
+      "to": "plan"
+    },
+    {
+      "from": "draft",
+      "to": "gather"
+    },
+    {
+      "from": "plan",
+      "to": "gather"
+    },
+    {
+      "from": "gather",
+      "to": "capstone"
+    }
+  ]
+}

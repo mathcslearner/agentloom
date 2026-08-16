@@ -561,6 +561,26 @@ contract; no prior decision is changed.*
   missing-reference failure by design — `get`/`default` is the tool for
   values that may legitimately be absent.
 
+### The `blackboard` step envelope (as built, 12.2)
+
+*Added while implementing ticket 12.2 (ADR-014).* A step may carry a
+`blackboard` envelope block declaring declarative writes to the run-scoped
+blackboard, applied on the step's success:
+
+```json
+"blackboard": { "write": [ { "key": "draft", "from": "/text", "tags": ["draft"], "pinned": true } ] }
+```
+
+`key` follows the blackboard key grammar (`[A-Za-z0-9_-]{1,128}`, no dots —
+a dot is the path separator in 12.3's `blackboard.<key>` selectors); `from`
+is an RFC-6901 pointer into the step's *own* output (default `""` = whole
+output); `pinned: true` adds the reserved `pinned` tag. Validated at submit
+(codes `blackboard_field_required`/`blackboard_field_invalid`, at most 16
+writes, keys distinct). Like `cache`/`validation`, the block is uniform
+across step types and materialized at instantiation. **Declarative reads into
+a prompt are 12.3's context sources**, not a template root — 12.2 delivers
+writes plus the programmatic `StepContext.Blackboard` read/write API.
+
 ### Enforcement points
 
 For conformance, the rules above land in specific tickets: **1.2** — strict

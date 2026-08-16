@@ -78,7 +78,7 @@ func TestBuiltinsRegistersAllTestExecutors(t *testing.T) {
 	t.Parallel()
 
 	r := Builtins(nil, nil, nil)
-	for _, typ := range []string{"noop", "echo", "sleep", "fail_n_times", "counter", "join", "branch", "llm", "tool", "retrieve"} {
+	for _, typ := range []string{"noop", "echo", "sleep", "fail_n_times", "counter", "blackboard_write", "join", "branch", "llm", "tool", "retrieve"} {
 		e, err := r.Get(typ)
 		if err != nil {
 			t.Errorf("Get(%q): %v", typ, err)
@@ -90,21 +90,24 @@ func TestBuiltinsRegistersAllTestExecutors(t *testing.T) {
 	}
 }
 
-// TestCoreBuiltinsExcludesFilesystemExecutors pins the 6.2 split: the
-// production default registry is Builtins minus exactly the two test
-// executors with filesystem side effects.
-func TestCoreBuiltinsExcludesFilesystemExecutors(t *testing.T) {
+// TestCoreBuiltinsExcludesTestOnlyExecutors pins the 6.2 split: the
+// production default registry is Builtins minus exactly the test-only
+// executors — counter and effectful_echo (filesystem side effects, ticket
+// 6.2) and blackboard_write (a test harness for the blackboard API, ticket
+// 12.2). An authed deployment must not expose any of them to arbitrary
+// submitters; they are opt-in via AGENTLOOM_WORKER_TEST_EXECUTORS.
+func TestCoreBuiltinsExcludesTestOnlyExecutors(t *testing.T) {
 	t.Parallel()
 
 	core := CoreBuiltins(nil, nil, nil)
-	for _, typ := range []string{"counter", "effectful_echo"} {
+	for _, typ := range []string{"counter", "effectful_echo", "blackboard_write"} {
 		if _, err := core.Get(typ); err == nil {
-			t.Errorf("CoreBuiltins registers %q — filesystem test executors must be opt-in", typ)
+			t.Errorf("CoreBuiltins registers %q — test-only executors must be opt-in", typ)
 		}
 	}
 	full := Builtins(nil, nil, nil)
-	if got, want := len(core.Types())+2, len(full.Types()); got != want {
-		t.Errorf("core (%d) + 2 = %d types, Builtins has %d — the split no longer partitions the set",
+	if got, want := len(core.Types())+3, len(full.Types()); got != want {
+		t.Errorf("core (%d) + 3 = %d types, Builtins has %d — the split no longer partitions the set",
 			len(core.Types()), got, want)
 	}
 	for _, typ := range core.Types() {

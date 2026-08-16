@@ -30,6 +30,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/ratelimit/resource"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
+	"github.com/mathcslearner/agentloom/internal/tokens"
 	"github.com/mathcslearner/agentloom/internal/validate"
 )
 
@@ -237,7 +238,7 @@ func fanOut(ctx context.Context, q store.Querier, runID uuid.UUID, now time.Time
 // contract: nil = committed, ACK; non-nil = nothing decided, redeliver.
 // semanticAttempt is this attempt's 1-based semantic-retry number (ticket
 // 11.6), recorded as the terminal depth of a validated step's semantic loop.
-func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec.Output, verdict *validate.Verdict, semanticAttempt int) error {
+func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec.Output, verdict *validate.Verdict, semanticAttempt int, counter tokens.Counter) error {
 	logger := log.From(ctx)
 
 	// The pre-transaction reads: run params and the out-edge rows are
@@ -268,6 +269,22 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		logger.WarnContext(ctx, "edge predicate evaluation failed; recording step failure",
 			slog.Any("error", err))
 		return e.completeFailure(ctx, step, exec.Output{}, err, dag.ClassPermanent, store.TraceFromRun(run))
+	}
+
+	// Declarative blackboard writes (ticket 12.2, ADR-014): planned pre-
+	// transaction (pure — resolve each write's From pointer into this step's
+	// output), applied in-transaction after the success CAS. Gated on a wired
+	// board so test layers that don't opt in see no blackboard behavior. A
+	// pointer that does not resolve is a deterministic data error → permanent
+	// step failure, carrying the output so its productive cost still ledgers.
+	var bbWrites []plannedBBWrite
+	if e.blackboard != nil {
+		bbWrites, err = planBlackboardWrites(step, out.Data)
+		if err != nil {
+			logger.WarnContext(ctx, "declarative blackboard write planning failed; recording step failure",
+				slog.Any("error", err))
+			return e.completeFailure(ctx, step, out, err, dag.ClassPermanent, store.TraceFromRun(run))
+		}
 	}
 
 	// The attempt's token usage (ticket 8.6), set only by metered
@@ -365,6 +382,15 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		// success CAS (ticket 11.5): each is a distinct entry on this attempt.
 		for _, oh := range overheadRows {
 			if _, err := store.ApplyAttemptCost(ctx, q, oh); err != nil {
+				return err
+			}
+		}
+		// Declarative blackboard writes (ticket 12.2), atomic with the success
+		// CAS and under the run lock it holds: each write appends a versioned,
+		// token-counted, step-attributed entry. No fence — the success CAS
+		// already fenced this completion.
+		if len(bbWrites) > 0 {
+			if err := e.applyBlackboardWrites(ctx, q, step, bbWrites, counter, now); err != nil {
 				return err
 			}
 		}

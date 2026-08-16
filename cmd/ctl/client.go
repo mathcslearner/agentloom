@@ -169,6 +169,18 @@ func (c *client) listPlugins(ctx context.Context) (api.ListPluginsResponse, erro
 	return resp, err
 }
 
+// getBlackboard GETs a run's blackboard entries (ticket 12.2, read). query
+// is the raw query string (key/tag/history/limit/cursor), already assembled.
+func (c *client) getBlackboard(ctx context.Context, runID, query string) (api.BlackboardResponse, error) {
+	var resp api.BlackboardResponse
+	path := "/v1/runs/" + url.PathEscape(runID) + "/blackboard"
+	if query != "" {
+		path += "?" + query
+	}
+	err := c.do(ctx, http.MethodGet, path, nil, &resp)
+	return resp, err
+}
+
 // bustCache POSTs a response-cache bust by namespace (ticket 9.6, admin).
 func (c *client) bustCache(ctx context.Context, req api.CacheBustRequest) (api.CacheBustResponse, error) {
 	body, err := json.Marshal(req)
