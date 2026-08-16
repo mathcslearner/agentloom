@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "name": "planner-expansion",
+  "description": "The ticket 13.3 canonical dynamic-DAG workflow (ADR-015). A `planner` step is an `llm` call whose validated output — a PlanOutput document — is spliced into the running graph atomically with the planner's completion (store.ExpandRun): the plan injects two `llm` worker steps that depend on the planner (an `after` splice, `plan -> work_*`) and fan into a pre-existing `gather` join (a `before` splice, `work_* -> gather`, widening the join's dependency count). The injected steps then execute like any authored step, the join continues once both land, and the run succeeds. The plan is gated by an implicit json_schema validator over the published plan-output.v1.json schema (a malformed plan would route to the semantic-retry loop, repaired with the rejection issues as feedback, `max_attempts` 3) and by the run's expansion caps. It runs entirely offline on the mock (model `mock/sim-1`): the planner's prompt IS a valid PlanOutput, which the mock's structured-echo returns verbatim — swap the prompt for a real instruction and the model id for a real provider and the planner generates the plan itself, unchanged.",
+  "steps": [
+    {
+      "id": "plan",
+      "type": "planner",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "{\"schema_version\":1,\"steps\":[{\"id\":\"work_a\",\"type\":\"llm\",\"config\":{\"model\":\"mock/sim-1\",\"prompt\":\"Analyze part A\",\"max_tokens\":64,\"temperature\":0}},{\"id\":\"work_b\",\"type\":\"llm\",\"config\":{\"model\":\"mock/sim-1\",\"prompt\":\"Analyze part B\",\"max_tokens\":64,\"temperature\":0}}],\"edges\":[{\"from\":\"plan\",\"to\":\"work_a\"},{\"from\":\"plan\",\"to\":\"work_b\"},{\"from\":\"work_a\",\"to\":\"gather\"},{\"from\":\"work_b\",\"to\":\"gather\"}]}",
+        "max_tokens": 512,
+        "temperature": 0,
+        "max_added_steps": 8
+      },
+      "validation": {
+        "max_attempts": 3
+      }
+    },
+    {
+      "id": "gather",
+      "type": "join",
+      "config": {
+        "mode": "all"
+      }
+    },
+    {
+      "id": "report",
+      "type": "echo",
+      "config": {
+        "input": {
+          "status": "plan executed and gathered"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "plan",
+      "to": "gather"
+    },
+    {
+      "from": "gather",
+      "to": "report"
+    }
+  ],
+  "expansion": {
+    "max_added_steps": 16,
+    "max_expansions": 10,
+    "max_depth": 2
+  }
+}

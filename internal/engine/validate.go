@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sync"
 
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/exec"
@@ -31,6 +32,15 @@ import (
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 	"github.com/mathcslearner/agentloom/internal/validate"
 )
+
+// plannerPlanSchema is the published PlanOutput JSON Schema (ADR-015),
+// generated once per process. A planner step's implicit json_schema validator
+// enforces it over the shaped completion (output.text carries the compact plan
+// JSON), so a structurally-wrong plan is a validation_failed verdict feeding
+// 11.4's semantic retry — before the engine ever tries to apply it with
+// ExpandRun. Generation is pure and deterministic; a failure is a build error,
+// surfaced as a permanent resolve-time failure like an unresolvable validator.
+var plannerPlanSchema = sync.OnceValues(dag.GeneratePlanOutputSchema)
 
 // resolveChain resolves a claimed step's materialized validation chain
 // (ADR-013's pre-flight gate). It reads the validation_policy off the
@@ -77,6 +87,15 @@ func (e *Engine) resolveChain(step gen.RunStep) (*validate.Chain, error) {
 // invalid_json). The schema is read off the materialized config (output_format
 // is never templated), so this needs no rendered config.
 func implicitOutputFormatSpec(step gen.RunStep) (*dag.ValidatorSpec, error) {
+	if dag.StepType(step.StepType) == dag.StepPlanner {
+		// A planner always carries an implicit json_schema validator over the
+		// published PlanOutput schema (ticket 13.3, ADR-015): the plan's JSON
+		// layer is gated here, and dag.ValidateExpansion (in ExpandRun) gates
+		// the plan against this graph. The two compose exactly as ADR-015
+		// describes — invalid JSON / wrong shape → validation_failed here,
+		// graph-illegal splice → validation_failed in the completion tx.
+		return implicitPlanSchemaSpec()
+	}
 	if dag.StepType(step.StepType) != dag.StepLLM || len(step.Config) == 0 {
 		return nil, nil
 	}
@@ -95,6 +114,22 @@ func implicitOutputFormatSpec(step gen.RunStep) (*dag.ValidatorSpec, error) {
 		// Plain json format: any JSON accepted, so an empty schema — the
 		// parseability-only check.
 		schema = json.RawMessage(`{}`)
+	}
+	config, err := json.Marshal(map[string]json.RawMessage{"schema": schema})
+	if err != nil {
+		return nil, err
+	}
+	return &dag.ValidatorSpec{Name: validate.NameJSONSchema, Config: config}, nil
+}
+
+// implicitPlanSchemaSpec builds the synthetic json_schema validator a planner
+// step's output carries (ticket 13.3): the published PlanOutput schema over
+// the /text default (the shaped completion's compact plan JSON). A schema
+// generation or marshal failure is a build error, permanent at resolve time.
+func implicitPlanSchemaSpec() (*dag.ValidatorSpec, error) {
+	schema, err := plannerPlanSchema()
+	if err != nil {
+		return nil, err
 	}
 	config, err := json.Marshal(map[string]json.RawMessage{"schema": schema})
 	if err != nil {

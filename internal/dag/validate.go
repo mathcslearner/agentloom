@@ -580,11 +580,12 @@ func (v *validator) checkValidation(path string, s Step) {
 		return
 	}
 	path += ".validation"
-	// An empty chain is meaningless *unless* the step is an llm step with an
-	// output_format: there the implicit json_schema validator (11.3) is the
-	// chain, so `validation` may carry only a semantic policy (max_attempts /
-	// feedback) with no explicit validators.
-	hasImplicitChain := s.Type == StepLLM && cfg[LLMConfig](s).OutputFormat != nil
+	// An empty chain is meaningless *unless* the step carries an implicit
+	// validator: an llm step with an output_format (11.3's json_schema chain)
+	// or a planner step (13.3's implicit PlanOutput json_schema validator is
+	// always present). Either lets `validation` carry only a semantic policy
+	// (max_attempts / feedback) with no explicit validators.
+	hasImplicitChain := (s.Type == StepLLM && cfg[LLMConfig](s).OutputFormat != nil) || s.Type == StepPlanner
 	if len(vp.Validators) == 0 && !hasImplicitChain {
 		v.add(CodeValidationFieldRequired, path+".validators", "at least one validator is required when a validation block is present")
 		return
@@ -722,8 +723,8 @@ func (v *validator) checkStepBudget(path string, st StepType, b *StepBudget) {
 	if b.MaxTokens < 0 {
 		v.add(CodeBudgetFieldInvalid, path+".max_tokens", "must be positive, got %d", b.MaxTokens)
 	}
-	if b.MaxTokens > 0 && st != StepLLM {
-		v.add(CodeBudgetFieldInvalid, path+".max_tokens", "applies only to llm steps, not %q", string(st))
+	if b.MaxTokens > 0 && st != StepLLM && st != StepPlanner {
+		v.add(CodeBudgetFieldInvalid, path+".max_tokens", "applies only to llm-family steps, not %q", string(st))
 	}
 }
 

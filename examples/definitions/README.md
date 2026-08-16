@@ -69,6 +69,18 @@ each example's "header comment" is its top-level `description` field.
   compare-and-swap (`expected_version`) and reads the pinned draft back.
   Every entry is token-counted and retained for audit; inspect with
   `ctl blackboard <run-id>`. Runs offline on the mock.
+- **[planner.json](planner.json)** — dynamic DAG expansion (ticket 13.3,
+  ADR-015): a `planner` step is an `llm` call whose validated `PlanOutput`
+  is spliced into the running graph atomically with its completion
+  (`store.ExpandRun`). The plan injects two `llm` worker steps that depend on
+  the planner (an *after* splice) and fan into a pre-existing `gather` join
+  (a *before* splice, widening the join); the injected steps then execute
+  like any authored step and the join continues. The plan is gated by an
+  implicit `json_schema` validator over `plan-output.v1.json` (a malformed
+  plan semantic-retries with the rejection issues as feedback,
+  `max_attempts` 3) and by the run's `expansion` caps. Runs offline on the
+  mock — the planner's prompt *is* a valid `PlanOutput`, echoed back
+  verbatim.
 - **[kitchen_sink.json](kitchen_sink.json)** — one coherent
   research-and-publish pipeline exercising every construct: all 14 step
   types, both join modes (`any` and `all`), conditioned and unconditioned

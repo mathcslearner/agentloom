@@ -499,15 +499,16 @@ func buildResponse(req ChatRequest, prompt string, o MockOutcome) ChatResponse {
 	return ChatResponse{Model: req.Model, StopReason: stop, Blocks: blocks, Usage: usage}
 }
 
-// echoStructured is the default structured-output echo: a JSON object
-// {"echo": "<last user text>"} on Structured, so a chained structured-output
-// step against the mock flows well-formed JSON through templating.
+// echoStructured is the default structured-output echo. When the last user
+// text is itself a JSON object (a planner prompt that carries its plan, or any
+// step whose upstream produced structured input), it is echoed verbatim on
+// Structured — so a planner step against the unscripted mock returns a
+// well-formed PlanOutput offline (ticket 13.3). Otherwise the last user text is
+// wrapped as a JSON object {"echo": "<text>"}, so a chained structured-output
+// step still flows well-formed JSON through templating. Deterministic and
+// offline either way.
 func echoStructured(req ChatRequest, prompt string, o MockOutcome) ChatResponse {
-	payload, err := json.Marshal(map[string]string{"echo": lastUserText(req)})
-	if err != nil {
-		// map[string]string always marshals; unreachable, but never panic.
-		payload = json.RawMessage(`{"echo":""}`)
-	}
+	payload := structuredEchoPayload(req)
 	usage := estimateUsage(prompt, []Block{TextBlock(string(payload))})
 	if o.Usage != nil {
 		usage = *o.Usage
@@ -560,6 +561,22 @@ func flattenPrompt(req ChatRequest) string {
 		}
 	}
 	return b.String()
+}
+
+// structuredEchoPayload builds the default structured-output echo payload: the
+// last user text verbatim when it is already a JSON object, else that text
+// wrapped as {"echo": "<text>"}. Never fails — a marshal error (unreachable for
+// map[string]string) falls back to an empty echo object.
+func structuredEchoPayload(req ChatRequest) json.RawMessage {
+	text := lastUserText(req)
+	if trimmed := strings.TrimSpace(text); len(trimmed) > 0 && trimmed[0] == '{' && json.Valid([]byte(trimmed)) {
+		return json.RawMessage(trimmed)
+	}
+	payload, err := json.Marshal(map[string]string{"echo": text})
+	if err != nil {
+		return json.RawMessage(`{"echo":""}`)
+	}
+	return payload
 }
 
 // lastUserText returns the last user message's concatenated text, the

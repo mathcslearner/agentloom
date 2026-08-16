@@ -426,6 +426,104 @@ Not yet (after 13.2): the planner executor that composes `SucceedStep` +
 read under the run lock (after `ExpandRun`) for **every** completion, since an
 active non-origin anchor may complete concurrently with an expansion.
 
+### Planner executor (as built, 13.3)
+
+13.3 ships the `planner` step executor and composes `ExpandRun` into the
+completion transaction — the runtime that turns a validated plan into a graph
+mutation. Nothing new is invented: a planner is an **llm-family step**, so the
+whole M8–M12 pipeline (routing, request framing, response cache, rate limiter,
+cost estimate, semantic feedback, context assembly, window guard) is reused
+verbatim, and the plan validation reuses M11's implicit-validator + semantic-
+retry machinery. The ticket is mostly *composition*.
+
+**`exec.PlannerExecutor` is the llm executor re-targeted.** It embeds
+`LLMExecutor`; the only overrides are `Type()` (`planner`) and the manifest
+(a distinct `(executor, planner, 1.0.0)` identity, cacheable + cost-bearing).
+The reuse hinges on one helper: `llmConfigView(sc)` decodes the step's config
+into the effective `LLMConfig` every request-building hook runs on — for an
+`llm` step it is the `LLMConfig` verbatim; for a `planner` step it **projects**
+the `PlannerConfig` onto an `LLMConfig` carrying the same model-call fields plus
+an **implicit plan `output_format`** (`type: json`, `mode: auto`) and drops
+`max_added_steps` (engine state, not a model input). Because the raw-key hooks
+(`WithFeedback` / `WithContext` / `WithModel`) already rewrite the top-level
+`prompt` / `messages` / `model` keys — which a planner config also has — they
+need no change, so a planner gets semantic-retry feedback injection and context
+assembly for free. The plan lands on the ordinary llm output shape
+(`output.json`, via 11.3's `shapeStructured`), so `${{ steps.plan.output.json }}`
+is addressable and the audit/UI provenance is the same field every structured
+step uses.
+
+**The provider request is deliberately schema-less; the full schema is enforced
+engine-side.** The implicit `output_format` is a plain-`json` native request
+(OpenAI `json_object` / Anthropic forced permissive-object tool / mock
+structured echo, with `jsonrepair` fallback), *not* the 17 KB `PlanOutput`
+schema. The engine then prepends an implicit `json_schema` validator over the
+**published `plan-output.v1.json`** to the planner's chain
+(`implicitPlanSchemaSpec`, the schema generated once per process). Reason: the
+generated schema uses `$ref`/`$defs`/`if-then` per step type, which OpenAI
+strict mode rejects and which cannot be validated against Anthropic offline —
+so keeping the schema on the engine's validate stage makes plan-shape checking
+provider-independent. The JSON layer (invalid JSON → `invalid_json`, wrong
+shape → schema `validation_failed`) and `ValidateExpansion` (graph-illegal
+splice → `validation_failed`, cap exhaustion → permanent) **compose** exactly as
+this ADR's §"Rejection routing" describes.
+
+**The completion transaction gained `ExpandRun` and moved the edge read under
+the lock.** `completeSuccess` now, for a `planner` origin: decodes the plan from
+`output.json` pre-transaction (the implicit validator already gated its shape,
+so this normally succeeds; a residual decode defect is plan-attributable), then
+inside the transaction — after the claim-fenced `SucceedStep` and cost/
+blackboard writes, at a new `after_expand` failpoint — calls `store.ExpandRun`,
+skipped on a cancelling run (the run must quiesce, not grow). The out-edge read
+and `planEdges` **moved from before the transaction to inside it, under the run
+lock, after any expansion — for every completion, not just planners** — because
+the pre-M13 "out-edges immutable for the life of the run" assumption is exactly
+what expansion breaks: a planner's own `origin → new` "after" edge, and a
+concurrent `parallel-to` splice onto an active non-origin anchor, both add
+out-edges the fan-out must see. So the origin's fan-out resolves the freshly-
+inserted `origin → new` edges and readies the "after"-spliced steps in the same
+transaction, alongside `ExpandRun`'s own outbox rows for the zero-indegree
+injected steps.
+
+**Rejection routing is one branch on `CapExceeded()`.** A rolled-back
+transaction carrying a `*store.ExpansionRejectedError` routes via
+`routeExpansionRejection`: `CapExceeded()` → `completeFailure` permanent with a
+descriptive `expansion_cap_exceeded:` reason (a better plan cannot lift a cap);
+otherwise → `completeValidationFailure` with a **synthesized fail verdict** —
+the passing chain verdict's results plus one `expansion` validator result whose
+issues are the rejection's error-severity issues mapped 1:1 (code/path/message,
+structure only). 11.4's `buildFeedback` renders those issues into the re-prompt
+and the terminal DLQ records them as verdict history, so a rejected plan self-
+heals through the same loop as any other validation failure — no bespoke planner
+feedback path. `out` carries the productive spend on both routes, so the
+planner's provider call is metered whether the plan is applied, retried, or
+capped.
+
+**Empty plans are a no-op** (an ADR amendment). A planner that legitimately
+concludes it should add nothing returns `{"schema_version": 1, "steps": []}`;
+rather than force a wasteful semantic retry against `ValidateExpansion`'s
+"at least one step" rule, `completeSuccess` treats a plan with no steps as no
+expansion — an ordinary success. The store guard stays (a plan reaching
+`ExpandRun` still must be non-empty); the engine simply does not call it. A plan
+with edges but no steps is still malformed (its edges reference nothing) and
+`ExpandRun` rejects it.
+
+**Crash-safety is inherited, proven.** The `after_expand` failpoint test aborts
+the transaction right after `ExpandRun` and shows no injected rows and an
+unmoved `graph_version` (cell E3). The zombie-planner test stalls worker A past
+its lease, lets B take over and expand, then resumes A — whose completion,
+`ExpandRun` included, is fenced at `SucceedStep` and abandoned without ACK, the
+graph expanded exactly once (cell E6). The mock refinement that makes the
+offline example runnable: the mock's structured echo returns the last user text
+verbatim when it is already a JSON object (a planner prompt that carries its
+plan), else the `{"echo": …}` wrapper — so `examples/definitions/planner.json`
+runs a real expansion on the unscripted mock with zero scripting.
+
+Not yet (after 13.3): dynamic map fan-out (13.4 — the same `ExpandRun` with an
+engine-generated delta), the chaos/recovery matrix (13.5 — automating the E1–E7
+kill points and fuzzing `ValidateExpansion`), and the run-graph introspection
+API (13.6).
+
 ## Consequences
 
 Positive:

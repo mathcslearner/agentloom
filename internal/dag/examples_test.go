@@ -35,6 +35,7 @@ var exampleFiles = []string{
 	"context_compaction.json",
 	"context_summarization.json",
 	"context_window.json",
+	"planner.json",
 }
 
 // readExample loads one example definition document.

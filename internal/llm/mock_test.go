@@ -99,6 +99,35 @@ func TestMockStructuredEcho(t *testing.T) {
 	}
 }
 
+// TestMockStructuredEchoVerbatimJSON: under a ResponseFormat request whose
+// last user text is itself a JSON object, the default echo returns it verbatim
+// (ticket 13.3) — the property the offline planner example relies on (its
+// prompt IS a valid PlanOutput), while a non-object prompt still gets the
+// {"echo": ...} wrapper.
+func TestMockStructuredEchoVerbatimJSON(t *testing.T) {
+	t.Parallel()
+	m, err := llm.NewMock(llm.MockConfig{})
+	if err != nil {
+		t.Fatalf("NewMock: %v", err)
+	}
+	req := mockReq(`{"schema_version":1,"steps":[]}`)
+	req.ResponseFormat = &llm.ResponseFormat{}
+	resp, err := m.Chat(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(resp.Structured, &obj); err != nil {
+		t.Fatalf("Structured is not valid JSON: %v (%s)", err, resp.Structured)
+	}
+	if _, wrapped := obj["echo"]; wrapped {
+		t.Errorf("a JSON-object prompt should echo verbatim, not be wrapped: %s", resp.Structured)
+	}
+	if obj["schema_version"] == nil {
+		t.Errorf("verbatim echo did not preserve the object: %s", resp.Structured)
+	}
+}
+
 // TestMockScriptedStructured: an explicit Structured outcome returns native
 // structured JSON.
 func TestMockScriptedStructured(t *testing.T) {

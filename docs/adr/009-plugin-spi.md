@@ -168,10 +168,16 @@ The builtin flag table (the conformance baseline):
 | `counter` | 1.0.0 | ✓ | – | – |
 | `effectful_echo` | 1.0.0 | ✓ | – | – |
 | `llm` | 1.0.0 | – | ✓ | ✓ |
+| `planner` | 1.0.0 | – | ✓ | ✓ |
 | `tool` | 1.0.0 | ✓ | – | – |
 | `retrieve` | 1.0.0 | – | ✓ | – |
 
-(`join`/`branch` are pure but not cacheable: they are control flow whose
+(`planner` (ticket 13.3) is an llm-family executor — the `LLMExecutor`
+re-targeted by embedding, keyed under its own name so a planner and an
+`llm` step never share a response-cache entry — so it carries the llm flags
+(cacheable + cost_bearing); its output is a `PlanOutput` the engine applies
+to the running graph via `store.ExpandRun`. `join`/`branch` are pure but not
+cacheable: they are control flow whose
 meaning is readiness and edge firing — caching them is noise. The `tool`
 *executor* is side-effectful because an unknown tool must be assumed to
 act on the world; individual built-in tools carry their own per-tool

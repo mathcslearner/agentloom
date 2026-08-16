@@ -44,6 +44,7 @@ var builtinCapabilities = map[string]plugin.Capabilities{
 	"effectful_echo":   {SideEffectful: true},
 	"blackboard_write": {SideEffectful: true},
 	"llm":              {Cacheable: true, CostBearing: true},
+	"planner":          {Cacheable: true, CostBearing: true},
 	"tool":             {SideEffectful: true},
 	"retrieve":         {Cacheable: true},
 }

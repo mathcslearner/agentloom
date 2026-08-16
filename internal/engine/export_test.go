@@ -6,6 +6,7 @@ import "testing"
 // tests.
 const (
 	StageAfterStepTransition = stageAfterStepTransition
+	StageAfterExpand         = stageAfterExpand
 	StageAfterFanOut         = stageAfterFanOut
 	StageAfterOutbox         = stageAfterOutbox
 )

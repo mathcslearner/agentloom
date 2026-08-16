@@ -56,6 +56,59 @@ func NewLLMExecutor(providers *llm.Registry) LLMExecutor {
 	return LLMExecutor{providers: providers, tokenReg: tokens.NewRegistry(nil)}
 }
 
+// llmConfigView decodes a claimed step's config into the effective LLMConfig
+// the whole request-building pipeline runs on. For an llm step it is the
+// LLMConfig verbatim; for a planner step (ticket 13.3, ADR-015) the
+// PlannerConfig is projected onto an LLMConfig — the same model-call fields
+// plus the implicit plan output_format — so the planner reuses every llm hook
+// (routing, request framing, caching, limiting, cost, feedback, context,
+// window guard) with no duplicated pipeline. The planner's per-expansion cap
+// (max_added_steps) is engine state, not a model-call input, so it is dropped
+// here. A nil config (no config key) decodes to nil, as for llm.
+func llmConfigView(sc StepContext) (*dag.LLMConfig, error) {
+	if sc.StepType == dag.StepPlanner {
+		c, err := configAs[*dag.PlannerConfig](sc)
+		if err != nil {
+			return nil, err
+		}
+		if c == nil {
+			return nil, nil
+		}
+		return &dag.LLMConfig{
+			Model:        c.Model,
+			Prompt:       c.Prompt,
+			Messages:     c.Messages,
+			MaxTokens:    c.MaxTokens,
+			Temperature:  c.Temperature,
+			OutputFormat: plannerOutputFormat(),
+		}, nil
+	}
+	return configAs[*dag.LLMConfig](sc)
+}
+
+// plannerOutputFormat is the implicit structured-output policy every planner
+// step's model call carries (ticket 13.3): a plain-JSON native request with a
+// deterministic repair pass, so the completion is shaped into output.json (the
+// PlanOutput the engine decodes and applies). It is deliberately schema-less
+// at the provider layer — the full PlanOutput schema is enforced engine-side
+// by the implicit validator, keeping the provider request provider-independent
+// (OpenAI strict mode rejects the schema's $ref/$defs, and Anthropic's forced
+// tool cannot be validated offline). A fresh pointer per call keeps the shared
+// package state immutable.
+func plannerOutputFormat() *dag.OutputFormat {
+	return &dag.OutputFormat{Type: dag.OutputFormatJSON, Mode: dag.OutputFormatAuto}
+}
+
+// executorVersion is the plugin version for an llm-family executor's cache-key
+// identity: planner and llm are distinct plugins (different Name), so their
+// entries never collide even at the same version string.
+func executorVersion(st dag.StepType) string {
+	if st == dag.StepPlanner {
+		return plannerVersion
+	}
+	return llmVersion
+}
+
 // Type implements Executor.
 func (LLMExecutor) Type() string { return string(dag.StepLLM) }
 
@@ -77,7 +130,7 @@ func (LLMExecutor) PluginManifest() plugin.Manifest {
 // unclassified so the engine keeps the timeout/cancelled judgment
 // (ADR-006 rows 3/8).
 func (e LLMExecutor) Execute(ctx context.Context, sc StepContext) (Output, error) {
-	cfg, err := configAs[*dag.LLMConfig](sc)
+	cfg, err := llmConfigView(sc)
 	if err != nil {
 		return Output{}, err
 	}
@@ -147,7 +200,7 @@ func (e LLMExecutor) Execute(ctx context.Context, sc StepContext) (Output, error
 // tells the middleware to skip limiting and let Execute land the permanent
 // failure — the routing judgment lives in one place.
 func (e LLMExecutor) ResourceClaim(sc StepContext) (string, int64, error) {
-	cfg, err := configAs[*dag.LLMConfig](sc)
+	cfg, err := llmConfigView(sc)
 	if err != nil {
 		return "", 0, err
 	}
@@ -175,7 +228,7 @@ func (e LLMExecutor) ResourceClaim(sc StepContext) (string, int64, error) {
 // or config failure returns an error, telling the engine to fall back to the
 // chars/4 counter and let Execute land the classified failure.
 func (e LLMExecutor) TokenCounter(sc StepContext) (tokens.Counter, error) {
-	cfg, err := configAs[*dag.LLMConfig](sc)
+	cfg, err := llmConfigView(sc)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +256,7 @@ func (e LLMExecutor) TokenCounter(sc StepContext) (tokens.Counter, error) {
 // caching and lets Execute land the permanent failure — the same convention
 // ResourceClaim uses.
 func (e LLMExecutor) CacheBinding(sc StepContext) (*CacheBinding, error) {
-	cfg, err := configAs[*dag.LLMConfig](sc)
+	cfg, err := llmConfigView(sc)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +295,7 @@ func (e LLMExecutor) CacheBinding(sc StepContext) (*CacheBinding, error) {
 		outputFormat = of
 	}
 	return &CacheBinding{
-		Executor:      cache.PluginRef{Kind: plugin.KindExecutor, Name: string(dag.StepLLM), Version: llmVersion},
+		Executor:      cache.PluginRef{Kind: plugin.KindExecutor, Name: string(sc.StepType), Version: executorVersion(sc.StepType)},
 		Plugin:        cache.PluginRef{Kind: m.Kind, Name: m.Name, Version: m.Version},
 		Caps:          m.Capabilities,
 		Deterministic: deterministic,
@@ -264,7 +317,7 @@ func (e LLMExecutor) CacheBinding(sc StepContext) (*CacheBinding, error) {
 // config failures route like ResourceClaim's: skip the check, let Execute
 // land the permanent failure.
 func (e LLMExecutor) CostEstimate(sc StepContext) (CostEstimate, error) {
-	cfg, err := configAs[*dag.LLMConfig](sc)
+	cfg, err := llmConfigView(sc)
 	if err != nil {
 		return CostEstimate{}, err
 	}
@@ -291,7 +344,7 @@ func (e LLMExecutor) CostEstimate(sc StepContext) (CostEstimate, error) {
 // A config-decode miss routes like the other binding hooks: skip the
 // downgrade, let Execute land the classified failure.
 func (e LLMExecutor) ModelFallbacks(sc StepContext) (string, []ModelFallback, error) {
-	cfg, err := configAs[*dag.LLMConfig](sc)
+	cfg, err := llmConfigView(sc)
 	if err != nil {
 		return "", nil, err
 	}
@@ -458,7 +511,7 @@ func (e LLMExecutor) WithContext(sc StepContext, preamble string) (json.RawMessa
 // checks. Model routing is not needed: the counter frames the request's
 // content, not its model id.
 func (e LLMExecutor) PreflightTokens(sc StepContext, counter tokens.Counter) (int, error) {
-	cfg, err := configAs[*dag.LLMConfig](sc)
+	cfg, err := llmConfigView(sc)
 	if err != nil {
 		return 0, err
 	}

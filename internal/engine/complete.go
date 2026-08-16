@@ -39,6 +39,7 @@ import (
 // single-transaction test can abort it anywhere and assert nothing leaked.
 const (
 	stageAfterStepTransition = "after_step_transition"
+	stageAfterExpand         = "after_expand"
 	stageAfterFanOut         = "after_fan_out"
 	stageAfterOutbox         = "after_outbox"
 )
@@ -241,14 +242,14 @@ func fanOut(ctx context.Context, q store.Querier, runID uuid.UUID, now time.Time
 func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec.Output, verdict *validate.Verdict, semanticAttempt int, counter tokens.Counter) error {
 	logger := log.From(ctx)
 
-	// The pre-transaction reads: run params and the out-edge rows are
-	// immutable for the life of the run in v1 (expansion is M13), so
-	// reading them outside the transaction is safe and keeps it short.
+	// The pre-transaction reads: run params are immutable for the life of the
+	// run, so reading them outside the transaction is safe and keeps it short.
+	// The out-edge rows are NO LONGER immutable — a planner's own completion
+	// (ExpandRun below) and a concurrent expansion (a parallel-to splice onto
+	// an active anchor) may add out-edges — so the out-edge read and edge plan
+	// move UNDER the run lock, after any expansion, inside the transaction
+	// (ADR-015). params still resolve pre-transaction.
 	run, err := e.store.Runs().Get(ctx, step.RunID)
-	if err != nil {
-		return err
-	}
-	outEdges, err := e.store.Steps().ListEdgesFromStep(ctx, step.RunID, step.StepID)
 	if err != nil {
 		return err
 	}
@@ -261,14 +262,28 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 			return e.completeFailure(ctx, step, exec.Output{}, fmt.Errorf("decoding run params: %w", err), dag.ClassPermanent, store.TraceFromRun(run))
 		}
 	}
-	verdicts, err := planEdges(step.StepType, outEdges, out.Data, params)
-	if err != nil {
-		// Deterministic content failure (ADR-003: evaluation errors are
-		// recorded as a step-level failure of the completing step;
-		// ADR-006 row 6: force-classified permanent).
-		logger.WarnContext(ctx, "edge predicate evaluation failed; recording step failure",
-			slog.Any("error", err))
-		return e.completeFailure(ctx, step, exec.Output{}, err, dag.ClassPermanent, store.TraceFromRun(run))
+
+	// Planner expansion (ticket 13.3, ADR-015): decode the plan the completion
+	// carries from its output.json. The implicit json_schema validator already
+	// gated the plan's JSON shape (execute() routes a malformed plan to the
+	// semantic-retry loop before reaching here), so this normally succeeds; a
+	// residual decode defect is plan-attributable and routes the same way. An
+	// empty plan (a planner that legitimately adds nothing) is a no-op — no
+	// expansion, an ordinary success. plannerCap is the origin's per-expansion
+	// override.
+	var plan *dag.PlanOutput
+	plannerCap := 0
+	if dag.StepType(step.StepType) == dag.StepPlanner {
+		p, derr := planFromOutput(out)
+		if derr != nil {
+			logger.WarnContext(ctx, "planner output is not a decodable plan; routing to semantic retry",
+				slog.Any("error", derr))
+			return e.completeValidationFailure(ctx, step, out, expansionVerdict(verdict, planDecodeIssue(derr)), store.TraceFromRun(run))
+		}
+		if len(p.Steps) > 0 {
+			plan = p
+		}
+		plannerCap = plannerMaxAddedSteps(step)
 	}
 
 	// Declarative blackboard writes (ticket 12.2, ADR-014): planned pre-
@@ -341,7 +356,11 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 	// genuine spend).
 	overheadRows := e.priceOverheads(ctx, step, verdict, now)
 	var fanned fanOutResult
+	var expanded store.ExpandRunResult
 	var fenced *store.TransitionError
+	var rejected *store.ExpansionRejectedError
+	var planEdgesErr error
+	edgesResolved := 0
 	var terminalRun *gen.Run
 	cancelling := false
 	txCtx, txSpan := e.tracer.Start(ctx, "step.completion")
@@ -350,8 +369,8 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		// by the run lock every transition takes first. On a cancelling
 		// run the success is still honored — the work is done, and
 		// discarding it would waste budget and re-run side effects — but
-		// fan-out is skipped: the successors were already cancelled by the
-		// request's sweep, and the run must quiesce, not advance.
+		// expansion and fan-out are skipped: the successors were already
+		// cancelled by the request's sweep, and the run must quiesce.
 		status, err := store.LockRunStatus(ctx, q, step.RunID, now)
 		if err != nil {
 			return err
@@ -364,7 +383,8 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 			// A typed conflict on the terminal CAS is the fence firing:
 			// this worker's claim is no longer current (zombie write,
 			// ADR-005). Recorded for the post-tx abandon; the error return
-			// still rolls the transaction back.
+			// still rolls the transaction back — so a zombie planner never
+			// expands (ADR-015 crash cell E6).
 			errors.As(err, &fenced)
 			return err
 		}
@@ -397,7 +417,55 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		if err := failpoint(stageAfterStepTransition); err != nil {
 			return err
 		}
+		// The enqueuing span's trace context (ticket 7.3), stamped onto every
+		// outbox row this completion writes — ExpandRun's rows (the injected
+		// zero-indegree steps) and the fan-out's rows alike. Empty when tracing
+		// is off (NULL columns, run-row fallback at drain).
+		tp, ts := obstrace.Inject(ctx)
+		enqTrace := store.TraceContext{Parent: tp, State: ts}
+		// Planner graph expansion (ticket 13.3, ADR-015): apply the plan
+		// atomically with the completion — after the fenced SucceedStep (so a
+		// zombie never expands) and BEFORE the out-edge fan-out (so an
+		// "after"-spliced origin→new edge is resolved by that same fan-out and
+		// the injected step readied in this one transaction). A rejected plan
+		// returns *ExpansionRejectedError, rolling the whole transaction back
+		// (a rejected plan mutates nothing) — routed by class post-commit.
+		if plan != nil && !cancelling {
+			res, xerr := store.ExpandRun(ctx, q, store.ExpandRunArgs{
+				RunID:         step.RunID,
+				Origin:        dag.ExpansionOrigin{Kind: dag.OriginPlanner, StepID: step.StepID},
+				Plan:          *plan,
+				MaxAddedSteps: plannerCap,
+				Trace:         enqTrace,
+				Now:           now,
+			})
+			if xerr != nil {
+				errors.As(xerr, &rejected)
+				return xerr
+			}
+			expanded = res
+			if err := failpoint(stageAfterExpand); err != nil {
+				return err
+			}
+		}
 		if !cancelling {
+			// The out-edge read + edge plan move UNDER the run lock, after any
+			// expansion (ADR-015): a planner's own ExpandRun (an origin→new
+			// "after" edge) and a concurrent parallel-to splice onto this
+			// active anchor may have added out-edges since the claim, so the
+			// pre-M13 "out-edges immutable" assumption no longer holds for any
+			// completion. A CEL failure is a deterministic step-level failure
+			// (ADR-003) captured for the permanent route post-commit.
+			outEdges, oerr := q.Steps().ListEdgesFromStep(ctx, step.RunID, step.StepID)
+			if oerr != nil {
+				return oerr
+			}
+			verdicts, perr := planEdges(step.StepType, outEdges, out.Data, params)
+			if perr != nil {
+				planEdgesErr = perr
+				return perr
+			}
+			edgesResolved = len(verdicts)
 			var ferr error
 			fanned, ferr = fanOut(ctx, q, step.RunID, now, terminalSource{stepID: step.StepID, verdicts: verdicts})
 			if ferr != nil {
@@ -406,13 +474,6 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 			if err := failpoint(stageAfterFanOut); err != nil {
 				return err
 			}
-			// The outbox rows carry this completion span's context (ticket
-			// 7.3): the dispatcher injects it into the envelope, so each
-			// successor's attempt span parents under the span that made it
-			// ready. Empty when tracing is off — NULL columns, run-row
-			// fallback at drain.
-			tp, ts := obstrace.Inject(ctx)
-			enqTrace := store.TraceContext{Parent: tp, State: ts}
 			for _, id := range fanned.readied {
 				if _, err := q.Outbox().CreateTraced(ctx, step.RunID, id, store.OutboxReasonStepReady, enqTrace); err != nil {
 					return err
@@ -430,6 +491,23 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 	if txErr != nil {
 		if fenced != nil {
 			return e.abandonFenced(ctx, step, fenced, txErr)
+		}
+		// A rejected planner plan (ticket 13.3, ADR-015): the whole transaction
+		// rolled back (the expansion mutated nothing), so route the origin by
+		// rejection class — a run-guard cap exhaustion fails permanently (a
+		// better plan cannot lift a cap), everything else is plan-attributable
+		// and re-prompts the planner through 11.4's semantic-retry loop.
+		if rejected != nil {
+			return e.routeExpansionRejection(ctx, step, out, verdict, rejected, store.TraceFromRun(run))
+		}
+		// A CEL edge-predicate failure captured inside the transaction
+		// (ADR-003): a deterministic step-level failure of the completing step,
+		// force-classified permanent (ADR-006 row 6). The transaction rolled
+		// back, so the step is still running and completeFailure's CAS lands.
+		if planEdgesErr != nil {
+			logger.WarnContext(ctx, "edge predicate evaluation failed; recording step failure",
+				slog.Any("error", planEdgesErr))
+			return e.completeFailure(ctx, step, exec.Output{}, planEdgesErr, dag.ClassPermanent, store.TraceFromRun(run))
 		}
 		// A dag decode error surfacing from the transaction is isJoinAny
 		// hitting a join target whose stored config no longer decodes —
@@ -478,19 +556,57 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 	if verdict != nil {
 		e.metrics.SemanticRetryDepth(store.StepStatusSucceeded, semanticAttempt)
 	}
-	logger.InfoContext(ctx, "step succeeded",
-		slog.Int("edges_resolved", len(verdicts)),
+	// Graph-expansion signal (ticket 13.3): a committed expansion made the run
+	// bigger and may have readied injected steps directly (a "before"/
+	// independent splice ExpandRun outboxed) alongside the origin's fan-out.
+	logAttrs := []any{
+		slog.Int("edges_resolved", edgesResolved),
 		slog.Int("steps_readied", len(fanned.readied)),
 		slog.Int("steps_skipped", len(fanned.skipped)),
 		slog.Bool("run_cancelling", cancelling),
-		slog.Bool("run_terminal", terminalRun != nil))
+		slog.Bool("run_terminal", terminalRun != nil),
+	}
+	if plan != nil && !cancelling {
+		logAttrs = append(logAttrs,
+			slog.Int("graph_version", int(expanded.GraphVersion)),
+			slog.Int("steps_injected", len(plan.Steps)),
+			slog.Int("steps_injected_readied", len(expanded.Readied)),
+			slog.Int("anchors_widened", len(expanded.Widened)))
+	}
+	logger.InfoContext(ctx, "step succeeded", logAttrs...)
 	if terminalRun != nil {
 		e.recordRunCompleted(terminalRun.Status, terminalRun.StartedAt, now)
 	}
-	if len(fanned.readied) > 0 && e.nudge != nil {
+	// Nudge the dispatcher when any step became ready: the origin's fan-out
+	// successors, or ExpandRun's zero-indegree injected steps.
+	if (len(fanned.readied) > 0 || len(expanded.Readied) > 0) && e.nudge != nil {
 		e.nudge()
 	}
 	return nil
+}
+
+// routeExpansionRejection routes a rejected planner plan by class (ticket
+// 13.3, ADR-015): a run-guard cap exhaustion (CapExceeded) fails the origin
+// permanently — a better plan cannot lift a cap (ADR-006 rows 4/15/17/19) — and
+// dead-letters with a descriptive expansion_cap_exceeded reason. Every other
+// rejection is plan-attributable, so it routes through completeValidationFailure
+// as a validation_failed outcome: 11.4's semantic-retry loop re-prompts the
+// planner with the rejection issues rendered as feedback, and a fresh plan can
+// fix it (ADR-015 × ADR-013). out carries the productive spend either way, so
+// the planner's provider call is metered on both routes. base is the passing
+// implicit-validator verdict, preserved for provenance in the synthesized
+// fail verdict.
+func (e *Engine) routeExpansionRejection(ctx context.Context, step gen.RunStep, out exec.Output, base *validate.Verdict, rej *store.ExpansionRejectedError, runTrace store.TraceContext) error {
+	logger := log.From(ctx)
+	if rej.CapExceeded() {
+		logger.WarnContext(ctx, "planner expansion exceeded a run cap; failing permanently",
+			slog.Any("error", rej))
+		return e.completeFailure(ctx, step, out,
+			fmt.Errorf("expansion_cap_exceeded: %w", rej), dag.ClassPermanent, runTrace)
+	}
+	logger.InfoContext(ctx, "planner plan rejected against the run graph; routing to semantic retry",
+		slog.Any("error", rej))
+	return e.completeValidationFailure(ctx, step, out, expansionVerdict(base, expansionIssues(rej.Verdict)), runTrace)
 }
 
 // attemptRunRollup tries the terminal rollups and drops the conflicts

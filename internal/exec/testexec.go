@@ -53,8 +53,10 @@ func builtinManifest(st dag.StepType, version, description string, caps plugin.C
 // executor, and retrievers back the retrieve executor; a nil registry is
 // valid for any of the three — a step of that type then fails permanent at
 // resolve/lookup time — which suits the non-executing call sites (manifest
-// and registry-shape tests). This is the registry for tests and dev/demo
-// deployments. Production workers default to CoreBuiltins — see the
+// and registry-shape tests). The set also includes the production planner
+// executor (ticket 13.3), an llm-family executor backed by the same provider
+// registry. This is the registry for tests and dev/demo deployments.
+// Production workers default to CoreBuiltins — see the
 // AGENTLOOM_WORKER_TEST_EXECUTORS knob (ticket 6.2).
 func Builtins(providers *llm.Registry, toolReg *tools.Registry, retrievers *retrieval.Registry) *Registry {
 	r := CoreBuiltins(providers, toolReg, retrievers)
@@ -79,7 +81,8 @@ func Builtins(providers *llm.Registry, toolReg *tools.Registry, retrievers *retr
 func CoreBuiltins(providers *llm.Registry, toolReg *tools.Registry, retrievers *retrieval.Registry) *Registry {
 	r, err := NewRegistry(NoopExecutor{}, EchoExecutor{}, NewSleep(), FailNTimesExecutor{},
 		JoinExecutor{}, BranchExecutor{},
-		NewLLMExecutor(providers), NewToolExecutor(toolReg), NewRetrieveExecutor(retrievers))
+		NewLLMExecutor(providers), NewPlannerExecutor(providers),
+		NewToolExecutor(toolReg), NewRetrieveExecutor(retrievers))
 	if err != nil {
 		panic(err) // unreachable: a fixed set of distinct, non-empty types
 	}
