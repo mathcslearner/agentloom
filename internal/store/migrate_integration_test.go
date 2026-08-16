@@ -41,7 +41,7 @@ func columnExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table, 
 // latestVersion is the highest migration in internal/store/migrations —
 // bump when adding a migration (the round-trip test below walks every
 // down migration regardless, so forgetting only fails the version check).
-const latestVersion = 22
+const latestVersion = 23
 
 func TestMigrateUpDownRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -84,17 +84,33 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 	}
 
 	// Down rolls back one step: the newest migration's additions are gone,
-	// earlier ones untouched. 0022 drops the run_steps.context_policy column —
-	// its revert is observable while everything below it survives, starting
+	// earlier ones untouched. 0023 drops the run_steps.depth / origin columns
+	// and runs.expansion_caps — their revert is observable while everything
+	// below it survives, starting with 0022's context_policy column.
+	if err := mg.Down(); err != nil {
+		t.Fatalf("Down (0023): %v", err)
+	}
+	if columnExists(ctx, t, pool, "run_steps", "depth") {
+		t.Fatal("after one Down: run_steps.depth was not dropped by 0023")
+	}
+	if columnExists(ctx, t, pool, "runs", "expansion_caps") {
+		t.Fatal("after one Down: runs.expansion_caps was not dropped by 0023")
+	}
+	if !columnExists(ctx, t, pool, "run_steps", "context_policy") {
+		t.Fatal("after one Down: run_steps.context_policy was dropped by the wrong migration")
+	}
+
+	// Down again rolls back 0022: it drops the run_steps.context_policy column
+	// — its revert is observable while everything below it survives, starting
 	// with 0021's blackboard_policy column.
 	if err := mg.Down(); err != nil {
 		t.Fatalf("Down (0022): %v", err)
 	}
 	if columnExists(ctx, t, pool, "run_steps", "context_policy") {
-		t.Fatal("after one Down: run_steps.context_policy was not dropped by 0022")
+		t.Fatal("after two Downs: run_steps.context_policy was not dropped by 0022")
 	}
 	if !columnExists(ctx, t, pool, "run_steps", "blackboard_policy") {
-		t.Fatal("after one Down: run_steps.blackboard_policy was dropped by the wrong migration")
+		t.Fatal("after two Downs: run_steps.blackboard_policy was dropped by the wrong migration")
 	}
 
 	// Down again rolls back 0021: it drops the blackboard_entries table and

@@ -107,6 +107,7 @@ type Run struct {
 	SavedNanoUsd           int64
 	BudgetNanoUsd          *int64
 	OnBudgetExceeded       string
+	ExpansionCaps          json.RawMessage
 }
 
 type RunEdge struct {
@@ -120,6 +121,8 @@ type RunEdge struct {
 	MaxIterations *int32
 	Resolution    string
 	GraphVersion  int32
+	OriginStep    *string
+	OriginKind    *string
 }
 
 type RunStep struct {
@@ -149,6 +152,9 @@ type RunStep struct {
 	Feedback         json.RawMessage
 	BlackboardPolicy json.RawMessage
 	ContextPolicy    json.RawMessage
+	Depth            int32
+	OriginStep       *string
+	OriginKind       *string
 }
 
 type SchemaBaseline struct {

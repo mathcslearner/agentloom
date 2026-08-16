@@ -289,6 +289,113 @@ func hasCode(issues []*dag.ValidationIssue, code dag.ValidationCode) bool {
 	return false
 }
 
+// ---- Cross-graph ref lint (13.2, deferred from 13.1) ----
+
+// templatedStep is an llm step whose prompt references another step's output —
+// the reference the cross-graph lint resolves against the merged graph and the
+// run's succeeded rows.
+func templatedStep(id, prompt string) dag.Step {
+	return dag.Step{ID: id, Type: dag.StepLLM, Config: &dag.LLMConfig{Model: "mock/sim-1", Prompt: prompt}}
+}
+
+func TestValidateExpansion_RefToAncestorOK(t *testing.T) {
+	t.Parallel()
+	// x is spliced after the origin and reads the origin's output; the origin is
+	// a normal-edge ancestor of x, so the reference resolves.
+	in := baseInput(dag.PlanOutput{
+		SchemaVersion: 1,
+		Steps:         []dag.Step{templatedStep("x", "summarize ${{ steps.plan.output.text }}")},
+		Edges:         []dag.Edge{{From: "plan", To: "x"}},
+	})
+	if v := dag.ValidateExpansion(in); !v.OK() {
+		t.Fatalf("want OK for ancestor reference, got: %v", v.Issues)
+	}
+}
+
+func TestValidateExpansion_RefToSucceededNonAncestorOK(t *testing.T) {
+	t.Parallel()
+	// x reads an existing step's output that is not its graph ancestor but has
+	// already succeeded — its output is materialized, so the reference resolves.
+	in := baseInput(dag.PlanOutput{
+		SchemaVersion: 1,
+		Steps:         []dag.Step{templatedStep("x", "use ${{ steps.done.output.text }}")},
+		Edges:         []dag.Edge{{From: "plan", To: "x"}},
+	})
+	in.Existing["done"] = dag.ExpansionAnchor{Type: dag.StepLLM, Status: dag.AnchorTerminal, Succeeded: true}
+	in.CurrentStepCount = 2
+	if v := dag.ValidateExpansion(in); !v.OK() {
+		t.Fatalf("want OK for succeeded-step reference, got: %v", v.Issues)
+	}
+}
+
+func TestValidateExpansion_RefToPendingNonAncestorRejected(t *testing.T) {
+	t.Parallel()
+	// x reads an existing step that is neither its ancestor nor succeeded —
+	// its output may not exist when x runs, so the plan is rejected (a
+	// plan-attributable, retryable failure).
+	in := baseInput(dag.PlanOutput{
+		SchemaVersion: 1,
+		Steps:         []dag.Step{templatedStep("x", "use ${{ steps.later.output.text }}")},
+		Edges:         []dag.Edge{{From: "plan", To: "x"}},
+	})
+	in.Existing["later"] = dag.ExpansionAnchor{Type: dag.StepLLM, Status: dag.AnchorPending}
+	in.CurrentStepCount = 2
+	v := dag.ValidateExpansion(in)
+	if v.OK() || !hasCode(v.Issues, dag.CodeTemplateRefNotUpstream) {
+		t.Fatalf("want template_ref_not_upstream, got OK=%v issues=%v", v.OK(), v.Issues)
+	}
+	if v.CapExceeded() {
+		t.Error("a ref failure must not be a cap exhaustion")
+	}
+}
+
+func TestValidateExpansion_RefToUnknownStepRejected(t *testing.T) {
+	t.Parallel()
+	in := baseInput(dag.PlanOutput{
+		SchemaVersion: 1,
+		Steps:         []dag.Step{templatedStep("x", "use ${{ steps.ghost.output.text }}")},
+		Edges:         []dag.Edge{{From: "plan", To: "x"}},
+	})
+	v := dag.ValidateExpansion(in)
+	if v.OK() || !hasCode(v.Issues, dag.CodeTemplateRefUnknownStep) {
+		t.Fatalf("want template_ref_unknown_step, got OK=%v issues=%v", v.OK(), v.Issues)
+	}
+}
+
+func TestValidateExpansion_RefBetweenDeltaStepsOK(t *testing.T) {
+	t.Parallel()
+	// y reads x; both are in the same plan and x → y is a delta edge, so x is a
+	// merged-graph ancestor of y.
+	in := baseInput(dag.PlanOutput{
+		SchemaVersion: 1,
+		Steps:         []dag.Step{llmStep("x"), templatedStep("y", "on ${{ steps.x.output.text }}")},
+		Edges:         []dag.Edge{{From: "plan", To: "x"}, {From: "x", To: "y"}},
+	})
+	if v := dag.ValidateExpansion(in); !v.OK() {
+		t.Fatalf("want OK for delta-internal reference, got: %v", v.Issues)
+	}
+}
+
+func TestValidateExpansion_ParamRef(t *testing.T) {
+	t.Parallel()
+	mk := func(params string) dag.ExpansionInput {
+		in := baseInput(dag.PlanOutput{
+			SchemaVersion: 1,
+			Steps:         []dag.Step{templatedStep("x", "topic ${{ run.params.topic }}")},
+			Edges:         []dag.Edge{{From: "plan", To: "x"}},
+		})
+		in.RunParams = []byte(params)
+		return in
+	}
+	if v := dag.ValidateExpansion(mk(`{"topic":"cats"}`)); !v.OK() {
+		t.Fatalf("declared param should be OK, got: %v", v.Issues)
+	}
+	v := dag.ValidateExpansion(mk(`{"other":"x"}`))
+	if v.OK() || !hasCode(v.Issues, dag.CodeTemplateRefUnknownParam) {
+		t.Fatalf("undeclared param should reject, got OK=%v issues=%v", v.OK(), v.Issues)
+	}
+}
+
 // ---- ExpansionPolicy resolution + definition-level validation ----
 
 func TestExpansionPolicyResolveDefaults(t *testing.T) {

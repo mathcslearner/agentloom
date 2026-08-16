@@ -268,7 +268,13 @@ once written; a new version is a new row.
   `runs (created_at DESC, id DESC)` and the partial
   `runs (definition_id, created_at DESC, id DESC)`.
 - `graph_version` — the run's current graph version, starting at 1;
-  `ExpandRun` increments it (M13).
+  `ExpandRun` increments it once per committed expansion (13.2), so the
+  run's expansion count is `graph_version - 1` (no separate counter,
+  ADR-015).
+- `expansion_caps` — the run's resolved `dag.ExpansionCaps` (migration
+  0023), materialized at instantiation like `retry_policy`/`on_failure`
+  so `ExpandRun` and the claim-time guards never reparse the snapshot;
+  NULL on pre-0023 rows means the compiled defaults apply (ADR-015).
 - `next_seq` — the event sequence counter (above).
 - Aggregate counters `steps_total`, `steps_succeeded`, `steps_failed`,
   `steps_skipped` — and since 5.4 `steps_cancelled` (the write-off
@@ -306,13 +312,21 @@ M13/M18 provenance), `trace_span` (TEXT, nullable; since 7.3, migration
 0010 — the current attempt's span context in traceparent format, stamped
 by the claim CAS; the value a claim overwrites is the previous attempt's
 span, which is how retries and takeovers link the new attempt span back
-to the attempt it re-executes, ADR-008), and timestamps.
+to the attempt it re-executes, ADR-008), `depth`/`origin_step`/`origin_kind`
+(migration 0023 — the expansion provenance ADR-015 needs: `depth` is the
+nesting depth (0 for a definition-authored step, `origin.depth + 1` for an
+injected one), and `origin_step`/`origin_kind` (both NULL for an authored
+step) name the expansion that spliced the row in — read by the 13.6
+introspection API as columns, never a join through the event log), and
+timestamps.
 
 **`run_edges`** — the per-run graph copy, edge side. `from_step`,
 `to_step`, `edge_type` (`normal | loop`), the raw predicate texts
 (`when_expr` for normal edges, `condition` + `max_iterations` for loop
 edges — compiled at evaluation time; validation already proved they
-compile), `resolution`, and `graph_version`. Loop edges keep
+compile), `resolution`, `graph_version`, and (migration 0023)
+`origin_step`/`origin_kind` — the same expansion provenance as the node
+side (NULL for a definition-authored edge). Loop edges keep
 `resolution = 'unresolved'` forever in v1 — iteration accounting belongs
 to expansion (M14), which this schema anticipates but does not implement.
 

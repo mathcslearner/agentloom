@@ -309,6 +309,16 @@ const (
 	// durable on the attempt via the request the executor sends).
 	EventContextAssembled = "context_assembled"
 
+	// EventGraphExpanded: a planner (or, later, a map/loop) expansion spliced
+	// new steps and edges into the running graph (ticket 13.2, ADR-015). The
+	// payload (GraphExpandedEvent) carries the origin, the graph_version
+	// transition, the injected steps' depth, the verbatim PlanOutput delta, and
+	// the readied/widened step ids. Appended by ExpandRun inside the origin's
+	// completion transaction, under the run lock and the same monotonic seq as
+	// the graph_version bump — so the run's graph_expanded events reconstruct
+	// every version's delta in order (the 13.6 introspection API reads them).
+	EventGraphExpanded = "graph_expanded"
+
 	// EventContextRevision: one deterministic compaction strategy was applied
 	// to shrink an over-budget assembled context (ticket 12.4, ADR-014). The
 	// payload (ContextRevisionEvent) carries the strategy, its parameters, the

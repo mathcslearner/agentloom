@@ -280,6 +280,16 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 	if onBudgetExceeded == "" {
 		onBudgetExceeded = dag.BudgetPark
 	}
+	// The run's resolved dynamic-expansion caps are materialized like the
+	// failure/budget policies (ticket 13.2, ADR-015): ExpandRun and the
+	// claim-time guards read them off the row, never reparsing the snapshot,
+	// and a worker upgrade cannot change an in-flight run's caps. Always
+	// present (defaults resolved) so a pre-13.2 NULL is the only "use compiled
+	// defaults" signal, reserved for rows that predate this column.
+	expansionCaps, err := json.Marshal(p.def.Expansion.Resolve())
+	if err != nil {
+		return gen.Run{}, fmt.Errorf("store: CreateRun: marshaling expansion caps: %w", err)
+	}
 	run, err := q.Runs().Create(ctx, gen.CreateRunParams{
 		ID:                     args.RunID,
 		DefinitionID:           args.DefinitionID,
@@ -296,6 +306,7 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		TraceState:             nullableText(args.Trace.State),
 		BudgetNanoUsd:          budgetNanoUSD,
 		OnBudgetExceeded:       string(onBudgetExceeded),
+		ExpansionCaps:          expansionCaps,
 	})
 	if err != nil {
 		return gen.Run{}, err
@@ -304,105 +315,24 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		return gen.Run{}, err
 	}
 
+	// Steps and edges are materialized through the shared helpers (ticket
+	// 13.2): run instantiation and ExpandRun compute placement differently (an
+	// entry step vs a spliced one) but materialize each step's envelope
+	// policies identically. Instantiation-time rows are all depth 0 with no
+	// origin (definition-authored), at graph_version 1.
 	steps := make([]gen.CreateRunStepsParams, len(p.def.Steps))
 	for i, step := range p.def.Steps {
 		status := StepStatusPending
 		if p.entrySet[step.ID] {
 			status = StepStatusReady
 		}
-		var config json.RawMessage
-		if step.Config != nil {
-			config, err = json.Marshal(step.Config)
-			if err != nil {
-				return gen.Run{}, fmt.Errorf("marshaling config of step %q: %w", step.ID, err)
-			}
-		}
-		// The *effective* retry policy — authored fields merged over engine
-		// defaults — is materialized per step (ticket 5.2, ADR-006): the
-		// failure path never reparses the snapshot, and a worker upgrade
-		// cannot change an in-flight run's retry behavior. M13's expansion
-		// inherits this same path.
-		retryPolicy, err := json.Marshal(dag.ResolveRetryPolicy(step.Retry))
+		steps[i], err = stepRowParams(run.ID, step, stepPlacement{
+			Status:        status,
+			RemainingDeps: p.remaining[step.ID],
+			GraphVersion:  1,
+		}, args.Now)
 		if err != nil {
-			return gen.Run{}, fmt.Errorf("marshaling retry policy of step %q: %w", step.ID, err)
-		}
-		// The per-attempt execution timeout is materialized alongside config
-		// and retry_policy (ticket 5.3); nil means no timeout.
-		var timeout *string
-		if step.Timeout != "" {
-			timeout = &step.Timeout
-		}
-		// The authored response-cache policy is materialized the same way
-		// (ticket 9.5, ADR-011): the cache middleware reads it off the row
-		// rather than reparsing the snapshot. NULL when the step authored no
-		// `cache` block — the engine's default policy then decides.
-		var cachePolicy json.RawMessage
-		if step.Cache != nil {
-			cachePolicy, err = json.Marshal(step.Cache)
-			if err != nil {
-				return gen.Run{}, fmt.Errorf("marshaling cache policy of step %q: %w", step.ID, err)
-			}
-		}
-		// The authored budget caps are materialized the same way (ticket
-		// 10.3, ADR-012): the claim-time check reads them off the row. NULL
-		// when the step authored no `budget` block — only the run budget then
-		// applies.
-		var budgetPolicy json.RawMessage
-		if step.Budget != nil {
-			budgetPolicy, err = json.Marshal(step.Budget)
-			if err != nil {
-				return gen.Run{}, fmt.Errorf("marshaling budget policy of step %q: %w", step.ID, err)
-			}
-		}
-		// The authored output-validation chain is materialized the same way
-		// (ticket 11.1, ADR-013): the engine's validate stage reads it off the
-		// claimed row rather than reparsing the snapshot. NULL when the step
-		// authored no `validation` block — the output is accepted as produced.
-		var validationPolicy json.RawMessage
-		if step.Validation != nil {
-			validationPolicy, err = json.Marshal(step.Validation)
-			if err != nil {
-				return gen.Run{}, fmt.Errorf("marshaling validation policy of step %q: %w", step.ID, err)
-			}
-		}
-		// The authored blackboard block (declarative writes) is materialized
-		// the same way (ticket 12.2, ADR-014): the success-completion path
-		// reads it off the claimed row. NULL when the step authored no
-		// `blackboard` block — no declarative writes.
-		var blackboardPolicy json.RawMessage
-		if step.Blackboard != nil {
-			blackboardPolicy, err = json.Marshal(step.Blackboard)
-			if err != nil {
-				return gen.Run{}, fmt.Errorf("marshaling blackboard policy of step %q: %w", step.ID, err)
-			}
-		}
-		// The authored context-assembly spec is materialized the same way
-		// (ticket 12.3, ADR-014): the engine's pre-execution assembly reads it
-		// off the claimed row. NULL when the step authored no `context` block —
-		// the request is built from the config alone.
-		var contextPolicy json.RawMessage
-		if step.Context != nil {
-			contextPolicy, err = json.Marshal(step.Context)
-			if err != nil {
-				return gen.Run{}, fmt.Errorf("marshaling context policy of step %q: %w", step.ID, err)
-			}
-		}
-		steps[i] = gen.CreateRunStepsParams{
-			RunID:            run.ID,
-			StepID:           step.ID,
-			StepType:         string(step.Type),
-			Config:           config,
-			RetryPolicy:      retryPolicy,
-			Timeout:          timeout,
-			CachePolicy:      cachePolicy,
-			BudgetPolicy:     budgetPolicy,
-			ValidationPolicy: validationPolicy,
-			BlackboardPolicy: blackboardPolicy,
-			ContextPolicy:    contextPolicy,
-			Status:           status,
-			RemainingDeps:    p.remaining[step.ID],
-			GraphVersion:     1,
-			UpdatedAt:        args.Now,
+			return gen.Run{}, err
 		}
 	}
 	if _, err := q.Steps().CreateBatch(ctx, steps); err != nil {
@@ -414,25 +344,7 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 
 	edges := make([]gen.CreateRunEdgesParams, len(p.def.Edges))
 	for i, e := range p.def.Edges {
-		edge := gen.CreateRunEdgesParams{
-			RunID:        run.ID,
-			Ordinal:      int32(i), //nolint:gosec // edge count is validation-bounded
-			FromStep:     e.From,
-			ToStep:       e.To,
-			EdgeType:     string(e.Type),
-			GraphVersion: 1,
-		}
-		if e.When != "" {
-			edge.WhenExpr = &e.When
-		}
-		if e.Condition != "" {
-			edge.Condition = &e.Condition
-		}
-		if e.MaxIterations != 0 {
-			maxIter := int32(e.MaxIterations) //nolint:gosec // validation-bounded
-			edge.MaxIterations = &maxIter
-		}
-		edges[i] = edge
+		edges[i] = edgeRowParams(run.ID, e, int32(i), 1, nil, nil) //nolint:gosec // edge count is validation-bounded
 	}
 	if _, err := q.Steps().CreateEdgeBatch(ctx, edges); err != nil {
 		return gen.Run{}, err

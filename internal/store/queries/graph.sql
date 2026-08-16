@@ -24,20 +24,23 @@
 -- context_policy is the step's authored context-assembly spec, materialized
 -- the same way (ticket 12.3, ADR-014); NULL means no `context` block (the
 -- request is built from the config alone).
+-- depth is the expansion nesting depth (ticket 13.2, ADR-015): 0 for a
+-- definition-authored step, origin.depth+1 for an injected one. origin_step /
+-- origin_kind name the expansion that introduced the row (NULL = authored).
 -- name: CreateRunStep :one
 INSERT INTO run_steps (run_id, step_id, step_type, config, retry_policy,
                        timeout, cache_policy, budget_policy, validation_policy, blackboard_policy, context_policy, status, remaining_deps, fired_deps,
-                       graph_version, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                       graph_version, updated_at, depth, origin_step, origin_kind)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 RETURNING *;
 
 -- CreateRunSteps is the batch (COPY) form for run instantiation (2.5) and
--- expansion (M13), which write whole graphs at once.
+-- expansion (13.2), which write whole graphs at once.
 -- name: CreateRunSteps :copyfrom
 INSERT INTO run_steps (run_id, step_id, step_type, config, retry_policy,
                        timeout, cache_policy, budget_policy, validation_policy, blackboard_policy, context_policy, status, remaining_deps, fired_deps,
-                       graph_version, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16);
+                       graph_version, updated_at, depth, origin_step, origin_kind)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19);
 
 -- name: GetRunStep :one
 SELECT * FROM run_steps WHERE run_id = $1 AND step_id = $2;
@@ -55,18 +58,20 @@ ORDER BY step_id;
 -- name: ListRunSteps :many
 SELECT * FROM run_steps WHERE run_id = $1 ORDER BY step_id;
 
+-- origin_step / origin_kind name the expansion that spliced the edge in
+-- (ticket 13.2, ADR-015); NULL for a definition-authored edge.
 -- name: CreateRunEdge :one
 INSERT INTO run_edges (run_id, ordinal, from_step, to_step, edge_type,
-                       when_expr, condition, max_iterations, graph_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                       when_expr, condition, max_iterations, graph_version, origin_step, origin_kind)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING *;
 
 -- CreateRunEdges is the batch (COPY) form for run instantiation (2.5) and
--- expansion (M13).
+-- expansion (13.2).
 -- name: CreateRunEdges :copyfrom
 INSERT INTO run_edges (run_id, ordinal, from_step, to_step, edge_type,
-                       when_expr, condition, max_iterations, graph_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
+                       when_expr, condition, max_iterations, graph_version, origin_step, origin_kind)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 
 -- ordinal order is semantic: the branch first-match rule evaluates
 -- out-edges in declaration order (ADR-004).
@@ -88,3 +93,37 @@ FROM run_edges e
 JOIN run_steps s ON s.run_id = e.run_id AND s.step_id = e.from_step
 WHERE e.run_id = $1 AND e.to_step = $2 AND e.resolution = 'fired'
 ORDER BY e.ordinal;
+
+-- MaxRunEdgeOrdinal returns the run's highest edge ordinal, or -1 when it has
+-- no edges — so an expansion's first spliced edge continues from MAX+1
+-- (ticket 13.2). Read under the run lock the expansion already holds.
+-- name: MaxRunEdgeOrdinal :one
+SELECT COALESCE(MAX(ordinal), -1)::int FROM run_edges WHERE run_id = $1;
+
+-- AddRunStepRemainingDeps bumps a still-pending existing step's remaining_deps
+-- by delta — the "before" splice, where an injected step becomes a new upstream
+-- dependency of a pending anchor (ticket 13.2, ADR-015). Guarded on
+-- status = 'pending': the anchor status was validated under this same run lock,
+-- so zero rows is a graph-integrity error, never a race. updated_at is
+-- app-written from the injected clock (ADR-004 timestamp policy).
+-- name: AddRunStepRemainingDeps :one
+UPDATE run_steps
+SET remaining_deps = remaining_deps + @delta::int,
+    updated_at     = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id AND status = 'pending'
+RETURNING *;
+
+-- ExpandRunGraph commits an expansion's run-row side atomically with the step
+-- and edge inserts (ticket 13.2, ADR-015): increment graph_version and grow
+-- steps_total by the injected count. The expected_version CAS is a
+-- belt-and-braces guard under the run lock the expansion already holds — it can
+-- only fail if a concurrent committed expansion moved the version, which the
+-- lock serializes, so a zero-row result is an integrity error. graph_version's
+-- new value is the run's expansion count + 1 and stamps every row this
+-- expansion introduced.
+-- name: ExpandRunGraph :one
+UPDATE runs
+SET graph_version = graph_version + 1,
+    steps_total   = steps_total + @added::int
+WHERE id = @run_id AND graph_version = @expected_version::int
+RETURNING graph_version, steps_total;

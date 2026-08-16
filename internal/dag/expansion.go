@@ -232,6 +232,12 @@ const (
 type ExpansionAnchor struct {
 	Type   StepType
 	Status ExpansionAnchorStatus
+	// Succeeded reports whether the step has completed successfully, so its
+	// output is materialized and immutable. An injected step may reference a
+	// succeeded step's output (`${{ steps.x.output }}`) even when x is not a
+	// normal-edge ancestor — the additive-only relaxation the store's in-tx
+	// ref lint (13.2) applies against materialized run rows.
+	Succeeded bool
 }
 
 // ExpansionInput is the whole-graph context ValidateExpansion needs. It is
@@ -247,6 +253,13 @@ type ExpansionInput struct {
 	// ExistingEdges is the current run graph's edges, merged with the delta
 	// for the acyclicity and loop-ancestry checks.
 	ExistingEdges []Edge
+	// RunParams is the run's submitted parameters (the run row's params JSON),
+	// what the template renderer resolves `${{ run.params.<key> }}` against at
+	// runtime. An injected step referencing an undeclared parameter is a
+	// plan-attributable rejection. Empty means no params. Optional: the store
+	// (13.2) supplies it for the cross-graph ref lint; leaving it nil disables
+	// only that lint (14.x engine-generated deltas carry no templated params).
+	RunParams json.RawMessage
 
 	// PerExpansionCap is the effective cap for THIS expansion — the caller has
 	// already taken min(run default, planner override). Exceeding it is a
@@ -420,12 +433,16 @@ func ValidateExpansion(in ExpansionInput) ExpansionVerdict {
 		v.checkExpansionEdgeFields(p, e)
 	}
 
-	// Whole-merged-graph acyclicity + loop-edge ancestry. Only attempted when
-	// ids are unique and endpoints resolve, so NewGraph cannot fail and a
-	// broken endpoint does not cascade into a spurious cycle report — the same
-	// gate Validate uses.
+	// Whole-merged-graph acyclicity + loop-edge ancestry, plus the cross-graph
+	// template/context ref lint. Only attempted when ids are unique and
+	// endpoints resolve, so NewGraph cannot fail and a broken endpoint does not
+	// cascade into a spurious cycle report — the same gate Validate uses. The
+	// merged graph is built once and shared by both checks.
 	if !v.has(CodeDuplicateStepID, CodeUnknownEdgeEndpoint, CodeExpansionAnchorInvalid, CodeInvalidStepID) {
-		v.checkMergedGraph(in, deltaIDs)
+		if merged, g := buildMergedGraph(in); g != nil {
+			v.checkMergedGraph(in, merged, g, deltaIDs)
+			v.checkExpansionRefs(in, g, deltaIDs)
+		}
 	}
 
 	return ExpansionVerdict{Issues: v.issues}
@@ -469,20 +486,18 @@ func (v *validator) checkExpansionEdgeFields(path string, e Edge) {
 	}
 }
 
-// checkMergedGraph builds the post-expansion graph (existing nodes/edges +
-// delta) and reports normal-edge cycles and loop edges whose target is not a
-// normal-edge ancestor of their source — the acyclic-instance-graph invariant
-// every durability mechanism depends on (ADR-003/004). Cycle paths and
-// loop-edge indices are reported against the plan document where they touch
-// the delta.
-func (v *validator) checkMergedGraph(in ExpansionInput, deltaIDs map[string]int) {
+// buildMergedGraph assembles the post-expansion graph (existing nodes/edges +
+// delta) and compiles it, returning both the merged definition (for edge index
+// lookups) and the graph (for ancestry). Returns (nil, nil) if compilation
+// fails, which is unreachable when the caller has gated on unique ids and
+// resolved endpoints. Existing-node order is sorted so cycle reporting is
+// deterministic despite map iteration.
+func buildMergedGraph(in ExpansionInput) (*Definition, *Graph) {
 	merged := &Definition{}
 	merged.Steps = make([]Step, 0, len(in.Existing)+len(in.Plan.Steps))
 	for id, a := range in.Existing {
 		merged.Steps = append(merged.Steps, Step{ID: id, Type: a.Type})
 	}
-	// Existing-node order is map iteration; sort for a deterministic graph
-	// build so cycle reporting is stable.
 	slices.SortFunc(merged.Steps, func(a, b Step) int {
 		switch {
 		case a.ID < b.ID:
@@ -498,9 +513,17 @@ func (v *validator) checkMergedGraph(in ExpansionInput, deltaIDs map[string]int)
 
 	g, err := NewGraph(merged)
 	if err != nil {
-		// Unreachable: the caller gated on unique ids and resolved endpoints.
-		return
+		return nil, nil
 	}
+	return merged, g
+}
+
+// checkMergedGraph reports normal-edge cycles and loop edges whose target is
+// not a normal-edge ancestor of their source — the acyclic-instance-graph
+// invariant every durability mechanism depends on (ADR-003/004). Cycle paths
+// and loop-edge indices are reported against the plan document where they touch
+// the delta.
+func (v *validator) checkMergedGraph(in ExpansionInput, merged *Definition, g *Graph, deltaIDs map[string]int) {
 	touchesDelta := func(e Edge) bool {
 		_, from := deltaIDs[e.From]
 		_, to := deltaIDs[e.To]
@@ -528,6 +551,104 @@ func (v *validator) checkMergedGraph(in ExpansionInput, deltaIDs map[string]int)
 		if !g.reaches(toIdx, fromIdx) {
 			v.add(CodeLoopEdgeNotAncestor, fmt.Sprintf("plan.edges[%d]", i),
 				"loop edge target %q is not a normal-edge ancestor of source %q", e.To, e.From)
+		}
+	}
+}
+
+// checkExpansionRefs is the cross-graph ref lint ADR-015 defers from the pure
+// 13.1 validator to the store's in-tx revalidation: an injected step's
+// `${{ steps.x.output }}` template references and step_output context sources
+// must resolve against the merged graph — either x is a normal-edge ancestor of
+// the injected step (its output guaranteed recorded before the injected step
+// readies, the authored-template rule) or x is an existing step that has
+// already succeeded (its output is materialized and immutable). A
+// `${{ run.params.<key> }}` reference must name a submitted run parameter.
+// These depend on materialized run-row state (succeeded outputs, the run's
+// params), which is why they live here and not in the pure shape validator.
+// Reuses classifyUpstreamRef and the same codes as the authored-template lint
+// (checkTemplates / checkContextGraph) so an injected step is held to exactly
+// the same reference contract as an authored one.
+func (v *validator) checkExpansionRefs(in ExpansionInput, g *Graph, deltaIDs map[string]int) {
+	var params map[string]json.RawMessage
+	paramsDecoded := false
+	paramDeclared := func(key string) bool {
+		if !paramsDecoded {
+			paramsDecoded = true
+			if len(in.RunParams) > 0 {
+				_ = json.Unmarshal(in.RunParams, &params) // non-object params → no keys declared
+			}
+		}
+		_, ok := params[key]
+		return ok
+	}
+	// classify resolves a step reference from an injected step against the
+	// merged graph plus the succeeded-anchor relaxation.
+	classify := func(fromStepID, refStepID string, ancestors map[string]bool) refStatus {
+		st := classifyUpstreamRef(g, fromStepID, refStepID, ancestors)
+		if st == refNotAncestor {
+			if a, ok := in.Existing[refStepID]; ok && a.Succeeded {
+				return refOK // materialized, immutable output
+			}
+		}
+		return st
+	}
+
+	for i, s := range in.Plan.Steps {
+		ancestors, _ := g.Ancestors(s.ID) // one BFS per injected step, over the merged graph; s.ID is a known node
+		base := fmt.Sprintf("plan.steps[%d].config", i)
+
+		// Template references in the config's `${{ }}` expressions.
+		if s.Config != nil {
+			if raw, err := marshalNoEscape(s.Config); err == nil && HasTemplate(string(raw)) {
+				if ct, perr := ParseConfigTemplates(raw); perr == nil {
+					for _, r := range ct.Refs() {
+						if r.Lenient {
+							continue
+						}
+						path := tmplIssuePath(base, r.ConfigPath)
+						switch {
+						case r.StepID != "":
+							switch classify(s.ID, r.StepID, ancestors) {
+							case refUnknownStep:
+								v.add(CodeTemplateRefUnknownStep, path, "reference %q names unknown step %q", r.Raw, r.StepID)
+							case refSelf:
+								v.add(CodeTemplateRefNotUpstream, path, "reference %q: a step cannot reference its own output", r.Raw)
+							case refNotAncestor:
+								v.add(CodeTemplateRefNotUpstream, path, "reference %q: step %q is neither upstream of %q nor already succeeded", r.Raw, r.StepID, s.ID)
+							case refOK:
+							}
+						case r.ParamKey != "":
+							if !paramDeclared(r.ParamKey) {
+								v.add(CodeTemplateRefUnknownParam, path, "reference %q names undeclared run parameter %q", r.Raw, r.ParamKey)
+							}
+						}
+					}
+				}
+				// A template parse error was already reported by the per-step
+				// config validation above (checkStepConfig does not parse
+				// templates, but the plan's shape validation reused from Validate
+				// does not either — a malformed template surfaces at render, and
+				// the pure validator deliberately does not re-lint it here).
+			}
+		}
+
+		// step_output context sources (mirroring checkContextGraph).
+		if s.Context != nil {
+			for j, src := range s.Context.Sources {
+				if src.Kind != SourceStepOutput || src.Step == "" {
+					continue
+				}
+				path := fmt.Sprintf("plan.steps[%d].context.sources[%d].step", i, j)
+				switch classify(s.ID, src.Step, ancestors) {
+				case refUnknownStep:
+					v.add(CodeContextFieldInvalid, path, "step_output source names unknown step %q", src.Step)
+				case refSelf:
+					v.add(CodeContextFieldInvalid, path, "step_output source: a step cannot reference its own output")
+				case refNotAncestor:
+					v.add(CodeContextFieldInvalid, path, "step_output source: step %q is neither upstream of %q nor already succeeded", src.Step, s.ID)
+				case refOK:
+				}
+			}
 		}
 	}
 }

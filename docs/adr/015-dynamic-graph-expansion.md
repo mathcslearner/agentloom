@@ -340,6 +340,92 @@ reconstructed from the `graph_expanded` events; the M18 dashboard animates
 expansions from that feed, and needs a layout strategy for injected nodes (they
 carry no authored `ui` position) — noted for M18.2.
 
+### Graph mutation in the store (as built, 13.2)
+
+13.2 ships `store.ExpandRun` — the transition-style primitive that applies a
+validated `PlanOutput` to a running graph inside the caller's transaction — plus
+its schema, its shared materialization, and the deferred cross-graph ref lint.
+The engine wiring (a planner completing through it) is 13.3; **nothing in
+production calls `ExpandRun` yet.**
+
+**Migration 0023 — provenance columns.** `run_steps` gains `depth` (`INT NOT
+NULL DEFAULT 0`; a definition-authored step is 0, an injected step is
+`origin.depth + 1`) and `origin_step`/`origin_kind` (both NULL for an authored
+step; a paired CHECK keeps them consistent, and `origin_kind ∈
+{planner,map,loop}`). `run_edges` gains the same `origin_step`/`origin_kind`. So
+the 13.6 introspection API reads a row's provenance as a column, never a join
+through the event log. `runs` gains `expansion_caps JSONB` — the run's
+**resolved** `dag.ExpansionCaps`, materialized at instantiation exactly like
+`retry_policy`/`on_failure` (the failure path never reparses the snapshot, and a
+worker upgrade cannot change an in-flight run's caps). A NULL column (a pre-0023
+row) means the compiled defaults apply. `graph_version` (on all three tables,
+since 0002) needs no change — it already stamps the row's introducing version.
+
+**Shared materialization.** `stepRowParams`/`edgeRowParams` (a new
+`materialize.go`) are the single materialization both `CreateRun` and
+`ExpandRun` call. Placement (`status`, `remaining_deps`, `graph_version`,
+`depth`, origin) differs between the two paths; every **envelope policy**
+(retry, timeout, cache, budget, validation, blackboard, context) is materialized
+by the shared helper, so an injected step's stored row cannot drift from an
+authored step's — the property "an injected step is executed by exactly the same
+machinery as an authored one" holds by construction.
+
+**`ExpandRun(ctx, q, ExpandRunArgs) → ExpandRunResult`.** `ErrNoTx`-guarded
+(like `ApplyAttemptCost`), it: takes the run-row lock and guards the run status
+(`running`/`parked` only — a `cancelling`/terminal run refuses to grow, a
+`ConflictRunNotRunning`); reads the run, the origin row (for its `depth`), and
+the current steps/edges under the lock; builds the `ExpansionInput` snapshot and
+calls `dag.ValidateExpansion`; on rejection returns a typed
+`*ExpansionRejectedError` (carrying the verdict, `CapExceeded()` and unwrapping
+to the joined `*ValidationIssue`s) so the caller's error return rolls the whole
+transaction back — **a rejected plan mutates nothing**; else inserts the steps
+(zero-indegree → `ready`, else `pending`; `remaining_deps` = incoming normal
+delta-edge count) and edges (ordinals from `MAX(ordinal)+1`), widens the
+`remaining_deps` of every `new → existing-pending` "before"-splice anchor,
+`ExpandRunGraph` bumps `graph_version` and `steps_total` (an `expected_version`
+CAS under the lock — belt-and-braces), appends the `graph_expanded` event, and
+readies + outboxes the zero-indegree injected steps. **"After"-spliced steps stay
+`pending`** in `ExpandRun` and are readied by the origin's fan-out, which the
+caller (13.3) runs after `ExpandRun`.
+
+**The origin anchor.** By the time `ExpandRun` reads the graph the origin's
+`SucceedStep` has already run (the row reads `succeeded`), but its fan-out — the
+step that resolves its out-edges — has *not*. So `buildAnchors` forces the
+origin to `AnchorActive` regardless of its row status: an `origin → new` "after"
+edge is a valid `from`, exactly as ADR-015 models the origin as `running`. The
+origin's `Succeeded` flag is read from the true row status, so the ref lint sees
+its output as available.
+
+**The deferred cross-graph ref lint.** 13.1 deferred the
+`${{ steps.x.output }}` / `step_output`-context ancestry check to "the store's
+in-tx revalidation," because it depends on materialized run rows. 13.2 lands it
+*inside* `dag.ValidateExpansion` (not the store — keeping the check pure and
+fuzzable): `ExpansionAnchor.Succeeded` and `ExpansionInput.RunParams` are new
+inputs the store fills from the graph snapshot and the run's params;
+`checkExpansionRefs` requires every injected-step reference to resolve to a
+merged-graph **normal-edge ancestor** *or* an existing **succeeded** step (its
+output is materialized and immutable), and every `run.params.<key>` reference to
+name a submitted parameter. It reuses `classifyUpstreamRef` and the same codes
+as the authored-template lint, so an injected step is held to exactly the
+authored reference contract. A reference failure is plan-attributable
+(`validation_failed`), never a cap.
+
+**Concurrency.** Two planners completing at once serialize on the run-row lock:
+each `ExpandRun` validates against the graph the other already committed, so
+their `graph_version`s are strictly ordered (2 then 3), `steps_total` is the
+sum, the `graph_expanded` events step the versions linearly in seq order, and an
+id collision between the two plans is rejected on the loser. Proven by
+`TestExpandRunConcurrent` + `TestExpandRunIDCollisionRejected`; the splice
+matrix (after/before/parallel-to), cap/rejection atomicity, depth propagation,
+and the guards are the rest of `expand_integration_test.go`.
+
+Not yet (after 13.2): the planner executor that composes `SucceedStep` +
+`ExpandRun` + fan-out and routes `*ExpansionRejectedError`
+(`CapExceeded` → permanent `expansion_cap_exceeded`, else `validation_failed`
+→ 11.4 semantic retry) is 13.3, which also moves `completeSuccess`'s out-edge
+read under the run lock (after `ExpandRun`) for **every** completion, since an
+active non-origin anchor may complete concurrently with an expansion.
+
 ## Consequences
 
 Positive:

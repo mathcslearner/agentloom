@@ -38,6 +38,8 @@ func (r iteratorForCreateRunEdges) Values() ([]interface{}, error) {
 		r.rows[0].Condition,
 		r.rows[0].MaxIterations,
 		r.rows[0].GraphVersion,
+		r.rows[0].OriginStep,
+		r.rows[0].OriginKind,
 	}, nil
 }
 
@@ -46,9 +48,9 @@ func (r iteratorForCreateRunEdges) Err() error {
 }
 
 // CreateRunEdges is the batch (COPY) form for run instantiation (2.5) and
-// expansion (M13).
+// expansion (13.2).
 func (q *Queries) CreateRunEdges(ctx context.Context, arg []CreateRunEdgesParams) (int64, error) {
-	return q.db.CopyFrom(ctx, []string{"run_edges"}, []string{"run_id", "ordinal", "from_step", "to_step", "edge_type", "when_expr", "condition", "max_iterations", "graph_version"}, &iteratorForCreateRunEdges{rows: arg})
+	return q.db.CopyFrom(ctx, []string{"run_edges"}, []string{"run_id", "ordinal", "from_step", "to_step", "edge_type", "when_expr", "condition", "max_iterations", "graph_version", "origin_step", "origin_kind"}, &iteratorForCreateRunEdges{rows: arg})
 }
 
 // iteratorForCreateRunSteps implements pgx.CopyFromSource.
@@ -87,6 +89,9 @@ func (r iteratorForCreateRunSteps) Values() ([]interface{}, error) {
 		r.rows[0].FiredDeps,
 		r.rows[0].GraphVersion,
 		r.rows[0].UpdatedAt,
+		r.rows[0].Depth,
+		r.rows[0].OriginStep,
+		r.rows[0].OriginKind,
 	}, nil
 }
 
@@ -95,9 +100,9 @@ func (r iteratorForCreateRunSteps) Err() error {
 }
 
 // CreateRunSteps is the batch (COPY) form for run instantiation (2.5) and
-// expansion (M13), which write whole graphs at once.
+// expansion (13.2), which write whole graphs at once.
 func (q *Queries) CreateRunSteps(ctx context.Context, arg []CreateRunStepsParams) (int64, error) {
-	return q.db.CopyFrom(ctx, []string{"run_steps"}, []string{"run_id", "step_id", "step_type", "config", "retry_policy", "timeout", "cache_policy", "budget_policy", "validation_policy", "blackboard_policy", "context_policy", "status", "remaining_deps", "fired_deps", "graph_version", "updated_at"}, &iteratorForCreateRunSteps{rows: arg})
+	return q.db.CopyFrom(ctx, []string{"run_steps"}, []string{"run_id", "step_id", "step_type", "config", "retry_policy", "timeout", "cache_policy", "budget_policy", "validation_policy", "blackboard_policy", "context_policy", "status", "remaining_deps", "fired_deps", "graph_version", "updated_at", "depth", "origin_step", "origin_kind"}, &iteratorForCreateRunSteps{rows: arg})
 }
 
 // iteratorForCreateStepLogs implements pgx.CopyFromSource.

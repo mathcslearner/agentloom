@@ -6,8 +6,8 @@ INSERT INTO runs (id, definition_id, definition, status, params,
                   idempotency_token, idempotency_fingerprint, on_failure,
                   steps_total, started_at, deadline_at,
                   trace_parent, trace_state,
-                  budget_nano_usd, on_budget_exceeded)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                  budget_nano_usd, on_budget_exceeded, expansion_caps)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 RETURNING *;
 
 -- name: GetRun :one

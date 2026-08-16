@@ -13,136 +13,33 @@ import (
 	"github.com/google/uuid"
 )
 
-const createRunEdge = `-- name: CreateRunEdge :one
-INSERT INTO run_edges (run_id, ordinal, from_step, to_step, edge_type,
-                       when_expr, condition, max_iterations, graph_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version
+const addRunStepRemainingDeps = `-- name: AddRunStepRemainingDeps :one
+UPDATE run_steps
+SET remaining_deps = remaining_deps + $1::int,
+    updated_at     = $2::timestamptz
+WHERE run_id = $3 AND step_id = $4 AND status = 'pending'
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind
 `
 
-type CreateRunEdgeParams struct {
-	RunID         uuid.UUID
-	Ordinal       int32
-	FromStep      string
-	ToStep        string
-	EdgeType      string
-	WhenExpr      *string
-	Condition     *string
-	MaxIterations *int32
-	GraphVersion  int32
+type AddRunStepRemainingDepsParams struct {
+	Delta  int32
+	Now    time.Time
+	RunID  uuid.UUID
+	StepID string
 }
 
-func (q *Queries) CreateRunEdge(ctx context.Context, arg CreateRunEdgeParams) (RunEdge, error) {
-	row := q.db.QueryRow(ctx, createRunEdge,
-		arg.RunID,
-		arg.Ordinal,
-		arg.FromStep,
-		arg.ToStep,
-		arg.EdgeType,
-		arg.WhenExpr,
-		arg.Condition,
-		arg.MaxIterations,
-		arg.GraphVersion,
-	)
-	var i RunEdge
-	err := row.Scan(
-		&i.RunID,
-		&i.Ordinal,
-		&i.FromStep,
-		&i.ToStep,
-		&i.EdgeType,
-		&i.WhenExpr,
-		&i.Condition,
-		&i.MaxIterations,
-		&i.Resolution,
-		&i.GraphVersion,
-	)
-	return i, err
-}
-
-type CreateRunEdgesParams struct {
-	RunID         uuid.UUID
-	Ordinal       int32
-	FromStep      string
-	ToStep        string
-	EdgeType      string
-	WhenExpr      *string
-	Condition     *string
-	MaxIterations *int32
-	GraphVersion  int32
-}
-
-const createRunStep = `-- name: CreateRunStep :one
-
-INSERT INTO run_steps (run_id, step_id, step_type, config, retry_policy,
-                       timeout, cache_policy, budget_policy, validation_policy, blackboard_policy, context_policy, status, remaining_deps, fired_deps,
-                       graph_version, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy
-`
-
-type CreateRunStepParams struct {
-	RunID            uuid.UUID
-	StepID           string
-	StepType         string
-	Config           json.RawMessage
-	RetryPolicy      json.RawMessage
-	Timeout          *string
-	CachePolicy      json.RawMessage
-	BudgetPolicy     json.RawMessage
-	ValidationPolicy json.RawMessage
-	BlackboardPolicy json.RawMessage
-	ContextPolicy    json.RawMessage
-	Status           string
-	RemainingDeps    int32
-	FiredDeps        int32
-	GraphVersion     int32
-	UpdatedAt        time.Time
-}
-
-// Per-run graph copy: run_steps (node side) and run_edges (edge side).
-// Inserts and reads only — status transitions and dependency-counter
-// updates are the guarded CAS queries in transitions.sql.
-// updated_at is app-written from the injected clock, here and in every
-// transition (ADR-004 timestamp policy) — the reconciler's staleness scan
-// reads it, so tests must be able to control it.
-// retry_policy is the step's effective policy, materialized at
-// instantiation (ticket 5.2, ADR-006) — required on every row.
-// timeout is the step's per-attempt execution timeout, materialized the
-// same way (ticket 5.3); NULL means no timeout.
-// cache_policy is the step's authored response-cache policy, materialized
-// the same way (ticket 9.5, ADR-011); NULL means no `cache` block (engine
-// default policy decides).
-// budget_policy is the step's authored budget caps, materialized the same
-// way (ticket 10.3, ADR-012); NULL means no `budget` block (only the run
-// budget applies).
-// validation_policy is the step's authored output-validation chain,
-// materialized the same way (ticket 11.1, ADR-013); NULL means no
-// `validation` block (the output is accepted as produced).
-// blackboard_policy is the step's authored blackboard block (declarative
-// writes), materialized the same way (ticket 12.2, ADR-014); NULL means no
-// `blackboard` block (no declarative writes).
-// context_policy is the step's authored context-assembly spec, materialized
-// the same way (ticket 12.3, ADR-014); NULL means no `context` block (the
-// request is built from the config alone).
-func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (RunStep, error) {
-	row := q.db.QueryRow(ctx, createRunStep,
+// AddRunStepRemainingDeps bumps a still-pending existing step's remaining_deps
+// by delta — the "before" splice, where an injected step becomes a new upstream
+// dependency of a pending anchor (ticket 13.2, ADR-015). Guarded on
+// status = 'pending': the anchor status was validated under this same run lock,
+// so zero rows is a graph-integrity error, never a race. updated_at is
+// app-written from the injected clock (ADR-004 timestamp policy).
+func (q *Queries) AddRunStepRemainingDeps(ctx context.Context, arg AddRunStepRemainingDepsParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, addRunStepRemainingDeps,
+		arg.Delta,
+		arg.Now,
 		arg.RunID,
 		arg.StepID,
-		arg.StepType,
-		arg.Config,
-		arg.RetryPolicy,
-		arg.Timeout,
-		arg.CachePolicy,
-		arg.BudgetPolicy,
-		arg.ValidationPolicy,
-		arg.BlackboardPolicy,
-		arg.ContextPolicy,
-		arg.Status,
-		arg.RemainingDeps,
-		arg.FiredDeps,
-		arg.GraphVersion,
-		arg.UpdatedAt,
 	)
 	var i RunStep
 	err := row.Scan(
@@ -172,6 +69,194 @@ func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (R
 		&i.Feedback,
 		&i.BlackboardPolicy,
 		&i.ContextPolicy,
+		&i.Depth,
+		&i.OriginStep,
+		&i.OriginKind,
+	)
+	return i, err
+}
+
+const createRunEdge = `-- name: CreateRunEdge :one
+INSERT INTO run_edges (run_id, ordinal, from_step, to_step, edge_type,
+                       when_expr, condition, max_iterations, graph_version, origin_step, origin_kind)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+RETURNING run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind
+`
+
+type CreateRunEdgeParams struct {
+	RunID         uuid.UUID
+	Ordinal       int32
+	FromStep      string
+	ToStep        string
+	EdgeType      string
+	WhenExpr      *string
+	Condition     *string
+	MaxIterations *int32
+	GraphVersion  int32
+	OriginStep    *string
+	OriginKind    *string
+}
+
+// origin_step / origin_kind name the expansion that spliced the edge in
+// (ticket 13.2, ADR-015); NULL for a definition-authored edge.
+func (q *Queries) CreateRunEdge(ctx context.Context, arg CreateRunEdgeParams) (RunEdge, error) {
+	row := q.db.QueryRow(ctx, createRunEdge,
+		arg.RunID,
+		arg.Ordinal,
+		arg.FromStep,
+		arg.ToStep,
+		arg.EdgeType,
+		arg.WhenExpr,
+		arg.Condition,
+		arg.MaxIterations,
+		arg.GraphVersion,
+		arg.OriginStep,
+		arg.OriginKind,
+	)
+	var i RunEdge
+	err := row.Scan(
+		&i.RunID,
+		&i.Ordinal,
+		&i.FromStep,
+		&i.ToStep,
+		&i.EdgeType,
+		&i.WhenExpr,
+		&i.Condition,
+		&i.MaxIterations,
+		&i.Resolution,
+		&i.GraphVersion,
+		&i.OriginStep,
+		&i.OriginKind,
+	)
+	return i, err
+}
+
+type CreateRunEdgesParams struct {
+	RunID         uuid.UUID
+	Ordinal       int32
+	FromStep      string
+	ToStep        string
+	EdgeType      string
+	WhenExpr      *string
+	Condition     *string
+	MaxIterations *int32
+	GraphVersion  int32
+	OriginStep    *string
+	OriginKind    *string
+}
+
+const createRunStep = `-- name: CreateRunStep :one
+
+INSERT INTO run_steps (run_id, step_id, step_type, config, retry_policy,
+                       timeout, cache_policy, budget_policy, validation_policy, blackboard_policy, context_policy, status, remaining_deps, fired_deps,
+                       graph_version, updated_at, depth, origin_step, origin_kind)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind
+`
+
+type CreateRunStepParams struct {
+	RunID            uuid.UUID
+	StepID           string
+	StepType         string
+	Config           json.RawMessage
+	RetryPolicy      json.RawMessage
+	Timeout          *string
+	CachePolicy      json.RawMessage
+	BudgetPolicy     json.RawMessage
+	ValidationPolicy json.RawMessage
+	BlackboardPolicy json.RawMessage
+	ContextPolicy    json.RawMessage
+	Status           string
+	RemainingDeps    int32
+	FiredDeps        int32
+	GraphVersion     int32
+	UpdatedAt        time.Time
+	Depth            int32
+	OriginStep       *string
+	OriginKind       *string
+}
+
+// Per-run graph copy: run_steps (node side) and run_edges (edge side).
+// Inserts and reads only — status transitions and dependency-counter
+// updates are the guarded CAS queries in transitions.sql.
+// updated_at is app-written from the injected clock, here and in every
+// transition (ADR-004 timestamp policy) — the reconciler's staleness scan
+// reads it, so tests must be able to control it.
+// retry_policy is the step's effective policy, materialized at
+// instantiation (ticket 5.2, ADR-006) — required on every row.
+// timeout is the step's per-attempt execution timeout, materialized the
+// same way (ticket 5.3); NULL means no timeout.
+// cache_policy is the step's authored response-cache policy, materialized
+// the same way (ticket 9.5, ADR-011); NULL means no `cache` block (engine
+// default policy decides).
+// budget_policy is the step's authored budget caps, materialized the same
+// way (ticket 10.3, ADR-012); NULL means no `budget` block (only the run
+// budget applies).
+// validation_policy is the step's authored output-validation chain,
+// materialized the same way (ticket 11.1, ADR-013); NULL means no
+// `validation` block (the output is accepted as produced).
+// blackboard_policy is the step's authored blackboard block (declarative
+// writes), materialized the same way (ticket 12.2, ADR-014); NULL means no
+// `blackboard` block (no declarative writes).
+// context_policy is the step's authored context-assembly spec, materialized
+// the same way (ticket 12.3, ADR-014); NULL means no `context` block (the
+// request is built from the config alone).
+// depth is the expansion nesting depth (ticket 13.2, ADR-015): 0 for a
+// definition-authored step, origin.depth+1 for an injected one. origin_step /
+// origin_kind name the expansion that introduced the row (NULL = authored).
+func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, createRunStep,
+		arg.RunID,
+		arg.StepID,
+		arg.StepType,
+		arg.Config,
+		arg.RetryPolicy,
+		arg.Timeout,
+		arg.CachePolicy,
+		arg.BudgetPolicy,
+		arg.ValidationPolicy,
+		arg.BlackboardPolicy,
+		arg.ContextPolicy,
+		arg.Status,
+		arg.RemainingDeps,
+		arg.FiredDeps,
+		arg.GraphVersion,
+		arg.UpdatedAt,
+		arg.Depth,
+		arg.OriginStep,
+		arg.OriginKind,
+	)
+	var i RunStep
+	err := row.Scan(
+		&i.RunID,
+		&i.StepID,
+		&i.StepType,
+		&i.Config,
+		&i.Status,
+		&i.RemainingDeps,
+		&i.FiredDeps,
+		&i.ClaimID,
+		&i.AttemptCount,
+		&i.Output,
+		&i.Error,
+		&i.GraphVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
+		&i.Timeout,
+		&i.TraceSpan,
+		&i.CachePolicy,
+		&i.BudgetPolicy,
+		&i.ValidationPolicy,
+		&i.Feedback,
+		&i.BlackboardPolicy,
+		&i.ContextPolicy,
+		&i.Depth,
+		&i.OriginStep,
+		&i.OriginKind,
 	)
 	return i, err
 }
@@ -193,10 +278,47 @@ type CreateRunStepsParams struct {
 	FiredDeps        int32
 	GraphVersion     int32
 	UpdatedAt        time.Time
+	Depth            int32
+	OriginStep       *string
+	OriginKind       *string
+}
+
+const expandRunGraph = `-- name: ExpandRunGraph :one
+UPDATE runs
+SET graph_version = graph_version + 1,
+    steps_total   = steps_total + $1::int
+WHERE id = $2 AND graph_version = $3::int
+RETURNING graph_version, steps_total
+`
+
+type ExpandRunGraphParams struct {
+	Added           int32
+	RunID           uuid.UUID
+	ExpectedVersion int32
+}
+
+type ExpandRunGraphRow struct {
+	GraphVersion int32
+	StepsTotal   int32
+}
+
+// ExpandRunGraph commits an expansion's run-row side atomically with the step
+// and edge inserts (ticket 13.2, ADR-015): increment graph_version and grow
+// steps_total by the injected count. The expected_version CAS is a
+// belt-and-braces guard under the run lock the expansion already holds — it can
+// only fail if a concurrent committed expansion moved the version, which the
+// lock serializes, so a zero-row result is an integrity error. graph_version's
+// new value is the run's expansion count + 1 and stamps every row this
+// expansion introduced.
+func (q *Queries) ExpandRunGraph(ctx context.Context, arg ExpandRunGraphParams) (ExpandRunGraphRow, error) {
+	row := q.db.QueryRow(ctx, expandRunGraph, arg.Added, arg.RunID, arg.ExpectedVersion)
+	var i ExpandRunGraphRow
+	err := row.Scan(&i.GraphVersion, &i.StepsTotal)
+	return i, err
 }
 
 const getRunStep = `-- name: GetRunStep :one
-SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy FROM run_steps WHERE run_id = $1 AND step_id = $2
+SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind FROM run_steps WHERE run_id = $1 AND step_id = $2
 `
 
 type GetRunStepParams struct {
@@ -234,6 +356,9 @@ func (q *Queries) GetRunStep(ctx context.Context, arg GetRunStepParams) (RunStep
 		&i.Feedback,
 		&i.BlackboardPolicy,
 		&i.ContextPolicy,
+		&i.Depth,
+		&i.OriginStep,
+		&i.OriginKind,
 	)
 	return i, err
 }
@@ -281,7 +406,7 @@ func (q *Queries) ListFiringParentTraceSpans(ctx context.Context, arg ListFiring
 }
 
 const listRunEdges = `-- name: ListRunEdges :many
-SELECT run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version FROM run_edges WHERE run_id = $1 ORDER BY ordinal
+SELECT run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind FROM run_edges WHERE run_id = $1 ORDER BY ordinal
 `
 
 // ordinal order is semantic: the branch first-match rule evaluates
@@ -306,6 +431,8 @@ func (q *Queries) ListRunEdges(ctx context.Context, runID uuid.UUID) ([]RunEdge,
 			&i.MaxIterations,
 			&i.Resolution,
 			&i.GraphVersion,
+			&i.OriginStep,
+			&i.OriginKind,
 		); err != nil {
 			return nil, err
 		}
@@ -318,7 +445,7 @@ func (q *Queries) ListRunEdges(ctx context.Context, runID uuid.UUID) ([]RunEdge,
 }
 
 const listRunEdgesFromStep = `-- name: ListRunEdgesFromStep :many
-SELECT run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version FROM run_edges WHERE run_id = $1 AND from_step = $2 ORDER BY ordinal
+SELECT run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind FROM run_edges WHERE run_id = $1 AND from_step = $2 ORDER BY ordinal
 `
 
 type ListRunEdgesFromStepParams struct {
@@ -348,6 +475,8 @@ func (q *Queries) ListRunEdgesFromStep(ctx context.Context, arg ListRunEdgesFrom
 			&i.MaxIterations,
 			&i.Resolution,
 			&i.GraphVersion,
+			&i.OriginStep,
+			&i.OriginKind,
 		); err != nil {
 			return nil, err
 		}
@@ -360,7 +489,7 @@ func (q *Queries) ListRunEdgesFromStep(ctx context.Context, arg ListRunEdgesFrom
 }
 
 const listRunSteps = `-- name: ListRunSteps :many
-SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy FROM run_steps WHERE run_id = $1 ORDER BY step_id
+SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind FROM run_steps WHERE run_id = $1 ORDER BY step_id
 `
 
 func (q *Queries) ListRunSteps(ctx context.Context, runID uuid.UUID) ([]RunStep, error) {
@@ -399,6 +528,9 @@ func (q *Queries) ListRunSteps(ctx context.Context, runID uuid.UUID) ([]RunStep,
 			&i.Feedback,
 			&i.BlackboardPolicy,
 			&i.ContextPolicy,
+			&i.Depth,
+			&i.OriginStep,
+			&i.OriginKind,
 		); err != nil {
 			return nil, err
 		}
@@ -411,7 +543,7 @@ func (q *Queries) ListRunSteps(ctx context.Context, runID uuid.UUID) ([]RunStep,
 }
 
 const listRunStepsByIDs = `-- name: ListRunStepsByIDs :many
-SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy FROM run_steps
+SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind FROM run_steps
 WHERE run_id = $1 AND step_id = ANY($2::text[])
 ORDER BY step_id
 `
@@ -462,6 +594,9 @@ func (q *Queries) ListRunStepsByIDs(ctx context.Context, arg ListRunStepsByIDsPa
 			&i.Feedback,
 			&i.BlackboardPolicy,
 			&i.ContextPolicy,
+			&i.Depth,
+			&i.OriginStep,
+			&i.OriginKind,
 		); err != nil {
 			return nil, err
 		}
@@ -471,4 +606,18 @@ func (q *Queries) ListRunStepsByIDs(ctx context.Context, arg ListRunStepsByIDsPa
 		return nil, err
 	}
 	return items, nil
+}
+
+const maxRunEdgeOrdinal = `-- name: MaxRunEdgeOrdinal :one
+SELECT COALESCE(MAX(ordinal), -1)::int FROM run_edges WHERE run_id = $1
+`
+
+// MaxRunEdgeOrdinal returns the run's highest edge ordinal, or -1 when it has
+// no edges — so an expansion's first spliced edge continues from MAX+1
+// (ticket 13.2). Read under the run lock the expansion already holds.
+func (q *Queries) MaxRunEdgeOrdinal(ctx context.Context, runID uuid.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, maxRunEdgeOrdinal, runID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
 }
