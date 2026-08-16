@@ -298,4 +298,14 @@ const (
 	// re-targeted attempt runs; the used model is durable on the attempt's
 	// cost-ledger resource and its output, so no state transition is needed.
 	EventModelDowngraded = "model_downgraded"
+
+	// EventContextAssembled: the pre-execution context-assembly stage built an
+	// llm step's request from its `context` spec (ticket 12.3, ADR-014). The
+	// payload (ContextAssembledEvent) carries the per-source disposition
+	// (included / skipped / truncated), the counter fingerprint, the assembled
+	// context tokens, and the pre-flight request total. Appended by
+	// RecordContextAssembled in its own fenced transaction before the assembled
+	// request runs; it is not a state transition (the assembled content is
+	// durable on the attempt via the request the executor sends).
+	EventContextAssembled = "context_assembled"
 )

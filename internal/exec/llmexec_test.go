@@ -10,6 +10,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/plugin"
+	"github.com/mathcslearner/agentloom/internal/tokens"
 )
 
 // recordingProvider is a controllable llm.Provider for executor unit
@@ -478,4 +479,105 @@ func cacheKeyFor(t *testing.T, e LLMExecutor, sc StepContext) string {
 func isPermanent(err error) bool {
 	var ce *ClassifiedError
 	return errors.As(err, &ce) && ce.Class == dag.ClassPermanent
+}
+
+// TestLLMExecutorWithContextPromptPrefix asserts a prompt-form config gets the
+// preamble prefixed with a blank-line separator, leaving other fields intact.
+func TestLLMExecutorWithContextPromptPrefix(t *testing.T) {
+	t.Parallel()
+	p := &recordingProvider{resp: okResponse()}
+	e := recExecutor(t, p)
+	sc := llmStep(t, map[string]any{"model": "rec/sim-1", "prompt": "Write it.", "max_tokens": 10, "temperature": 0.5})
+
+	out, err := e.WithContext(sc, "CONTEXT")
+	if err != nil {
+		t.Fatalf("WithContext: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(out, &fields); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var prompt string
+	_ = json.Unmarshal(fields["prompt"], &prompt)
+	if prompt != "CONTEXT\n\nWrite it." {
+		t.Errorf("prompt = %q, want prefixed", prompt)
+	}
+	// Sibling fields untouched byte-for-byte.
+	orig := map[string]json.RawMessage{}
+	_ = json.Unmarshal(sc.Config, &orig)
+	for _, k := range []string{"model", "max_tokens", "temperature"} {
+		if string(fields[k]) != string(orig[k]) {
+			t.Errorf("field %q changed: %s != %s", k, fields[k], orig[k])
+		}
+	}
+	// An empty preamble returns the config unchanged.
+	same, err := e.WithContext(sc, "")
+	if err != nil {
+		t.Fatalf("WithContext empty: %v", err)
+	}
+	if string(same) != string(sc.Config) {
+		t.Error("empty preamble should return config unchanged")
+	}
+}
+
+// TestLLMExecutorWithContextMessages asserts a messages-form config gets a
+// LEADING user message carrying the preamble.
+func TestLLMExecutorWithContextMessages(t *testing.T) {
+	t.Parallel()
+	p := &recordingProvider{resp: okResponse()}
+	e := recExecutor(t, p)
+	sc := llmStep(t, map[string]any{
+		"model": "rec/sim-1", "max_tokens": 10,
+		"messages": []map[string]string{{"role": "user", "content": "task"}},
+	})
+	out, err := e.WithContext(sc, "CTX")
+	if err != nil {
+		t.Fatalf("WithContext: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(out, &fields)
+	var msgs []dag.LLMMessage
+	_ = json.Unmarshal(fields["messages"], &msgs)
+	if len(msgs) != 2 || msgs[0].Content != "CTX" || msgs[1].Content != "task" {
+		t.Errorf("messages = %+v, want leading CTX then task", msgs)
+	}
+}
+
+// TestLLMExecutorContextChangesCacheKey asserts an assembled preamble re-keys
+// the response cache (so the assembled context is a cache-key input, ADR-014).
+func TestLLMExecutorContextChangesCacheKey(t *testing.T) {
+	t.Parallel()
+	p := &recordingProvider{resp: okResponse()}
+	e := recExecutor(t, p)
+	base := llmStep(t, map[string]any{"model": "rec/sim-1", "prompt": "hi", "max_tokens": 10})
+	withCtx, err := e.WithContext(base, "assembled context")
+	if err != nil {
+		t.Fatalf("WithContext: %v", err)
+	}
+	kBase := cacheKeyFor(t, e, base)
+	kCtx := cacheKeyFor(t, e, StepContext{StepType: dag.StepLLM, Config: withCtx, Attempt: 1})
+	if kBase == kCtx {
+		t.Fatal("assembled context did not change the cache key")
+	}
+}
+
+// TestLLMExecutorPreflightTokens asserts the preflight count equals the mock
+// counter's CountRequest of the built request — the number the audit records.
+func TestLLMExecutorPreflightTokens(t *testing.T) {
+	t.Parallel()
+	p := &recordingProvider{resp: okResponse()}
+	e := recExecutor(t, p)
+	sc := llmStep(t, map[string]any{"model": "rec/sim-1", "prompt": "some prompt text here", "max_tokens": 10})
+
+	counter, _ := tokens.NewRegistry(nil).Select("mock", "sim-1")
+	got, err := e.PreflightTokens(sc, counter)
+	if err != nil {
+		t.Fatalf("PreflightTokens: %v", err)
+	}
+	// Build the same request and count directly.
+	cfg := &dag.LLMConfig{Prompt: "some prompt text here", MaxTokens: 10}
+	req, _ := buildChatRequest(cfg)
+	if want := counter.CountRequest(req); got != want {
+		t.Errorf("PreflightTokens = %d, want %d", got, want)
+	}
 }

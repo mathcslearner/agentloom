@@ -581,6 +581,37 @@ across step types and materialized at instantiation. **Declarative reads into
 a prompt are 12.3's context sources**, not a template root — 12.2 delivers
 writes plus the programmatic `StepContext.Blackboard` read/write API.
 
+### The `context` step envelope (as built, 12.3)
+
+*Added while implementing ticket 12.3 (ADR-014).* An llm-family step may carry
+a `context` envelope block declaring the ordered sources assembled into its
+provider request before the call:
+
+```json
+"context": { "sources": [
+  { "kind": "literal", "text": "You are a careful editor.", "pinned": true },
+  { "kind": "step_output", "step": "draft", "path": "/text", "max_tokens": 2000 },
+  { "kind": "blackboard", "key": "findings" },
+  { "kind": "retrieval", "retriever": "pg_fulltext", "query": "style guide", "top_k": 3, "on_missing": "skip" }
+] }
+```
+
+Each source's `kind` selects which fields apply (`step`+`path` for
+step_output; `key` XOR `tags` for blackboard; `retriever`+`query`+`top_k` for
+retrieval; `text` for literal); order is precedence and message order. A
+per-source `max_tokens` caps the source (mutually exclusive with `pinned`,
+which is never truncated); `on_missing` (`error` default | `skip`) governs a
+source that resolves to nothing. Validated at submit (codes
+`context_field_required`/`context_field_invalid`, at most 32 sources,
+llm-family only, per-kind required/forbidden fields, key/tag/pointer grammar,
+and — for a `step_output` source — the same normal-edge-ancestry rule as a
+template ref). Templating inside the block is **not** supported (a dynamic
+query flows through a `retrieve` step and a `step_output` source). Like
+`cache`/`validation`/`blackboard`, the block is uniform across the llm family
+and materialized at instantiation (`run_steps.context_policy`). The
+declarative *reads* the 12.2 blackboard section deferred are exactly these
+`blackboard` context sources.
+
 ### Enforcement points
 
 For conformance, the rules above land in specific tickets: **1.2** — strict

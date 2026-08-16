@@ -32,6 +32,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/exec/effects"
 	"github.com/mathcslearner/agentloom/internal/queue"
 	"github.com/mathcslearner/agentloom/internal/ratelimit/resource"
+	"github.com/mathcslearner/agentloom/internal/retrieval"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/tokens"
 	"github.com/mathcslearner/agentloom/internal/validate"
@@ -195,6 +196,11 @@ type Engine struct {
 	// tokenizer; every other step gets the chars/4 fallback. Never nil after
 	// New (built with the engine's logger so the fallback warning logs once).
 	tokenCounters *tokens.Registry
+	// retrievers, when set, resolves the retriever a context-assembly
+	// `retrieval` source names (ticket 12.3, ADR-014). Nil means no registry is
+	// wired: a step whose context spec has a retrieval source fails permanent.
+	// cmd/worker wires the same registry the retrieve executor uses.
+	retrievers *retrieval.Registry
 }
 
 // Option customizes an Engine.
@@ -248,6 +254,15 @@ func WithStrictEffects(strict bool) Option {
 // (the default) disables the blackboard entirely.
 func WithBlackboard(b *pgboard.Board) Option {
 	return func(e *Engine) { e.blackboard = b }
+}
+
+// WithRetrievers wires the retriever registry the M12 context-assembly stage
+// resolves a `retrieval` context source against (ticket 12.3, ADR-014).
+// cmd/worker passes the same registry the retrieve executor uses; nil (the
+// default) leaves a retrieval context source failing permanent (no registry
+// wired) — harmless for a workflow that declares none.
+func WithRetrievers(r *retrieval.Registry) Option {
+	return func(e *Engine) { e.retrievers = r }
 }
 
 // WithCancelPollInterval sets how often the in-flight cancellation watch

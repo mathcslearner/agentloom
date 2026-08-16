@@ -148,6 +148,7 @@ type RunStep struct {
 	ValidationPolicy json.RawMessage
 	Feedback         json.RawMessage
 	BlackboardPolicy json.RawMessage
+	ContextPolicy    json.RawMessage
 }
 
 type SchemaBaseline struct {

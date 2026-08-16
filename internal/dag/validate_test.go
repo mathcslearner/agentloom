@@ -216,6 +216,16 @@ var structuralCases = map[string][]issueRef{
 		{dag.CodeBlackboardFieldInvalid, "steps[3].blackboard.write[0].tags"},
 		{dag.CodeBlackboardFieldInvalid, "steps[4].blackboard.write[1].key"},
 	},
+	"context_bad.json": {
+		{dag.CodeContextFieldRequired, "steps[0].context.sources"},
+		{dag.CodeContextFieldInvalid, "steps[1].context"},
+		{dag.CodeContextFieldRequired, "steps[2].context.sources[0].text"},
+		{dag.CodeContextFieldInvalid, "steps[3].context.sources[0]"},
+		{dag.CodeContextFieldRequired, "steps[4].context.sources[0].query"},
+		{dag.CodeContextFieldInvalid, "steps[5].context.sources[0].max_tokens"},
+		{dag.CodeContextFieldInvalid, "steps[6].context.sources[0].step"},
+		{dag.CodeContextFieldInvalid, "steps[7].context.sources[0].step"},
+	},
 }
 
 // TestValidateInvalidStructuralFixtures is the ticket 1.3 acceptance test:

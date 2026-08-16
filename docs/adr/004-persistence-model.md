@@ -402,7 +402,13 @@ meter's source), and since 12.2 `blackboard_updated` (payload
 `BlackboardUpdatedEvent`: a run-scoped blackboard key gained a new version —
 key, version, tags, token_count, author step/attempt — appended by
 `PutBlackboardEntry` in the same transaction as the insert, under the run
-lock and monotonic seq).
+lock and monotonic seq), and since 12.3 `context_assembled` (payload
+`ContextAssembledEvent`: a context-bearing llm step's pre-execution assembly
+manifest — the counter fingerprint, the assembled context tokens, the
+pre-flight request total, and each source's disposition
+`included | truncated | skipped` — appended by `RecordContextAssembled` in its
+own short fenced transaction before the assembled request runs, the
+`model_downgraded` precedent).
 
 **`blackboard_entries`** — the run-scoped blackboard (ticket 12.2, ADR-014):
 shared, versioned key/value memory steps read and write during a run.
@@ -415,6 +421,9 @@ Writes go through the transition-style `PutBlackboardEntry` (run-lock →
 optional claim fence → CAS → insert → event); `run_steps.blackboard_policy`
 (nullable JSONB, migration 0021) materializes a step's declarative-write
 block like `cache_policy`. Retained past the run for audit; pruned in M21.
+Since 12.3, `run_steps.context_policy` (nullable JSONB, migration 0022)
+materializes a step's authored `context`-assembly spec the same way; the
+assembly writes no new table (its manifest is the `context_assembled` event).
 
 **`task_outbox`** — the transactional Postgres→Redis dispatch buffer
 (ADR-002). `id` (identity, drain order), `run_id`, `step_id`, `reason`

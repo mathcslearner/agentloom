@@ -6907,3 +6907,146 @@ guardrails (12.6). ADR-014 §"Blackboard store (as built, 12.2)"; ADR-004
 (table + `blackboard_updated` event), ADR-003 (`blackboard` envelope + reads-
 are-12.3 note), ADR-006 (CAS=transient / fence=permanent), ADR-007 (route
 row) cross-amended.
+
+### 12.3 — Context assembly ✅
+
+Delivered declarative **context assembly**: an llm-family step declares an
+ordered `context` spec whose sources — upstream step outputs, blackboard
+entries by key/tag, retrieval results, inline literals — are assembled into
+the provider request **before the call**, with per-source token caps and
+pinned entries always included, deterministic given store state (ADR-014).
+This is the `blackboard` context source 12.2 deferred, plus the other three
+kinds. 12.3 ships the contract, the assembler leaf, the engine middleware,
+the pre-flight token total, and the audit record; compaction (12.4) and the
+window guardrail (12.6) build on the counted output.
+
+**Contract (`internal/dag`).** New `context.go`: `ContextSpec{Sources
+[]ContextSource}` (`MaxContextSources = 32`), `ContextSourceKind`
+(`step_output | blackboard | retrieval | literal`), `ContextMissingPolicy`
+(`error` default | `skip`). `Step.Context *ContextSpec` appended to the
+envelope (struct order = canonical order); `decodeContext` branch + the
+`"context"` known-key case (closed enums checked at decode like `decodeCache`).
+`checkContext` (in `checkSteps`) enforces the shape: llm-family only (the
+`checkSemanticPolicy` idiom), non-empty ≤ 32, per-kind required/forbidden
+fields, name uniqueness, key/tag grammar (shared with the `blackboard` leaf),
+`Path`/pointer syntax, `top_k` ≤ 100, `pinned`+`max_tokens` conflict, and a
+**no-templating** rule (`${{ }}` inside the block is `context_field_invalid`).
+The upstream-ancestry of a `step_output` source is a second pass
+(`checkContextGraph`, in the graph-valid gate beside `checkTemplates`) through
+the **extracted shared** `classifyUpstreamRef` — the same three-way classify
+(unknown / self / not-ancestor) the template lint now also uses, so the two
+cannot drift. New codes `context_field_required`/`context_field_invalid`;
+`JSONSchema()` for both enums; regenerated `workflow-definition.v1.json`.
+
+**Assembler leaf (`internal/contextmgr`).** Imports only leaves (`dag`,
+`blackboard`, `retrieval`, `tokens`) + stdlib, so exec/engine depend on it
+without a cycle. `Assemble(spec, counter, Sources) → Assembly` resolves each
+source in declaration order (precedence = message order), renders it into a
+stable `<context name=… kind=…>…</context>` block (JSON-string values render
+as text, else compact canonical JSON; tag-selected entries wrap as
+`<entry key=… version=…>`; retrieval docs as `<doc id=…>`), joins with blank
+lines, and counts everything with the step's counter. A per-source
+`max_tokens` cap truncates on a rune boundary with a fixed `…[truncated]…`
+marker via a binary search over the **final** string (BPE counts are not
+additive, so measuring the concatenation is the only way to guarantee ≤ cap);
+`pinned` sources are never truncated. `Sources` supplies the store-backed
+readers as closures/handles (a batched step-output map, the step's blackboard
+`Board`, the retriever registry) so the leaf never imports `store`. Typed
+errors: `*MissingSourceError` (default policy → permanent), `*ConfigError`
+(unwired/unknown backend → permanent regardless of policy); anything else is
+wrapped transport. Golden test (byte-exact four-kind preamble), determinism
+(repeat → byte-identical, tag entries in key order), the missing→error/skip
+matrix per kind, config-error matrix, transport-propagation, and a truncation
+**property** test (≤ cap across content sizes × caps, multibyte content).
+
+**Missing-source policy.** `on_missing: error` (the default, the 8.2
+strict-reference stance) fails the step permanently before any provider call;
+`skip` omits the source and records it on the audit event. "Missing" = an
+upstream step that did not succeed, a `step_output` pointer that does not
+resolve, a blackboard key with no head, a tag matching no heads, or a
+retriever returning no results.
+
+**exec hooks.** Two optional interfaces on `LLMExecutor`:
+`ContextInjector.WithContext(sc, preamble)` prepends the preamble (a leading
+user message for a messages-form config, a prompt prefix for a prompt-form
+config — the `WithFeedback` raw-message re-key mirror, siblings byte-identical),
+and `PreflightCounter.PreflightTokens(sc, counter)` counts the whole framed
+request (`counter.CountRequest(buildChatRequest(cfg))`). Because the
+prompt/messages feed the cache key, the resource estimate, and the provider
+call, the one rewrite re-targets the whole pipeline — so the assembled context
+is a cache-key input by construction (asserted at the exec layer:
+`TestLLMExecutorContextChangesCacheKey`). The `llm.ChatRequest` type stays out
+of the engine: preflight returns an `int`.
+
+**Store.** Migration 0022 adds `run_steps.context_policy` (nullable JSONB,
+materialized at instantiation like `blackboard_policy`; sqlc regenerated,
+`instantiate.go` marshals `step.Context`). `store.RecordContextAssembled`
+(the `RecordModelDowngrade` fenced-record precedent — run lock → fetch step →
+require running + matching claim → `appendEvent`, no state transition, no new
+table) appends the new `context_assembled` event
+(`store.ContextAssembledEvent`: counter fingerprint, per-source
+`ContextSourceRecord` dispositions, `context_tokens`, `preflight_tokens`).
+Migrate round-trip test pins 22 (context_policy drops on the first Down,
+blackboard on the second).
+
+**Engine (`engine/context.go`).** `assembleContext` sits in `execute()`
+**after feedback injection, before the cache read** (`claim.go`), so the
+assembled preamble is prepended into the request the cache binding keys on. It
+decodes the materialized spec (no spec → zero-read fast path; corrupt →
+permanent), requires the executor to be a `ContextInjector` (else permanent),
+builds the readers (one batched `ListByIDs` for step outputs, `sc.Blackboard`
+for the board, `e.retrievers.Get` for retrieval), calls `contextmgr.Assemble`,
+routes a `MissingSourceError`/`ConfigError` to a permanent completion and a
+transport error to a redeliver, injects the preamble, computes the pre-flight
+total on the augmented request, and appends the `context_assembled` event in
+its own short fenced tx (a fenced caller abandons like `recordDowngrade`).
+`engine.WithRetrievers(*retrieval.Registry)` wires the same registry the
+retrieve executor uses; `cmd/worker` passes it. Headline integration
+`TestContextAssembly` (the canonical `context_assembly.json` on the mock: the
+assembled literal/step_output/blackboard reach the provider echo, the
+retrieval source skips on an empty corpus, the event records the four
+dispositions, and **`preflight_tokens` == the draft attempt's input tokens
+exactly** — the ±5% accuracy criterion, exact on the mock); a determinism test
+(two runs → byte-identical echo + equal context tokens); and a
+missing-source-error test (a required retrieval source on an empty corpus →
+DLQ permanent, no `context_assembled` event, no usage, no provider call).
+
+**Fixtures.** Canonical `examples/definitions/context_assembly.json` (offline
+mock, added to `exampleFiles`); a `context` block on both kitchen sinks + a
+construct-pin block (`TestExampleKitchenSinkCoversEveryConstruct` — all four
+kinds, pinned source, per-source cap, skip policy; plus the backfilled 12.2
+pinned-blackboard-write assertion); `testdata/invalid/context_unknown_field.json`
++ `context_bad_kind.json` (decode) and `testdata/invalid_structural/context_bad.json`
+(eight steps → eight distinct `context_field_*` issues).
+
+**Non-obvious decisions.**
+- *Envelope block, not a config field.* `context` applies to the whole llm
+  family (llm/planner/agent — M13 planners want it) and materializes like
+  `cache`/`validation`/`blackboard`; a config field would not reuse the
+  materialization path and would not extend to planner/agent.
+- *Assembly runs after feedback, before the cache.* After feedback so the
+  pre-flight count reflects the final request; before the cache so the
+  assembled content is keyed (ADR-011/014). On a first attempt (no feedback)
+  the assembled config is what the cache keys on; a semantic retry is
+  cache-bypassed anyway.
+- *Recount, don't trust the stored blackboard `token_count`.* The rendered
+  wrapper framing differs from the raw value; the honest number is the count
+  over the assembled text. ADR-014's recompute-on-mismatch is thus trivially
+  honored.
+- *No templating in the block.* A dynamic query flows through a `retrieve`
+  step + `step_output` source, keeping 12.3 out of the template engine (the
+  12.2 stance); the `blackboard.<key>` template root stays deferred.
+- *Pre-flight returns an int.* The `PreflightCounter` hook returns a count,
+  not an `llm.ChatRequest`, so the engine never imports `llm`.
+
+One migration (0022), no new config var, no new metric (the
+`context_utilization` histogram is 12.6). ADR-014 §"Context assembly (as
+built, 12.3)"; ADR-003 (`context` envelope), ADR-004 (column +
+`context_assembled` event), ADR-006 (row 20: assembly failure permanent /
+transport redeliver), ADR-011 (assembled context is a cache-key input)
+cross-amended.
+
+**Deferred to later M12 tickets:** deterministic compaction respecting
+`pinned` when assembly exceeds the budget (12.4), summarization compaction
+(12.5), provider-window guardrails swapping M9.2's chars/4 estimator for the
+real counters (12.6).

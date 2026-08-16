@@ -72,6 +72,8 @@ const (
 	CodeValidationFieldInvalid  ValidationCode = "validation_field_invalid"
 	CodeBlackboardFieldRequired ValidationCode = "blackboard_field_required"
 	CodeBlackboardFieldInvalid  ValidationCode = "blackboard_field_invalid"
+	CodeContextFieldRequired    ValidationCode = "context_field_required"
+	CodeContextFieldInvalid     ValidationCode = "context_field_invalid"
 	CodeLimitExceeded           ValidationCode = "limit_exceeded"
 	CodeCycle                   ValidationCode = "cycle_detected"
 	CodeLoopEdgeNotAncestor     ValidationCode = "loop_edge_not_ancestor"
@@ -141,6 +143,7 @@ func Validate(def *Definition) (issues []*ValidationIssue, err error) {
 		if g, gerr := NewGraph(def); gerr == nil {
 			v.checkGraphSemantics(def, g)
 			v.checkTemplates(def, g)
+			v.checkContextGraph(def, g)
 		}
 	}
 
@@ -237,6 +240,7 @@ func (v *validator) checkSteps(def *Definition) map[string]int {
 		v.checkStepBudget(path, s.Type, s.Budget)
 		v.checkValidation(path, s)
 		v.checkBlackboard(path, s.Blackboard)
+		v.checkContext(path, s)
 	}
 	return index
 }
@@ -277,6 +281,179 @@ func (v *validator) checkBlackboard(path string, bp *BlackboardPolicy) {
 		if len(w.Tags) > 0 {
 			if _, err := blackboard.NormalizeTags(w.Tags); err != nil {
 				v.add(CodeBlackboardFieldInvalid, entry+".tags", "%v", err)
+			}
+		}
+	}
+}
+
+// checkContext enforces the context-assembly spec's shape bounds (ADR-014,
+// ticket 12.3). The codec already rejected unknown fields, mistyped values,
+// and unknown source kinds / missing-policies; here the whole-spec llm-family
+// restriction, the non-empty-sources rule, the source-count bound, name
+// uniqueness, per-kind required/forbidden fields, key/tag/pointer grammar
+// (shared with the runtime store so they cannot drift), the cap/pin bounds,
+// and the no-templating rule. The upstream-ancestry of a step_output source
+// is a graph check (checkContextGraph), like a template ref. A nil spec means
+// the `context` key was absent, nothing to check.
+func (v *validator) checkContext(path string, s Step) {
+	cs := s.Context
+	if cs == nil {
+		return
+	}
+	path += ".context"
+	if len(cs.Sources) == 0 {
+		v.add(CodeContextFieldRequired, path+".sources", "at least one source is required when a context block is present")
+		return
+	}
+	if !s.Type.IsLLMFamily() {
+		v.add(CodeContextFieldInvalid, path,
+			"applies only to llm-family steps, not %q", string(s.Type))
+	}
+	if len(cs.Sources) > MaxContextSources {
+		v.add(CodeContextFieldInvalid, path+".sources", "must have at most %d sources, got %d", MaxContextSources, len(cs.Sources))
+	}
+	seenName := make(map[string]int, len(cs.Sources))
+	for i, src := range cs.Sources {
+		entry := fmt.Sprintf("%s.sources[%d]", path, i)
+		if src.Name != "" {
+			if first, dup := seenName[src.Name]; dup {
+				v.add(CodeContextFieldInvalid, entry+".name", "duplicate source name %q (first at sources[%d])", src.Name, first)
+			} else {
+				seenName[src.Name] = i
+			}
+		}
+		v.checkContextSource(entry, src)
+	}
+}
+
+// checkContextSource validates one source's per-kind required/forbidden
+// fields, its cap/pin bounds, and the no-templating rule.
+func (v *validator) checkContextSource(entry string, src ContextSource) {
+	// A pinned source is never truncated, so a per-source cap on it is a
+	// contradiction (ADR-014: pinned entries are always included whole).
+	if src.Pinned && src.MaxTokens != nil {
+		v.add(CodeContextFieldInvalid, entry+".max_tokens", "a pinned source cannot also carry a per-source max_tokens cap")
+	}
+	if src.MaxTokens != nil && *src.MaxTokens < 1 {
+		v.add(CodeContextFieldInvalid, entry+".max_tokens", "must be at least 1, got %d", *src.MaxTokens)
+	}
+	// Templating inside the context block is deliberately unsupported (ADR-014):
+	// a dynamic query flows through a `retrieve` step and a step_output source.
+	if HasTemplate(src.Text) {
+		v.add(CodeContextFieldInvalid, entry+".text", "template expressions are not supported inside a context block")
+	}
+	if HasTemplate(src.Query) {
+		v.add(CodeContextFieldInvalid, entry+".query", "template expressions are not supported inside a context block")
+	}
+	switch src.Kind {
+	case "":
+		v.add(CodeContextFieldRequired, entry+".kind", "source kind is required")
+	case SourceStepOutput:
+		if src.Step == "" {
+			v.add(CodeContextFieldRequired, entry+".step", "step is required for a step_output source")
+		}
+		if src.Path != "" {
+			if err := checkJSONPointer(src.Path); err != nil {
+				v.add(CodeContextFieldInvalid, entry+".path", "invalid JSON pointer: %v", err)
+			}
+		}
+		v.forbidContextFields(entry, src, "step_output", "key", "tags", "retriever", "query", "top_k", "text")
+	case SourceBlackboard:
+		switch {
+		case src.Key == "" && len(src.Tags) == 0:
+			v.add(CodeContextFieldRequired, entry, "a blackboard source requires exactly one of key or tags")
+		case src.Key != "" && len(src.Tags) > 0:
+			v.add(CodeContextFieldInvalid, entry, "a blackboard source cannot set both key and tags")
+		}
+		if src.Key != "" {
+			if err := blackboard.ValidateKey(src.Key); err != nil {
+				v.add(CodeContextFieldInvalid, entry+".key", "%v", err)
+			}
+		}
+		if len(src.Tags) > 0 {
+			if _, err := blackboard.NormalizeTags(src.Tags); err != nil {
+				v.add(CodeContextFieldInvalid, entry+".tags", "%v", err)
+			}
+		}
+		v.forbidContextFields(entry, src, "blackboard", "step", "path", "retriever", "query", "top_k", "text")
+	case SourceRetrieval:
+		if src.Retriever == "" {
+			v.add(CodeContextFieldRequired, entry+".retriever", "retriever is required for a retrieval source")
+		} else if !pluginNameRe.MatchString(src.Retriever) {
+			v.add(CodeContextFieldInvalid, entry+".retriever", "retriever name %q does not match %s", src.Retriever, pluginNameRe)
+		}
+		if src.Query == "" {
+			v.add(CodeContextFieldRequired, entry+".query", "query is required for a retrieval source")
+		}
+		if src.TopK != nil && (*src.TopK < 0 || *src.TopK > MaxContextTopK) {
+			v.add(CodeContextFieldInvalid, entry+".top_k", "must be between 0 and %d, got %d", MaxContextTopK, *src.TopK)
+		}
+		v.forbidContextFields(entry, src, "retrieval", "step", "path", "key", "tags", "text")
+	case SourceLiteral:
+		if src.Text == "" {
+			v.add(CodeContextFieldRequired, entry+".text", "text is required for a literal source")
+		}
+		v.forbidContextFields(entry, src, "literal", "step", "path", "key", "tags", "retriever", "query", "top_k")
+	}
+}
+
+// forbidContextFields flags any field set on a source that does not belong to
+// its kind — strict decode admits every ContextSource field, so a
+// wrong-kind field would otherwise be silently ignored.
+func (v *validator) forbidContextFields(entry string, src ContextSource, kind string, fields ...string) {
+	for _, f := range fields {
+		set := false
+		switch f {
+		case "step":
+			set = src.Step != ""
+		case "path":
+			set = src.Path != ""
+		case "key":
+			set = src.Key != ""
+		case "tags":
+			set = len(src.Tags) > 0
+		case "retriever":
+			set = src.Retriever != ""
+		case "query":
+			set = src.Query != ""
+		case "top_k":
+			set = src.TopK != nil
+		case "text":
+			set = src.Text != ""
+		}
+		if set {
+			v.add(CodeContextFieldInvalid, entry+"."+f, "%s is not valid for a %s source", f, kind)
+		}
+	}
+}
+
+// checkContextGraph validates that every step_output context source names a
+// step that is strictly upstream via normal edges — the same rule as a
+// template ref (checkTemplates), so the two produce identical codes through
+// the shared classifyUpstreamRef. Runs only inside Validate's well-formed-
+// graph gate.
+func (v *validator) checkContextGraph(def *Definition, g *Graph) {
+	for i, s := range def.Steps {
+		if s.Context == nil {
+			continue
+		}
+		var ancestors map[string]bool // lazy: one BFS per referencing step
+		for j, src := range s.Context.Sources {
+			if src.Kind != SourceStepOutput || src.Step == "" {
+				continue
+			}
+			path := fmt.Sprintf("steps[%d].context.sources[%d].step", i, j)
+			if ancestors == nil {
+				ancestors, _ = g.Ancestors(s.ID)
+			}
+			switch classifyUpstreamRef(g, s.ID, src.Step, ancestors) {
+			case refUnknownStep:
+				v.add(CodeContextFieldInvalid, path, "step_output source names unknown step %q", src.Step)
+			case refSelf:
+				v.add(CodeContextFieldInvalid, path, "step_output source: a step cannot reference its own output")
+			case refNotAncestor:
+				v.add(CodeContextFieldInvalid, path, "step_output source: step %q is not upstream of %q (no normal-edge path)", src.Step, s.ID)
+			case refOK:
 			}
 		}
 	}
@@ -950,18 +1127,17 @@ func (v *validator) checkTemplates(def *Definition, g *Graph) {
 			path := tmplIssuePath(base, r.ConfigPath)
 			switch {
 			case r.StepID != "":
-				if _, known := g.index[r.StepID]; !known {
-					v.add(CodeTemplateRefUnknownStep, path, "reference %q names unknown step %q", r.Raw, r.StepID)
-					continue
-				}
 				if ancestors == nil {
 					ancestors, _ = g.Ancestors(s.ID) // s.ID is known: the gate ensured a well-formed graph
 				}
-				switch {
-				case r.StepID == s.ID:
+				switch classifyUpstreamRef(g, s.ID, r.StepID, ancestors) {
+				case refUnknownStep:
+					v.add(CodeTemplateRefUnknownStep, path, "reference %q names unknown step %q", r.Raw, r.StepID)
+				case refSelf:
 					v.add(CodeTemplateRefNotUpstream, path, "reference %q: a step cannot reference its own output", r.Raw)
-				case !ancestors[r.StepID]:
+				case refNotAncestor:
 					v.add(CodeTemplateRefNotUpstream, path, "reference %q: step %q is not upstream of %q (no normal-edge path)", r.Raw, r.StepID, s.ID)
+				case refOK:
 				}
 			case r.ParamKey != "":
 				if _, declared := def.Params[r.ParamKey]; !declared {
@@ -970,6 +1146,35 @@ func (v *validator) checkTemplates(def *Definition, g *Graph) {
 			}
 		}
 	}
+}
+
+// refStatus classifies an upstream step reference.
+type refStatus int
+
+const (
+	refOK          refStatus = iota // a valid, strictly-upstream normal-edge reference
+	refUnknownStep                  // names a step not in the graph
+	refSelf                         // references the declaring step itself
+	refNotAncestor                  // a known step, but not a normal-edge ancestor
+)
+
+// classifyUpstreamRef reports whether refStepID is a usable strictly-upstream
+// reference from fromStepID via normal edges (ticket 8.2 rule), shared by the
+// template lint and the context-source graph check so the two cannot drift.
+// ancestors is the memoized Ancestors(fromStepID) set (loop edges confer no
+// ancestry; a step is never its own ancestor), computed once per fromStepID by
+// the caller.
+func classifyUpstreamRef(g *Graph, fromStepID, refStepID string, ancestors map[string]bool) refStatus {
+	if _, known := g.index[refStepID]; !known {
+		return refUnknownStep
+	}
+	if refStepID == fromStepID {
+		return refSelf
+	}
+	if !ancestors[refStepID] {
+		return refNotAncestor
+	}
+	return refOK
 }
 
 // tmplIssuePath qualifies a config-relative template path with the step's

@@ -131,6 +131,85 @@
         "run"
       ]
     },
+    "ContextMissingPolicy": {
+      "type": "string",
+      "enum": [
+        "error",
+        "skip"
+      ]
+    },
+    "ContextSource": {
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ContextSourceKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "step": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "retriever": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "top_k": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        },
+        "max_tokens": {
+          "type": "integer"
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "on_missing": {
+          "$ref": "#/$defs/ContextMissingPolicy"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "kind"
+      ]
+    },
+    "ContextSourceKind": {
+      "type": "string",
+      "enum": [
+        "step_output",
+        "blackboard",
+        "retrieval",
+        "literal"
+      ]
+    },
+    "ContextSpec": {
+      "properties": {
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/ContextSource"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "CounterConfig": {
       "properties": {
         "path": {
@@ -692,6 +771,9 @@
         },
         "blackboard": {
           "$ref": "#/$defs/BlackboardPolicy"
+        },
+        "context": {
+          "$ref": "#/$defs/ContextSpec"
         }
       },
       "additionalProperties": false,

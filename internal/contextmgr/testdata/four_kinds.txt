@@ -1,0 +1,26 @@
+<context name="instructions" kind="literal">
+Be concise.
+</context>
+
+<context name="draft" kind="step_output">
+the drafted body
+</context>
+
+<context name="findings" kind="blackboard">
+sky is blue
+</context>
+
+<context name="notes" kind="blackboard">
+<entry key="note_a" version=1>
+first note
+</entry>
+<entry key="note_b" version=1>
+{"n":2}
+</entry>
+</context>
+
+<context name="guide" kind="retrieval">
+<doc id="d1">
+keep it short
+</doc>
+</context>

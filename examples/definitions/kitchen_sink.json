@@ -181,6 +181,42 @@
       "config": {
         "agent": "critic",
         "prompt": "Review the latest draft. Output JSON like {\"verdict\": \"approve\", \"channel\": \"blog\"} or {\"verdict\": \"revise\", \"notes\": [\"...\"]}."
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "name": "instructions",
+            "text": "You are a meticulous editor. Judge only clarity and factual support.",
+            "pinned": true
+          },
+          {
+            "kind": "step_output",
+            "name": "draft",
+            "step": "draft",
+            "path": "/text",
+            "max_tokens": 4000
+          },
+          {
+            "kind": "blackboard",
+            "name": "pinned_draft",
+            "key": "draft_text"
+          },
+          {
+            "kind": "blackboard",
+            "name": "notes",
+            "tags": ["draft"],
+            "on_missing": "skip"
+          },
+          {
+            "kind": "retrieval",
+            "name": "style_guide",
+            "retriever": "pg_fulltext",
+            "query": "editorial style guide",
+            "top_k": 3,
+            "on_missing": "skip"
+          }
+        ]
       }
     },
     {

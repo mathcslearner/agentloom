@@ -220,14 +220,38 @@ func decodeStep(raw json.RawMessage, path string, errs *errList) Step {
 	if blackboardRaw, present := m["blackboard"]; present {
 		step.Blackboard = decodeBlackboard(blackboardRaw, path+".blackboard", errs)
 	}
+	if contextRaw, present := m["context"]; present {
+		step.Context = decodeContext(contextRaw, path+".context", errs)
+	}
 	for _, k := range sortedKeys(m) {
 		switch k {
-		case "id", "type", "config", "retry", "timeout", "cache", "budget", "validation", "blackboard":
+		case "id", "type", "config", "retry", "timeout", "cache", "budget", "validation", "blackboard", "context":
 		default:
 			errs.add(path+"."+k, "unknown field")
 		}
 	}
 	return step
+}
+
+// decodeContext decodes a step's context-assembly spec (ADR-014, ticket
+// 12.3). Like decodeCache the codec level enforces shape and closed enums —
+// unknown fields, mistyped values, an unknown source kind or missing-policy;
+// the non-empty-sources rule, per-kind field requirements, key/tag grammar,
+// the upstream-ancestry check, and the cap/pin bounds are structural
+// validation (Validate).
+func decodeContext(raw json.RawMessage, path string, errs *errList) *ContextSpec {
+	var cs ContextSpec
+	strictUnmarshal(raw, &cs, path, errs)
+	for i := range cs.Sources {
+		sp := fmt.Sprintf("%s.sources[%d]", path, i)
+		if k := cs.Sources[i].Kind; k != "" && !slices.Contains(contextSourceKinds, k) {
+			errs.add(sp+".kind", "unknown context source kind %q (expected one of: %s)", string(k), joinEnum(contextSourceKinds))
+		}
+		if p := cs.Sources[i].OnMissing; p != "" && !slices.Contains(contextMissingPolicies, p) {
+			errs.add(sp+".on_missing", "unknown missing-source policy %q (expected one of: %s)", string(p), joinEnum(contextMissingPolicies))
+		}
+	}
+	return &cs
 }
 
 // decodeValidation decodes a step's output-validation chain (ADR-013). Like

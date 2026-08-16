@@ -1,0 +1,17 @@
+-- Context assembly: the step's authored `context` block (dag.ContextSpec:
+-- ordered sources assembled into the provider request before the call) is
+-- materialized at instantiation like config, retry_policy, cache_policy, and
+-- blackboard_policy (ticket 12.3, ADR-014). The engine reads the effective
+-- spec off the claimed row and never reparses the definition snapshot, and a
+-- worker upgrade cannot change an in-flight run's context behavior. NULL when
+-- the step authored no `context` block (the request is built from the config
+-- alone).
+--
+-- The assembly itself writes no new table: each application appends a
+-- context_assembled event to the per-run event log (the model_downgraded
+-- precedent), carrying the per-source disposition (included / skipped /
+-- truncated), the counter fingerprint, and the pre-flight token total — so
+-- the whole pre-execution context decision is reconstructable from durable
+-- state (the ADR-014 audit requirement). 12.4's context_revision events hang
+-- off the same log.
+ALTER TABLE run_steps ADD COLUMN context_policy JSONB;

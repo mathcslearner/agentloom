@@ -376,6 +376,17 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 				return gen.Run{}, fmt.Errorf("marshaling blackboard policy of step %q: %w", step.ID, err)
 			}
 		}
+		// The authored context-assembly spec is materialized the same way
+		// (ticket 12.3, ADR-014): the engine's pre-execution assembly reads it
+		// off the claimed row. NULL when the step authored no `context` block —
+		// the request is built from the config alone.
+		var contextPolicy json.RawMessage
+		if step.Context != nil {
+			contextPolicy, err = json.Marshal(step.Context)
+			if err != nil {
+				return gen.Run{}, fmt.Errorf("marshaling context policy of step %q: %w", step.ID, err)
+			}
+		}
 		steps[i] = gen.CreateRunStepsParams{
 			RunID:            run.ID,
 			StepID:           step.ID,
@@ -387,6 +398,7 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 			BudgetPolicy:     budgetPolicy,
 			ValidationPolicy: validationPolicy,
 			BlackboardPolicy: blackboardPolicy,
+			ContextPolicy:    contextPolicy,
 			Status:           status,
 			RemainingDeps:    p.remaining[step.ID],
 			GraphVersion:     1,

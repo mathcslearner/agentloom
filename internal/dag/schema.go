@@ -190,3 +190,15 @@ func (CacheScope) JSONSchema() *jsonschema.Schema {
 func (BudgetPolicy) JSONSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "string", Enum: enumAny(budgetPolicies)}
 }
+
+// JSONSchema declares the context-source-kind enum in the generated schema
+// (ADR-014).
+func (ContextSourceKind) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny(contextSourceKinds)}
+}
+
+// JSONSchema declares the context missing-source-policy enum in the generated
+// schema (ADR-014).
+func (ContextMissingPolicy) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny(contextMissingPolicies)}
+}

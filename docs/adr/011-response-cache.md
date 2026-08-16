@@ -215,6 +215,12 @@ folded into the request *before* the cache read, so the augmented request has a
 **different cache key** by construction — a semantic retry never reads (or is
 served) the failed attempt's entry. Nothing about the cache key changed for the
 feedback loop; it falls out of the existing request-component rule.
+**Context assembly (12.3)** rides it the same way: the assembled context
+preamble is prepended into the request *before* the cache read, so the
+assembled sources are cache-key inputs by construction — two runs whose store
+state assembles identically share an entry, and a changed blackboard/step
+output re-keys it. Nothing about the cache key changed for context assembly
+either; it too falls out of the existing request-component rule.
 
 ### Storage — write-through Redis, with a size cap
 

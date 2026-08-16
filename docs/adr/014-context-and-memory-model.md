@@ -307,6 +307,98 @@ by default, or every version with `?history=true`, filterable by `?key=` and
 blackboard (steps do, in the worker), so ADR-002 is untouched. `ctl
 blackboard <run-id>` mirrors it.
 
+### Context assembly (as built, 12.3)
+
+Context assembly is the declarative-read half the blackboard section deferred:
+a step declares an *ordered* `context` spec whose sources are assembled into
+the provider request **before the call**, deterministic given store state.
+12.3 delivers the contract, the assembler, the engine middleware, and the
+audit record; the compaction that shrinks an over-budget assembly is 12.4 and
+the provider-window guardrail is 12.6.
+
+**Where the spec lives.** `context` is a **step-envelope block**
+(`dag.Step.Context *ContextSpec`), like `cache`/`validation`/`blackboard`, not
+a field on the per-type config — it is uniform across the llm family (llm,
+planner, agent), and materialized at instantiation onto
+`run_steps.context_policy` (migration 0022, the `blackboard_policy`
+precedent), so the engine reads the effective spec off the claimed row and
+never reparses the snapshot. `context` on a non-llm-family step is a
+submit-time error (`context_field_invalid`) — a spec on a step that issues no
+provider request can never fire.
+
+**Source schema.** Each `ContextSource` carries a `kind`
+(`step_output | blackboard | retrieval | literal`), an optional `name` (the
+label the assembled request and the audit event wrap it under; defaults to
+`<kind>#<index>`, unique within the spec), the per-kind selector fields
+(`step`+`path` for step_output; `key` XOR `tags` for blackboard; `retriever`+
+`query`+`top_k` for retrieval; `text` for literal), an optional per-source
+`max_tokens` cap, a `pinned` flag, and an `on_missing` policy. Wrong-kind
+fields are rejected at submit; `step_output` sources are checked for
+normal-edge ancestry through the **same** `classifyUpstreamRef` the 8.2
+template lint uses (so the two produce identical codes and cannot drift).
+Templating inside the block (`${{ ... }}`) is deliberately **unsupported** — a
+dynamic query flows through a `retrieve` step and a `step_output` source,
+keeping 12.3 out of the template engine (the 12.2 stance).
+
+**Assembler.** `internal/contextmgr` is a leaf (imports `dag`, `blackboard`,
+`retrieval`, `tokens` — all leaves — plus stdlib). `Assemble(spec, counter,
+Sources) → Assembly` resolves each source in declaration order (precedence and
+message order), renders it into a stable `<context name=… kind=…>…</context>`
+block (blackboard values that are JSON strings render as their text, else
+compact canonical JSON; tag-selected entries wrap as `<entry key=… version=…>`;
+retrieval docs as `<doc id=…>`), joins the blocks with blank lines, and counts
+everything with the step's counter. A per-source `max_tokens` cap truncates the
+source's text on a rune boundary with a fixed `…[truncated]…` marker (a binary
+search over the **final** string, since BPE counts are not additive, so the
+result is guaranteed ≤ cap); a `pinned` source is never truncated (`pinned` and
+`max_tokens` on one source is a submit error). Assembly is deterministic: the
+same store state and corpus produce a byte-identical preamble and identical
+counts (the 12.3 golden goldens rest on this).
+
+**Missing-source policy.** A source that resolves to nothing — an upstream step
+that did not succeed, a `step_output` pointer that does not resolve, a
+blackboard key with no head, a tag matching no heads, a retriever returning no
+results — is governed by `on_missing`: **`error` (the default)** fails the step
+permanently *before any provider call* (`*contextmgr.MissingSourceError` →
+ClassPermanent, the 8.2 strict-reference stance), while **`skip`** omits the
+source and records it on the audit event. A source whose backend is unwired
+(no board, no retriever registry) or names an unknown retriever, or an executor
+that cannot inject context, is a permanent **config error** regardless of
+policy (`*contextmgr.ConfigError`). A transport failure of a source read
+(a store/retriever hiccup) is neither — it decides nothing and redelivers.
+
+**Engine middleware.** The stage sits in `execute()` **after feedback
+injection and before the cache read** (`engine/context.go`), so the assembled
+preamble is prepended into the request the cache binding keys on — the
+assembled context is a cache-key input by construction (ADR-011/014). The llm
+executor implements two new hooks: `ContextInjector.WithContext(sc, preamble)`
+prepends the preamble (a leading user message, or a prompt prefix — the
+`WithFeedback` raw-message re-key mirror), and `PreflightCounter.PreflightTokens
+(sc, counter)` counts the whole framed request. Blackboard and step-output
+sources need no new wiring (the board bound in 12.2, the store); a `retrieval`
+source resolves against the same retriever registry the retrieve executor uses
+(`engine.WithRetrievers`, wired by `cmd/worker`).
+
+**Audit.** Every context-bearing attempt appends a **`context_assembled`
+event** before the request runs (`store.RecordContextAssembled`, the
+`RecordModelDowngrade` fenced-record precedent — no state transition, fenced on
+the caller's live claim, no new table): the payload carries the counter
+fingerprint, the assembled `context_tokens`, the pre-flight request total, and
+each source's disposition (`included | truncated | skipped`, its ref, tokens,
+and pinned flag). Because a mock-driven request's `CountRequest` equals the
+mock provider's reported `Usage.InputTokens` exactly, the recorded
+`preflight_tokens` equals the attempt's input tokens on the offline fixture —
+the ±5% accuracy criterion, exact by construction on the mock. The pre-flight
+total is the number 12.6's window guardrail compares against the model context
+window; 12.4's `context_revision` events hang off the same log.
+
+**Recompute-on-mismatch note.** Assembly recounts every source on its rendered
+text with the step's counter rather than trusting the blackboard entry's stored
+`token_count` — the rendered wrapper framing differs from the raw value, and the
+honest count is the one over the text actually assembled. ADR-014's
+"cache `(count, counter_id)`, recompute on mismatch" is thus trivially honored:
+the assembly count is always fresh under the current counter.
+
 ## Consequences
 
 **Easier.**

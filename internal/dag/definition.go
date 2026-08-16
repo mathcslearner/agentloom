@@ -173,6 +173,16 @@ type Step struct {
 	// declarative writes). Uniform across step types, so it lives on the step
 	// envelope, not in the per-type config.
 	Blackboard *BlackboardPolicy `json:"blackboard,omitempty"`
+
+	// Context is the step's authored context-assembly spec (ADR-014, ticket
+	// 12.3): an ordered list of sources (upstream step outputs, blackboard
+	// entries by key/tag, retrieval results, literals) assembled into the
+	// provider request before the call, with per-source token caps and pinned
+	// entries always included. Nil when the source document had no context key
+	// (the request is built from the config alone). llm-family only — a
+	// context spec on a step type that makes no provider request can never
+	// fire (Validate rejects it).
+	Context *ContextSpec `json:"context,omitempty"`
 }
 
 // EdgeType distinguishes normal dependency edges from marked loop edges.

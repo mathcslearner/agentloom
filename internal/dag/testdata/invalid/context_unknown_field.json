@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "name": "context-unknown-field",
+  "steps": [{"id": "a", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"srcs": [{"kind": "literal", "text": "x"}]}}],
+  "edges": []
+}

@@ -283,6 +283,24 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	if feedback != nil && feedback.SemanticAttempt > 0 {
 		semanticAttempt = feedback.SemanticAttempt
 	}
+	// Context assembly (ticket 12.3, ADR-014): if this step carries a `context`
+	// spec, assemble its sources (upstream outputs, blackboard entries,
+	// retrieval results, literals) into a preamble prepended to the request,
+	// before the cache read so the assembled content is a cache-key input by
+	// construction. A missing source (on_missing: error) or a config error is a
+	// permanent failure before any spend; a transport failure of a source read
+	// redelivers. A step with no context spec passes through untouched.
+	assembledConfig, cxErr := e.assembleContext(ctx, step, executor, sc)
+	if cxErr != nil {
+		var cxe *contextError
+		if errors.As(cxErr, &cxe) {
+			logger.ErrorContext(ctx, "step context assembly failed; recording step failure",
+				slog.Any("error", cxErr))
+			return e.completeFailure(ctx, step, exec.Output{}, cxErr, dag.ClassPermanent, origin.RunTrace)
+		}
+		return cxErr
+	}
+	sc.Config = assembledConfig
 	// Response cache read-through (ticket 9.5, ADR-011): ahead of the rate
 	// limiter, consult the cache. A hit completes the step from the stored
 	// result — no limiter acquire, no provider call — and returns handled.

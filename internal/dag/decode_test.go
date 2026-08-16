@@ -63,6 +63,8 @@ var decodeInvalidCases = map[string][]string{
 	"validation_feedback_unknown_field.json": {"steps[0].validation.feedback.tone: unknown field"},
 	"validation_entry_unknown_field.json":    {"steps[0].validation.validators[0].weight: unknown field"},
 	"blackboard_unknown_field.json":          {"steps[0].blackboard.writes: unknown field"},
+	"context_unknown_field.json":             {"steps[0].context.srcs: unknown field"},
+	"context_bad_kind.json":                  {`steps[0].context.sources[0].kind: unknown context source kind "database"`},
 	"max_wall_clock_wrong_type.json":         {"max_wall_clock: expected string, got number"},
 	"edge_missing_from.json":                 {"edges[0].from: required field is missing"},
 	"unknown_edge_field.json":                {"edges[0].whenever: unknown field"},

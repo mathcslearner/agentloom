@@ -31,6 +31,7 @@ var exampleFiles = []string{
 	"semantic_retry.json",
 	"llm_judge.json",
 	"blackboard.json",
+	"context_assembly.json",
 }
 
 // readExample loads one example definition document.
@@ -363,6 +364,71 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	}
 	if !hasOutputFormat {
 		t.Error("no llm step with a json_schema output_format in kitchen_sink.json")
+	}
+
+	// Ticket 12.2 construct (ADR-014): a step with a declarative blackboard
+	// write carrying a pinned entry, so a schema edit that dropped the
+	// blackboard envelope block would fail here.
+	var hasPinnedBlackboardWrite bool
+	for _, s := range def.Steps {
+		if s.Blackboard == nil {
+			continue
+		}
+		for _, w := range s.Blackboard.Write {
+			if w.Pinned {
+				hasPinnedBlackboardWrite = true
+			}
+		}
+	}
+	if !hasPinnedBlackboardWrite {
+		t.Error("no step with a pinned declarative blackboard write in kitchen_sink.json")
+	}
+
+	// Ticket 12.3 construct (ADR-014): a step with a context-assembly spec
+	// exercising all four source kinds, a pinned source, a per-source cap, and
+	// a skip missing-policy — so a schema edit that dropped the context
+	// envelope block would fail here.
+	var (
+		hasContext    bool
+		kinds         = map[dag.ContextSourceKind]bool{}
+		hasPinnedSrc  bool
+		hasSourceCap  bool
+		hasSkipPolicy bool
+	)
+	for _, s := range def.Steps {
+		if s.Context == nil {
+			continue
+		}
+		hasContext = true
+		for _, src := range s.Context.Sources {
+			kinds[src.Kind] = true
+			if src.Pinned {
+				hasPinnedSrc = true
+			}
+			if src.MaxTokens != nil {
+				hasSourceCap = true
+			}
+			if src.OnMissing == dag.MissingSkip {
+				hasSkipPolicy = true
+			}
+		}
+	}
+	if !hasContext {
+		t.Error("no step with a context-assembly spec in kitchen_sink.json")
+	}
+	for _, k := range []dag.ContextSourceKind{dag.SourceStepOutput, dag.SourceBlackboard, dag.SourceRetrieval, dag.SourceLiteral} {
+		if !kinds[k] {
+			t.Errorf("no context source of kind %q in kitchen_sink.json", k)
+		}
+	}
+	if !hasPinnedSrc {
+		t.Error("no pinned context source in kitchen_sink.json")
+	}
+	if !hasSourceCap {
+		t.Error("no context source with a per-source max_tokens cap in kitchen_sink.json")
+	}
+	if !hasSkipPolicy {
+		t.Error("no context source with a skip missing-policy in kitchen_sink.json")
 	}
 }
 

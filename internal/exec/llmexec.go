@@ -387,6 +387,87 @@ func (e LLMExecutor) WithFeedback(sc StepContext, fb Feedback) (json.RawMessage,
 	return out, nil
 }
 
+// WithContext implements ContextInjector (ADR-014, ticket 12.3): it prepends
+// an assembled context preamble to the rendered config's request, leaving
+// every other value byte-identical (a raw-message re-key, the WithFeedback
+// mirror). A messages-form config gets a leading user message carrying the
+// preamble; a prompt-form config gets the preamble prefixed to its prompt with
+// a blank-line separator. An empty preamble (every source skipped) returns the
+// config unchanged. Because the prompt/messages feed the cache key, the
+// resource estimate, and the provider call, the one rewrite re-targets the
+// whole pipeline, so the assembled context is a cache-key input by
+// construction.
+func (e LLMExecutor) WithContext(sc StepContext, preamble string) (json.RawMessage, error) {
+	if preamble == "" {
+		return sc.Config, nil
+	}
+	fields := map[string]json.RawMessage{}
+	if len(sc.Config) > 0 {
+		if err := json.Unmarshal(sc.Config, &fields); err != nil {
+			return nil, fmt.Errorf("decoding llm config for context: %w", err)
+		}
+	}
+	// messages form wins when present (a config carries exactly one of prompt
+	// or messages — validated at submit time). The preamble becomes a LEADING
+	// user message (context precedes the task), the mirror of feedback's
+	// trailing message.
+	if raw, ok := fields["messages"]; ok && len(raw) > 0 {
+		var msgs []dag.LLMMessage
+		if err := json.Unmarshal(raw, &msgs); err != nil {
+			return nil, fmt.Errorf("decoding llm messages for context: %w", err)
+		}
+		msgs = append([]dag.LLMMessage{{Role: "user", Content: preamble}}, msgs...)
+		encoded, err := json.Marshal(msgs)
+		if err != nil {
+			return nil, fmt.Errorf("re-encoding llm messages for context: %w", err)
+		}
+		fields["messages"] = encoded
+	} else {
+		var prompt string
+		if raw, ok := fields["prompt"]; ok && len(raw) > 0 {
+			if err := json.Unmarshal(raw, &prompt); err != nil {
+				return nil, fmt.Errorf("decoding llm prompt for context: %w", err)
+			}
+		}
+		if prompt != "" {
+			prompt = preamble + "\n\n" + prompt
+		} else {
+			prompt = preamble
+		}
+		encoded, err := json.Marshal(prompt)
+		if err != nil {
+			return nil, fmt.Errorf("re-encoding llm prompt for context: %w", err)
+		}
+		fields["prompt"] = encoded
+	}
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("re-encoding llm config for context: %w", err)
+	}
+	return out, nil
+}
+
+// PreflightTokens implements PreflightCounter (ADR-014): it builds the request
+// this step would send from its (already assembled and rendered) config and
+// returns the counter's count of the whole framed request — the pre-flight
+// total the context_assembled audit records and the 12.6 window guardrail
+// checks. Model routing is not needed: the counter frames the request's
+// content, not its model id.
+func (e LLMExecutor) PreflightTokens(sc StepContext, counter tokens.Counter) (int, error) {
+	cfg, err := configAs[*dag.LLMConfig](sc)
+	if err != nil {
+		return 0, err
+	}
+	if cfg == nil {
+		return 0, fmt.Errorf("missing llm config")
+	}
+	req, err := buildChatRequest(cfg)
+	if err != nil {
+		return 0, fmt.Errorf("building chat request: %w", err)
+	}
+	return counter.CountRequest(req), nil
+}
+
 // estimateLLMInputTokens is the pre-call input-token estimate: roughly four
 // characters per token over the rendered prompt and messages.
 func estimateLLMInputTokens(cfg *dag.LLMConfig) int64 {

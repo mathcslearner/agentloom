@@ -281,6 +281,12 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		return fmt.Errorf("building blackboard: %w", err)
 	}
 	engineOpts = append(engineOpts, engine.WithBlackboard(board))
+	// Context assembly (ticket 12.3, ADR-014): the engine resolves a
+	// `retrieval` context source against the same retriever registry the
+	// retrieve executor uses, so a context spec and a `retrieve` step share
+	// backends. Blackboard and step-output sources need no extra wiring
+	// (the board above and the store).
+	engineOpts = append(engineOpts, engine.WithRetrievers(retrievers))
 	if resourceLimiter != nil {
 		engineOpts = append(engineOpts,
 			engine.WithResourceLimiter(resourceLimiter),

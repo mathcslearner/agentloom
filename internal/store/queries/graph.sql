@@ -21,20 +21,23 @@
 -- blackboard_policy is the step's authored blackboard block (declarative
 -- writes), materialized the same way (ticket 12.2, ADR-014); NULL means no
 -- `blackboard` block (no declarative writes).
+-- context_policy is the step's authored context-assembly spec, materialized
+-- the same way (ticket 12.3, ADR-014); NULL means no `context` block (the
+-- request is built from the config alone).
 -- name: CreateRunStep :one
 INSERT INTO run_steps (run_id, step_id, step_type, config, retry_policy,
-                       timeout, cache_policy, budget_policy, validation_policy, blackboard_policy, status, remaining_deps, fired_deps,
+                       timeout, cache_policy, budget_policy, validation_policy, blackboard_policy, context_policy, status, remaining_deps, fired_deps,
                        graph_version, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 RETURNING *;
 
 -- CreateRunSteps is the batch (COPY) form for run instantiation (2.5) and
 -- expansion (M13), which write whole graphs at once.
 -- name: CreateRunSteps :copyfrom
 INSERT INTO run_steps (run_id, step_id, step_type, config, retry_policy,
-                       timeout, cache_policy, budget_policy, validation_policy, blackboard_policy, status, remaining_deps, fired_deps,
+                       timeout, cache_policy, budget_policy, validation_policy, blackboard_policy, context_policy, status, remaining_deps, fired_deps,
                        graph_version, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16);
 
 -- name: GetRunStep :one
 SELECT * FROM run_steps WHERE run_id = $1 AND step_id = $2;

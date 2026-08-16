@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "name": "context-bad",
+  "steps": [
+    {"id": "a", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": []}},
+    {"id": "b", "type": "noop", "context": {"sources": [{"kind": "literal", "text": "x"}]}},
+    {"id": "c", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "literal"}]}},
+    {"id": "d", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "blackboard", "key": "k", "tags": ["draft"]}]}},
+    {"id": "e", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "retrieval", "retriever": "pg_fulltext"}]}},
+    {"id": "f", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "literal", "text": "x", "pinned": true, "max_tokens": 10}]}},
+    {"id": "g", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "literal", "text": "x", "step": "a"}]}},
+    {"id": "h", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "step_output", "step": "ghost"}]}}
+  ],
+  "edges": [
+    {"from": "a", "to": "b"},
+    {"from": "b", "to": "c"},
+    {"from": "c", "to": "d"},
+    {"from": "d", "to": "e"},
+    {"from": "e", "to": "f"},
+    {"from": "f", "to": "g"},
+    {"from": "g", "to": "h"}
+  ]
+}

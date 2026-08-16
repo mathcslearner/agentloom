@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "name": "context_assembly",
+  "description": "The ticket 12.3 (ADR-014) demonstration of declarative context assembly: a step declares an ordered `context` spec whose sources — upstream step outputs, blackboard entries by key or tag, retrieval results, and inline literals — are assembled into the provider request before the call, with per-source token caps and pinned entries always included, deterministic given store state. A `research` `llm` step (offline mock, model `mock/sim-1`) publishes its completion text to the blackboard under key `findings` (tag `research`) via its `blackboard` write block. The `draft` `llm` step then assembles four sources in precedence order: a pinned `literal` of editor instructions (never dropped or truncated by future compaction, M12.4); the `research` step's `/text` output capped at 2000 tokens; the pinned `findings` blackboard head by key; and a `pg_fulltext` retrieval of a style guide with `on_missing: skip` so an empty corpus omits it with an audit event rather than failing the step. Assembly prepends the rendered context to the prompt, re-keying the response cache and the pre-flight token total by construction; the total is recorded on the `context_assembled` event alongside each source's included/skipped/truncated disposition. Runs entirely offline on the mock provider — no API key, no network — so it is the workhorse context-assembly fixture for CI. Inspect the blackboard with `ctl blackboard <run-id>`; the assembly manifest is on the run's event log.",
+  "steps": [
+    {
+      "id": "research",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Research the topic and list the key findings.",
+        "max_tokens": 256
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "findings",
+            "from": "/text",
+            "tags": ["research"],
+            "pinned": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "draft",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Write a first draft grounded in the research and style guide above.",
+        "max_tokens": 512
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "name": "instructions",
+            "text": "You are a careful writer. Ground every claim in the provided findings.",
+            "pinned": true
+          },
+          {
+            "kind": "step_output",
+            "name": "research",
+            "step": "research",
+            "path": "/text",
+            "max_tokens": 2000
+          },
+          {
+            "kind": "blackboard",
+            "name": "findings",
+            "key": "findings"
+          },
+          {
+            "kind": "retrieval",
+            "name": "style_guide",
+            "retriever": "pg_fulltext",
+            "query": "editorial style guide",
+            "top_k": 3,
+            "on_missing": "skip"
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "research",
+      "to": "draft"
+    }
+  ]
+}

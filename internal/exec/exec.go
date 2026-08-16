@@ -357,6 +357,38 @@ type FeedbackInjector interface {
 	WithFeedback(sc StepContext, fb Feedback) (json.RawMessage, error)
 }
 
+// ContextInjector is the optional executor hook the M12 context-assembly
+// middleware consults to prepend an assembled context preamble into a step's
+// request before it runs (ADR-014, ticket 12.3). Only a step whose request has
+// a natural place to prepend text implements it (the llm executor); a step
+// type that cannot fails permanently when it carries a `context` spec (the
+// engine records the miss). WithContext returns sc.Config with the preamble
+// prepended (the llm executor prefixes the prompt / adds a leading user
+// message), leaving every other value byte-identical — the raw-message re-key
+// mirror of WithFeedback (which appends). Because the prompt/messages feed the
+// cache key, the resource estimate, and the provider call, the one rewrite
+// re-targets the whole pipeline, so the assembled context is a cache-key input
+// by construction (ADR-011/014). An empty preamble returns the config
+// unchanged. An error means the rewrite could not be computed (a corrupt
+// config); the middleware then records a permanent step failure.
+type ContextInjector interface {
+	WithContext(sc StepContext, preamble string) (json.RawMessage, error)
+}
+
+// PreflightCounter is the optional executor hook the context-assembly and
+// (M12.6) provider-window middleware use to count the fully-framed request a
+// step will send, using the step's resolved token counter (ADR-014). Only a
+// step that issues a provider request implements it (the llm executor). The
+// returned count is the whole request's token total — system prompt, message
+// framing, tool definitions, structured-output schema — the number the window
+// guardrail compares against the model context window and the assembly audit
+// records as the pre-flight total. An error means the request could not be
+// built (a corrupt config); the middleware treats the count as unavailable
+// rather than failing the step (Execute will land any real config failure).
+type PreflightCounter interface {
+	PreflightTokens(sc StepContext, counter tokens.Counter) (int, error)
+}
+
 // CacheBinder is the optional executor hook the M9 response-cache middleware
 // consults before a step runs (ADR-011, ticket 9.5): it projects the
 // resolved request onto the cache key's inputs and supplies the
