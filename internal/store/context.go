@@ -58,8 +58,9 @@ type ContextAssembledEvent struct {
 	// (e.g. "mock/estimate@1", "fallback/chars4@1").
 	CounterID string `json:"counter_id"`
 	// Sources is the per-source disposition (included | truncated | skipped |
-	// dropped) in declaration (precedence) order — the final state after any
-	// compaction.
+	// dropped | summarized) in declaration (precedence) order — the final state
+	// after any compaction. A summarize strategy appends a synthetic
+	// "summary"-kind source for the summary it produced.
 	Sources []ContextSourceRecord `json:"sources"`
 	// ContextTokens is the (post-compaction) assembled context's counted size.
 	ContextTokens int `json:"context_tokens"`
@@ -77,16 +78,37 @@ type ContextAssembledEvent struct {
 	// Revisions is the number of compaction strategies that ran (each also its
 	// own context_revision event); 0 when the assembly fit the budget.
 	Revisions int `json:"revisions,omitempty"`
+	// Summaries is the number of summarizations that produced a summary
+	// (ticket 12.5), each priced as compaction overhead; 0 when none ran.
+	Summaries int `json:"summaries,omitempty"`
 }
 
-// ContextRevisionActionRecord is one entry's drop/truncate action in a
-// compaction strategy (ticket 12.4).
+// ContextRevisionActionRecord is one entry's drop/truncate/summarize action in
+// a compaction strategy (tickets 12.4/12.5).
 type ContextRevisionActionRecord struct {
 	SourceIndex  int    `json:"source_index"`
 	Name         string `json:"name"`
-	Action       string `json:"action"` // "dropped" | "truncated"
+	Action       string `json:"action"` // "dropped" | "truncated" | "summarized"
 	TokensBefore int    `json:"tokens_before"`
 	TokensAfter  int    `json:"tokens_after"`
+}
+
+// ContextRevisionSummaryRecord is one summarization's provenance in a summarize
+// strategy's context_revision (ticket 12.5): the blackboard key@version the
+// summary landed at, the model/resource billed as overhead, and the span it
+// folded.
+type ContextRevisionSummaryRecord struct {
+	Key           string   `json:"key"`
+	Version       int      `json:"version"`
+	ParentVersion int      `json:"parent_version,omitempty"`
+	Model         string   `json:"model"`
+	Resource      string   `json:"resource"`
+	SpanNames     []string `json:"span_names,omitempty"`
+	SpanTokens    int      `json:"span_tokens"`
+	SummaryTokens int      `json:"summary_tokens"`
+	CacheHit      bool     `json:"cache_hit,omitempty"`
+	InputTokens   int64    `json:"input_tokens"`
+	OutputTokens  int64    `json:"output_tokens"`
 }
 
 // ContextRevisionEvent is the context_revision event payload (ticket 12.4,
@@ -114,8 +136,15 @@ type ContextRevisionEvent struct {
 	TokensAfter  int `json:"tokens_after"`
 	// Changed reports whether the strategy altered the assembly.
 	Changed bool `json:"changed"`
-	// Actions is the per-entry drop/truncate detail.
+	// Actions is the per-entry drop/truncate/summarize detail.
 	Actions []ContextRevisionActionRecord `json:"actions,omitempty"`
+	// Summaries is the summarization detail for a summarize strategy (12.5).
+	Summaries []ContextRevisionSummaryRecord `json:"summaries,omitempty"`
+	// Error, when set, is why a summarize strategy fell back to the next
+	// strategy (ticket 12.5) — the warning content: the summarizer was
+	// unavailable, errored, timed out, or could not shrink the span. It is the
+	// audit record of a summarizer failure that did not block the step.
+	Error string `json:"error,omitempty"`
 	// Kept is the names of the entries still present after this strategy.
 	Kept []string `json:"kept,omitempty"`
 }
@@ -134,6 +163,12 @@ type RecordContextAssembledArgs struct {
 	// appended as its own context_revision event before the assembled event, in
 	// order. Empty when the assembly fit its budget (or the step declared none).
 	Revisions []ContextRevisionEvent
+	// CostRows are the summarize compaction overhead charges (ticket 12.5),
+	// ledgered inside this fenced transaction — under the same claim fence as
+	// the events, before the provider call — so a summarizer's spend is metered
+	// even if the step later fails or retries (the 11.5 judge-overhead
+	// discipline). Empty when no summarization billed.
+	CostRows []AttemptCostArgs
 	// Now is the injected current time. Required.
 	Now time.Time
 }
@@ -179,8 +214,66 @@ func RecordContextAssembled(ctx context.Context, q Querier, args RecordContextAs
 	if err := appendEvent(ctx, gq, op, args.RunID, EventContextAssembled, args.Event); err != nil {
 		return err
 	}
+	// Summarize compaction overhead (ticket 12.5): ledger each summarizer call's
+	// spend under the same claim fence and run lock as the events, before the
+	// provider call — so a summary's cost is metered even if the step later
+	// fails or retries (the 11.5 judge-overhead discipline). The rows carry
+	// their own step/attempt/entry; the cost_updated event ApplyAttemptCost
+	// appends rides the same monotonic seq.
+	for _, row := range args.CostRows {
+		if _, err := ApplyAttemptCost(ctx, q, row); err != nil {
+			return err
+		}
+	}
 	log.From(ctx).InfoContext(ctx, "context assembled for step",
 		log.RunID(args.RunID.String()), log.StepID(args.StepID),
-		log.Attempt(int(step.AttemptCount)), slog.Int("revisions", len(args.Revisions)))
+		log.Attempt(int(step.AttemptCount)),
+		slog.Int("revisions", len(args.Revisions)), slog.Int("cost_rows", len(args.CostRows)))
+	return nil
+}
+
+// RecordContextRevisions appends the compaction revision events and ledgers the
+// summarize overhead rows for a claim whose compaction pipeline COULD NOT fit
+// the budget (ticket 12.5). Unlike RecordContextAssembled it appends no
+// context_assembled event — there is no assembly to send, the step fails
+// permanently before the provider call — but a summarizer that ran and billed
+// before the pipeline gave up must still be audited and metered, so the
+// revisions and the overhead ledger rows are written under the same claim fence
+// and run lock. Like RecordContextAssembled it fences on the caller's live
+// claim; a fenced caller gets a *TransitionError and abandons.
+func RecordContextRevisions(ctx context.Context, q Querier, args RecordContextAssembledArgs) error {
+	const op = "record context revisions"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return err
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return err
+	}
+	step, err := gq.GetRunStep(ctx, gen.GetRunStepParams{RunID: args.RunID, StepID: args.StepID})
+	if err != nil {
+		return wrapErr(op, err)
+	}
+	if step.Status != StepStatusRunning || step.ClaimID == nil || *step.ClaimID != args.ClaimID {
+		return stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
+			want: StepStatusRunning, to: StepStatusRunning, claim: &args.ClaimID,
+		})
+	}
+	for i := range args.Revisions {
+		args.Revisions[i].StepID = args.StepID
+		args.Revisions[i].AttemptNo = step.AttemptCount
+		if err := appendEvent(ctx, gq, op, args.RunID, EventContextRevision, args.Revisions[i]); err != nil {
+			return err
+		}
+	}
+	for _, row := range args.CostRows {
+		if _, err := ApplyAttemptCost(ctx, q, row); err != nil {
+			return err
+		}
+	}
+	log.From(ctx).InfoContext(ctx, "context compaction failed to fit budget; revisions recorded",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID),
+		log.Attempt(int(step.AttemptCount)),
+		slog.Int("revisions", len(args.Revisions)), slog.Int("cost_rows", len(args.CostRows)))
 	return nil
 }

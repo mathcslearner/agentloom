@@ -497,6 +497,95 @@ not persisted for a failed attempt — a documented limitation).
    same permanent pre-call failure. This is the shape 12.6 reuses for the
    provider-window check.
 
+### Summarization compaction (as built, 12.5)
+
+`summarize` is the fourth compaction strategy and the only one that is not a
+pure function: it replaces the oldest evicted non-pinned span with a
+cheap-model summary. It is deliberately last to build because it needs the
+whole M12 stack — the counter (12.1) to size the span, the blackboard (12.2)
+to persist the summary and chain it, assembly + the deterministic strategies
+(12.3/12.4) to sit beside, and the cost ledger (10.2) to bill the summarizer
+call as overhead.
+
+**Authoring.** A `summarize` strategy on the `compaction` pipeline carries a
+required `model` (routed through the llm registry like a step's model), an
+optional `key` (the blackboard key the summary is written under; default
+`context_summary`), an optional `max_tokens` (the summary completion bound;
+default 256), and an optional `timeout` (per-call deadline; default 60s, ≤
+10m). At most one `summarize` per pipeline (the no-duplicate-strategy rule).
+The model's routability is checked at claim pre-flight, not at submit (the
+step's own model precedent).
+
+**The strategy (`internal/contextmgr/compact.go`).** While the framed request
+is over budget, `summarize` gathers the oldest non-pinned live entries
+oldest-first until their token sum reaches `over + max_tokens` (so replacing
+them with a ≤ `max_tokens` summary should clear the overage) or the non-pinned
+set is exhausted, calls the summarizer once over the rendered span, writes the
+summary to the blackboard, drops the span, and splices a synthetic
+`summary`-kind entry into the assembly at the span's oldest position (so it
+renders where the oldest evicted turn was). A summary is committed only if it
+is genuinely smaller than the span it replaces (progress guarantee). Because
+the summary is an ordinary non-pinned entry, a later strategy in the pipeline
+(or a later step's compaction) may fold it again — chaining.
+
+**Chaining is the blackboard's version history.** Each summarization appends a
+new version of the summary key, stamping `parent_version` = the prior head. A
+step reads a prior running summary by declaring a `blackboard` context source
+on the key (typically `on_missing: skip`), so a summary produced by one step's
+compaction is available to the next — the conversational running-summary
+pattern. The key's version history *is* the chain, honestly auditable.
+
+**Determinism restored operationally.** A model call is not deterministic, so
+`summarize` breaks the pure-function property the deterministic strategies
+have. Two mechanisms restore it: the summary prompt is fixed and issued at
+`temperature: 0` (`contextmgr.SummaryChatRequest` — a fixed system prompt, the
+span as a leading user turn, a fixed instruction as the trailing turn), and the
+call is cached under ADR-011 (`internal/engine/summarize.go`'s
+`cachedSummarizer` keys the deterministic request under a dedicated
+`context_summarizer` plugin namespace at `SummarizerVersion`, global scope). A
+repeated compaction of the same span is a cache hit — no second billed call —
+and the audit records the exact `key@version` the summary landed at, so the
+decision is reconstructable even though the text came from a model.
+
+**Cost is overhead, ledgered before the call.** A summarizer's provider usage
+is attributed to the *serving* step as overhead (ADR-012 rule 4) under a
+`compaction:<i>` ledger entry (the same-attempt slot migration 0016 reserved).
+The rows are written **inside the same fenced transaction** as the
+`context_revision`/`context_assembled` events — under the claim fence, before
+the step's own provider call — so a summarizer's spend is metered even if the
+step later fails or retries (the 11.5 judge-overhead discipline). A cache-hit
+summary is a $0 row carrying the counterfactual `saved` figure.
+
+**Failure never blocks the step.** A summarizer that is unavailable, errors,
+times out, or returns a summary no smaller than the span is a *fallback*: the
+assembly is left unchanged, the failure is recorded on the strategy's
+`context_revision` (the `error` field is the warning event), and the pipeline
+continues to the next deterministic strategy. So a pipeline authored as
+`[summarize, drop_lowest_priority]` degrades to `drop_lowest_priority` when the
+summarizer is down — never a step failure. The one exception is a
+caller-context cancellation (the step's timeout/cancellation), which passes
+through unwrapped so the engine keeps its judgment and the delivery redelivers.
+
+**Failed-compaction audit (closing a 12.4 gap).** When a pipeline that
+*includes* a summarizer still cannot fit the budget, the engine now records the
+revisions that ran and ledgers any summarizer overhead that billed
+(`RecordContextRevisions`) before dead-lettering the step permanently — so a
+summarizer's spend before an `OverBudgetError` is metered and the failed
+decision is auditable, not silent (12.4 left the failed-attempt revisions
+unpersisted; 12.5 persists them whenever a summarizer billed).
+
+**Worked example** (mock counter, illustrative). A rollup step reads a running
+summary (`context_summary` v1, ~20 tok) plus four recent turns (~60 tok each),
+budget 200, pipeline `[summarize model=mock/cheap, drop_lowest_priority]`. Raw
+request ~280 > 200 → `summarize` gathers the oldest entries (the old summary +
+the first turns) whose sum reaches `over(80) + max_tokens(64) = 144`, folds them
+into `context_summary` v2 (`parent_version: 1`, ~25 tok), and the request drops
+to ~180 ≤ 200. `context_revision`: `summarize` (actions: the folded entries
+`summarized`; summaries: `key=context_summary version=2`). The v2 summary is on
+the blackboard for the next rollup; a `compaction:0` overhead row bills the
+mock/cheap call to this step. Re-running the identical conversation hits the
+summarizer cache — the second run's `compaction:0` rows are $0 `saved` rows.
+
 ## Consequences
 
 **Easier.**

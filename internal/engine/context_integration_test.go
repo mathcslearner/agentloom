@@ -58,6 +58,7 @@ type contextAssembledPayload struct {
 	RawContextTokens   int    `json:"raw_context_tokens"`
 	RawPreflightTokens int    `json:"raw_preflight_tokens"`
 	Revisions          int    `json:"revisions"`
+	Summaries          int    `json:"summaries"`
 	Sources            []struct {
 		Index  int    `json:"index"`
 		Kind   string `json:"kind"`
@@ -80,6 +81,7 @@ type contextRevisionPayload struct {
 	TokensBefore int    `json:"tokens_before"`
 	TokensAfter  int    `json:"tokens_after"`
 	Changed      bool   `json:"changed"`
+	Error        string `json:"error"`
 	Actions      []struct {
 		SourceIndex  int    `json:"source_index"`
 		Name         string `json:"name"`

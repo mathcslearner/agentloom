@@ -27,6 +27,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/mathcslearner/agentloom/internal/blackboard/pgboard"
+	"github.com/mathcslearner/agentloom/internal/contextmgr"
 	"github.com/mathcslearner/agentloom/internal/cost"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/exec/effects"
@@ -201,6 +202,11 @@ type Engine struct {
 	// wired: a step whose context spec has a retrieval source fails permanent.
 	// cmd/worker wires the same registry the retrieve executor uses.
 	retrievers *retrieval.Registry
+	// summarizer, when set, is the cheap-model summarizer the summarize
+	// compaction strategy calls (ticket 12.5, ADR-014). Nil leaves a summarize
+	// strategy to fall back to the next deterministic strategy. When a response
+	// cache is wired, stepSummarizer wraps it in a caching decorator.
+	summarizer contextmgr.Summarizer
 }
 
 // Option customizes an Engine.

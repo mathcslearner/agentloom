@@ -230,8 +230,13 @@ var structuralCases = map[string][]issueRef{
 		{dag.CodeContextFieldInvalid, "steps[10].context.compaction[0].n"},
 		{dag.CodeContextFieldInvalid, "steps[11].context.compaction[0].n"},
 		{dag.CodeContextFieldInvalid, "steps[12].context.compaction[0].min_tokens"},
-		{dag.CodeContextFieldInvalid, "steps[13].context.compaction[0].strategy"},
+		{dag.CodeContextFieldRequired, "steps[13].context.compaction[0].model"},
 		{dag.CodeContextFieldInvalid, "steps[14].context.compaction[1].strategy"},
+		{dag.CodeContextFieldRequired, "steps[15].context.compaction[0].model"},
+		{dag.CodeContextFieldInvalid, "steps[15].context.compaction[0].key"},
+		{dag.CodeContextFieldInvalid, "steps[16].context.compaction[0].timeout"},
+		{dag.CodeContextFieldInvalid, "steps[17].context.compaction[0].max_tokens"},
+		{dag.CodeContextFieldInvalid, "steps[18].context.compaction[0].model"},
 	},
 }
 

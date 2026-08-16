@@ -33,6 +33,7 @@ var exampleFiles = []string{
 	"blackboard.json",
 	"context_assembly.json",
 	"context_compaction.json",
+	"context_summarization.json",
 }
 
 // readExample loads one example definition document.
@@ -385,11 +386,12 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 		t.Error("no step with a pinned declarative blackboard write in kitchen_sink.json")
 	}
 
-	// Ticket 12.3/12.4 construct (ADR-014): a step with a context-assembly spec
-	// exercising all four source kinds, a pinned source, a per-source cap, a
-	// skip missing-policy, a source priority, a budget, and the three
-	// deterministic compaction strategies — so a schema edit that dropped the
-	// context envelope block or a compaction strategy would fail here.
+	// Ticket 12.3/12.4/12.5 construct (ADR-014): a step with a context-assembly
+	// spec exercising all four source kinds, a pinned source, a per-source cap,
+	// a skip missing-policy, a source priority, a budget, the three
+	// deterministic compaction strategies, and the summarize strategy — so a
+	// schema edit that dropped the context envelope block or a compaction
+	// strategy would fail here.
 	var (
 		hasContext    bool
 		kinds         = map[dag.ContextSourceKind]bool{}
@@ -450,7 +452,7 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	if !hasBudget {
 		t.Error("no context spec with a budget_tokens in kitchen_sink.json")
 	}
-	for _, st := range []dag.CompactionStrategyKind{dag.SlidingWindow, dag.TruncateOldest, dag.DropLowestPriority} {
+	for _, st := range []dag.CompactionStrategyKind{dag.SlidingWindow, dag.TruncateOldest, dag.DropLowestPriority, dag.SummarizeStrategy} {
 		if !strategies[st] {
 			t.Errorf("no %q compaction strategy in kitchen_sink.json", st)
 		}

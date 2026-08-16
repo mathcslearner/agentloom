@@ -84,7 +84,10 @@
           "multiplier": 2
         },
         "jitter": "full",
-        "retry_on": ["transient", "timeout"]
+        "retry_on": [
+          "transient",
+          "timeout"
+        ]
       }
     },
     {
@@ -133,7 +136,9 @@
                 "type": "string"
               }
             },
-            "required": ["title"]
+            "required": [
+              "title"
+            ]
           },
           "mode": "auto"
         }
@@ -169,7 +174,9 @@
           {
             "key": "draft_text",
             "from": "/text",
-            "tags": ["draft"],
+            "tags": [
+              "draft"
+            ],
             "pinned": true
           }
         ]
@@ -205,7 +212,9 @@
           {
             "kind": "blackboard",
             "name": "notes",
-            "tags": ["draft"],
+            "tags": [
+              "draft"
+            ],
             "priority": 1,
             "on_missing": "skip"
           },
@@ -221,9 +230,24 @@
         ],
         "budget_tokens": 8000,
         "compaction": [
-          {"strategy": "sliding_window", "n": 4},
-          {"strategy": "truncate_oldest", "min_tokens": 64},
-          {"strategy": "drop_lowest_priority"}
+          {
+            "strategy": "summarize",
+            "model": "mock/sim-1",
+            "key": "context_summary",
+            "max_tokens": 128,
+            "timeout": "30s"
+          },
+          {
+            "strategy": "sliding_window",
+            "n": 4
+          },
+          {
+            "strategy": "truncate_oldest",
+            "min_tokens": 64
+          },
+          {
+            "strategy": "drop_lowest_priority"
+          }
         ]
       }
     },
@@ -322,7 +346,9 @@
         "value": {
           "ok": true
         },
-        "tags": ["audit"],
+        "tags": [
+          "audit"
+        ],
         "expected_version": 0,
         "read_key": "draft_text"
       }
@@ -439,13 +465,43 @@
   ],
   "ui": {
     "nodes": {
-      "start": {"position": {"x": 0, "y": 200}},
-      "plan": {"position": {"x": 180, "y": 80}},
-      "search": {"position": {"x": 180, "y": 320}},
-      "draft": {"position": {"x": 560.5, "y": 200}},
-      "critique": {"position": {"x": 740, "y": 200}}
+      "start": {
+        "position": {
+          "x": 0,
+          "y": 200
+        }
+      },
+      "plan": {
+        "position": {
+          "x": 180,
+          "y": 80
+        }
+      },
+      "search": {
+        "position": {
+          "x": 180,
+          "y": 320
+        }
+      },
+      "draft": {
+        "position": {
+          "x": 560.5,
+          "y": 200
+        }
+      },
+      "critique": {
+        "position": {
+          "x": 740,
+          "y": 200
+        }
+      }
     },
     "zoom": 0.8,
-    "builder_metadata_the_engine_must_round_trip": ["anything", {"goes": "here"}]
+    "builder_metadata_the_engine_must_round_trip": [
+      "anything",
+      {
+        "goes": "here"
+      }
+    ]
   }
 }

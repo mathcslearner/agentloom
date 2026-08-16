@@ -7,59 +7,437 @@
   "budget_usd": 5,
   "on_budget_exceeded": "park",
   "params": {
-    "goal": {"type": "string", "required": true},
-    "budget": {"type": "number", "required": false},
-    "flags": {"type": "object"},
-    "tags": {"type": "array"},
-    "dry_run": {"type": "boolean"}
+    "goal": {
+      "type": "string",
+      "required": true
+    },
+    "budget": {
+      "type": "number",
+      "required": false
+    },
+    "flags": {
+      "type": "object"
+    },
+    "tags": {
+      "type": "array"
+    },
+    "dry_run": {
+      "type": "boolean"
+    }
   },
   "steps": [
-    {"id": "start", "type": "noop"},
-    {"id": "fetch", "type": "tool", "config": {"tool": "http_request", "input": {"method": "GET", "url": "https://example.internal/api?a=1&b=2"}}, "retry": {"max_attempts": 2}, "timeout": "30s", "budget": {"max_usd": 0.5}},
-    {"id": "find_similar", "type": "retrieve", "config": {"retriever": "pg_fulltext", "query": "${{ run.params.goal }}", "top_k": 5}, "cache": {"mode": "read_write", "ttl": "1h", "scope": "run"}},
-    {"id": "plan", "type": "planner", "config": {"model": "anthropic/claude-sonnet-5", "prompt": "Break down: ${{ run.params.goal }}"}},
-    {"id": "draft", "type": "llm", "config": {"model": "anthropic/claude-sonnet-5", "messages": [{"role": "user", "content": "Draft it if x < 3 & y > 2"}], "max_tokens": 1024, "temperature": 0, "model_fallbacks": [{"model": "anthropic/claude-haiku-4-5", "at_budget_fraction": 0.8}, {"model": "openai/gpt-5-mini"}], "output_format": {"type": "json_schema", "schema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}, "mode": "auto"}}, "cache": {"mode": "off"}, "budget": {"max_usd": 1.5, "max_tokens": 8000}, "validation": {"validators": [{"name": "contains", "config": {"substring": "Introduction"}}, {"name": "cel", "config": {"expr": "size(value) > 200"}, "target": "/text"}], "max_attempts": 3, "feedback": {"template": "Attempt ${{ feedback.attempt }}/${{ feedback.max_attempts }} failed:\n${{ feedback.issues }}\nPrior output:\n${{ feedback.prior_output }}", "max_output_chars": 2000}}, "blackboard": {"write": [{"key": "draft_text", "from": "/text", "tags": ["draft"], "pinned": true}]}},
-    {"id": "summarize_each", "type": "map", "config": {"items": "${{ steps.find_similar.output.docs }}", "body": "summarize_one"}},
-    {"id": "critique", "type": "agent", "config": {"agent": "critic", "prompt": "Review the draft on the blackboard."}, "context": {"sources": [{"kind": "literal", "name": "instructions", "text": "You are a meticulous editor.", "pinned": true}, {"kind": "step_output", "name": "draft", "step": "draft", "path": "/text", "max_tokens": 4000}, {"kind": "blackboard", "name": "pinned_draft", "key": "draft_text"}, {"kind": "blackboard", "name": "notes", "tags": ["draft"], "priority": 1, "on_missing": "skip"}, {"kind": "retrieval", "name": "style_guide", "retriever": "pg_fulltext", "query": "editorial style guide", "top_k": 3, "on_missing": "skip"}], "budget_tokens": 8000, "compaction": [{"strategy": "sliding_window", "n": 4}, {"strategy": "truncate_oldest", "min_tokens": 64}, {"strategy": "drop_lowest_priority"}]}},
-    {"id": "route", "type": "branch", "config": {}},
-    {"id": "refund_flow", "type": "echo", "config": {"input": {"hello": "world"}}},
-    {"id": "generic_flow", "type": "noop"},
-    {"id": "gather", "type": "join", "config": {"mode": "all"}},
-    {"id": "flaky_probe", "type": "fail_n_times", "config": {"n": 2}, "retry": {"max_attempts": 4, "backoff": {"initial": "100ms", "cap": "2s", "multiplier": 2}, "jitter": "full", "retry_on": ["transient", "timeout"]}},
-    {"id": "approve", "type": "human_approval", "config": {"prompt": "OK to send?"}},
-    {"id": "cooldown", "type": "sleep", "config": {"duration": "250ms"}, "retry": {"backoff": {"initial": "500ms", "cap": "500ms", "multiplier": 1.5}, "jitter": "none"}, "timeout": "5s"},
-    {"id": "tally", "type": "counter", "config": {"path": "/tmp/kitchen-sink-tally"}},
-    {"id": "notify", "type": "effectful_echo", "config": {"path": "/tmp/kitchen-sink-notify", "input": {"sent": true}, "fail_times": 1}, "retry": {"max_attempts": 3}},
-    {"id": "record", "type": "blackboard_write", "config": {"key": "final_note", "value": {"ok": true}, "tags": ["audit"], "expected_version": 0, "read_key": "draft_text"}}
+    {
+      "id": "start",
+      "type": "noop"
+    },
+    {
+      "id": "fetch",
+      "type": "tool",
+      "config": {
+        "tool": "http_request",
+        "input": {
+          "method": "GET",
+          "url": "https://example.internal/api?a=1&b=2"
+        }
+      },
+      "retry": {
+        "max_attempts": 2
+      },
+      "timeout": "30s",
+      "budget": {
+        "max_usd": 0.5
+      }
+    },
+    {
+      "id": "find_similar",
+      "type": "retrieve",
+      "config": {
+        "retriever": "pg_fulltext",
+        "query": "${{ run.params.goal }}",
+        "top_k": 5
+      },
+      "cache": {
+        "mode": "read_write",
+        "ttl": "1h",
+        "scope": "run"
+      }
+    },
+    {
+      "id": "plan",
+      "type": "planner",
+      "config": {
+        "model": "anthropic/claude-sonnet-5",
+        "prompt": "Break down: ${{ run.params.goal }}"
+      }
+    },
+    {
+      "id": "draft",
+      "type": "llm",
+      "config": {
+        "model": "anthropic/claude-sonnet-5",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Draft it if x < 3 & y > 2"
+          }
+        ],
+        "max_tokens": 1024,
+        "temperature": 0,
+        "model_fallbacks": [
+          {
+            "model": "anthropic/claude-haiku-4-5",
+            "at_budget_fraction": 0.8
+          },
+          {
+            "model": "openai/gpt-5-mini"
+          }
+        ],
+        "output_format": {
+          "type": "json_schema",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "title"
+            ]
+          },
+          "mode": "auto"
+        }
+      },
+      "cache": {
+        "mode": "off"
+      },
+      "budget": {
+        "max_usd": 1.5,
+        "max_tokens": 8000
+      },
+      "validation": {
+        "validators": [
+          {
+            "name": "contains",
+            "config": {
+              "substring": "Introduction"
+            }
+          },
+          {
+            "name": "cel",
+            "config": {
+              "expr": "size(value) > 200"
+            },
+            "target": "/text"
+          }
+        ],
+        "max_attempts": 3,
+        "feedback": {
+          "template": "Attempt ${{ feedback.attempt }}/${{ feedback.max_attempts }} failed:\n${{ feedback.issues }}\nPrior output:\n${{ feedback.prior_output }}",
+          "max_output_chars": 2000
+        }
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "draft_text",
+            "from": "/text",
+            "tags": [
+              "draft"
+            ],
+            "pinned": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "summarize_each",
+      "type": "map",
+      "config": {
+        "items": "${{ steps.find_similar.output.docs }}",
+        "body": "summarize_one"
+      }
+    },
+    {
+      "id": "critique",
+      "type": "agent",
+      "config": {
+        "agent": "critic",
+        "prompt": "Review the draft on the blackboard."
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "name": "instructions",
+            "text": "You are a meticulous editor.",
+            "pinned": true
+          },
+          {
+            "kind": "step_output",
+            "name": "draft",
+            "step": "draft",
+            "path": "/text",
+            "max_tokens": 4000
+          },
+          {
+            "kind": "blackboard",
+            "name": "pinned_draft",
+            "key": "draft_text"
+          },
+          {
+            "kind": "blackboard",
+            "name": "notes",
+            "tags": [
+              "draft"
+            ],
+            "priority": 1,
+            "on_missing": "skip"
+          },
+          {
+            "kind": "retrieval",
+            "name": "style_guide",
+            "retriever": "pg_fulltext",
+            "query": "editorial style guide",
+            "top_k": 3,
+            "on_missing": "skip"
+          }
+        ],
+        "budget_tokens": 8000,
+        "compaction": [
+          {
+            "strategy": "summarize",
+            "model": "mock/sim-1",
+            "key": "context_summary",
+            "max_tokens": 128,
+            "timeout": "30s"
+          },
+          {
+            "strategy": "sliding_window",
+            "n": 4
+          },
+          {
+            "strategy": "truncate_oldest",
+            "min_tokens": 64
+          },
+          {
+            "strategy": "drop_lowest_priority"
+          }
+        ]
+      }
+    },
+    {
+      "id": "route",
+      "type": "branch",
+      "config": {}
+    },
+    {
+      "id": "refund_flow",
+      "type": "echo",
+      "config": {
+        "input": {
+          "hello": "world"
+        }
+      }
+    },
+    {
+      "id": "generic_flow",
+      "type": "noop"
+    },
+    {
+      "id": "gather",
+      "type": "join",
+      "config": {
+        "mode": "all"
+      }
+    },
+    {
+      "id": "flaky_probe",
+      "type": "fail_n_times",
+      "config": {
+        "n": 2
+      },
+      "retry": {
+        "max_attempts": 4,
+        "backoff": {
+          "initial": "100ms",
+          "cap": "2s",
+          "multiplier": 2
+        },
+        "jitter": "full",
+        "retry_on": [
+          "transient",
+          "timeout"
+        ]
+      }
+    },
+    {
+      "id": "approve",
+      "type": "human_approval",
+      "config": {
+        "prompt": "OK to send?"
+      }
+    },
+    {
+      "id": "cooldown",
+      "type": "sleep",
+      "config": {
+        "duration": "250ms"
+      },
+      "retry": {
+        "backoff": {
+          "initial": "500ms",
+          "cap": "500ms",
+          "multiplier": 1.5
+        },
+        "jitter": "none"
+      },
+      "timeout": "5s"
+    },
+    {
+      "id": "tally",
+      "type": "counter",
+      "config": {
+        "path": "/tmp/kitchen-sink-tally"
+      }
+    },
+    {
+      "id": "notify",
+      "type": "effectful_echo",
+      "config": {
+        "path": "/tmp/kitchen-sink-notify",
+        "input": {
+          "sent": true
+        },
+        "fail_times": 1
+      },
+      "retry": {
+        "max_attempts": 3
+      }
+    },
+    {
+      "id": "record",
+      "type": "blackboard_write",
+      "config": {
+        "key": "final_note",
+        "value": {
+          "ok": true
+        },
+        "tags": [
+          "audit"
+        ],
+        "expected_version": 0,
+        "read_key": "draft_text"
+      }
+    }
   ],
   "edges": [
-    {"from": "start", "to": "fetch"},
-    {"from": "start", "to": "find_similar"},
-    {"from": "fetch", "to": "plan"},
-    {"from": "find_similar", "to": "summarize_each"},
-    {"from": "plan", "to": "draft"},
-    {"from": "draft", "to": "critique"},
-    {"from": "critique", "to": "route"},
-    {"from": "route", "to": "refund_flow", "when": "output.category == 'refund'"},
-    {"from": "route", "to": "generic_flow"},
-    {"from": "refund_flow", "to": "gather"},
-    {"from": "generic_flow", "to": "gather"},
-    {"from": "summarize_each", "to": "gather"},
-    {"from": "start", "to": "flaky_probe"},
-    {"from": "flaky_probe", "to": "gather"},
-    {"from": "gather", "to": "approve"},
-    {"from": "approve", "to": "cooldown"},
-    {"from": "cooldown", "to": "tally"},
-    {"from": "tally", "to": "notify"},
-    {"from": "notify", "to": "record"},
-    {"from": "critique", "to": "draft", "type": "loop", "condition": "output.verdict == 'revise'", "max_iterations": 3}
+    {
+      "from": "start",
+      "to": "fetch"
+    },
+    {
+      "from": "start",
+      "to": "find_similar"
+    },
+    {
+      "from": "fetch",
+      "to": "plan"
+    },
+    {
+      "from": "find_similar",
+      "to": "summarize_each"
+    },
+    {
+      "from": "plan",
+      "to": "draft"
+    },
+    {
+      "from": "draft",
+      "to": "critique"
+    },
+    {
+      "from": "critique",
+      "to": "route"
+    },
+    {
+      "from": "route",
+      "to": "refund_flow",
+      "when": "output.category == 'refund'"
+    },
+    {
+      "from": "route",
+      "to": "generic_flow"
+    },
+    {
+      "from": "refund_flow",
+      "to": "gather"
+    },
+    {
+      "from": "generic_flow",
+      "to": "gather"
+    },
+    {
+      "from": "summarize_each",
+      "to": "gather"
+    },
+    {
+      "from": "start",
+      "to": "flaky_probe"
+    },
+    {
+      "from": "flaky_probe",
+      "to": "gather"
+    },
+    {
+      "from": "gather",
+      "to": "approve"
+    },
+    {
+      "from": "approve",
+      "to": "cooldown"
+    },
+    {
+      "from": "cooldown",
+      "to": "tally"
+    },
+    {
+      "from": "tally",
+      "to": "notify"
+    },
+    {
+      "from": "notify",
+      "to": "record"
+    },
+    {
+      "from": "critique",
+      "to": "draft",
+      "type": "loop",
+      "condition": "output.verdict == 'revise'",
+      "max_iterations": 3
+    }
   ],
   "ui": {
     "nodes": {
-      "start": {"position": {"x": 120, "y": 240}},
-      "draft": {"position": {"x": 300.5, "y": -40}}
+      "start": {
+        "position": {
+          "x": 120,
+          "y": 240
+        }
+      },
+      "draft": {
+        "position": {
+          "x": 300.5,
+          "y": -40
+        }
+      }
     },
     "zoom": 0.75,
-    "junk_the_engine_must_keep": ["anything", {"goes": "here"}]
+    "junk_the_engine_must_keep": [
+      "anything",
+      {
+        "goes": "here"
+      }
+    ]
   }
 }

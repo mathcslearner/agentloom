@@ -1,0 +1,607 @@
+{
+  "schema_version": 1,
+  "name": "context_summarization",
+  "description": "The ticket 12.5 (ADR-014) demonstration of summarization compaction: a sixteen-turn conversation (offline mock, model mock/sim-1) writes each turn to the run blackboard under key turn_N (tag `turn`). Every fourth turn a `rollup` `llm` step assembles the four most recent turns (and, from the second rollup on, the running summary via blackboard key `context_summary` with on_missing:skip) into its request under a tight `budget_tokens` (200). The assembly exceeds the budget, so the ordered compaction pipeline runs: the `summarize` strategy folds the oldest evicted turns with a cheap model (mock/cheap, temperature 0) into a summary written to the blackboard under key `context_summary`, chaining a new version each rollup (parent_version links the chain); `drop_lowest_priority` is the deterministic fallback if the summarizer is unavailable. Each summarization is metered as compaction overhead on the serving step, its provider call is cached (a repeat compaction of the same span is a cache hit), and the pinned exemption is honored. Every rollup's framed request is guaranteed at or under budget before the provider is ever called, so a context-overflow 400 is structurally impossible. Runs entirely offline on the mock provider (no API key, no network). Inspect the chained summaries with `ctl blackboard <run-id> --key context_summary` (four versions) and the run event log for the `context_revision`/`context_assembled` records.",
+  "steps": [
+    {
+      "id": "t1",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 1: we agreed the north-star metric is weekly active teams rather than raw signups, because activation is what predicts long-run retention in this segment and keeps the whole roadmap honest.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_1",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "t2",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 2: engineering flagged that the ingestion pipeline drops events under burst load, so we prioritized an at-least-once queue with idempotency keys before any new feature work is allowed to land.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_2",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "t3",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 3: design proposed a simplified onboarding of three steps instead of seven, and early usability sessions suggest the shorter flow roughly doubles completion for first-time teams across the board.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_3",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "t4",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 4: we reviewed pricing and settled on usage-based tiers with a generous free allotment, betting that land-and-expand beats a high upfront wall for bottoms-up adoption in this particular market.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_4",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "rollup1",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Rollup 1: summarize the conversation so far into the running notes.",
+        "max_tokens": 128
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "blackboard",
+            "name": "turn_1",
+            "key": "turn_1"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_2",
+            "key": "turn_2"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_3",
+            "key": "turn_3"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_4",
+            "key": "turn_4"
+          }
+        ],
+        "budget_tokens": 200,
+        "compaction": [
+          {
+            "strategy": "summarize",
+            "model": "mock/cheap",
+            "key": "context_summary",
+            "max_tokens": 64,
+            "timeout": "30s"
+          },
+          {
+            "strategy": "drop_lowest_priority"
+          }
+        ]
+      }
+    },
+    {
+      "id": "t5",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 5: the launch checklist is green except for the status page and the incident runbook, both owned by ops and due Friday, after which we can announce to the waitlist the following Monday morning.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_5",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "t6",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 6: support raised that the top three tickets are all about confusing error messages, so we scheduled a copy pass on the twelve most common failures and added inline links to the relevant docs.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_6",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "t7",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 7: the data team shipped the activation dashboard and found that teams inviting a second member within a day retain at nearly twice the rate, which reframes our entire onboarding investment.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_7",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "t8",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 8: security completed the threat model and the only high finding was overly broad API tokens, so we split scopes into read, submit, and admin and shipped a migration to re-mint existing keys.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_8",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "rollup2",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Rollup 2: summarize the conversation so far into the running notes.",
+        "max_tokens": 128
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "blackboard",
+            "name": "running_summary",
+            "key": "context_summary",
+            "on_missing": "skip"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_5",
+            "key": "turn_5"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_6",
+            "key": "turn_6"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_7",
+            "key": "turn_7"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_8",
+            "key": "turn_8"
+          }
+        ],
+        "budget_tokens": 200,
+        "compaction": [
+          {
+            "strategy": "summarize",
+            "model": "mock/cheap",
+            "key": "context_summary",
+            "max_tokens": 64,
+            "timeout": "30s"
+          },
+          {
+            "strategy": "drop_lowest_priority"
+          }
+        ]
+      }
+    },
+    {
+      "id": "t9",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 9: marketing wants a launch narrative around reliability, and since the durable-execution work is the real differentiator we agreed the demo should deliberately kill a worker mid-run on stage.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_9",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "t10",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 10: finance asked for a clearer cost model, so we added per-run budgets with model-downgrade fallbacks and a live spend meter, which also unblocks the enterprise procurement conversations.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_10",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "t11",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 11: the mobile spike concluded that a thin read-only client covers eighty percent of the asks, so we deprioritized a full native app and will ship a responsive dashboard for phones instead.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_11",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "t12",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 12: we debated the plugin story and decided the SPI stays in-process for v1 with WASM sandboxing on the backlog, because the demand is for more built-in tools rather than third-party isolation.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_12",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "rollup3",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Rollup 3: summarize the conversation so far into the running notes.",
+        "max_tokens": 128
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "blackboard",
+            "name": "running_summary",
+            "key": "context_summary",
+            "on_missing": "skip"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_9",
+            "key": "turn_9"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_10",
+            "key": "turn_10"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_11",
+            "key": "turn_11"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_12",
+            "key": "turn_12"
+          }
+        ],
+        "budget_tokens": 200,
+        "compaction": [
+          {
+            "strategy": "summarize",
+            "model": "mock/cheap",
+            "key": "context_summary",
+            "max_tokens": 64,
+            "timeout": "30s"
+          },
+          {
+            "strategy": "drop_lowest_priority"
+          }
+        ]
+      }
+    },
+    {
+      "id": "t13",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 13: an outage postmortem showed the reconciler interval was too slow to heal a redis tail loss, so we tightened it and added a chaos test that restarts redis mid-run to keep us honest.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_13",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "t14",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 14: product reviewed the roadmap and moved human-in-the-loop approvals ahead of the visual builder, since the design-partner deals all hinge on an approval gate before any irreversible action.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_14",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "t15",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 15: the hiring plan added two backend engineers and one developer-advocate, and we agreed the advocate should own the examples repository and the getting-started path end to end from day one.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_15",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "t16",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Turn 16: we closed on a support SLA of one business day for the free tier and four hours for paid, and wired alerting so an on-call engineer is paged before a customer notices a queue backing up.",
+        "max_tokens": 128
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "turn_16",
+            "from": "/text",
+            "tags": [
+              "turn"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "rollup4",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Rollup 4: summarize the conversation so far into the running notes.",
+        "max_tokens": 128
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "blackboard",
+            "name": "running_summary",
+            "key": "context_summary",
+            "on_missing": "skip"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_13",
+            "key": "turn_13"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_14",
+            "key": "turn_14"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_15",
+            "key": "turn_15"
+          },
+          {
+            "kind": "blackboard",
+            "name": "turn_16",
+            "key": "turn_16"
+          }
+        ],
+        "budget_tokens": 200,
+        "compaction": [
+          {
+            "strategy": "summarize",
+            "model": "mock/cheap",
+            "key": "context_summary",
+            "max_tokens": 64,
+            "timeout": "30s"
+          },
+          {
+            "strategy": "drop_lowest_priority"
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "t1",
+      "to": "t2"
+    },
+    {
+      "from": "t2",
+      "to": "t3"
+    },
+    {
+      "from": "t3",
+      "to": "t4"
+    },
+    {
+      "from": "t4",
+      "to": "rollup1"
+    },
+    {
+      "from": "rollup1",
+      "to": "t5"
+    },
+    {
+      "from": "t5",
+      "to": "t6"
+    },
+    {
+      "from": "t6",
+      "to": "t7"
+    },
+    {
+      "from": "t7",
+      "to": "t8"
+    },
+    {
+      "from": "t8",
+      "to": "rollup2"
+    },
+    {
+      "from": "rollup2",
+      "to": "t9"
+    },
+    {
+      "from": "t9",
+      "to": "t10"
+    },
+    {
+      "from": "t10",
+      "to": "t11"
+    },
+    {
+      "from": "t11",
+      "to": "t12"
+    },
+    {
+      "from": "t12",
+      "to": "rollup3"
+    },
+    {
+      "from": "rollup3",
+      "to": "t13"
+    },
+    {
+      "from": "t13",
+      "to": "t14"
+    },
+    {
+      "from": "t14",
+      "to": "t15"
+    },
+    {
+      "from": "t15",
+      "to": "t16"
+    },
+    {
+      "from": "t16",
+      "to": "rollup4"
+    }
+  ]
+}

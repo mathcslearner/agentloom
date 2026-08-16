@@ -32,6 +32,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/blackboard/pgboard"
 	"github.com/mathcslearner/agentloom/internal/cache/redisstore"
 	"github.com/mathcslearner/agentloom/internal/config"
+	"github.com/mathcslearner/agentloom/internal/contextmgr"
 	"github.com/mathcslearner/agentloom/internal/cost"
 	"github.com/mathcslearner/agentloom/internal/engine"
 	"github.com/mathcslearner/agentloom/internal/exec"
@@ -287,6 +288,13 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	// backends. Blackboard and step-output sources need no extra wiring
 	// (the board above and the store).
 	engineOpts = append(engineOpts, engine.WithRetrievers(retrievers))
+	// Summarization compaction (ticket 12.5, ADR-014): the summarize
+	// compaction strategy summarizes an evicted span with a cheap model routed
+	// through the same provider registry the llm executor uses. When a response
+	// cache is wired (below), the engine wraps this in a caching decorator so a
+	// repeated compaction of the same span is a cache hit, not a second billed
+	// call.
+	engineOpts = append(engineOpts, engine.WithSummarizer(contextmgr.NewLLMSummarizer(providers)))
 	if resourceLimiter != nil {
 		engineOpts = append(engineOpts,
 			engine.WithResourceLimiter(resourceLimiter),

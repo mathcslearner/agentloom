@@ -383,6 +383,26 @@ change, and no new config var**.
   invalidation mechanism (prefer a plugin version bump for behavioral changes;
   bust for corpus re-ingest or emergencies; TTL for everything else).
 
+### Summarizer cache (as built, 12.5)
+
+The motivating "same `temperature=0` summarization on the same rendered prompt"
+from the Context section is now a real consumer: ADR-014's `summarize`
+compaction strategy caches its provider call through this cache. The engine's
+`cachedSummarizer` (`internal/engine/summarize.go`) decorates the summarizer
+with the same read-through/write-through discipline as the executor middleware,
+keying the deterministic summarizer `ChatRequest` (fixed prompt, temperature 0)
+under a dedicated `context_summarizer` plugin namespace at `SummarizerVersion`,
+**global** scope (a span summary is reusable across runs). A hit returns the
+stored summary marked `CacheHit`, which the cost stage ledgers as a $0 `saved`
+overhead row (ADR-012 rule 4). Every cache error is fail-safe (an unbuildable
+key, a corrupt entry, or a store error just calls the summarizer uncached), and
+the summarizer cache uses the same `engine_cache_*` metrics under a bounded
+`summarizer` plugin label. A prompt/framing change bumps `SummarizerVersion`
+and invalidates every cached summary; the fixed `context_summarizer` namespace
+means a 9.6 bust-by-provider does *not* sweep summaries (they are derived and
+short-TTL — the accepted trade for keeping the decorator from resolving the
+model registry).
+
 ## Consequences
 
 - **Repeat deterministic work becomes a lookup.** The headline win: identical

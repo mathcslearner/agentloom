@@ -14,6 +14,8 @@ package dag
 // step and a `step_output` source, keeping this ticket out of the template
 // engine (the 12.2 stance).
 
+import "time"
+
 // MaxContextSources bounds the sources one step may assemble.
 const MaxContextSources = 32
 
@@ -24,6 +26,29 @@ const MaxContextTopK = 100
 // MaxCompactionStrategies bounds the strategy pipeline one step may declare
 // (ticket 12.4). A pipeline longer than a handful is an authoring mistake.
 const MaxCompactionStrategies = 8
+
+// Summarize-strategy defaults and bounds (ticket 12.5). A summarize strategy
+// replaces an evicted span with a cheap-model summary written to the
+// blackboard; these fix its summary key, its completion bound, and its
+// per-call deadline when the author leaves them unset.
+const (
+	// DefaultSummaryKey is the blackboard key a summarize strategy writes its
+	// summary under when the author declares no `key`. Successive
+	// summarizations of the same step append new versions, so the key's
+	// version history is the chained-summary audit (ADR-014).
+	DefaultSummaryKey = "context_summary"
+	// DefaultSummaryMaxTokens is the summary completion bound (max_tokens for
+	// the summarizer call) when unset — a summary must be materially smaller
+	// than the span it replaces for compaction to make progress.
+	DefaultSummaryMaxTokens = 256
+	// DefaultSummaryTimeout is the per-summarizer-call deadline when unset. A
+	// summarizer failure (including a timeout) falls back to the next
+	// deterministic strategy and never blocks the step, so this is a
+	// promptness bound, not a correctness one.
+	DefaultSummaryTimeout = 60 * time.Second
+	// MaxSummaryTimeout bounds an authored summarizer timeout.
+	MaxSummaryTimeout = 10 * time.Minute
+)
 
 // ContextSourceKind is the discriminator of a context source.
 type ContextSourceKind string
@@ -84,9 +109,12 @@ const (
 	// SlidingWindow keeps only the last N non-pinned sources in message order
 	// (pinned sources are always kept and do not count toward N).
 	SlidingWindow CompactionStrategyKind = "sliding_window"
-	// SummarizeStrategy replaces an evicted span with a cheap-model summary
-	// (ticket 12.5). Reserved here: Validate rejects it until 12.5 lands, the
-	// reserved-and-rejected precedent (retry_on: validation_failed).
+	// SummarizeStrategy replaces the oldest evicted non-pinned span with a
+	// cheap-model summary written to the run blackboard (ticket 12.5). The
+	// summary is a synthetic entry in the assembly and, once durable, a
+	// versioned blackboard entry other steps can read; chained summaries fold
+	// an earlier summary with newer turns. A summarizer failure falls back to
+	// the next deterministic strategy and never blocks the step.
 	SummarizeStrategy CompactionStrategyKind = "summarize"
 )
 
@@ -111,6 +139,62 @@ type CompactionStrategy struct {
 	// truncated further; nil means truncate toward empty. Forbidden for every
 	// other strategy.
 	MinTokens *int `json:"min_tokens,omitempty"`
+
+	// Model is the cheap model the summarize strategy calls to summarize an
+	// evicted span (summarize only). Required for summarize (routed through
+	// the llm registry like an llm step's model), forbidden for every other
+	// strategy.
+	Model string `json:"model,omitempty"`
+
+	// Key is the blackboard key the summarize strategy writes its summary
+	// under (summarize only, optional). Defaults to DefaultSummaryKey; must be
+	// a valid blackboard key. Successive summarizations append new versions,
+	// so the key's history is the chained-summary audit. Forbidden for every
+	// other strategy.
+	Key string `json:"key,omitempty"`
+
+	// MaxTokens is the summary completion bound — the max_tokens of the
+	// summarizer call (summarize only, optional, >= 1). Defaults to
+	// DefaultSummaryMaxTokens. Forbidden for every other strategy.
+	MaxTokens *int `json:"max_tokens,omitempty"`
+
+	// Timeout is the per-summarizer-call deadline as a Go duration string
+	// (summarize only, optional). Defaults to DefaultSummaryTimeout, at most
+	// MaxSummaryTimeout. A timeout is a summarizer failure (fall back to the
+	// next strategy), never a step failure. Forbidden for every other strategy.
+	Timeout string `json:"timeout,omitempty"`
+}
+
+// EffectiveSummaryKey resolves a summarize strategy's blackboard key to its
+// default when unset.
+func (c CompactionStrategy) EffectiveSummaryKey() string {
+	if c.Key == "" {
+		return DefaultSummaryKey
+	}
+	return c.Key
+}
+
+// EffectiveSummaryMaxTokens resolves a summarize strategy's summary completion
+// bound to its default when unset.
+func (c CompactionStrategy) EffectiveSummaryMaxTokens() int {
+	if c.MaxTokens == nil {
+		return DefaultSummaryMaxTokens
+	}
+	return *c.MaxTokens
+}
+
+// EffectiveSummaryTimeout resolves a summarize strategy's per-call deadline to
+// its default when unset. The value is validated at submit time, so a parse
+// error here falls back to the default rather than propagating.
+func (c CompactionStrategy) EffectiveSummaryTimeout() time.Duration {
+	if c.Timeout == "" {
+		return DefaultSummaryTimeout
+	}
+	d, err := time.ParseDuration(c.Timeout)
+	if err != nil || d <= 0 {
+		return DefaultSummaryTimeout
+	}
+	return d
 }
 
 // ContextSource is one source in a step's ordered context spec. Exactly one

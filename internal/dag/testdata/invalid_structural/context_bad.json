@@ -2,36 +2,473 @@
   "schema_version": 1,
   "name": "context-bad",
   "steps": [
-    {"id": "a", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": []}},
-    {"id": "b", "type": "noop", "context": {"sources": [{"kind": "literal", "text": "x"}]}},
-    {"id": "c", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "literal"}]}},
-    {"id": "d", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "blackboard", "key": "k", "tags": ["draft"]}]}},
-    {"id": "e", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "retrieval", "retriever": "pg_fulltext"}]}},
-    {"id": "f", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "literal", "text": "x", "pinned": true, "max_tokens": 10}]}},
-    {"id": "g", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "literal", "text": "x", "step": "a"}]}},
-    {"id": "h", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "step_output", "step": "ghost"}]}},
-    {"id": "i", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "literal", "text": "x"}], "budget_tokens": 0}},
-    {"id": "j", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "literal", "text": "x"}], "budget_tokens": 100, "compaction": [{"strategy": "sliding_window"}]}},
-    {"id": "k", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "literal", "text": "x"}], "budget_tokens": 100, "compaction": [{"strategy": "sliding_window", "n": 0}]}},
-    {"id": "l", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "literal", "text": "x"}], "budget_tokens": 100, "compaction": [{"strategy": "truncate_oldest", "n": 2}]}},
-    {"id": "m", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "literal", "text": "x"}], "budget_tokens": 100, "compaction": [{"strategy": "drop_lowest_priority", "min_tokens": 5}]}},
-    {"id": "n", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "literal", "text": "x"}], "budget_tokens": 100, "compaction": [{"strategy": "summarize"}]}},
-    {"id": "o", "type": "llm", "config": {"model": "mock/sim-1", "prompt": "hi", "max_tokens": 10}, "context": {"sources": [{"kind": "literal", "text": "x"}], "budget_tokens": 100, "compaction": [{"strategy": "sliding_window", "n": 2}, {"strategy": "sliding_window", "n": 3}]}}
+    {
+      "id": "a",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": []
+      }
+    },
+    {
+      "id": "b",
+      "type": "noop",
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "text": "x"
+          }
+        ]
+      }
+    },
+    {
+      "id": "c",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal"
+          }
+        ]
+      }
+    },
+    {
+      "id": "d",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "blackboard",
+            "key": "k",
+            "tags": [
+              "draft"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "e",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "retrieval",
+            "retriever": "pg_fulltext"
+          }
+        ]
+      }
+    },
+    {
+      "id": "f",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "text": "x",
+            "pinned": true,
+            "max_tokens": 10
+          }
+        ]
+      }
+    },
+    {
+      "id": "g",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "text": "x",
+            "step": "a"
+          }
+        ]
+      }
+    },
+    {
+      "id": "h",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "step_output",
+            "step": "ghost"
+          }
+        ]
+      }
+    },
+    {
+      "id": "i",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "text": "x"
+          }
+        ],
+        "budget_tokens": 0
+      }
+    },
+    {
+      "id": "j",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "text": "x"
+          }
+        ],
+        "budget_tokens": 100,
+        "compaction": [
+          {
+            "strategy": "sliding_window"
+          }
+        ]
+      }
+    },
+    {
+      "id": "k",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "text": "x"
+          }
+        ],
+        "budget_tokens": 100,
+        "compaction": [
+          {
+            "strategy": "sliding_window",
+            "n": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "l",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "text": "x"
+          }
+        ],
+        "budget_tokens": 100,
+        "compaction": [
+          {
+            "strategy": "truncate_oldest",
+            "n": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "m",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "text": "x"
+          }
+        ],
+        "budget_tokens": 100,
+        "compaction": [
+          {
+            "strategy": "drop_lowest_priority",
+            "min_tokens": 5
+          }
+        ]
+      }
+    },
+    {
+      "id": "n",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "text": "x"
+          }
+        ],
+        "budget_tokens": 100,
+        "compaction": [
+          {
+            "strategy": "summarize"
+          }
+        ]
+      }
+    },
+    {
+      "id": "o",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "text": "x"
+          }
+        ],
+        "budget_tokens": 100,
+        "compaction": [
+          {
+            "strategy": "sliding_window",
+            "n": 2
+          },
+          {
+            "strategy": "sliding_window",
+            "n": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "p",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "text": "x"
+          }
+        ],
+        "budget_tokens": 100,
+        "compaction": [
+          {
+            "strategy": "summarize",
+            "key": "bad key"
+          }
+        ]
+      }
+    },
+    {
+      "id": "q",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "text": "x"
+          }
+        ],
+        "budget_tokens": 100,
+        "compaction": [
+          {
+            "strategy": "summarize",
+            "model": "mock/sim-1",
+            "timeout": "nope"
+          }
+        ]
+      }
+    },
+    {
+      "id": "r",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "text": "x"
+          }
+        ],
+        "budget_tokens": 100,
+        "compaction": [
+          {
+            "strategy": "summarize",
+            "model": "mock/sim-1",
+            "max_tokens": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "s",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "literal",
+            "text": "x"
+          }
+        ],
+        "budget_tokens": 100,
+        "compaction": [
+          {
+            "strategy": "sliding_window",
+            "n": 2,
+            "model": "mock/sim-1"
+          }
+        ]
+      }
+    }
   ],
   "edges": [
-    {"from": "a", "to": "b"},
-    {"from": "b", "to": "c"},
-    {"from": "c", "to": "d"},
-    {"from": "d", "to": "e"},
-    {"from": "e", "to": "f"},
-    {"from": "f", "to": "g"},
-    {"from": "g", "to": "h"},
-    {"from": "h", "to": "i"},
-    {"from": "i", "to": "j"},
-    {"from": "j", "to": "k"},
-    {"from": "k", "to": "l"},
-    {"from": "l", "to": "m"},
-    {"from": "m", "to": "n"},
-    {"from": "n", "to": "o"}
+    {
+      "from": "a",
+      "to": "b"
+    },
+    {
+      "from": "b",
+      "to": "c"
+    },
+    {
+      "from": "c",
+      "to": "d"
+    },
+    {
+      "from": "d",
+      "to": "e"
+    },
+    {
+      "from": "e",
+      "to": "f"
+    },
+    {
+      "from": "f",
+      "to": "g"
+    },
+    {
+      "from": "g",
+      "to": "h"
+    },
+    {
+      "from": "h",
+      "to": "i"
+    },
+    {
+      "from": "i",
+      "to": "j"
+    },
+    {
+      "from": "j",
+      "to": "k"
+    },
+    {
+      "from": "k",
+      "to": "l"
+    },
+    {
+      "from": "l",
+      "to": "m"
+    },
+    {
+      "from": "m",
+      "to": "n"
+    },
+    {
+      "from": "n",
+      "to": "o"
+    },
+    {
+      "from": "o",
+      "to": "p"
+    },
+    {
+      "from": "p",
+      "to": "q"
+    },
+    {
+      "from": "q",
+      "to": "r"
+    },
+    {
+      "from": "r",
+      "to": "s"
+    }
   ]
 }

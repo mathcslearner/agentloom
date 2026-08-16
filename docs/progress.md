@@ -7173,3 +7173,145 @@ ADR-006 (row 21) cross-amended.
 **Deferred to later M12 tickets:** summarization compaction billed as overhead
 (12.5), provider-window guardrails swapping M9.2's chars/4 estimator for the
 real counters + the `context_utilization` histogram (12.6).
+
+### 12.5 — Summarization compaction ✅
+
+Added the fourth compaction strategy, `summarize` — the only one that is not a
+pure function. It replaces the oldest evicted non-pinned span with a
+cheap-model summary written to the run blackboard, chaining across steps through
+the summary key's version history. It is the last compaction strategy to build
+because it needs the whole M12 stack (counter, blackboard, assembly, the
+deterministic strategies) plus the M10.2 cost ledger.
+
+**Contract (`internal/dag`).** Un-reserved `summarize` on the `context`
+envelope's `compaction` pipeline. `CompactionStrategy` grew four summarize-only
+fields: `model` (required, routed through the llm registry like a step's model —
+routability checked at claim pre-flight, not submit), `key` (the blackboard key
+the summary lands under; default `context_summary`), `max_tokens` (the summary
+completion bound; default 256), and `timeout` (per-call deadline; default 60s,
+≤ 10m). `checkCompaction` validates them and rejects each on a non-summarize
+strategy (and `n`/`min_tokens` on summarize); at most one summarize per pipeline
+(the no-duplicate rule). Effective-value helpers default the unset fields. No
+migration — the fields materialize on the existing `run_steps.context_policy`
+with the rest of the spec. Regenerated JSON Schema; both kitchen sinks + the
+construct-pin test gained a summarize strategy; `context_bad.json` grew five
+summarize cases (missing model, bad key, bad timeout, zero max_tokens, model on
+a non-summarize strategy).
+
+**Strategy + summarizer (`internal/contextmgr`).** New `summarize.go`: the
+`Summarizer` interface (`Summarize(ctx, SummarizeRequest) (SummaryResult,
+error)`), the concrete `LLMSummarizer` (routes `req.Model`, one temperature-0
+`Chat` under an optional per-call `context.WithTimeout`; a per-call timeout is an
+ordinary error the caller falls back on, a **parent-context cancellation passes
+through unwrapped** so the engine keeps its timeout/cancelled judgment; an empty
+summary is an error), the deterministic `SummaryChatRequest` (a fixed system
+prompt, the span as a **leading** user turn, a fixed instruction as the trailing
+turn — the mock echoes the short trailing instruction, so the offline fixture
+shrinks without scripting while a real provider gets material-then-task), and the
+`SummaryValue`/`SummaryAction` types + `SummarizerVersion`. In `compact.go` the
+`summarize` strategy gathers the oldest non-pinned live entries oldest-first
+until their token sum reaches `over + max_tokens` (or the set is exhausted),
+renders the span, calls the summarizer once, writes a versioned `SummaryValue`
+to the blackboard (`parent_version` = the prior head → the key's history **is**
+the chain), drops the span (recorded as `summarized` actions), and **splices a
+synthetic `summary`-kind entry** into the working `entries` at the span's oldest
+position — so it re-renders where the oldest evicted turn was and can be folded
+again (chaining within a pipeline, and across steps that read the running summary
+via a `blackboard` source). A summary is committed only if it is genuinely
+smaller than its span (progress guard). The compaction working set was
+refactored from source-index ordering to **message-position ordering** (so a
+spliced synthetic entry orders correctly among authored ones — behavior-identical
+for the no-splice case the 12.4 tests exercise). `Compact` gained a `ctx` param
+and `Policy{Summarizer, Board}`; `Revision` gained `Summaries []SummaryAction` +
+`Error`; `OverBudgetError` gained `Revisions`/`Summaries` (so the engine can
+audit and bill a summarizer that ran before the pipeline gave up); `Compacted`
+gained `Summaries`; disposition `Summarized` added.
+
+**Determinism restored operationally.** A model call breaks the pure-function
+property the deterministic strategies have. Two mechanisms restore it: the fixed
+temp-0 prompt, and ADR-011 caching. The engine's `cachedSummarizer`
+(`engine/summarize.go`) decorates the summarizer with read-through/write-through
+over the response cache, keying the deterministic `ChatRequest` under a dedicated
+`context_summarizer` plugin namespace at `SummarizerVersion`, **global** scope; a
+hit returns the stored summary marked `CacheHit`. Every cache error is fail-safe
+(unbuildable key / corrupt entry / store error → summarize uncached), reusing the
+`engine_cache_*` metrics under a bounded `summarizer` label. `stepSummarizer`
+wraps the wired summarizer in the decorator only when a cache is configured.
+
+**Cost — overhead ledgered before the call.** New `store.CompactionEntry(i)` =
+`compaction:<i>` (the same-attempt PK slot migration 0016 reserved). New
+`priceSummaryOverheads` (engine) prices each summarization under
+`PolicyEstimate` — a cache-hit summary is a $0 row carrying the counterfactual
+`saved`, exactly like a cached provider call. Unlike a judge (post-completion),
+a summarizer runs pre-execution, so its overhead row is written **inside the
+fenced context-record transaction** — `RecordContextAssembled` grew a `CostRows`
+slice, and a new `RecordContextRevisions` records the revisions + overhead for
+the **over-budget** path (a summarizer may bill before a later strategy fails).
+Both apply the rows via `ApplyAttemptCost` under the claim fence and run lock,
+before the step's own provider call, so the spend is metered even if the step
+later fails/retries (the 11.5 discipline). This also closes 12.4's documented
+"failed-attempt revisions not persisted" gap whenever a summarizer billed. Cost
+metrics are recorded post-commit (`recordCostRows`).
+
+**Failure never blocks the step.** A summarizer that is unavailable, errors,
+times out, or returns a non-shrinking summary is a *fallback*: the assembly is
+left unchanged, the failure is recorded on the strategy's `context_revision`
+(the `error` field is the warning event), and the pipeline continues to the next
+deterministic strategy — so `[summarize, drop_lowest_priority]` degrades to
+`drop_lowest_priority` when the summarizer is down. The one fatal case is a
+caller-context cancellation (the step's own timeout/cancel), which the engine
+returns bare so the delivery redelivers (ADR-006 rows 3/8, not row 21).
+
+**Store/API.** `ContextRevisionEvent` grew `summaries[]` + `error`;
+`ContextAssembledEvent` grew `summaries`; the assembled `sources` gained the
+`summarized` disposition and a synthetic `summary`-kind source. No migration
+(all events), no new config var, no new metric.
+
+**Wiring & fixture.** `cmd/worker` wires
+`engine.WithSummarizer(contextmgr.NewLLMSummarizer(providers))`. Canonical
+`examples/definitions/context_summarization.json`: a sixteen-turn conversation
+(offline mock, `mock/sim-1`) writing each turn to the blackboard, with four
+`rollup` steps that each assemble the four most recent turns (and, from rollup 2
+on, the running summary) under a tight budget and summarize with `mock/cheap`,
+producing four chained `context_summary` versions.
+
+**Tests.** `internal/contextmgr` summarize unit matrix (shrink + blackboard
+value/parent_version, chaining, fallback-with-error, ctx-cancel-fatal, the
+`SummaryChatRequest` golden) plus the extended property test (random pipelines
+now include summarize; still `FinalTokens ≤ budget` or `*OverBudgetError`, pins
+byte-identical). Engine integration (`summarize_integration_test.go`):
+`TestContextSummarization` (four chained versions with parent links, every
+rollup under budget, `summarized`/`summary` dispositions, four `compaction:*`
+`overhead` rows at `mock:cheap`), `TestContextSummarizationCacheHit` (two runs
+share one cache; the second run's `compaction:*` rows are `cache_hit` $0 saved
+rows — no second billed call), `TestContextSummarizerFallsBack` (unroutable
+summarizer model → an unchanged summarize revision with an `error`, the
+deterministic fallback runs, the step completes under budget, no summary/overhead
+written).
+
+**Non-obvious decisions & limitations.**
+- *Message-position ordering.* The synthetic summary entry has no source index,
+  so "oldest"/"last-N"/"lowest-priority-tiebreak" switched from source index to
+  slice position. Identical for authored-only assemblies (12.4 tests unchanged).
+- *One call per summarize application.* The strategy folds the oldest span in a
+  single call (greedy to `over + max_tokens`), not one-fold-per-turn — bounded
+  provider calls; chaining is primarily *across steps* via the blackboard key,
+  not repeated folds within one step.
+- *Global summarizer cache scope + fixed namespace.* A span summary is reusable
+  across runs (global). The `context_summarizer` namespace is fixed (not the
+  resolved provider), so the decorator never resolves the model registry — the
+  trade is that a 9.6 bust-by-provider does not sweep summaries (derived,
+  short-TTL). `SummarizerVersion` bump invalidates them.
+- *Accepted (mirroring the judge).* Summarizer calls bypass the M9 fleet limiter
+  and are metered after the call, not pre-projected by the M10 budget check.
+
+One ADR (§"Summarization compaction (as built, 12.5)" + worked example);
+ADR-012 (rule 4 — `compaction:<i>` overhead, ledgered pre-call), ADR-011
+(§"Summarizer cache (as built, 12.5)"), ADR-006 (row 21 — a summarizer failure
+is never a step failure) cross-amended.
+
+**Deferred to 12.6 (the last M12 ticket):** provider-window guardrails —
+a `context_window` column in the pricing/model catalog, the default budget
+(`window − max_tokens − headroom`) so a bare pipeline fires, the pre-flight hard
+check, the `context_utilization` histogram, and swapping M9.2's chars/4
+estimator for the real counters.

@@ -123,6 +123,15 @@ func JudgeEntry(chainIndex int) string {
 // so it needs no index.
 const JudgeErrorEntry = "judge:e"
 
+// CompactionEntry is the cost_ledger.entry value for one summarize compaction
+// call's overhead charge on a step's attempt (ticket 12.5, ADR-012 rule 4). The
+// pipeline index disambiguates two summarizations on the same attempt so the
+// (run, step, attempt, entry) primary key never collides — the same-attempt
+// slot migration 0016 reserved for M12.
+func CompactionEntry(index int) string {
+	return fmt.Sprintf("compaction:%d", index)
+}
+
 // CostUpdatedEvent is the cost_updated event payload (ticket 10.5, ADR-012):
 // one cost-bearing attempt's charge plus the run's running spend/saved totals
 // after the charge is folded into the aggregate. The M18 live meter reads

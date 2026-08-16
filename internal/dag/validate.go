@@ -328,12 +328,12 @@ func (v *validator) checkContext(path string, s Step) {
 }
 
 // checkCompaction validates the budget and the compaction strategy pipeline
-// (ADR-014, ticket 12.4): a positive budget, a bounded pipeline of known
+// (ADR-014, tickets 12.4/12.5): a positive budget, a bounded pipeline of known
 // strategies with their per-strategy parameters (sliding_window requires n >=
-// 1; truncate_oldest admits an optional min_tokens >= 0; a parameter on a
-// strategy it does not belong to is rejected), no duplicate strategies, and
-// the reserved `summarize` strategy rejected until 12.5. The codec already
-// rejected unknown strategy kinds; here the shape and bounds.
+// 1; truncate_oldest admits an optional min_tokens >= 0; summarize requires a
+// model and admits an optional key/max_tokens/timeout; a parameter on a
+// strategy it does not belong to is rejected), and no duplicate strategies. The
+// codec already rejected unknown strategy kinds; here the shape and bounds.
 func (v *validator) checkCompaction(path string, cs *ContextSpec) {
 	if cs.BudgetTokens != nil && *cs.BudgetTokens < 1 {
 		v.add(CodeContextFieldInvalid, path+".budget_tokens", "must be at least 1, got %d", *cs.BudgetTokens)
@@ -348,8 +348,6 @@ func (v *validator) checkCompaction(path string, cs *ContextSpec) {
 		case "":
 			v.add(CodeContextFieldRequired, entry+".strategy", "strategy is required")
 			continue
-		case SummarizeStrategy:
-			v.add(CodeContextFieldInvalid, entry+".strategy", "the %q strategy is reserved for a later release (12.5) and not yet supported", string(SummarizeStrategy))
 		case SlidingWindow:
 			if st.N == nil {
 				v.add(CodeContextFieldRequired, entry+".n", "n is required for a sliding_window strategy")
@@ -360,6 +358,8 @@ func (v *validator) checkCompaction(path string, cs *ContextSpec) {
 			if st.MinTokens != nil && *st.MinTokens < 0 {
 				v.add(CodeContextFieldInvalid, entry+".min_tokens", "must be non-negative, got %d", *st.MinTokens)
 			}
+		case SummarizeStrategy:
+			v.checkSummarizeStrategy(entry, st)
 		}
 		// Reject parameters set on a strategy they do not belong to.
 		if st.N != nil && st.Strategy != SlidingWindow {
@@ -368,12 +368,54 @@ func (v *validator) checkCompaction(path string, cs *ContextSpec) {
 		if st.MinTokens != nil && st.Strategy != TruncateOldest {
 			v.add(CodeContextFieldInvalid, entry+".min_tokens", "min_tokens is not valid for a %s strategy", string(st.Strategy))
 		}
+		if st.Model != "" && st.Strategy != SummarizeStrategy {
+			v.add(CodeContextFieldInvalid, entry+".model", "model is not valid for a %s strategy", string(st.Strategy))
+		}
+		if st.Key != "" && st.Strategy != SummarizeStrategy {
+			v.add(CodeContextFieldInvalid, entry+".key", "key is not valid for a %s strategy", string(st.Strategy))
+		}
+		if st.MaxTokens != nil && st.Strategy != SummarizeStrategy {
+			v.add(CodeContextFieldInvalid, entry+".max_tokens", "max_tokens is not valid for a %s strategy", string(st.Strategy))
+		}
+		if st.Timeout != "" && st.Strategy != SummarizeStrategy {
+			v.add(CodeContextFieldInvalid, entry+".timeout", "timeout is not valid for a %s strategy", string(st.Strategy))
+		}
 		if st.Strategy != "" {
 			if first, dup := seen[st.Strategy]; dup {
 				v.add(CodeContextFieldInvalid, entry+".strategy", "duplicate strategy %q (first at compaction[%d])", string(st.Strategy), first)
 			} else {
 				seen[st.Strategy] = i
 			}
+		}
+	}
+}
+
+// checkSummarizeStrategy validates a summarize strategy's own fields (ticket
+// 12.5): a required model, an optional valid blackboard key, an optional
+// positive max_tokens, and an optional parseable/positive/bounded timeout. The
+// model's routability is checked at claim pre-flight (like the llm step's
+// model), not at submit.
+func (v *validator) checkSummarizeStrategy(entry string, st CompactionStrategy) {
+	if st.Model == "" {
+		v.add(CodeContextFieldRequired, entry+".model", "model is required for a summarize strategy")
+	}
+	if st.Key != "" {
+		if err := blackboard.ValidateKey(st.Key); err != nil {
+			v.add(CodeContextFieldInvalid, entry+".key", "invalid blackboard key: %v", err)
+		}
+	}
+	if st.MaxTokens != nil && *st.MaxTokens < 1 {
+		v.add(CodeContextFieldInvalid, entry+".max_tokens", "must be at least 1, got %d", *st.MaxTokens)
+	}
+	if st.Timeout != "" {
+		d, err := time.ParseDuration(st.Timeout)
+		switch {
+		case err != nil:
+			v.add(CodeContextFieldInvalid, entry+".timeout", "not a Go duration string: %v", err)
+		case d <= 0:
+			v.add(CodeContextFieldInvalid, entry+".timeout", "must be positive, got %q", st.Timeout)
+		case d > MaxSummaryTimeout:
+			v.add(CodeContextFieldInvalid, entry+".timeout", "must be at most %s, got %q", MaxSummaryTimeout, st.Timeout)
 		}
 	}
 }

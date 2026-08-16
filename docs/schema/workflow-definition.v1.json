@@ -141,6 +141,18 @@
         },
         "min_tokens": {
           "type": "integer"
+        },
+        "model": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "max_tokens": {
+          "type": "integer"
+        },
+        "timeout": {
+          "type": "string"
         }
       },
       "additionalProperties": false,

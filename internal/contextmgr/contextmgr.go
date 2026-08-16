@@ -55,6 +55,9 @@ const (
 	Skipped Disposition = "skipped"
 	// Dropped is a source evicted whole by a compaction strategy (12.4).
 	Dropped Disposition = "dropped"
+	// Summarized is a source folded into a summary by the summarize compaction
+	// strategy (12.5) — its content was replaced by a summary entry.
+	Summarized Disposition = "summarized"
 )
 
 // SourceReport is one source's disposition in an assembly — the audit record

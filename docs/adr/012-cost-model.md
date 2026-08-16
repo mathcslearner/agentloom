@@ -186,6 +186,18 @@ unless noted:
    the next claim and against a step `max_usd` cap (SumByStep sums all
    entries). The cost API surfaces it as `entries[].overhead` under the
    `judge:*` entry plus a per-step `overhead_nano_usd` roll-up.
+   *Exercised by ADR-014 (M12.5):* the `summarize` compaction strategy's
+   provider call is ledgered the same way, under a `compaction:<pipeline index>`
+   `entry` (the same 0016 slot; `store.CompactionEntry`). Unlike a judge — which
+   is priced post-completion — a summarizer runs in the **pre-execution** path,
+   so its overhead row is written inside the fenced `RecordContextAssembled`/
+   `RecordContextRevisions` transaction (under the claim fence, before the
+   step's own provider call), so the spend is metered even if the step later
+   fails or retries. A cache-served summary (ADR-011) is a $0 row carrying the
+   counterfactual `saved` figure, exactly like a cached provider call.
+   *Accepted limitations (documented, mirroring the judge):* summarizer calls
+   bypass the M9 fleet limiter, and summarizer overhead is metered after the
+   call, not pre-projected by the M10 budget check.
 
 5. **No usage ⇒ no cost row.** A throttled attempt (ADR-010), a `lost`
    administrative outcome (ADR-005), or an errored provider call carries no

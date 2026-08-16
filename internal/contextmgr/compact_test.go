@@ -1,6 +1,7 @@
 package contextmgr_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -62,7 +63,7 @@ func TestCompactUnderBudgetNoop(t *testing.T) {
 	m := measurer(c)
 	total, _ := m(asm.Preamble)
 
-	cmp, err := contextmgr.Compact(asm, contextmgr.Policy{Budget: total + 100, Pipeline: []dag.CompactionStrategy{
+	cmp, err := contextmgr.Compact(context.Background(), asm, contextmgr.Policy{Budget: total + 100, Pipeline: []dag.CompactionStrategy{
 		{Strategy: dag.DropLowestPriority},
 	}}, c, m)
 	if err != nil {
@@ -96,7 +97,7 @@ func TestCompactSlidingWindow(t *testing.T) {
 	// Budget = exactly the survivors (pin + last 2 non-pinned).
 	budget, _ := m(contextmgr.Render([]contextmgr.Entry{entries[0], entries[3], entries[4]}))
 
-	cmp, err := contextmgr.Compact(asm, contextmgr.Policy{Budget: budget, Pipeline: []dag.CompactionStrategy{
+	cmp, err := contextmgr.Compact(context.Background(), asm, contextmgr.Policy{Budget: budget, Pipeline: []dag.CompactionStrategy{
 		{Strategy: dag.SlidingWindow, N: intp(2)},
 	}}, c, m)
 	if err != nil {
@@ -137,7 +138,7 @@ func TestCompactDropLowestPriority(t *testing.T) {
 	// Budget = everything except the lowest priority ("lo"): exactly one drop.
 	budget, _ := m(contextmgr.Render([]contextmgr.Entry{entries[0], entries[2], entries[3]}))
 
-	cmp, err := contextmgr.Compact(asm, contextmgr.Policy{Budget: budget, Pipeline: []dag.CompactionStrategy{
+	cmp, err := contextmgr.Compact(context.Background(), asm, contextmgr.Policy{Budget: budget, Pipeline: []dag.CompactionStrategy{
 		{Strategy: dag.DropLowestPriority},
 	}}, c, m)
 	if err != nil {
@@ -182,7 +183,7 @@ func TestCompactTruncateOldest(t *testing.T) {
 	full, _ := m(asm.Preamble)
 	budget := full - 100 // force truncation of the oldest
 
-	cmp, err := contextmgr.Compact(asm, contextmgr.Policy{Budget: budget, Pipeline: []dag.CompactionStrategy{
+	cmp, err := contextmgr.Compact(context.Background(), asm, contextmgr.Policy{Budget: budget, Pipeline: []dag.CompactionStrategy{
 		{Strategy: dag.TruncateOldest, MinTokens: intp(4)},
 	}}, c, m)
 	if err != nil {
@@ -211,7 +212,7 @@ func TestCompactPinnedExceedsBudget(t *testing.T) {
 		ent(c, 1, "other", strings.Repeat("o", 40), false, 0),
 	)
 	m := measurer(c)
-	_, err := contextmgr.Compact(asm, contextmgr.Policy{Budget: 10, Pipeline: []dag.CompactionStrategy{
+	_, err := contextmgr.Compact(context.Background(), asm, contextmgr.Policy{Budget: 10, Pipeline: []dag.CompactionStrategy{
 		{Strategy: dag.DropLowestPriority},
 		{Strategy: dag.SlidingWindow, N: intp(1)},
 	}}, c, m)
@@ -231,7 +232,7 @@ func TestCompactEmptyPipelineGuardrail(t *testing.T) {
 	c := mockCounter()
 	asm := asmOf(c, ent(c, 0, "a", strings.Repeat("x", 400), false, 0))
 	m := measurer(c)
-	_, err := contextmgr.Compact(asm, contextmgr.Policy{Budget: 5}, c, m)
+	_, err := contextmgr.Compact(context.Background(), asm, contextmgr.Policy{Budget: 5}, c, m)
 	var obe *contextmgr.OverBudgetError
 	if !errors.As(err, &obe) {
 		t.Fatalf("want *OverBudgetError, got %v", err)
@@ -260,7 +261,7 @@ func TestCompactDeterministic(t *testing.T) {
 		{Strategy: dag.TruncateOldest, MinTokens: intp(4)},
 		{Strategy: dag.DropLowestPriority},
 	}}
-	first, err := contextmgr.Compact(build(), pol, c, m)
+	first, err := contextmgr.Compact(context.Background(), build(), pol, c, m)
 	if err != nil {
 		var obe *contextmgr.OverBudgetError
 		if !errors.As(err, &obe) {
@@ -268,7 +269,7 @@ func TestCompactDeterministic(t *testing.T) {
 		}
 	}
 	for i := 0; i < 20; i++ {
-		got, gerr := contextmgr.Compact(build(), pol, c, m)
+		got, gerr := contextmgr.Compact(context.Background(), build(), pol, c, m)
 		if (err == nil) != (gerr == nil) {
 			t.Fatalf("determinism: error mismatch %v vs %v", err, gerr)
 		}
@@ -312,8 +313,18 @@ func TestCompactProperty(t *testing.T) {
 		}
 		k := rapid.IntRange(0, len(strategyPool)).Draw(t, "pipelen")
 		pipeline := strategyPool[:k]
+		// Sometimes lead with a summarize strategy (12.5). The fake summarizer
+		// returns a short fixed digest, so the hard guarantee (<= budget or
+		// typed error) and the pinned exemption must still hold with a
+		// synthetic summary entry spliced in.
+		pol := contextmgr.Policy{Budget: budget, Pipeline: pipeline}
+		if rapid.Bool().Draw(t, "summarize") {
+			pol.Pipeline = append([]dag.CompactionStrategy{{Strategy: dag.SummarizeStrategy, Model: "mock/cheap"}}, pipeline...)
+			pol.Summarizer = &fakeSummarizer{text: "digest"}
+			pol.Board = newWriteBoard()
+		}
 
-		cmp, err := contextmgr.Compact(asm, contextmgr.Policy{Budget: budget, Pipeline: pipeline}, c, m)
+		cmp, err := contextmgr.Compact(context.Background(), asm, pol, c, m)
 		if err != nil {
 			var obe *contextmgr.OverBudgetError
 			if !errors.As(err, &obe) {

@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mathcslearner/agentloom/internal/contextmgr"
 	"github.com/mathcslearner/agentloom/internal/cost"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
@@ -176,6 +177,56 @@ func (e *Engine) priceOverhead(ctx context.Context, step gen.RunStep, entry stri
 		}
 	}
 	return args
+}
+
+// priceSummaryOverheads computes the cost_ledger overhead rows for a step's
+// summarize compaction calls (ticket 12.5, ADR-012 rule 4). A summarizer's
+// provider call is attributed to the SERVING step, flagged overhead: true,
+// under a compaction:<i> entry (the 0016-reserved same-attempt slot). A
+// cache-served summary spent nothing, so it records only its counterfactual
+// saved figure (like a cached provider call). It reads no database — the caller
+// writes the rows inside the fenced context-record transaction, before any
+// provider call, so a summary's spend is metered even if the step later fails.
+// Returns nil when pricing is off or no summary carries usage.
+func (e *Engine) priceSummaryOverheads(ctx context.Context, step gen.RunStep, summaries []contextmgr.SummaryAction, now time.Time) []store.AttemptCostArgs {
+	if e.pricing == nil {
+		return nil
+	}
+	var rows []store.AttemptCostArgs
+	for i, s := range summaries {
+		if s.Resource == "" {
+			continue
+		}
+		priced, err := e.pricing.PriceModel(s.Resource, now, cost.PolicyEstimate)
+		if err != nil {
+			log.From(ctx).WarnContext(ctx, "summary overhead unpriceable (no catalog fallback); recording no cost",
+				slog.String("resource", s.Resource), slog.Any("error", err))
+			continue
+		}
+		rate, _ := json.Marshal(priced.Rate)
+		usageJSON, _ := json.Marshal(exec.Usage{InputTokens: s.InputTokens, OutputTokens: s.OutputTokens, CacheHit: s.CacheHit})
+		amount := cost.Cost(s.InputTokens, s.OutputTokens, priced.Rate)
+		args := store.AttemptCostArgs{
+			RunID: step.RunID, StepID: step.StepID, Attempt: step.AttemptCount,
+			Entry: store.CompactionEntry(i), Resource: s.Resource, Usage: usageJSON, Rate: rate,
+			RateSource: priced.Source.String(), Overhead: true, CacheHit: s.CacheHit, Now: now,
+		}
+		// A cache hit spent nothing (the original summarization already
+		// billed): meter only the counterfactual saved figure, and stay silent
+		// on an unknown model (the miss already warned).
+		if s.CacheHit {
+			args.SavedNanoUSD = amount
+		} else {
+			args.CostNanoUSD = amount
+			if priced.Fallback {
+				if w, werr := json.Marshal(cost.NewUnknownModelWarning(s.Resource, priced.Rate)); werr == nil {
+					args.Warning = w
+				}
+			}
+		}
+		rows = append(rows, args)
+	}
+	return rows
 }
 
 // recordCost emits the cost metrics for one priced attempt (ticket 10.5),

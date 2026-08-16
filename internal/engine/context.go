@@ -95,7 +95,7 @@ func (e *Engine) assembleContext(ctx context.Context, step gen.RunStep, executor
 	}
 
 	// The assembled context becomes the request preamble; the compaction stage
-	// (ticket 12.4) may shrink it below the step budget first.
+	// (tickets 12.4/12.5) may shrink it below the step budget first.
 	preamble := asm.Preamble
 	reports := asm.Sources
 	contextTokens := asm.ContextTokens
@@ -103,6 +103,8 @@ func (e *Engine) assembleContext(ctx context.Context, step gen.RunStep, executor
 	rawPreflight := 0
 	budgetTokens := 0
 	var revisions []store.ContextRevisionEvent
+	var costRows []store.AttemptCostArgs
+	var summaries []contextmgr.SummaryAction
 
 	if spec.BudgetTokens != nil {
 		// Compaction (ticket 12.4): the budget is over the whole framed request,
@@ -127,19 +129,39 @@ func (e *Engine) assembleContext(ctx context.Context, step gen.RunStep, executor
 		if n, merr := measure(asm.Preamble); merr == nil {
 			rawPreflight = n
 		}
-		comp, cerr := contextmgr.Compact(asm, contextmgr.Policy{Budget: budgetTokens, Pipeline: spec.Compaction}, counter, measure)
+		comp, cerr := contextmgr.Compact(ctx, asm, contextmgr.Policy{
+			Budget: budgetTokens, Pipeline: spec.Compaction,
+			Summarizer: e.stepSummarizer(), Board: sc.Blackboard,
+		}, counter, measure)
 		if cerr != nil {
+			// A caller-context cancellation (surfaced by the summarizer, ticket
+			// 12.5) decides nothing — return it bare so the engine keeps its
+			// timeout/cancelled judgment and the delivery redelivers.
+			if errors.Is(cerr, context.Canceled) || errors.Is(cerr, context.DeadlineExceeded) {
+				return nil, cerr
+			}
 			// An OverBudgetError (pipeline could not fit, or pins alone exceed the
 			// budget) and a measure-build failure are both deterministic — the
 			// same request assembles the same way every attempt — so the step
 			// fails permanently before any provider call (ADR-014's hard
-			// guarantee: overflow is never sent).
+			// guarantee: overflow is never sent). Before failing, record the
+			// revisions that DID run and ledger any summarizer overhead that
+			// billed (ticket 12.5) — a failed compaction is auditable and its
+			// spend metered, not silent.
+			var obe *contextmgr.OverBudgetError
+			if errors.As(cerr, &obe) {
+				if rerr := e.recordFailedCompaction(ctx, step, obe); rerr != nil {
+					return nil, rerr // fenced/transport: redeliver
+				}
+			}
 			return nil, &contextError{cause: cerr}
 		}
 		preamble = comp.Preamble
 		reports = comp.Sources
 		contextTokens = comp.ContextTokens
 		revisions = toRevisionEvents(comp.Revisions)
+		summaries = comp.Summaries
+		costRows = e.priceSummaryOverheads(ctx, step, summaries, e.now())
 	}
 
 	augmented, err := injector.WithContext(sc, preamble)
@@ -174,12 +196,17 @@ func (e *Engine) assembleContext(ctx context.Context, step gen.RunStep, executor
 		RawContextTokens:   rawContextTokens,
 		RawPreflightTokens: rawPreflight,
 		Revisions:          len(revisions),
+		Summaries:          len(summaries),
 	}
-	if err := e.recordContextAssembled(ctx, step, asmEvent, revisions); err != nil {
+	if err := e.recordContextAssembled(ctx, step, asmEvent, revisions, costRows); err != nil {
 		// A fenced caller (taken over) or a transport failure of the audit
 		// write decides nothing — redeliver, exactly like recordDowngrade.
 		return nil, err
 	}
+	// Meter the summarizer overhead post-commit (ticket 12.5): the rows are
+	// durable now, so record the cost metrics off the transaction (the 10.5
+	// discipline — a fenced record returned above and metered nothing).
+	e.recordCostRows(nil, costRows)
 
 	logger := log.From(ctx)
 	included, skipped, truncated, dropped := tallyDispositions(reports)
@@ -190,10 +217,30 @@ func (e *Engine) assembleContext(ctx context.Context, step gen.RunStep, executor
 		slog.Int("truncated", truncated),
 		slog.Int("dropped", dropped),
 		slog.Int("revisions", len(revisions)),
+		slog.Int("summaries", len(summaries)),
 		slog.Int("context_tokens", contextTokens),
 		slog.Int("budget_tokens", budgetTokens),
 		slog.Int("preflight_tokens", preflight))
 	return augmented, nil
+}
+
+// recordFailedCompaction records the compaction that ran and ledgers any
+// summarizer overhead that billed before the pipeline gave up (ticket 12.5),
+// then leaves the caller to fail the step permanently. A summarizer may have
+// billed a real provider call before a later strategy could not fit the budget;
+// the spend must be metered and the decision auditable even though no assembled
+// context is sent. Returns a fenced/transport error to redeliver.
+func (e *Engine) recordFailedCompaction(ctx context.Context, step gen.RunStep, obe *contextmgr.OverBudgetError) error {
+	revisions := toRevisionEvents(obe.Revisions)
+	costRows := e.priceSummaryOverheads(ctx, step, obe.Summaries, e.now())
+	if len(revisions) == 0 && len(costRows) == 0 {
+		return nil // nothing ran and nothing billed — the plain guardrail path
+	}
+	if err := e.recordContextRevisions(ctx, step, revisions, costRows); err != nil {
+		return err
+	}
+	e.recordCostRows(nil, costRows)
+	return nil
 }
 
 // contextSources builds the store-backed readers contextmgr.Assemble needs:
@@ -240,14 +287,15 @@ func (e *Engine) contextSources(ctx context.Context, step gen.RunStep, spec dag.
 	return src, nil
 }
 
-// recordContextAssembled appends the compaction revision events (ticket 12.4)
-// and the context_assembled event for a claim whose context spec the assembly
-// built into the request, in one short fenced transaction (the recordDowngrade
-// precedent). It is not a state transition, so it only fences on the caller's
-// live claim and appends the events; a fenced caller surfaces a
-// *store.TransitionError so assembleContext abandons like any other fenced
-// write, and a transport error redelivers.
-func (e *Engine) recordContextAssembled(ctx context.Context, step gen.RunStep, event store.ContextAssembledEvent, revisions []store.ContextRevisionEvent) error {
+// recordContextAssembled appends the compaction revision events (ticket 12.4),
+// the summarize overhead ledger rows (ticket 12.5), and the context_assembled
+// event for a claim whose context spec the assembly built into the request, in
+// one short fenced transaction (the recordDowngrade precedent). It is not a
+// state transition, so it only fences on the caller's live claim and appends
+// the events; a fenced caller surfaces a *store.TransitionError so
+// assembleContext abandons like any other fenced write, and a transport error
+// redelivers.
+func (e *Engine) recordContextAssembled(ctx context.Context, step gen.RunStep, event store.ContextAssembledEvent, revisions []store.ContextRevisionEvent, costRows []store.AttemptCostArgs) error {
 	claimID := uuid.Nil
 	if step.ClaimID != nil {
 		claimID = *step.ClaimID
@@ -257,7 +305,30 @@ func (e *Engine) recordContextAssembled(ctx context.Context, step gen.RunStep, e
 	err := e.store.WithTx(txCtx, func(ctx context.Context, q store.Querier) error {
 		return store.RecordContextAssembled(ctx, q, store.RecordContextAssembledArgs{
 			RunID: step.RunID, StepID: step.StepID, ClaimID: claimID,
-			Event: event, Revisions: revisions, Now: now,
+			Event: event, Revisions: revisions, CostRows: costRows, Now: now,
+		})
+	})
+	endTxSpan(span, err)
+	return err
+}
+
+// recordContextRevisions appends the compaction revision events and ledgers the
+// summarize overhead rows for a claim whose compaction pipeline could NOT fit
+// the budget (ticket 12.5) — no context_assembled event, since no assembly is
+// sent, but a summarizer that billed before the pipeline gave up must still be
+// audited and metered. Fenced on the caller's live claim, like
+// recordContextAssembled.
+func (e *Engine) recordContextRevisions(ctx context.Context, step gen.RunStep, revisions []store.ContextRevisionEvent, costRows []store.AttemptCostArgs) error {
+	claimID := uuid.Nil
+	if step.ClaimID != nil {
+		claimID = *step.ClaimID
+	}
+	now := e.now()
+	txCtx, span := e.tracer.Start(ctx, "step.context.record")
+	err := e.store.WithTx(txCtx, func(ctx context.Context, q store.Querier) error {
+		return store.RecordContextRevisions(ctx, q, store.RecordContextAssembledArgs{
+			RunID: step.RunID, StepID: step.StepID, ClaimID: claimID,
+			Revisions: revisions, CostRows: costRows, Now: now,
 		})
 	})
 	endTxSpan(span, err)
@@ -278,7 +349,7 @@ func toSourceRecords(reports []contextmgr.SourceReport) []store.ContextSourceRec
 }
 
 // toRevisionEvents maps compaction revisions onto the store's context_revision
-// event payloads (ticket 12.4).
+// event payloads (tickets 12.4/12.5).
 func toRevisionEvents(revs []contextmgr.Revision) []store.ContextRevisionEvent {
 	if len(revs) == 0 {
 		return nil
@@ -292,10 +363,19 @@ func toRevisionEvents(revs []contextmgr.Revision) []store.ContextRevisionEvent {
 				TokensBefore: a.TokensBefore, TokensAfter: a.TokensAfter,
 			}
 		}
+		summaries := make([]store.ContextRevisionSummaryRecord, len(r.Summaries))
+		for j, s := range r.Summaries {
+			summaries[j] = store.ContextRevisionSummaryRecord{
+				Key: s.Key, Version: s.Version, ParentVersion: s.ParentVersion,
+				Model: s.Model, Resource: s.Resource, SpanNames: s.SpanNames,
+				SpanTokens: s.SpanTokens, SummaryTokens: s.SummaryTokens, CacheHit: s.CacheHit,
+				InputTokens: s.InputTokens, OutputTokens: s.OutputTokens,
+			}
+		}
 		out[i] = store.ContextRevisionEvent{
 			Index: r.Index, Strategy: r.Strategy, N: r.N, MinTokens: r.MinTokens,
 			Budget: r.Budget, TokensBefore: r.TokensBefore, TokensAfter: r.TokensAfter,
-			Changed: r.Changed, Actions: actions, Kept: r.Kept,
+			Changed: r.Changed, Actions: actions, Summaries: summaries, Error: r.Error, Kept: r.Kept,
 		}
 	}
 	return out
@@ -313,6 +393,10 @@ func tallyDispositions(reports []contextmgr.SourceReport) (included, skipped, tr
 		case contextmgr.Truncated:
 			truncated++
 		case contextmgr.Dropped:
+			dropped++
+		case contextmgr.Summarized:
+			// A summarized source folded into a summary — counted as dropped
+			// (its content left the assembly) for this coarse log tally.
 			dropped++
 		}
 	}
