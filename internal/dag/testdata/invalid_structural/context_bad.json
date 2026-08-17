@@ -395,6 +395,43 @@
           }
         ]
       }
+    },
+    {
+      "id": "t",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "thread",
+            "tags": [
+              "draft"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "u",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "hi",
+        "max_tokens": 10
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "blackboard",
+            "key": "k",
+            "role": "writer"
+          }
+        ]
+      }
     }
   ],
   "edges": [
@@ -469,6 +506,14 @@
     {
       "from": "r",
       "to": "s"
+    },
+    {
+      "from": "s",
+      "to": "t"
+    },
+    {
+      "from": "t",
+      "to": "u"
     }
   ]
 }

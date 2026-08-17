@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mathcslearner/agentloom/internal/blackboard"
@@ -23,6 +25,12 @@ import (
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 	"github.com/mathcslearner/agentloom/internal/tokens"
 )
+
+// defaultThreadContentPointer is the JSON pointer an auto-thread append selects
+// from an agent's output for the message body — an llm-family step always sets
+// a canonical /text, so this resolves for every agent. An output that lacks it
+// falls back to the whole output (auto-threading never fails a succeeded step).
+const defaultThreadContentPointer = "/text"
 
 // stepCounter resolves the token counter for a step's blackboard writes: the
 // executor's TokenCounter hook (the llm executor resolves the model's
@@ -119,4 +127,97 @@ func clampCount(n int) int32 {
 	default:
 		return int32(n)
 	}
+}
+
+// plannedThreadMessage is one auto-thread append with its ThreadMessage already
+// marshaled — the pure product of planThreadAppend, ready to insert inside the
+// completion transaction.
+type plannedThreadMessage struct {
+	value json.RawMessage
+}
+
+// planThreadAppend builds the handoff-thread message for a completing agent
+// step (ticket 14.2, ADR-016): pure, no database reads. An agent turn is
+// auto-appended to the run's thread — a new version of the conventional thread
+// key carrying the message body plus author/role/iteration — so a downstream
+// agent's `thread` context source sees the prior turns. Non-agent steps plan
+// nothing (nil). The role comes from the merged AgentConfig (ResolveAgentStep
+// stamped it); the iteration comes from the step's `#k` instance suffix (0 for
+// an authored step, the loop iteration once 14.3 unrolls loops); the content is
+// the step's /text output, falling back to the whole output. A decode/marshal
+// failure is deterministic → the caller records a permanent step failure.
+func planThreadAppend(step gen.RunStep, output json.RawMessage, now time.Time) (*plannedThreadMessage, error) {
+	if dag.StepType(step.StepType) != dag.StepAgent {
+		return nil, nil
+	}
+	var cfg struct {
+		Role string `json:"role"`
+	}
+	if len(step.Config) > 0 {
+		if err := json.Unmarshal(step.Config, &cfg); err != nil {
+			return nil, fmt.Errorf("decoding agent config for thread append: %w", err)
+		}
+	}
+	content, perr := blackboard.ResolvePointer(output, defaultThreadContentPointer)
+	if perr != nil {
+		// An agent output without /text (unusual for an llm-family step) still
+		// contributes its whole output as the message body — the empty pointer
+		// always resolves (a nil output becomes JSON null).
+		content, _ = blackboard.ResolvePointer(output, "")
+	}
+	value, err := json.Marshal(blackboard.ThreadMessage{
+		Author:    step.StepID,
+		Role:      cfg.Role,
+		Iteration: threadIteration(step.StepID),
+		Content:   content,
+		CreatedAt: now,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling thread message: %w", err)
+	}
+	return &plannedThreadMessage{value: value}, nil
+}
+
+// applyThreadAppend inserts the planned thread message on the completion
+// transaction's Querier — a new version of the conventional thread key, tagged
+// TagThread, token-counted, attributed to the completing step. Unconditional
+// (no CAS) and unfenced (the success CAS already fenced this completion), atomic
+// with the success under the run lock it holds.
+func (e *Engine) applyThreadAppend(ctx context.Context, q store.Querier, step gen.RunStep, msg *plannedThreadMessage, counter tokens.Counter, now time.Time) error {
+	value := blackboard.CanonicalValue(msg.value)
+	tags, err := blackboard.NormalizeTags([]string{blackboard.TagThread})
+	if err != nil {
+		return fmt.Errorf("thread append to key %q: %w", blackboard.DefaultThreadKey, err)
+	}
+	count := counter.Count(string(value))
+	if _, err := store.PutBlackboardEntry(ctx, q, store.BlackboardPutArgs{
+		RunID:         step.RunID,
+		Key:           blackboard.DefaultThreadKey,
+		Value:         value,
+		TokenCount:    clampCount(count),
+		TokenCounter:  counter.ID(),
+		Tags:          tags,
+		AuthorStepID:  step.StepID,
+		AuthorAttempt: step.AttemptCount,
+		Now:           now,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// threadIteration parses the loop iteration from a step's `#k` instance suffix
+// (the reserved instance-id space): "writer#2" → 2, an authored id with no
+// suffix → 0. 14.2's authored agents are all iteration 0; 14.3's loop unrolling
+// mints the `#k` instances that carry a real iteration.
+func threadIteration(stepID string) int {
+	i := strings.LastIndex(stepID, "#")
+	if i < 0 || i == len(stepID)-1 {
+		return 0
+	}
+	n, err := strconv.Atoi(stepID[i+1:])
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }

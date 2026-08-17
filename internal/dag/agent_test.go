@@ -68,6 +68,22 @@ func TestResolveAgentStepPrecedence(t *testing.T) {
 		if got.Context != roleContext {
 			t.Errorf("context = %+v, want inherited role context", got.Context)
 		}
+		if c.Role != "critic" {
+			t.Errorf("role = %q, want the role's Role name (14.2 thread metadata)", c.Role)
+		}
+	})
+
+	t.Run("role falls back to the agent ref when the role declares none", func(t *testing.T) {
+		t.Parallel()
+		anon := &dag.Definition{Agents: map[string]*dag.AgentDef{"helper": {Model: "mock/m"}}}
+		step := dag.Step{ID: "s", Type: dag.StepAgent, Config: &dag.AgentConfig{Agent: "helper", Prompt: "x"}}
+		got, err := dag.ResolveAgentStep(anon, step)
+		if err != nil {
+			t.Fatalf("ResolveAgentStep: %v", err)
+		}
+		if c := got.Config.(*dag.AgentConfig); c.Role != "helper" {
+			t.Errorf("role = %q, want the agent ref as fallback", c.Role)
+		}
 	})
 
 	t.Run("step overrides win per field", func(t *testing.T) {

@@ -991,13 +991,13 @@ Targeted chaos: kill workers at each 13.1 boundary (pre-claim, mid-LLM, pre-comm
 - [x] `agent` step executes as a fully-configured LLM step (e2e with mock)
 - [x] Tool calls outside the agent's allowlist rejected with typed error
 
-#### 14.2 — Handoff conventions & message thread
+#### 14.2 — Handoff conventions & message thread ✅
 **Depends on:** 14.1, 12.2
 Standardized blackboard usage: agent outputs auto-appended to a `thread` (author, role, iteration, timestamp); per-agent context presets ("conversation view": thread + role-filtered entries + pinned facts); explicit handoff payloads (structured output of one agent as pinned input to the next).
 **Done when:**
-- [ ] Two-agent relay e2e: researcher findings automatically visible to writer via thread preset
-- [ ] Thread entries carry author/role/iteration metadata (asserted)
-- [ ] Context preset respects compaction (long thread compacts, pinned handoff survives — test)
+- [x] Two-agent relay e2e: researcher findings automatically visible to writer via thread preset
+- [x] Thread entries carry author/role/iteration metadata (asserted)
+- [x] Context preset respects compaction (long thread compacts, pinned handoff survives — test)
 
 #### 14.3 — Loop-edge runtime (unrolling)
 **Depends on:** 14.2, 13.2

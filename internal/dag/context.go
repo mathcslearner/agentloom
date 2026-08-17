@@ -68,10 +68,17 @@ const (
 	// SourceLiteral is an inline constant (a system-prompt fragment,
 	// instructions) included verbatim.
 	SourceLiteral ContextSourceKind = "literal"
+	// SourceThread is an agent handoff thread (ticket 14.2, ADR-016): the full
+	// version History of a thread key (default "thread"), rendered as ordered
+	// messages carrying author/role/iteration — the "conversation view" a role's
+	// default context assembles so a downstream agent sees the prior turns. An
+	// optional Role filters the messages to one role. Unlike SourceBlackboard
+	// (which reads heads), a thread source reads every version of its key.
+	SourceThread ContextSourceKind = "thread"
 )
 
 var contextSourceKinds = []ContextSourceKind{
-	SourceStepOutput, SourceBlackboard, SourceRetrieval, SourceLiteral,
+	SourceStepOutput, SourceBlackboard, SourceRetrieval, SourceLiteral, SourceThread,
 }
 
 // ContextMissingPolicy governs what happens when a source resolves to nothing
@@ -220,10 +227,16 @@ type ContextSource struct {
 	// "/text" is the natural choice for an upstream llm step.
 	Path string `json:"path,omitempty"`
 
-	// Key selects a single blackboard entry's head by key (blackboard only).
-	// Mutually exclusive with Tags; exactly one of Key/Tags is required for a
-	// blackboard source.
+	// Key selects a single blackboard entry's head by key (blackboard only), or
+	// the thread key whose History a thread source renders (thread only,
+	// optional — defaults to blackboard.DefaultThreadKey). Mutually exclusive
+	// with Tags for a blackboard source; exactly one of Key/Tags is required
+	// there.
 	Key string `json:"key,omitempty"`
+
+	// Role filters a thread source's messages to a single role (thread only,
+	// optional — empty renders every turn). Forbidden for every other kind.
+	Role string `json:"role,omitempty"`
 
 	// Tags selects every blackboard head carrying all listed tags (blackboard
 	// only, AND semantics — the store's ListFilter). Mutually exclusive with

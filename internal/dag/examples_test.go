@@ -38,6 +38,7 @@ var exampleFiles = []string{
 	"planner.json",
 	"map_fanout.json",
 	"agent_pipeline.json",
+	"agent_handoff.json",
 }
 
 // readExample loads one example definition document.
@@ -451,7 +452,7 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	if !hasContext {
 		t.Error("no step with a context-assembly spec in kitchen_sink.json")
 	}
-	for _, k := range []dag.ContextSourceKind{dag.SourceStepOutput, dag.SourceBlackboard, dag.SourceRetrieval, dag.SourceLiteral} {
+	for _, k := range []dag.ContextSourceKind{dag.SourceStepOutput, dag.SourceBlackboard, dag.SourceRetrieval, dag.SourceLiteral, dag.SourceThread} {
 		if !kinds[k] {
 			t.Errorf("no context source of kind %q in kitchen_sink.json", k)
 		}

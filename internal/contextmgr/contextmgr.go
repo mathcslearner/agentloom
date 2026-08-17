@@ -271,6 +271,12 @@ func resolveSource(ctx context.Context, i int, s dag.ContextSource, name string,
 		}
 		return resolveBlackboard(ctx, s, src.Board)
 
+	case dag.SourceThread:
+		if src.Board == nil {
+			return "", threadRef(s), false, &ConfigError{Index: i, Kind: s.Kind, Name: name, Msg: "no blackboard wired"}
+		}
+		return resolveThread(ctx, s, src.Board)
+
 	case dag.SourceRetrieval:
 		ref = fmt.Sprintf("retriever:%s query:%q", s.Retriever, s.Query)
 		if src.Retriever == nil {
@@ -330,6 +336,56 @@ func resolveBlackboard(ctx context.Context, s dag.ContextSource, board blackboar
 		parts = append(parts, fmt.Sprintf("<entry key=%q version=%d>\n%s\n</entry>", e.Key, e.Version, renderValue(e.Value)))
 	}
 	return strings.Join(parts, "\n"), ref, false, nil
+}
+
+// resolveThread resolves a thread source (ticket 14.2): the full version
+// History of the thread key, rendered oldest-first as <message> elements
+// carrying author/role/iteration, optionally filtered to a single role. Unlike
+// resolveBlackboard (which reads heads), a thread source reads every version —
+// that is what makes it a conversation. A version whose value is not a thread
+// message (a key shared with a raw write) is skipped. No matching turn is a
+// missing source (subject to the on_missing policy).
+func resolveThread(ctx context.Context, s dag.ContextSource, board blackboard.Board) (content, ref string, missing bool, err error) {
+	key := threadKey(s)
+	ref = threadRef(s)
+	versions, herr := board.History(ctx, key)
+	if herr != nil {
+		return "", ref, false, fmt.Errorf("reading thread %q: %w", key, herr)
+	}
+	parts := make([]string, 0, len(versions))
+	for _, e := range versions {
+		var msg blackboard.ThreadMessage
+		if uerr := json.Unmarshal(e.Value, &msg); uerr != nil {
+			continue
+		}
+		if s.Role != "" && msg.Role != s.Role {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("<message author=%q role=%q iteration=%d version=%d>\n%s\n</message>",
+			msg.Author, msg.Role, msg.Iteration, e.Version, renderValue(msg.Content)))
+	}
+	if len(parts) == 0 {
+		return "", ref, true, nil
+	}
+	return strings.Join(parts, "\n"), ref, false, nil
+}
+
+// threadKey resolves a thread source's key to the conventional default when
+// unset.
+func threadKey(s dag.ContextSource) string {
+	if s.Key != "" {
+		return s.Key
+	}
+	return blackboard.DefaultThreadKey
+}
+
+// threadRef is a thread source's human-readable ref for the audit event.
+func threadRef(s dag.ContextSource) string {
+	ref := "thread:" + threadKey(s)
+	if s.Role != "" {
+		ref += " role:" + s.Role
+	}
+	return ref
 }
 
 // renderValue turns a stored JSON value into text: a JSON string becomes its

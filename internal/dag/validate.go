@@ -509,7 +509,7 @@ func (v *validator) checkContextSource(entry string, src ContextSource) {
 				v.add(CodeContextFieldInvalid, entry+".path", "invalid JSON pointer: %v", err)
 			}
 		}
-		v.forbidContextFields(entry, src, "step_output", "key", "tags", "retriever", "query", "top_k", "text")
+		v.forbidContextFields(entry, src, "step_output", "key", "tags", "retriever", "query", "top_k", "text", "role")
 	case SourceBlackboard:
 		switch {
 		case src.Key == "" && len(src.Tags) == 0:
@@ -527,7 +527,7 @@ func (v *validator) checkContextSource(entry string, src ContextSource) {
 				v.add(CodeContextFieldInvalid, entry+".tags", "%v", err)
 			}
 		}
-		v.forbidContextFields(entry, src, "blackboard", "step", "path", "retriever", "query", "top_k", "text")
+		v.forbidContextFields(entry, src, "blackboard", "step", "path", "retriever", "query", "top_k", "text", "role")
 	case SourceRetrieval:
 		if src.Retriever == "" {
 			v.add(CodeContextFieldRequired, entry+".retriever", "retriever is required for a retrieval source")
@@ -540,12 +540,23 @@ func (v *validator) checkContextSource(entry string, src ContextSource) {
 		if src.TopK != nil && (*src.TopK < 0 || *src.TopK > MaxContextTopK) {
 			v.add(CodeContextFieldInvalid, entry+".top_k", "must be between 0 and %d, got %d", MaxContextTopK, *src.TopK)
 		}
-		v.forbidContextFields(entry, src, "retrieval", "step", "path", "key", "tags", "text")
+		v.forbidContextFields(entry, src, "retrieval", "step", "path", "key", "tags", "text", "role")
 	case SourceLiteral:
 		if src.Text == "" {
 			v.add(CodeContextFieldRequired, entry+".text", "text is required for a literal source")
 		}
-		v.forbidContextFields(entry, src, "literal", "step", "path", "key", "tags", "retriever", "query", "top_k")
+		v.forbidContextFields(entry, src, "literal", "step", "path", "key", "tags", "retriever", "query", "top_k", "role")
+	case SourceThread:
+		// Key is the thread key (optional — defaults to the conventional thread
+		// key); Role is an optional single-role filter. A thread source reads the
+		// key's whole version History, so tags/step/path/retriever/query/text do
+		// not apply.
+		if src.Key != "" {
+			if err := blackboard.ValidateKey(src.Key); err != nil {
+				v.add(CodeContextFieldInvalid, entry+".key", "%v", err)
+			}
+		}
+		v.forbidContextFields(entry, src, "thread", "step", "path", "tags", "retriever", "query", "top_k", "text")
 	}
 }
 
@@ -572,6 +583,8 @@ func (v *validator) forbidContextFields(entry string, src ContextSource, kind st
 			set = src.TopK != nil
 		case "text":
 			set = src.Text != ""
+		case "role":
+			set = src.Role != ""
 		}
 		if set {
 			v.add(CodeContextFieldInvalid, entry+"."+f, "%s is not valid for a %s source", f, kind)

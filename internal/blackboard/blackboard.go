@@ -34,6 +34,40 @@ import (
 // is enforced by 12.4's strategy pipeline.
 const TagPinned = "pinned"
 
+// TagThread marks a blackboard entry as a turn in an agent handoff thread
+// (ticket 14.2, ADR-016). Every auto-appended agent message carries it, so a
+// blackboard tag filter or the run-status API can select the conversation.
+const TagThread = "thread"
+
+// DefaultThreadKey is the blackboard key agent turns auto-append to (ticket
+// 14.2): each agent step's success adds a new version — a message — so
+// History(DefaultThreadKey) reconstructs the ordered conversation. Both the
+// engine's auto-append and the `thread` context source default to it.
+const DefaultThreadKey = "thread"
+
+// ThreadMessage is one turn in an agent handoff thread (ticket 14.2, ADR-016):
+// the value stored under each version of a thread key. Because the store is
+// append-only per key, successive agent turns append new versions and
+// History(threadKey) reconstructs the whole conversation in order. Author,
+// Role, and Iteration are the handoff metadata the "conversation view" context
+// preset renders and filters on (author/attempt/created_at are also columns on
+// the entry row); Content is the agent's message — its /text output by default.
+type ThreadMessage struct {
+	// Author is the step id that produced this turn.
+	Author string `json:"author"`
+	// Role is the authoring agent's role name (AgentDef.Role, else the agent
+	// ref); empty for a non-agent author.
+	Role string `json:"role,omitempty"`
+	// Iteration is the loop iteration this turn belongs to (0 for an authored,
+	// un-unrolled step; the `#k` instance suffix once 14.3 unrolls loops).
+	Iteration int `json:"iteration"`
+	// Content is the message body — the value the author's content pointer
+	// (default /text) selected from its output, stored verbatim.
+	Content json.RawMessage `json:"content"`
+	// CreatedAt is when the turn was appended.
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // Limits on the shape of an entry. Keys are short identifiers (the same
 // grammar an author writes in a step's `blackboard` block); values are
 // capped so one entry cannot blow past a context budget on its own or wedge

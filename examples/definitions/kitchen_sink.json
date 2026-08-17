@@ -267,6 +267,13 @@
             "top_k": 3,
             "priority": 2,
             "on_missing": "skip"
+          },
+          {
+            "kind": "thread",
+            "name": "conversation",
+            "key": "thread",
+            "role": "writer",
+            "on_missing": "skip"
           }
         ],
         "budget_tokens": 8000,

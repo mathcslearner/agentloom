@@ -90,6 +90,14 @@ each example's "header comment" is its top-level `description` field.
   (each an `llm` call referencing its item through `${{ item }}` /
   `${{ item_index }}`), and `process#gather` emits the ordered array of
   analyses. `max_items` caps the width. Runs offline on the mock.
+- **[agent_handoff.json](agent_handoff.json)** — two-agent relay over the
+  blackboard handoff thread (ticket 14.2, ADR-016): a `researcher` agent's
+  turn is auto-appended to the run `thread` (author/role/iteration metadata)
+  and to a pinned `handoff` payload; the `writer` agent's role carries a
+  "conversation view" context preset (a `thread` context source + the pinned
+  handoff), so the researcher's findings reach the writer automatically —
+  the writer's task never names the topic, yet its output carries it. Runs
+  offline on the mock (the mock echoes the assembled context).
 - **[kitchen_sink.json](kitchen_sink.json)** — one coherent
   research-and-publish pipeline exercising every construct: every registered
   step type (including a `map` over a `templates` sub-template and a `gather`),

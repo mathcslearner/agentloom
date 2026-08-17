@@ -309,6 +309,13 @@ type AgentConfig struct {
 	// Tools overrides the role's allowed toolset wholesale when non-nil (an
 	// explicit empty list forbids all tools).
 	Tools []string `json:"tools,omitempty"`
+
+	// Role is the resolved role name, copied from the referenced AgentDef by
+	// ResolveAgentStep (falling back to the agent ref when the role declares no
+	// Role) so the materialized step row is self-describing. It is not authored
+	// on the step and is ignored by llmConfigView; the engine's auto-thread
+	// append (ticket 14.2) reads it to tag each turn with its role.
+	Role string `json:"role,omitempty"`
 }
 
 // HumanApprovalConfig configures a human_approval step: parks the run

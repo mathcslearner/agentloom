@@ -42,6 +42,9 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "role": {
+          "type": "string"
         }
       },
       "additionalProperties": false,
@@ -211,6 +214,9 @@
         "key": {
           "type": "string"
         },
+        "role": {
+          "type": "string"
+        },
         "tags": {
           "items": {
             "type": "string"
@@ -254,7 +260,8 @@
         "step_output",
         "blackboard",
         "retrieval",
-        "literal"
+        "literal",
+        "thread"
       ]
     },
     "ContextSpec": {

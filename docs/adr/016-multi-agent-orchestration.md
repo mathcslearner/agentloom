@@ -163,13 +163,68 @@ loop yet. Offering the allowlisted tools to the model and running them is
 deferred; 14.1 ships the declaration and the rejection guardrail, which is
 enough to keep a misbehaving or future tool-emitting path inside the boundary.
 
-### What is deferred (M14.2+)
+### Handoff conventions & the message thread (as built, 14.2)
+
+14.2 turns the blackboard into the handoff substrate the milestone needs — a
+standardized **message thread** agents write to and read from — composing the
+12.2 blackboard and the 12.3 context assembly with **no migration, no new config
+var, and no new metric**. The append-only-per-key blackboard is exactly a
+conversation log: each agent turn appends a new *version* of a thread key, and
+`History` reconstructs the ordered conversation.
+
+**The write side — auto-append (default-on for agents).** Every `agent` step,
+on success, appends its turn to the run's thread key (`blackboard.DefaultThreadKey`
+= `"thread"`) atomically with its success CAS, reusing the completion-transaction
+blackboard-write path (`engine.planThreadAppend` / `applyThreadAppend`). The
+stored value is a `blackboard.ThreadMessage` — `{author, role, iteration,
+content, created_at}` — tagged `TagThread`:
+
+- `author` is the step id; `role` is the agent's role, carried onto the merged
+  `AgentConfig.Role` by `ResolveAgentStep` (the role's `Role`, else the agent
+  ref); `iteration` is parsed from the step's `#k` instance suffix (0 for an
+  authored step — 14.3's loop unrolling mints the `#k` instances that carry a
+  real iteration); `content` is the step's `/text` output (falling back to the
+  whole output, so auto-threading never fails a succeeded step).
+- The append is unconditional and unfenced (the success CAS already fenced this
+  completion), token-counted with the step's counter, and attributed to the
+  step — so it also rides the ordinary `blackboard_updated` event and the run's
+  token accounting. It is default-on for agent steps only (a plain llm step does
+  not thread); making it configurable (a custom key, an opt-out, or opting an
+  llm step in) is a small later extension, not needed for the handoff flows.
+
+**The read side — the `thread` context source ("conversation view").** A new
+context source kind `thread` (ADR-014's context assembly) reads a thread key's
+full **History** — not just the head, unlike a `blackboard` source — and renders
+the turns oldest-first as `<message author=… role=… iteration=… version=…>`
+elements under one `<context kind="thread">` block, with an optional `role`
+filter (`ContextSource.Role`) selecting a single role's turns. A role's default
+`context` spec (14.1) carries the "conversation view" preset — a `thread` source
+plus a pinned handoff source — so every agent in that role inherits it and a
+downstream agent sees the prior turns without per-step wiring.
+
+**Explicit handoff payloads** are the existing pinned blackboard write: an agent
+writes a structured payload to a key with `pinned: true` (the 12.2 sugar); the
+next agent reads it through a pinned `blackboard` context source. Because the
+thread source is one compaction unit and the pinned handoff is a separate pinned
+source, a long conversation compacts (e.g. `truncate_oldest`) while the pinned
+handoff survives — the ADR-014 pinning guarantee carries the handoff contract.
+
+**Decisions.** The thread is one key whose versions are the messages (not a key
+per message), so the append-only store *is* the ordered log and `History` reads
+it — no ordering scheme, no cross-key sort. Metadata rides in the message value
+(plus author/attempt/created_at already on the row) and the `thread` tag, so no
+schema change is needed. Auto-append is default-on for agents (the "standardized/
+auto" contract) rather than an opt-in block. The thread source renders as one
+compaction unit (the whole conversation), which satisfies "long thread compacts,
+pinned handoff survives" without changing the 1-source-1-entry assembly model;
+per-message windowing is deferred.
+
+### What is deferred (M14.3+)
 
 - The autonomous tool-execution / ReAct loop, and offering tools to the model.
 - Planner-injected agent steps (only authored agent steps are resolved).
-- Handoff conventions: the blackboard message **thread** (author/role/iteration
-  metadata), per-agent "conversation view" context presets, and explicit pinned
-  handoff payloads (14.2, ADR-014's blackboard).
+- Thread configuration: a custom thread key, an opt-out, or opting a plain llm
+  step into the thread; per-message (turn-level) compaction windowing.
 - **Loop-edge runtime** — executing M1's marked loop edges by unrolling each
   iteration through `ExpandRun` (14.3, ADR-015), with the critic's feedback
   threaded into the next iteration's prompt; loop termination and the

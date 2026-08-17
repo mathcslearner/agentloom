@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "name": "agent-handoff",
+  "description": "Two-agent relay over the blackboard handoff thread (ADR-016, ticket 14.2): a researcher agent's turn is auto-appended to the run thread and a pinned handoff payload; the writer agent's role carries a 'conversation view' context preset (the thread + the pinned handoff), so the researcher's findings reach the writer automatically without the writer's task naming them. Runs offline on the mock provider — the mock echoes the assembled context, so the writer's output carries the researcher's finding.",
+  "agents": {
+    "researcher": {
+      "role": "researcher",
+      "system": "You are a researcher. Gather the key facts for the given topic and state them plainly.",
+      "model": "mock/sim-1",
+      "max_tokens": 256
+    },
+    "writer": {
+      "role": "writer",
+      "system": "You are a writer. Turn the research thread into a short article; rely only on the conversation and the pinned handoff.",
+      "model": "mock/sim-1",
+      "max_tokens": 512,
+      "context": {
+        "sources": [
+          {
+            "kind": "thread",
+            "name": "conversation",
+            "key": "thread"
+          },
+          {
+            "kind": "blackboard",
+            "name": "handoff",
+            "key": "handoff",
+            "pinned": true
+          }
+        ]
+      }
+    }
+  },
+  "params": {
+    "topic": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "research",
+      "type": "agent",
+      "config": {
+        "agent": "researcher",
+        "prompt": "Research this topic and report the findings: ${{ run.params.topic }}"
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "handoff",
+            "from": "/text",
+            "pinned": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "write",
+      "type": "agent",
+      "config": {
+        "agent": "writer",
+        "prompt": "Write a short article from the research conversation above."
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "research",
+      "to": "write"
+    }
+  ]
+}

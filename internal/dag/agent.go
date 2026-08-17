@@ -74,6 +74,13 @@ func ResolveAgentStep(def *Definition, step Step) (Step, error) {
 	if merged.Tools == nil {
 		merged.Tools = role.Tools
 	}
+	// Role is not authored on the step — it is the role's name, copied here so
+	// the materialized row is self-describing (ticket 14.2's auto-thread append
+	// reads it). A role with no explicit Role uses the agent ref (the map key).
+	merged.Role = role.Role
+	if merged.Role == "" {
+		merged.Role = sc.Agent
+	}
 
 	out := step
 	out.Config = &merged

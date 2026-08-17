@@ -360,6 +360,22 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 	repairJSON := marshalRepair(ctx, logger, out.Repair)
 
 	now := e.now()
+	// Auto thread append (ticket 14.2, ADR-016): an agent step's turn is
+	// appended to the run's handoff thread — a new version of the thread key
+	// carrying the message body + author/role/iteration — atomically with its
+	// success, so a downstream agent's `thread` context source (its role's
+	// "conversation view" preset) sees the prior turns. Non-agent steps and an
+	// unwired board plan nothing. A decode/marshal failure is deterministic →
+	// permanent, carrying the output so its productive cost still ledgers.
+	var threadMsg *plannedThreadMessage
+	if e.blackboard != nil {
+		threadMsg, err = planThreadAppend(step, out.Data, now)
+		if err != nil {
+			logger.WarnContext(ctx, "auto thread append planning failed; recording step failure",
+				slog.Any("error", err))
+			return e.completeFailure(ctx, step, out, err, dag.ClassPermanent, store.TraceFromRun(run))
+		}
+	}
 	// The attempt's cost row (ticket 10.2, ADR-012), priced before the
 	// transaction — pure, no database reads. Nil when the attempt ledgers
 	// nothing (pricing disabled, not cost-bearing, unpriced tool, no usage).
@@ -430,6 +446,14 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		// already fenced this completion.
 		if len(bbWrites) > 0 {
 			if err := e.applyBlackboardWrites(ctx, q, step, bbWrites, counter, now); err != nil {
+				return err
+			}
+		}
+		// The auto thread append (ticket 14.2), atomic with the success CAS and
+		// under the same run lock: an agent turn becomes a new version of the
+		// thread key. No fence — the success CAS already fenced this completion.
+		if threadMsg != nil {
+			if err := e.applyThreadAppend(ctx, q, step, threadMsg, counter, now); err != nil {
 				return err
 			}
 		}
