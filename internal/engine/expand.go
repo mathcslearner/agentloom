@@ -91,6 +91,39 @@ func mapPlanFromOutput(step gen.RunStep, run gen.Run, out exec.Output) (*dag.Pla
 	return &plan, nil
 }
 
+// isCollectErrorsInstance reports whether step is a map instance whose origin
+// map declared on_item_failure=collect_errors (ticket 13.4b, ADR-015): the
+// signal that its terminal failure should be tolerated (settled `collected`,
+// firing the gather) rather than dead-lettered. A non-instance step, a non-map
+// origin, or an unreadable/undecodable origin config falls back to false — the
+// step then dead-letters normally (fail-fast), never a panic.
+func (e *Engine) isCollectErrorsInstance(ctx context.Context, step gen.RunStep) bool {
+	if step.OriginStep == nil || step.OriginKind == nil || *step.OriginKind != string(dag.OriginMap) {
+		return false
+	}
+	origin, err := e.store.Steps().Get(ctx, step.RunID, *step.OriginStep)
+	if err != nil {
+		log.From(ctx).WarnContext(ctx, "collect-errors check: origin map step unreadable; treating as fail-fast",
+			slog.String("origin_step", *step.OriginStep), slog.Any("error", err))
+		return false
+	}
+	cfg, err := dag.DecodeStepConfig(dag.StepMap, origin.Config)
+	if err != nil {
+		return false
+	}
+	mc, ok := cfg.(*dag.MapConfig)
+	return ok && mc != nil && mc.OnItemFailure == dag.ItemCollectErrors
+}
+
+// collectErrorMarker is the engine-synthesized output stored on a collected map
+// instance (ticket 13.4b): a structural marker the gather collects into its
+// ordered result array — the failure class only, never the raw error text
+// (which lives on the step's error field for audit), honoring the 11.x output-
+// hygiene convention. class is a bounded ADR-006 enum value, safe to embed.
+func collectErrorMarker(class dag.ErrorClass) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"map_item_failed":true,"class":%q}`, string(class)))
+}
+
 // routeMapRejection routes a rejected map expansion (ticket 13.4, ADR-015): the
 // delta is engine-generated, so no re-prompt can fix it — every rejection is
 // permanent. A run-guard cap exhaustion (too many instances for the run's

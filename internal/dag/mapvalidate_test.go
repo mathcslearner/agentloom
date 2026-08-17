@@ -1,10 +1,27 @@
 package dag_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/mathcslearner/agentloom/internal/dag"
 )
+
+// TestMapUnknownOnItemFailureRejectedAtDecode: an unknown on_item_failure value
+// is a codec-level error (a closed enum), reported before validation.
+func TestMapUnknownOnItemFailureRejectedAtDecode(t *testing.T) {
+	t.Parallel()
+	doc := `{"schema_version":1,"name":"x",
+		"templates":{"b":{"steps":[{"id":"a","type":"llm","config":{"model":"mock/sim-1","prompt":"${{ item }}","max_tokens":8}}]}},
+		"steps":[
+			{"id":"src","type":"echo","config":{"input":{"items":["a"]}}},
+			{"id":"m","type":"map","config":{"items":"${{ steps.src.output.items }}","body":"b","on_item_failure":"retry_everything"}}],
+		"edges":[{"from":"src","to":"m"}]}`
+	_, err := dag.Decode([]byte(doc))
+	if err == nil || !strings.Contains(err.Error(), "on_item_failure") {
+		t.Fatalf("Decode error = %v, want one naming on_item_failure", err)
+	}
+}
 
 // validateJSON decodes and validates a definition document, returning the
 // issues (the document must be codec-valid).
@@ -103,6 +120,42 @@ func TestMapValidationTable(t *testing.T) {
 					{"id":"m","type":"map","config":{"items":"${{ steps.src.output.items }}","body":"b"}}],
 				"edges":[{"from":"src","to":"m"}]}`,
 			errs: []issueRef{{dag.CodeTemplateSectionInvalid, "templates.b.steps"}},
+		},
+		{
+			name: "collect_errors with single-step body is valid",
+			doc: `{"schema_version":1,"name":"x",
+				"templates":{"b":{"steps":[{"id":"a","type":"llm","config":{"model":"mock/sim-1","prompt":"${{ item }}","max_tokens":8}}]}},
+				"steps":[
+					{"id":"src","type":"echo","config":{"input":{"items":["a"]}}},
+					{"id":"m","type":"map","config":{"items":"${{ steps.src.output.items }}","body":"b","on_item_failure":"collect_errors"}}],
+				"edges":[{"from":"src","to":"m"}]}`,
+			errs: nil,
+		},
+		{
+			name: "collect_errors with multi-step body is rejected",
+			doc: `{"schema_version":1,"name":"x",
+				"templates":{"b":{"steps":[
+					{"id":"a","type":"llm","config":{"model":"mock/sim-1","prompt":"${{ item }}","max_tokens":8}},
+					{"id":"c","type":"llm","config":{"model":"mock/sim-1","prompt":"${{ steps.a.output.text }}","max_tokens":8}}],
+					"edges":[{"from":"a","to":"c"}]}},
+				"steps":[
+					{"id":"src","type":"echo","config":{"input":{"items":["a"]}}},
+					{"id":"m","type":"map","config":{"items":"${{ steps.src.output.items }}","body":"b","on_item_failure":"collect_errors"}}],
+				"edges":[{"from":"src","to":"m"}]}`,
+			errs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[1].config.on_item_failure"}},
+		},
+		{
+			name: "fail_fast with multi-step body is fine",
+			doc: `{"schema_version":1,"name":"x",
+				"templates":{"b":{"steps":[
+					{"id":"a","type":"llm","config":{"model":"mock/sim-1","prompt":"${{ item }}","max_tokens":8}},
+					{"id":"c","type":"llm","config":{"model":"mock/sim-1","prompt":"${{ steps.a.output.text }}","max_tokens":8}}],
+					"edges":[{"from":"a","to":"c"}]}},
+				"steps":[
+					{"id":"src","type":"echo","config":{"input":{"items":["a"]}}},
+					{"id":"m","type":"map","config":{"items":"${{ steps.src.output.items }}","body":"b","on_item_failure":"fail_fast"}}],
+				"edges":[{"from":"src","to":"m"}]}`,
+			errs: nil,
 		},
 		{
 			name: "negative max_items",

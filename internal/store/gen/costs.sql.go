@@ -247,7 +247,7 @@ UPDATE runs
 SET budget_nano_usd = $1::bigint
 WHERE id = $2
   AND status IN ('running', 'parked', 'cancelling')
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps, steps_collected
 `
 
 type SetRunBudgetParams struct {
@@ -291,6 +291,7 @@ func (q *Queries) SetRunBudget(ctx context.Context, arg SetRunBudgetParams) (Run
 		&i.BudgetNanoUsd,
 		&i.OnBudgetExceeded,
 		&i.ExpansionCaps,
+		&i.StepsCollected,
 	)
 	return i, err
 }

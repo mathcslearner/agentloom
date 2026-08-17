@@ -190,6 +190,12 @@ func (JoinMode) JSONSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "string", Enum: enumAny([]JoinMode{JoinAll, JoinAny})}
 }
 
+// JSONSchema declares the map item-failure-policy enum in the generated schema
+// (ADR-015, ticket 13.4b).
+func (ItemFailurePolicy) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny(itemFailurePolicies)}
+}
+
 // JSONSchema declares the param-type enum in the generated schema.
 func (ParamType) JSONSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "string", Enum: enumAny(paramTypes)}

@@ -108,6 +108,7 @@ type Run struct {
 	BudgetNanoUsd          *int64
 	OnBudgetExceeded       string
 	ExpansionCaps          json.RawMessage
+	StepsCollected         int32
 }
 
 type RunEdge struct {

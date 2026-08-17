@@ -452,6 +452,13 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "ItemFailurePolicy": {
+      "type": "string",
+      "enum": [
+        "fail_fast",
+        "collect_errors"
+      ]
+    },
     "JitterMode": {
       "type": "string",
       "enum": [
@@ -528,6 +535,9 @@
         },
         "max_items": {
           "type": "integer"
+        },
+        "on_item_failure": {
+          "$ref": "#/$defs/ItemFailurePolicy"
         }
       },
       "additionalProperties": false,

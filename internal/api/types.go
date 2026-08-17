@@ -128,6 +128,9 @@ type RunView struct {
 	StepsFailed    int        `json:"steps_failed"`
 	StepsSkipped   int        `json:"steps_skipped"`
 	StepsCancelled int        `json:"steps_cancelled"`
+	// StepsCollected counts map instances tolerated under collect_errors
+	// (ticket 13.4b): terminal failures the run did not fail on.
+	StepsCollected int `json:"steps_collected"`
 	ParkReason     string     `json:"park_reason,omitempty"`
 	CancelReason   string     `json:"cancel_reason,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`

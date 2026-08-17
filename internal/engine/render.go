@@ -73,11 +73,14 @@ func (e *Engine) renderConfig(ctx context.Context, step gen.RunStep) (json.RawMe
 		data.Outputs = make(map[string]json.RawMessage, len(rows))
 		for _, r := range rows {
 			statuses[r.StepID] = r.Status
-			// Only a succeeded step has a recorded output. Anything else a
-			// strict reference names — a skipped branch arm, a join-any
-			// loser still running — surfaces as a missing reference below;
-			// lenient `get` references resolve to nil, as authored.
-			if r.Status == store.StepStatusSucceeded {
+			// A succeeded step has its output; a `collected` step (a map
+			// instance tolerated under collect_errors, ticket 13.4b) has its
+			// engine-synthesized error marker — both are real, immutable
+			// outputs the generated gather references by id. Anything else a
+			// strict reference names — a skipped branch arm, a join-any loser
+			// still running — surfaces as a missing reference below; lenient
+			// `get` references resolve to nil, as authored.
+			if r.Status == store.StepStatusSucceeded || r.Status == store.StepStatusCollected {
 				data.Outputs[r.StepID] = r.Output
 			}
 		}

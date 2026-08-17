@@ -409,6 +409,9 @@ func decodeStepConfig(st StepType, raw json.RawMessage, path string, errs *errLi
 		}
 	case *MapConfig:
 		compactRaw(&c.Items)
+		if c.OnItemFailure != "" && !slices.Contains(itemFailurePolicies, c.OnItemFailure) {
+			errs.add(path+".on_item_failure", "unknown item-failure policy %q (expected one of: %s)", string(c.OnItemFailure), joinEnum(itemFailurePolicies))
+		}
 	case *GatherConfig:
 		compactRaw(&c.Items)
 	case *BranchConfig:

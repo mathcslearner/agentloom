@@ -41,7 +41,7 @@ func columnExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table, 
 // latestVersion is the highest migration in internal/store/migrations —
 // bump when adding a migration (the round-trip test below walks every
 // down migration regardless, so forgetting only fails the version check).
-const latestVersion = 23
+const latestVersion = 24
 
 func TestMigrateUpDownRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -84,20 +84,39 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 	}
 
 	// Down rolls back one step: the newest migration's additions are gone,
-	// earlier ones untouched. 0023 drops the run_steps.depth / origin columns
-	// and runs.expansion_caps — their revert is observable while everything
-	// below it survives, starting with 0022's context_policy column.
+	// earlier ones untouched. 0024 drops runs.steps_collected — its revert is
+	// observable while everything below it survives, starting with 0023's
+	// run_steps.depth / runs.expansion_caps.
+	if err := mg.Down(); err != nil {
+		t.Fatalf("Down (0024): %v", err)
+	}
+	if columnExists(ctx, t, pool, "runs", "steps_collected") {
+		t.Fatal("after one Down: runs.steps_collected was not dropped by 0024")
+	}
+	if !columnExists(ctx, t, pool, "run_steps", "depth") {
+		t.Fatal("after one Down: run_steps.depth (0023) was dropped prematurely")
+	}
+	if !columnExists(ctx, t, pool, "runs", "expansion_caps") {
+		t.Fatal("after one Down: runs.expansion_caps (0023) was dropped prematurely")
+	}
+	if !columnExists(ctx, t, pool, "run_steps", "context_policy") {
+		t.Fatal("after one Down: run_steps.context_policy was dropped by the wrong migration")
+	}
+
+	// Down again rolls back 0023: it drops run_steps.depth and
+	// runs.expansion_caps — their revert is observable while everything below
+	// (starting with 0022's context_policy) survives.
 	if err := mg.Down(); err != nil {
 		t.Fatalf("Down (0023): %v", err)
 	}
 	if columnExists(ctx, t, pool, "run_steps", "depth") {
-		t.Fatal("after one Down: run_steps.depth was not dropped by 0023")
+		t.Fatal("after two Downs: run_steps.depth was not dropped by 0023")
 	}
 	if columnExists(ctx, t, pool, "runs", "expansion_caps") {
-		t.Fatal("after one Down: runs.expansion_caps was not dropped by 0023")
+		t.Fatal("after two Downs: runs.expansion_caps was not dropped by 0023")
 	}
 	if !columnExists(ctx, t, pool, "run_steps", "context_policy") {
-		t.Fatal("after one Down: run_steps.context_policy was dropped by the wrong migration")
+		t.Fatal("after two Downs: run_steps.context_policy (0022) was dropped prematurely")
 	}
 
 	// Down again rolls back 0022: it drops the run_steps.context_policy column
@@ -107,10 +126,10 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 		t.Fatalf("Down (0022): %v", err)
 	}
 	if columnExists(ctx, t, pool, "run_steps", "context_policy") {
-		t.Fatal("after two Downs: run_steps.context_policy was not dropped by 0022")
+		t.Fatal("after three Downs: run_steps.context_policy was not dropped by 0022")
 	}
 	if !columnExists(ctx, t, pool, "run_steps", "blackboard_policy") {
-		t.Fatal("after two Downs: run_steps.blackboard_policy was dropped by the wrong migration")
+		t.Fatal("after three Downs: run_steps.blackboard_policy was dropped by the wrong migration")
 	}
 
 	// Down again rolls back 0021: it drops the blackboard_entries table and

@@ -192,7 +192,8 @@
       "type": "map",
       "config": {
         "items": "${{ steps.find_similar.output.docs }}",
-        "body": "summarize_one"
+        "body": "summarize_one",
+        "on_item_failure": "fail_fast"
       }
     },
     {

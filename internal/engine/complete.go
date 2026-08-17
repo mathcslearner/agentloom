@@ -723,6 +723,23 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, out exec
 		}
 	}
 
+	// Collect-errors routing (ticket 13.4b, ADR-015): when this failure turns
+	// out to be terminal (retries exhausted or a non-retryable class) AND the
+	// step is a map instance whose map declared on_item_failure=collect_errors,
+	// the terminal branch below settles it `collected` (with an error marker)
+	// and fires its edge to the gather instead of dead-lettering — the run
+	// stays alive. Detected pre-transaction (the origin map's config is
+	// immutable); params feed the collect fan-out, read only when it applies.
+	collectErrors := e.isCollectErrorsInstance(ctx, step)
+	var collectParams map[string]any
+	if collectErrors {
+		if run, rerr := e.store.Runs().Get(ctx, step.RunID); rerr == nil && len(run.Params) > 0 {
+			if perr := json.Unmarshal(run.Params, &collectParams); perr != nil {
+				collectParams = nil // params were validated JSON at submit; a decode miss is non-fatal for an unconditioned splice edge
+			}
+		}
+	}
+
 	policy, perr := decodeRetryPolicy(step.RetryPolicy)
 	if perr != nil {
 		// Corrupt materialized policy — deterministic stored-state failure
@@ -734,10 +751,12 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, out exec
 
 	runFailed := false
 	cancelSettled := false
+	collected := false
 	var terminalRun *gen.Run
 	var dlqSource string
 	var run gen.Run
 	var cancelledSteps []string
+	var fanned fanOutResult
 	var fireAt time.Time
 	scheduled := false
 	var fenced *store.TransitionError
@@ -809,6 +828,52 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, out exec
 			scheduled = true
 			return nil
 		}
+		// The collect-errors terminal path (ticket 13.4b, ADR-015): a map
+		// instance whose map declared collect_errors is tolerated — settled
+		// `collected` with an error marker, its productive spend metered, and
+		// its (unconditioned) out-edge to the gather fired so the gather
+		// advances toward all-terminal. No dead-letter, no run disposition: the
+		// run stays alive and may still succeed.
+		if collectErrors {
+			marker := collectErrorMarker(class)
+			if _, err := store.CollectFailStep(ctx, q, store.CollectFailStepArgs{
+				RunID: step.RunID, StepID: step.StepID, ClaimID: *step.ClaimID,
+				Outcome: string(class), Output: marker, Error: payload, Usage: usage, Now: now,
+			}); err != nil {
+				errors.As(err, &fenced)
+				return err
+			}
+			if err := applyCostRows(ctx, q, costRow, overheadRows); err != nil {
+				return err
+			}
+			if err := failpoint(stageAfterStepTransition); err != nil {
+				return err
+			}
+			tp, ts := obstrace.Inject(ctx)
+			enqTrace := store.TraceContext{Parent: tp, State: ts}
+			outEdges, oerr := q.Steps().ListEdgesFromStep(ctx, step.RunID, step.StepID)
+			if oerr != nil {
+				return oerr
+			}
+			verdicts, perr := planEdges(step.StepType, outEdges, marker, collectParams)
+			if perr != nil {
+				return perr
+			}
+			var ferr error
+			fanned, ferr = fanOut(ctx, q, step.RunID, now, terminalSource{stepID: step.StepID, verdicts: verdicts})
+			if ferr != nil {
+				return ferr
+			}
+			for _, id := range fanned.readied {
+				if _, err := q.Outbox().CreateTraced(ctx, step.RunID, id, store.OutboxReasonStepReady, enqTrace); err != nil {
+					return err
+				}
+			}
+			collected = true
+			var rerr error
+			terminalRun, rerr = attemptRunRollup(ctx, q, step.RunID, now)
+			return rerr
+		}
 		// The terminal path (ticket 5.4): dead-letter with the source the
 		// disposition records — retries_exhausted iff a retryable class ran
 		// out of budget; permanent otherwise (a never-retryable class, a
@@ -862,6 +927,24 @@ func (e *Engine) completeFailure(ctx context.Context, step gen.RunStep, out exec
 		if terminalRun != nil {
 			e.recordRunCompleted(terminalRun.Status, terminalRun.StartedAt, now)
 		}
+		return nil
+	}
+	if collected {
+		// The tolerated map-item failure (ticket 13.4b): the productive spend is
+		// metered like any billed-then-failed attempt; the gather may have
+		// readied (all instances now terminal) and the run may have rolled up.
+		e.recordCostRows(costRow, overheadRows)
+		if terminalRun != nil {
+			e.recordRunCompleted(terminalRun.Status, terminalRun.StartedAt, now)
+		}
+		if len(fanned.readied) > 0 && e.nudge != nil {
+			e.nudge()
+		}
+		logger.InfoContext(ctx, "map item collected: tolerated failure, gather advanced",
+			slog.Any("error", execErr),
+			slog.String("class", string(class)),
+			slog.Int("steps_readied", len(fanned.readied)),
+			slog.Bool("run_terminal", terminalRun != nil))
 		return nil
 	}
 	if scheduled {

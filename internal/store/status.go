@@ -69,6 +69,12 @@ const (
 	// control flow (M5.6). Terminal unless a requeue revives it (→
 	// pending).
 	StepStatusCancelled = "cancelled"
+	// StepStatusCollected: a map instance that failed terminally under
+	// on_item_failure=collect_errors (ticket 13.4b, ADR-015). Terminal, but —
+	// unlike dead_lettered — tolerated: it carries an error-marker output the
+	// gather collects, its out-edge to the gather is fired, and it bumps
+	// steps_collected (not steps_failed), so the run may still succeed.
+	StepStatusCollected = "collected"
 )
 
 // Edge types.
@@ -243,6 +249,11 @@ const (
 	// ready (ticket 5.4). The payload carries the reason
 	// (upstream_dead_lettered; M5.6 adds run-cancel reasons).
 	EventStepCancelled = "step_cancelled"
+	// EventStepCollected: a map instance failed terminally under
+	// on_item_failure=collect_errors and was tolerated (ticket 13.4b,
+	// ADR-015). The payload carries the failure class and the attempt count —
+	// the failure is recorded but did not fail the run.
+	EventStepCollected = "step_collected"
 	// EventStepRequeued: the requeue op reset a dead-lettered step to
 	// ready, re-arming its full retry policy (ticket 5.4).
 	EventStepRequeued = "step_requeued"

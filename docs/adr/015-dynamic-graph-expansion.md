@@ -596,7 +596,61 @@ carries everything the delta is generated from.
   kitchen sinks + the construct pin gained a `templates` section, a `map`, and a
   `gather`.
 
-Not yet (after 13.4): map collect-errors (13.4b), the chaos/recovery matrix
+### Map collect-errors (as built, 13.4b)
+
+13.4b adds the `collect_errors` item-failure policy — the alternative to 13.4's
+fail-fast. Under it a map instance that fails terminally is **tolerated**: the
+run stays alive, the failure is recorded, and the generated gather emits the
+ordered result array with an error slot for the failed item.
+
+- **The irreducible constraint.** `SucceedRun`'s guard is
+  `steps_succeeded + steps_skipped = steps_total AND steps_failed = 0`, so a
+  dead-lettered instance (which bumps `steps_failed`) makes the run
+  unsucceedable. Therefore a tolerated failure must **not** count as
+  `steps_failed`. That is the one unavoidable store change; everything else
+  composes around it.
+
+- **A new terminal status `collected`** (migration 0024), distinct from
+  `dead_lettered` for observability honesty: `CollectFailStep` settles a failed
+  instance `running → collected` (claim-fenced), records the real ADR-006 class
+  on the attempt, stores an **engine-synthesized error marker**
+  (`{"map_item_failed": true, "class": …}` — structural, never raw error text,
+  the 11.x hygiene convention) as the step's output, and bumps a new
+  `runs.steps_collected` counter (not `steps_failed`). No `dead_letters` row — a
+  collected item did not stop progress. The `SucceedRun` / `FailRunRollup` /
+  `CancelRunRollup` all-terminal sums are widened with `+ steps_collected`, so a
+  run with collected instances rolls up honestly (success still requires
+  `steps_failed = 0`, so `collected` — unlike `dead_lettered` — never blocks it).
+
+- **The gather is mode-agnostic.** Its config is identical for fail-fast and
+  collect-errors (strict `${{ steps.<sink>#k.output }}` refs). The engine's
+  `renderConfig` is widened to include `collected` outputs, so a failed
+  instance's ref resolves to the error marker rather than a missing reference —
+  a rich marker, not a bare null, with no generator branch. Under fail-fast the
+  gather simply never renders (the run failed / it was written off).
+
+- **Readiness via the ordinary fan-out.** `completeFailure`'s terminal branch,
+  when the step is a collect-errors map instance (detected pre-transaction by
+  reading the origin map's config; an unreadable config falls back to
+  fail-fast), routes to `CollectFailStep` and then the **normal success-style
+  fan-out** — the instance's unconditioned `sink#k → gather` edge fires,
+  advancing the gather's ordinary all-mode counter. The gather thus readies when
+  all instances are terminal (succeeded ∨ collected), and the whole
+  dead-letter/write-off path is bypassed (`planWriteOff` only sees resolved
+  edges). The instance's normal transport-retry budget is unchanged — only the
+  *terminal* disposition differs.
+
+- **Scope: single-step bodies only** (validation-enforced —
+  `config_field_invalid` on a multi-step body). A mid-body failure would strand
+  the sink and needs a per-instance chain write-off; deferred. fail-fast works
+  for any body.
+
+`collected` was added to the terminal-status set everywhere it is enumerated
+(the claim/takeover ack-drop classifiers, the OpenAPI `StepState` enum, the
+run-view `steps_collected`, `ctl watch`'s glyph). One migration (0024), no new
+config var, no new metric.
+
+Not yet (after 13.4b): the chaos/recovery matrix
 (13.5), and the run-graph introspection API (13.6).
 
 ## Consequences

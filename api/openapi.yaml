@@ -1342,7 +1342,9 @@ components:
         Step states. `dead_lettered` is the terminal failure state
         (`failed` appears only on rows predating migration 0005);
         `cancelled` steps were written off and may be revived by a
-        requeue.
+        requeue; `collected` is a map instance whose terminal failure was
+        tolerated under `on_item_failure: collect_errors` (ADR-015) — the run
+        did not fail on it and the generated gather collected an error marker.
       enum:
         - pending
         - ready
@@ -1353,6 +1355,7 @@ components:
         - retrying
         - dead_lettered
         - cancelled
+        - collected
     AttemptOutcome:
       type: string
       description: >
@@ -1435,6 +1438,7 @@ components:
         - steps_failed
         - steps_skipped
         - steps_cancelled
+        - steps_collected
         - created_at
         - cost
       properties:
@@ -1461,6 +1465,9 @@ components:
           type: integer
         steps_cancelled:
           type: integer
+        steps_collected:
+          type: integer
+          description: Map instances tolerated under collect_errors (ADR-015) — terminal failures the run did not fail on.
         park_reason:
           type: string
           description: Why the run is parked; only on parked runs. `budget_exceeded` (M10) and `awaiting_human` (M15) are reserved.

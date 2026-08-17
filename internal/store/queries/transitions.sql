@@ -57,6 +57,26 @@ WHERE run_id = @run_id AND step_id = @step_id
   AND status = 'running' AND claim_id = @claim_id
 RETURNING *;
 
+-- Collect-errors terminal: running → collected, fenced by claim_id (ticket
+-- 13.4b, ADR-015). A map instance that failed terminally under
+-- on_item_failure=collect_errors is tolerated: it stores an engine-synthesized
+-- error-marker output (so the gather's strict reference resolves to the
+-- marker), records the failure summary on error, and — unlike DeadLetterRunStep
+-- — bumps steps_collected, not steps_failed, so the run may still succeed. Its
+-- out-edge to the gather is fired by the caller's fan-out (same contract as
+-- SucceedRunStep), never left unresolved.
+-- name: CollectFailRunStep :one
+UPDATE run_steps
+SET status      = 'collected',
+    output      = @output,
+    error       = @error,
+    feedback    = NULL,
+    finished_at = @now::timestamptz,
+    updated_at  = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id
+  AND status = 'running' AND claim_id = @claim_id
+RETURNING *;
+
 -- Poison dead-lettering: any non-terminal status → dead_lettered, with no
 -- claim fence — the poison path holds no claim; the entry's handlers kept
 -- dying without ever recording a judgment (ticket 5.4, ADR-006 sources
@@ -257,7 +277,8 @@ UPDATE runs
 SET steps_succeeded = steps_succeeded + @d_succeeded::int,
     steps_failed    = steps_failed + @d_failed::int,
     steps_skipped   = steps_skipped + @d_skipped::int,
-    steps_cancelled = steps_cancelled + @d_cancelled::int
+    steps_cancelled = steps_cancelled + @d_cancelled::int,
+    steps_collected = steps_collected + @d_collected::int
 WHERE id = @run_id;
 
 -- Rollup: running|parked → succeeded when every step is terminal and none
@@ -274,7 +295,7 @@ SET status      = 'succeeded',
     park_reason = NULL,
     finished_at = @now::timestamptz
 WHERE id = @run_id AND status IN ('running', 'parked')
-  AND steps_failed = 0 AND steps_succeeded + steps_skipped = steps_total
+  AND steps_failed = 0 AND steps_succeeded + steps_skipped + steps_collected = steps_total
 RETURNING *;
 
 -- Rollup: running|parked → failed, immediately — the fail_fast
@@ -300,7 +321,7 @@ SET status      = 'failed',
     park_reason = NULL,
     finished_at = @now::timestamptz
 WHERE id = @run_id AND status IN ('running', 'parked') AND steps_failed >= 1
-  AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled = steps_total
+  AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled + steps_collected = steps_total
 RETURNING *;
 
 -- Park: running → parked with a typed reason (ticket 5.6). Dispatch
@@ -343,7 +364,7 @@ UPDATE runs
 SET status      = 'cancelled',
     finished_at = @now::timestamptz
 WHERE id = @run_id AND status = 'cancelling'
-  AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled = steps_total
+  AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled + steps_collected = steps_total
 RETURNING *;
 
 -- Requeue revival: failed → running (ticket 5.4). An operator requeueing

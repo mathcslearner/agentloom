@@ -190,7 +190,36 @@ type MapConfig struct {
 	// explicit value must be positive; a list longer than it fails the step
 	// permanently at execution time, before any expansion.
 	MaxItems int `json:"max_items,omitempty"`
+
+	// OnItemFailure is what happens when an instance fails terminally
+	// (ADR-015, ticket 13.4b). Empty means the key was absent — the default,
+	// FailFast (an item failure fails the run per the run's on_failure policy;
+	// the gather never gathers). CollectErrors instead settles the failed
+	// instance as `collected` with an error marker, keeps the run alive, and
+	// lets the gather emit the ordered array with an error slot for the failed
+	// item. CollectErrors requires a single-step body (13.4b restriction).
+	OnItemFailure ItemFailurePolicy `json:"on_item_failure,omitempty"`
 }
+
+// ItemFailurePolicy selects how a map handles an instance's terminal failure
+// (ADR-015, ticket 13.4b).
+type ItemFailurePolicy string
+
+// The item-failure policies.
+const (
+	// ItemFailFast (the default when absent) lets an item failure fail the run
+	// per the run's on_failure policy — the gather never produces a result.
+	ItemFailFast ItemFailurePolicy = "fail_fast"
+
+	// ItemCollectErrors settles a failed instance as `collected` with an error
+	// marker, keeps the run alive, and lets the gather emit the ordered result
+	// array with an error slot for the failed item.
+	ItemCollectErrors ItemFailurePolicy = "collect_errors"
+)
+
+// itemFailurePolicies enumerates the valid ItemFailurePolicy values in
+// documentation order.
+var itemFailurePolicies = []ItemFailurePolicy{ItemFailFast, ItemCollectErrors}
 
 // GatherConfig configures a gather step: a fan-in barrier that emits its
 // resolved Items array as output (executor: M13, ADR-015). Gather steps are

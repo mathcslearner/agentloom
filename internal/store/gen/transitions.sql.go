@@ -147,8 +147,9 @@ UPDATE runs
 SET steps_succeeded = steps_succeeded + $1::int,
     steps_failed    = steps_failed + $2::int,
     steps_skipped   = steps_skipped + $3::int,
-    steps_cancelled = steps_cancelled + $4::int
-WHERE id = $5
+    steps_cancelled = steps_cancelled + $4::int,
+    steps_collected = steps_collected + $5::int
+WHERE id = $6
 `
 
 type BumpRunStepCountersParams struct {
@@ -156,6 +157,7 @@ type BumpRunStepCountersParams struct {
 	DFailed    int32
 	DSkipped   int32
 	DCancelled int32
+	DCollected int32
 	RunID      uuid.UUID
 }
 
@@ -167,6 +169,7 @@ func (q *Queries) BumpRunStepCounters(ctx context.Context, arg BumpRunStepCounte
 		arg.DFailed,
 		arg.DSkipped,
 		arg.DCancelled,
+		arg.DCollected,
 		arg.RunID,
 	)
 	if err != nil {
@@ -181,7 +184,7 @@ SET status        = 'cancelling',
     cancel_reason = $1,
     park_reason   = NULL
 WHERE id = $2 AND status IN ('running', 'parked')
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps, steps_collected
 `
 
 type CancelRunParams struct {
@@ -225,6 +228,7 @@ func (q *Queries) CancelRun(ctx context.Context, arg CancelRunParams) (Run, erro
 		&i.BudgetNanoUsd,
 		&i.OnBudgetExceeded,
 		&i.ExpansionCaps,
+		&i.StepsCollected,
 	)
 	return i, err
 }
@@ -234,8 +238,8 @@ UPDATE runs
 SET status      = 'cancelled',
     finished_at = $1::timestamptz
 WHERE id = $2 AND status = 'cancelling'
-  AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled = steps_total
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps
+  AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled + steps_collected = steps_total
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps, steps_collected
 `
 
 type CancelRunRollupParams struct {
@@ -279,6 +283,7 @@ func (q *Queries) CancelRunRollup(ctx context.Context, arg CancelRunRollupParams
 		&i.BudgetNanoUsd,
 		&i.OnBudgetExceeded,
 		&i.ExpansionCaps,
+		&i.StepsCollected,
 	)
 	return i, err
 }
@@ -494,6 +499,80 @@ func (q *Queries) ClaimRunStep(ctx context.Context, arg ClaimRunStepParams) (Run
 	return i, err
 }
 
+const collectFailRunStep = `-- name: CollectFailRunStep :one
+UPDATE run_steps
+SET status      = 'collected',
+    output      = $1,
+    error       = $2,
+    feedback    = NULL,
+    finished_at = $3::timestamptz,
+    updated_at  = $3::timestamptz
+WHERE run_id = $4 AND step_id = $5
+  AND status = 'running' AND claim_id = $6
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind
+`
+
+type CollectFailRunStepParams struct {
+	Output  json.RawMessage
+	Error   json.RawMessage
+	Now     time.Time
+	RunID   uuid.UUID
+	StepID  string
+	ClaimID *uuid.UUID
+}
+
+// Collect-errors terminal: running → collected, fenced by claim_id (ticket
+// 13.4b, ADR-015). A map instance that failed terminally under
+// on_item_failure=collect_errors is tolerated: it stores an engine-synthesized
+// error-marker output (so the gather's strict reference resolves to the
+// marker), records the failure summary on error, and — unlike DeadLetterRunStep
+// — bumps steps_collected, not steps_failed, so the run may still succeed. Its
+// out-edge to the gather is fired by the caller's fan-out (same contract as
+// SucceedRunStep), never left unresolved.
+func (q *Queries) CollectFailRunStep(ctx context.Context, arg CollectFailRunStepParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, collectFailRunStep,
+		arg.Output,
+		arg.Error,
+		arg.Now,
+		arg.RunID,
+		arg.StepID,
+		arg.ClaimID,
+	)
+	var i RunStep
+	err := row.Scan(
+		&i.RunID,
+		&i.StepID,
+		&i.StepType,
+		&i.Config,
+		&i.Status,
+		&i.RemainingDeps,
+		&i.FiredDeps,
+		&i.ClaimID,
+		&i.AttemptCount,
+		&i.Output,
+		&i.Error,
+		&i.GraphVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
+		&i.Timeout,
+		&i.TraceSpan,
+		&i.CachePolicy,
+		&i.BudgetPolicy,
+		&i.ValidationPolicy,
+		&i.Feedback,
+		&i.BlackboardPolicy,
+		&i.ContextPolicy,
+		&i.Depth,
+		&i.OriginStep,
+		&i.OriginKind,
+	)
+	return i, err
+}
+
 const deadLetterRunStep = `-- name: DeadLetterRunStep :one
 UPDATE run_steps
 SET status      = 'dead_lettered',
@@ -568,7 +647,7 @@ SET status      = 'failed',
     park_reason = NULL,
     finished_at = $1::timestamptz
 WHERE id = $2 AND status IN ('running', 'parked') AND steps_failed >= 1
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps, steps_collected
 `
 
 type FailRunParams struct {
@@ -611,6 +690,7 @@ func (q *Queries) FailRun(ctx context.Context, arg FailRunParams) (Run, error) {
 		&i.BudgetNanoUsd,
 		&i.OnBudgetExceeded,
 		&i.ExpansionCaps,
+		&i.StepsCollected,
 	)
 	return i, err
 }
@@ -621,8 +701,8 @@ SET status      = 'failed',
     park_reason = NULL,
     finished_at = $1::timestamptz
 WHERE id = $2 AND status IN ('running', 'parked') AND steps_failed >= 1
-  AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled = steps_total
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps
+  AND steps_succeeded + steps_failed + steps_skipped + steps_cancelled + steps_collected = steps_total
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps, steps_collected
 `
 
 type FailRunRollupParams struct {
@@ -668,6 +748,7 @@ func (q *Queries) FailRunRollup(ctx context.Context, arg FailRunRollupParams) (R
 		&i.BudgetNanoUsd,
 		&i.OnBudgetExceeded,
 		&i.ExpansionCaps,
+		&i.StepsCollected,
 	)
 	return i, err
 }
@@ -706,7 +787,7 @@ UPDATE runs
 SET status      = 'parked',
     park_reason = $1
 WHERE id = $2 AND status = 'running'
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps, steps_collected
 `
 
 type ParkRunParams struct {
@@ -749,6 +830,7 @@ func (q *Queries) ParkRun(ctx context.Context, arg ParkRunParams) (Run, error) {
 		&i.BudgetNanoUsd,
 		&i.OnBudgetExceeded,
 		&i.ExpansionCaps,
+		&i.StepsCollected,
 	)
 	return i, err
 }
@@ -984,7 +1066,7 @@ UPDATE runs
 SET status      = 'running',
     finished_at = NULL
 WHERE id = $1 AND status = 'failed'
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps, steps_collected
 `
 
 // Requeue revival: failed → running (ticket 5.4). An operator requeueing
@@ -1022,6 +1104,7 @@ func (q *Queries) ResumeRun(ctx context.Context, runID uuid.UUID) (Run, error) {
 		&i.BudgetNanoUsd,
 		&i.OnBudgetExceeded,
 		&i.ExpansionCaps,
+		&i.StepsCollected,
 	)
 	return i, err
 }
@@ -1288,8 +1371,8 @@ SET status      = 'succeeded',
     park_reason = NULL,
     finished_at = $1::timestamptz
 WHERE id = $2 AND status IN ('running', 'parked')
-  AND steps_failed = 0 AND steps_succeeded + steps_skipped = steps_total
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps
+  AND steps_failed = 0 AND steps_succeeded + steps_skipped + steps_collected = steps_total
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps, steps_collected
 `
 
 type SucceedRunParams struct {
@@ -1337,6 +1420,7 @@ func (q *Queries) SucceedRun(ctx context.Context, arg SucceedRunParams) (Run, er
 		&i.BudgetNanoUsd,
 		&i.OnBudgetExceeded,
 		&i.ExpansionCaps,
+		&i.StepsCollected,
 	)
 	return i, err
 }
@@ -1476,7 +1560,7 @@ UPDATE runs
 SET status      = 'running',
     park_reason = NULL
 WHERE id = $1 AND status = 'parked'
-RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps
+RETURNING id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps, steps_collected
 `
 
 // Unpark: parked → running (ticket 5.6). Re-outboxing the run's ready
@@ -1513,6 +1597,7 @@ func (q *Queries) UnparkRun(ctx context.Context, runID uuid.UUID) (Run, error) {
 		&i.BudgetNanoUsd,
 		&i.OnBudgetExceeded,
 		&i.ExpansionCaps,
+		&i.StepsCollected,
 	)
 	return i, err
 }

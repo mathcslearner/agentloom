@@ -117,7 +117,8 @@
       "type": "map",
       "config": {
         "items": "${{ steps.search.output.docs }}",
-        "body": "summarize_source"
+        "body": "summarize_source",
+        "on_item_failure": "collect_errors"
       }
     },
     {

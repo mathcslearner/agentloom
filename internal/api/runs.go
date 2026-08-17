@@ -484,6 +484,7 @@ func buildRunView(run gen.Run) RunView {
 		StepsFailed:    int(run.StepsFailed),
 		StepsSkipped:   int(run.StepsSkipped),
 		StepsCancelled: int(run.StepsCancelled),
+		StepsCollected: int(run.StepsCollected),
 		CreatedAt:      run.CreatedAt,
 		StartedAt:      run.StartedAt,
 		FinishedAt:     run.FinishedAt,

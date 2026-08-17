@@ -201,9 +201,19 @@ func (v *validator) checkMaps(def *Definition) {
 		if !ok || c == nil || c.Body == "" {
 			continue // a missing body was already reported by checkStepConfig
 		}
-		if _, declared := def.Templates[c.Body]; !declared {
+		tmpl, declared := def.Templates[c.Body]
+		if !declared {
 			v.add(CodeMapBodyUnknown, fmt.Sprintf("steps[%d].config.body", i),
 				"map body %q names no template in the definition's templates section", c.Body)
+			continue
+		}
+		// collect_errors is supported for single-step bodies only (ticket
+		// 13.4b): a mid-body failure would strand the sink, which needs a
+		// per-instance chain write-off deferred to a follow-up. fail-fast works
+		// for any body.
+		if c.OnItemFailure == ItemCollectErrors && tmpl != nil && len(tmpl.Steps) > 1 {
+			v.add(CodeConfigFieldInvalid, fmt.Sprintf("steps[%d].config.on_item_failure", i),
+				"collect_errors requires a single-step body, but %q has %d steps", c.Body, len(tmpl.Steps))
 		}
 	}
 }

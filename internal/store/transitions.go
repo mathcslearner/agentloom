@@ -105,6 +105,15 @@ type stepCancelledPayload struct {
 	Reason string `json:"reason"`
 }
 
+// stepCollectedPayload is the step_collected event body (ticket 13.4b): a map
+// instance failed terminally under collect_errors and was tolerated — the
+// judged class and the attempt count at the tolerated failure.
+type stepCollectedPayload struct {
+	StepID   string `json:"step_id"`
+	Class    string `json:"class,omitempty"`
+	Attempts int32  `json:"attempts"`
+}
+
 // ClaimStepArgs are the inputs to ClaimStep.
 type ClaimStepArgs struct {
 	RunID  uuid.UUID
@@ -465,6 +474,82 @@ func DeadLetterStep(ctx context.Context, q Querier, args DeadLetterStepArgs) (ge
 		return gen.RunStep{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "step dead-lettered",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID),
+		log.Attempt(int(step.AttemptCount)))
+	return step, nil
+}
+
+// CollectFailStepArgs are the inputs to CollectFailStep.
+type CollectFailStepArgs struct {
+	RunID  uuid.UUID
+	StepID string
+	// ClaimID is the fencing token ClaimStep issued to this caller.
+	ClaimID uuid.UUID
+	// Outcome is the failed attempt's ADR-006 error class (the real failure,
+	// recorded on the attempt even though the step's disposition is the
+	// tolerated `collected`). Required.
+	Outcome string
+	// Output is the engine-synthesized error marker stored on the step, so the
+	// gather's strict `${{ steps.<sink>#k.output }}` reference resolves to it.
+	// Required (a nil marker would render as a missing reference).
+	Output json.RawMessage
+	// Error is the failure summary stored on the step and its attempt; nil
+	// stores NULL.
+	Error json.RawMessage
+	// Usage is the failed attempt's token accounting when the collected attempt
+	// spent money (a billed llm call that then failed) — metered like an
+	// exhausted-retry dead-letter (ticket 11.5). nil for a mechanical failure.
+	Usage json.RawMessage
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// CollectFailStep transitions a map instance running → collected, fenced by
+// ClaimID (ticket 13.4b, ADR-015): the collect_errors tolerated-failure path.
+// It records the failure on the step and its attempt row (outcome = the real
+// ADR-006 class), stores the error-marker Output, bumps steps_collected (NOT
+// steps_failed — so the run may still succeed), and appends step_collected. It
+// writes NO dead_letters row: a collected item did not stop progress; it is
+// visible via its collected status, its attempt, its error output, and the
+// gather's ordered result array. The step's out-edge to the gather stays
+// unresolved — the caller's fan-out fires it, exactly as SucceedStep leaves its
+// out-edges for the fan-out.
+func CollectFailStep(ctx context.Context, q Querier, args CollectFailStepArgs) (gen.RunStep, error) {
+	const op = "collect-fail step"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.RunStep{}, err
+	}
+	if args.Outcome == "" {
+		return gen.RunStep{}, fmt.Errorf("store: %s: empty Outcome — pass the attempt's ADR-006 error class", op)
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.RunStep{}, err
+	}
+	step, err := gq.CollectFailRunStep(ctx, gen.CollectFailRunStepParams{
+		RunID: args.RunID, StepID: args.StepID, ClaimID: &args.ClaimID,
+		Output: args.Output, Error: args.Error, Now: args.Now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.RunStep{}, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
+			want: StepStatusRunning, to: StepStatusCollected, claim: &args.ClaimID,
+		})
+	}
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op, err)
+	}
+	if err := finishAttempt(ctx, gq, op, step, args.Outcome, args.Error, args.Usage, nil, nil, args.Now); err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DCollected: 1}); err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepCollected, stepCollectedPayload{
+		StepID: args.StepID, Class: args.Outcome, Attempts: step.AttemptCount,
+	}); err != nil {
+		return gen.RunStep{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "step collected (tolerated item failure)",
 		log.RunID(args.RunID.String()), log.StepID(args.StepID),
 		log.Attempt(int(step.AttemptCount)))
 	return step, nil
