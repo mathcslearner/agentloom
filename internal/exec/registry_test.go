@@ -124,7 +124,6 @@ func TestCoreBuiltinsExcludesTestOnlyExecutors(t *testing.T) {
 // an accident. Shrink this set as the executors land; never let it grow
 // silently (the sync test below fails on any unlisted mismatch).
 var deferredStepTypes = map[dag.StepType]string{
-	dag.StepAgent:         "M14 (multi-agent roles)",
 	dag.StepHumanApproval: "M15 (human-in-the-loop approvals)",
 }
 

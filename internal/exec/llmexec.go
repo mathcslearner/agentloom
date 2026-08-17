@@ -66,7 +66,8 @@ func NewLLMExecutor(providers *llm.Registry) LLMExecutor {
 // (max_added_steps) is engine state, not a model-call input, so it is dropped
 // here. A nil config (no config key) decodes to nil, as for llm.
 func llmConfigView(sc StepContext) (*dag.LLMConfig, error) {
-	if sc.StepType == dag.StepPlanner {
+	switch sc.StepType {
+	case dag.StepPlanner:
 		c, err := configAs[*dag.PlannerConfig](sc)
 		if err != nil {
 			return nil, err
@@ -82,8 +83,34 @@ func llmConfigView(sc StepContext) (*dag.LLMConfig, error) {
 			Temperature:  c.Temperature,
 			OutputFormat: plannerOutputFormat(),
 		}, nil
+	case dag.StepAgent:
+		// An agent step (ticket 14.1, ADR-016) is projected onto an LLMConfig
+		// exactly like a planner. By the time the step is claimed its config is
+		// the fully-merged AgentConfig (ResolveAgentStep ran at instantiation),
+		// so the projection is a straight field copy — including the role's
+		// system prompt. The allowed toolset is engine/executor state, not a
+		// model-call input, so it is not projected here (AgentExecutor reads it
+		// off the config directly to enforce the allowlist).
+		c, err := configAs[*dag.AgentConfig](sc)
+		if err != nil {
+			return nil, err
+		}
+		if c == nil {
+			return nil, nil
+		}
+		return &dag.LLMConfig{
+			System:         c.System,
+			Model:          c.Model,
+			Prompt:         c.Prompt,
+			Messages:       c.Messages,
+			MaxTokens:      c.MaxTokens,
+			Temperature:    c.Temperature,
+			ModelFallbacks: c.ModelFallbacks,
+			OutputFormat:   c.OutputFormat,
+		}, nil
+	default:
+		return configAs[*dag.LLMConfig](sc)
 	}
-	return configAs[*dag.LLMConfig](sc)
 }
 
 // plannerOutputFormat is the implicit structured-output policy every planner
@@ -100,13 +127,21 @@ func plannerOutputFormat() *dag.OutputFormat {
 }
 
 // executorVersion is the plugin version for an llm-family executor's cache-key
-// identity: planner and llm are distinct plugins (different Name), so their
-// entries never collide even at the same version string.
+// identity: llm, planner, and agent are distinct plugins (different Name), so
+// their entries never collide even at the same version string. The three
+// versions happen to coincide today (all 1.0.0) — the switch documents that
+// each is independently versioned and lets one diverge without touching callers.
+//
+//nolint:unparam // versions coincide today but are independently owned per executor
 func executorVersion(st dag.StepType) string {
-	if st == dag.StepPlanner {
+	switch st {
+	case dag.StepPlanner:
 		return plannerVersion
+	case dag.StepAgent:
+		return agentVersion
+	default:
+		return llmVersion
 	}
-	return llmVersion
 }
 
 // Type implements Executor.
@@ -301,6 +336,7 @@ func (e LLMExecutor) CacheBinding(sc StepContext) (*CacheBinding, error) {
 		Deterministic: deterministic,
 		Request: cache.LLMRequest{
 			Model:        model,
+			System:       req.System,
 			Temperature:  cfg.Temperature,
 			MaxTokens:    req.MaxTokens,
 			Messages:     msgs,
@@ -581,6 +617,7 @@ func buildChatRequest(cfg *dag.LLMConfig) (llm.ChatRequest, error) {
 		maxTokens = llmDefaultMaxTokens
 	}
 	return llm.ChatRequest{
+		System:         cfg.System,
 		Messages:       msgs,
 		MaxTokens:      maxTokens,
 		Temperature:    cfg.Temperature,

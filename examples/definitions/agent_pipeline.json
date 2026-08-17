@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "name": "agent-pipeline",
+  "description": "Two agent roles (ADR-016) in a relay: a researcher gathers findings and a writer drafts from them. Each `agent` step references a role from the agents section and inherits its system prompt, model, and defaults, supplying only its own task; the writer reads the researcher's output through an ordinary ${{ steps.*.output }} template. The writer step overrides the role's max_tokens to show step-over-role precedence. Runs offline on the mock provider.",
+  "agents": {
+    "researcher": {
+      "role": "researcher",
+      "system": "You are a diligent researcher. Gather the key facts for the given topic and list them plainly.",
+      "model": "mock/sim-1",
+      "max_tokens": 256
+    },
+    "writer": {
+      "role": "writer",
+      "system": "You are a clear, concise writer. Draft a short summary from the research provided.",
+      "model": "mock/sim-1",
+      "max_tokens": 256
+    }
+  },
+  "params": {
+    "topic": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "research",
+      "type": "agent",
+      "config": {
+        "agent": "researcher",
+        "prompt": "Research this topic and list the key facts:\n\n${{ run.params.topic }}"
+      }
+    },
+    {
+      "id": "write",
+      "type": "agent",
+      "config": {
+        "agent": "writer",
+        "prompt": "Write a short summary from these research findings:\n\n${{ steps.research.output.text }}",
+        "max_tokens": 512
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "research",
+      "to": "write"
+    }
+  ]
+}

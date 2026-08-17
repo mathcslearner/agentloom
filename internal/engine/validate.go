@@ -96,20 +96,23 @@ func implicitOutputFormatSpec(step gen.RunStep) (*dag.ValidatorSpec, error) {
 		// graph-illegal splice → validation_failed in the completion tx.
 		return implicitPlanSchemaSpec()
 	}
-	if dag.StepType(step.StepType) != dag.StepLLM || len(step.Config) == 0 {
+	st := dag.StepType(step.StepType)
+	if (st != dag.StepLLM && st != dag.StepAgent) || len(step.Config) == 0 {
 		return nil, nil
 	}
-	cfg, err := dag.DecodeStepConfig(dag.StepLLM, step.Config)
+	// An agent step's materialized config is a fully-merged AgentConfig (ADR-016,
+	// ticket 14.1) whose output_format may come from the role or a step override;
+	// read it off whichever config type this step carries.
+	outputFormat, err := materializedOutputFormat(st, step.Config)
 	if err != nil {
 		// Corrupt materialized config — deterministic, permanent (the render
 		// stage lands the same class independently).
 		return nil, err
 	}
-	llmCfg, ok := cfg.(*dag.LLMConfig)
-	if !ok || llmCfg.OutputFormat == nil {
+	if outputFormat == nil {
 		return nil, nil
 	}
-	schema := llmCfg.OutputFormat.Schema
+	schema := outputFormat.Schema
 	if len(schema) == 0 {
 		// Plain json format: any JSON accepted, so an empty schema — the
 		// parseability-only check.
@@ -120,6 +123,25 @@ func implicitOutputFormatSpec(step gen.RunStep) (*dag.ValidatorSpec, error) {
 		return nil, err
 	}
 	return &dag.ValidatorSpec{Name: validate.NameJSONSchema, Config: config}, nil
+}
+
+// materializedOutputFormat decodes an llm-family step's materialized config and
+// returns its output_format (nil when the step declares none). An agent step's
+// config is an AgentConfig (its output_format resolved from the role at
+// instantiation), an llm step's is an LLMConfig; both expose the same block.
+func materializedOutputFormat(st dag.StepType, raw json.RawMessage) (*dag.OutputFormat, error) {
+	cfg, err := dag.DecodeStepConfig(st, raw)
+	if err != nil {
+		return nil, err
+	}
+	switch c := cfg.(type) {
+	case *dag.LLMConfig:
+		return c.OutputFormat, nil
+	case *dag.AgentConfig:
+		return c.OutputFormat, nil
+	default:
+		return nil, nil
+	}
 }
 
 // implicitPlanSchemaSpec builds the synthetic json_schema validator a planner

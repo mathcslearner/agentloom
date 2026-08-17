@@ -27,6 +27,24 @@
       ]
     }
   },
+  "agents": {
+    "critic": {
+      "role": "critic",
+      "system": "You are a meticulous editor. Judge drafts only on clarity and factual support, and always respond in strict JSON.",
+      "model": "mock/sim-1",
+      "tools": [
+        "json_transform"
+      ],
+      "max_tokens": 512,
+      "temperature": 0,
+      "output_format": {
+        "type": "json"
+      },
+      "validation": {
+        "max_attempts": 3
+      }
+    }
+  },
   "params": {
     "goal": {
       "type": "string",

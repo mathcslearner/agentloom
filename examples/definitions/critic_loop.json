@@ -1,7 +1,15 @@
 {
   "schema_version": 1,
   "name": "critic-loop",
-  "description": "Bounded writer↔critic refinement: a draft step feeds a critic, and a marked loop edge — the only sanctioned kind of cycle — sends the run back to the draft step while the critic asks for revisions, up to max_iterations. Demonstrates loop edges (condition + max_iterations, executed by unrolling) and a conditioned exit edge.",
+  "description": "Bounded writer↔critic refinement: a draft step feeds a critic, and a marked loop edge — the only sanctioned kind of cycle — sends the run back to the draft step while the critic asks for revisions, up to max_iterations. Demonstrates loop edges (condition + max_iterations, executed by unrolling), a conditioned exit edge, and an `agent` role (ADR-016) supplying the critic's model and system prompt.",
+  "agents": {
+    "critic": {
+      "role": "critic",
+      "system": "You are a critic. Review the latest draft against the brief and decide whether it needs revision, responding in strict JSON.",
+      "model": "mock/sim-1",
+      "max_tokens": 512
+    }
+  },
   "params": {
     "brief": {
       "type": "string",

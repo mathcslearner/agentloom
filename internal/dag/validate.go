@@ -107,6 +107,16 @@ const (
 	CodeTemplateSectionInvalid ValidationCode = "template_section_invalid"
 	CodeMapBodyUnknown         ValidationCode = "map_body_unknown"
 
+	// Multi-agent codes (ADR-016, ticket 14.1). AgentSectionInvalid covers the
+	// definition's `agents` library structural rules (a role's name shape, its
+	// tool-name shapes, and — reusing the llm checks over a synthetic step —
+	// its default model_fallbacks/output_format/validation/context); AgentRefUnknown
+	// flags an `agent` step whose `agent` names no declared role. A merged
+	// agent step that is not a valid model call reuses the shared
+	// config_field_* codes.
+	CodeAgentSectionInvalid ValidationCode = "agent_section_invalid"
+	CodeAgentRefUnknown     ValidationCode = "agent_ref_unknown"
+
 	CodeLimitExceeded       ValidationCode = "limit_exceeded"
 	CodeCycle               ValidationCode = "cycle_detected"
 	CodeLoopEdgeNotAncestor ValidationCode = "loop_edge_not_ancestor"
@@ -180,6 +190,13 @@ func Validate(def *Definition) (issues []*ValidationIssue, err error) {
 	// outside the gate below.
 	v.checkTemplateSection(def)
 	v.checkMaps(def)
+	// Multi-agent (ADR-016, ticket 14.1): the `agents` library is validated as
+	// a set of synthetic llm steps (its default model_fallbacks/output_format/
+	// validation/context reuse the llm-family checks), and each `agent` step's
+	// ref must name a declared role whose merge is a valid model call. Both are
+	// independent of the main graph's well-formedness, so they run outside the
+	// gate below (like the templates/maps checks).
+	v.checkAgents(def)
 	if !v.has(CodeDuplicateStepID, CodeUnknownEdgeEndpoint) {
 		if g, gerr := NewGraph(def); gerr == nil {
 			v.checkGraphSemantics(def, g)
@@ -614,7 +631,15 @@ func (v *validator) checkValidation(path string, s Step) {
 	// or a planner step (13.3's implicit PlanOutput json_schema validator is
 	// always present). Either lets `validation` carry only a semantic policy
 	// (max_attempts / feedback) with no explicit validators.
-	hasImplicitChain := (s.Type == StepLLM && cfg[LLMConfig](s).OutputFormat != nil) || s.Type == StepPlanner
+	// An agent step is llm-family and may carry an implicit output_format chain
+	// on its config or its role's defaults (ADR-016). The role's output_format
+	// is not visible here (this validates the raw step, before ResolveAgentStep
+	// merges the role), so an agent step is treated as always potentially
+	// carrying an implicit chain — a validation block with only a semantic
+	// policy is admissible on it. A genuinely empty chain that resolves to
+	// nothing at runtime is a harmless no-op (resolveChain runs nothing).
+	hasImplicitChain := (s.Type == StepLLM && cfg[LLMConfig](s).OutputFormat != nil) ||
+		s.Type == StepPlanner || s.Type == StepAgent
 	if len(vp.Validators) == 0 && !hasImplicitChain {
 		v.add(CodeValidationFieldRequired, path+".validators", "at least one validator is required when a validation block is present")
 		return
@@ -1188,6 +1213,97 @@ func (v *validator) checkLLMConfig(path, model, prompt string, messages []LLMMes
 		if m.Content == "" {
 			v.add(CodeConfigFieldRequired, mp+".content", "required field is missing")
 		}
+	}
+}
+
+// checkAgents validates the `agents` library and every `agent` step (ADR-016,
+// ticket 14.1). Each role is validated as a synthetic llm step so its default
+// model_fallbacks / output_format / validation / context reuse the existing
+// llm-family checks verbatim — the only agent-specific rules are the role name
+// and tool-name shapes. Then each agent step's `agent` ref must name a declared
+// role, and the merged step (ResolveAgentStep) must be a valid model call: this
+// is where "an agent step executes as a fully-configured LLM step" is enforced
+// at submit time. A step-output context source on a role's default context is
+// field-checked here but its upstream ancestry is not — the role is not a graph
+// node; a step-level context override gets full ancestry via checkContextGraph.
+func (v *validator) checkAgents(def *Definition) {
+	for _, name := range sortedKeys(def.Agents) {
+		role := def.Agents[name]
+		path := "agents." + name
+		if !pluginNameRe.MatchString(name) {
+			v.add(CodeAgentSectionInvalid, path, "agent name %q does not match %s", name, pluginNameRe)
+		}
+		if role == nil {
+			continue
+		}
+		for i, t := range role.Tools {
+			if !pluginNameRe.MatchString(t) {
+				v.add(CodeAgentSectionInvalid, fmt.Sprintf("%s.tools[%d]", path, i),
+					"tool name %q does not match %s", t, pluginNameRe)
+			}
+		}
+		// Validate the role's config-level and envelope-level defaults by
+		// reusing the llm-family checks over a synthetic llm step. The role
+		// supplies no prompt, so the model-call presence check (checkLLMConfig)
+		// is deferred to each referencing step's merge below.
+		syn := Step{
+			Type: StepLLM,
+			Config: &LLMConfig{
+				Model:          role.Model,
+				ModelFallbacks: role.ModelFallbacks,
+				OutputFormat:   role.OutputFormat,
+				MaxTokens:      role.MaxTokens,
+				Temperature:    role.Temperature,
+			},
+			Validation: role.Validation,
+			Context:    role.Context,
+		}
+		v.checkModelFallbacks(def, path, syn)
+		v.checkOutputFormat(path, syn)
+		v.checkValidation(path, syn)
+		v.checkContext(path, syn)
+	}
+
+	for i, s := range def.Steps {
+		if s.Type != StepAgent {
+			continue
+		}
+		c, ok := s.Config.(*AgentConfig)
+		if !ok || c == nil || c.Agent == "" {
+			continue // a missing agent ref was already reported by checkStepConfig
+		}
+		path := fmt.Sprintf("steps[%d]", i)
+		if _, declared := def.Agents[c.Agent]; !declared {
+			v.add(CodeAgentRefUnknown, path+".config.agent",
+				"agent %q names no agent in the definition's agents section", c.Agent)
+			continue
+		}
+		merged, err := ResolveAgentStep(def, s)
+		if err != nil {
+			// Unreachable given the guards above; keep the invariant explicit.
+			v.add(CodeAgentSectionInvalid, path, "cannot resolve agent step: %v", err)
+			continue
+		}
+		mc := merged.Config.(*AgentConfig)
+		// The merged step must be a valid model call — model present, exactly
+		// one of prompt/messages (a role has no prompt, so this catches a step
+		// that supplied neither).
+		v.checkLLMConfig(path, mc.Model, mc.Prompt, mc.Messages)
+		// The merged output_format / model_fallbacks (which may come from the
+		// role or a step override) are validated over a synthetic llm step so a
+		// step-level override mistake is caught too. The step's own budget is
+		// threaded in so the fallback "has a budget to trigger" rule sees it.
+		msyn := Step{
+			Type: StepLLM,
+			Config: &LLMConfig{
+				Model:          mc.Model,
+				ModelFallbacks: mc.ModelFallbacks,
+				OutputFormat:   mc.OutputFormat,
+			},
+			Budget: s.Budget,
+		}
+		v.checkModelFallbacks(def, path, msyn)
+		v.checkOutputFormat(path, msyn)
 	}
 }
 

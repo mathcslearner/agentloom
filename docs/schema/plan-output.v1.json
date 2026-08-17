@@ -7,8 +7,41 @@
         "agent": {
           "type": "string"
         },
+        "system": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
         "prompt": {
           "type": "string"
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/LLMMessage"
+          },
+          "type": "array"
+        },
+        "max_tokens": {
+          "type": "integer"
+        },
+        "temperature": {
+          "type": "number"
+        },
+        "model_fallbacks": {
+          "items": {
+            "$ref": "#/$defs/ModelFallback"
+          },
+          "type": "array"
+        },
+        "output_format": {
+          "$ref": "#/$defs/OutputFormat"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "additionalProperties": false,
@@ -389,6 +422,9 @@
     "LLMConfig": {
       "properties": {
         "model": {
+          "type": "string"
+        },
+        "system": {
           "type": "string"
         },
         "prompt": {

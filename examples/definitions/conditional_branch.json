@@ -1,7 +1,15 @@
 {
   "schema_version": 1,
   "name": "conditional-branch",
-  "description": "Exclusive routing with a branch step: a classifier's output drives first-match-in-declaration-order routing across two `when`-conditioned edges plus a trailing default, and the three arms reconverge on a `join all` — the un-taken arms are skipped, and skipped parents satisfy the join (skip propagation). Demonstrates branch semantics, CEL `when` predicates, and conditional fan-in.",
+  "description": "Exclusive routing with a branch step: a classifier's output drives first-match-in-declaration-order routing across two `when`-conditioned edges plus a trailing default, and the three arms reconverge on a `join all` — the un-taken arms are skipped, and skipped parents satisfy the join (skip propagation). Demonstrates branch semantics, CEL `when` predicates, conditional fan-in, and an `agent` role (ADR-016).",
+  "agents": {
+    "support": {
+      "role": "support",
+      "system": "You are a warm, empathetic customer-support agent. Address the customer's concern directly and courteously.",
+      "model": "mock/sim-1",
+      "max_tokens": 512
+    }
+  },
   "params": {
     "message": {
       "type": "string",

@@ -104,6 +104,9 @@ func Decode(data []byte) (*Definition, error) {
 	if raw, ok := fields["templates"]; ok {
 		def.Templates = decodeTemplates(raw, &errs)
 	}
+	if raw, ok := fields["agents"]; ok {
+		def.Agents = decodeAgents(raw, &errs)
+	}
 	if raw, ok := fields["params"]; ok {
 		def.Params = decodeParams(raw, &errs)
 	}
@@ -129,7 +132,7 @@ func Decode(data []byte) (*Definition, error) {
 		"schema_version": true, "name": true, "description": true,
 		"on_failure": true, "max_wall_clock": true, "budget_usd": true,
 		"on_budget_exceeded": true, "expansion": true, "templates": true,
-		"params": true, "steps": true, "edges": true, "ui": true,
+		"agents": true, "params": true, "steps": true, "edges": true, "ui": true,
 	}
 	for _, k := range sortedKeys(fields) {
 		if !topLevel[k] {
@@ -204,6 +207,70 @@ func decodeTemplates(raw json.RawMessage, errs *errList) map[string]*Template {
 		out[name] = t
 	}
 	return out
+}
+
+// decodeAgents decodes the definition's `agents` library (ADR-016, ticket
+// 14.1): a name→role map. Each role is strict-decoded as a whole (unknown
+// fields, including nested ones, are rejected recursively), then the opaque
+// payloads it carries — each validator config and the output_format schema —
+// are compacted exactly as decodeValidation / decodeStepConfig compact them,
+// so a role round-trips losslessly, and the closed enums its context spec
+// carries are checked exactly as decodeContext checks them. The remaining
+// rules (a valid merged model-call, tool/validator name shapes, unknown agent
+// refs) are structural validation (Validate), like the templates library.
+func decodeAgents(raw json.RawMessage, errs *errList) map[string]*AgentDef {
+	m, ok := decodeObjectMap(raw, "agents", errs)
+	if !ok || len(m) == 0 {
+		// An empty agents object decodes to nil, matching Encode's omission of
+		// empty agents, so decode→encode→decode stays lossless.
+		return nil
+	}
+	out := make(map[string]*AgentDef, len(m))
+	for _, name := range sortedKeys(m) {
+		path := "agents." + name
+		a := &AgentDef{}
+		strictUnmarshal(m[name], a, path, errs)
+		// Canonicalize the opaque payloads so the in-memory value is stable and
+		// the definition round-trips (the decodeValidation / LLMConfig
+		// precedents).
+		if a.OutputFormat != nil {
+			compactRaw(&a.OutputFormat.Schema)
+		}
+		if a.Validation != nil {
+			for i := range a.Validation.Validators {
+				compactRaw(&a.Validation.Validators[i].Config)
+			}
+		}
+		// Closed enums the codec checks for a step's context block (decodeContext)
+		// are checked here for a role's context block too.
+		if a.Context != nil {
+			checkContextEnums(path+".context", a.Context, errs)
+		}
+		out[name] = a
+	}
+	return out
+}
+
+// checkContextEnums records unknown context source kinds, missing-source
+// policies, and compaction strategies in a context spec — the closed-enum
+// checks decodeContext applies inline. Factored out so a role's context block
+// (decodeAgents) is held to the same codec-level enum contract as a step's.
+func checkContextEnums(path string, cs *ContextSpec, errs *errList) {
+	for i := range cs.Sources {
+		sp := fmt.Sprintf("%s.sources[%d]", path, i)
+		if k := cs.Sources[i].Kind; k != "" && !slices.Contains(contextSourceKinds, k) {
+			errs.add(sp+".kind", "unknown context source kind %q (expected one of: %s)", string(k), joinEnum(contextSourceKinds))
+		}
+		if p := cs.Sources[i].OnMissing; p != "" && !slices.Contains(contextMissingPolicies, p) {
+			errs.add(sp+".on_missing", "unknown missing-source policy %q (expected one of: %s)", string(p), joinEnum(contextMissingPolicies))
+		}
+	}
+	for i := range cs.Compaction {
+		if k := cs.Compaction[i].Strategy; k != "" && !slices.Contains(compactionStrategyKinds, k) {
+			errs.add(fmt.Sprintf("%s.compaction[%d].strategy", path, i),
+				"unknown compaction strategy %q (expected one of: %s)", string(k), joinEnum(compactionStrategyKinds))
+		}
+	}
 }
 
 // decodeSteps decodes the steps array.
@@ -288,21 +355,7 @@ func decodeStep(raw json.RawMessage, path string, errs *errList) Step {
 func decodeContext(raw json.RawMessage, path string, errs *errList) *ContextSpec {
 	var cs ContextSpec
 	strictUnmarshal(raw, &cs, path, errs)
-	for i := range cs.Sources {
-		sp := fmt.Sprintf("%s.sources[%d]", path, i)
-		if k := cs.Sources[i].Kind; k != "" && !slices.Contains(contextSourceKinds, k) {
-			errs.add(sp+".kind", "unknown context source kind %q (expected one of: %s)", string(k), joinEnum(contextSourceKinds))
-		}
-		if p := cs.Sources[i].OnMissing; p != "" && !slices.Contains(contextMissingPolicies, p) {
-			errs.add(sp+".on_missing", "unknown missing-source policy %q (expected one of: %s)", string(p), joinEnum(contextMissingPolicies))
-		}
-	}
-	for i := range cs.Compaction {
-		if k := cs.Compaction[i].Strategy; k != "" && !slices.Contains(compactionStrategyKinds, k) {
-			errs.add(fmt.Sprintf("%s.compaction[%d].strategy", path, i),
-				"unknown compaction strategy %q (expected one of: %s)", string(k), joinEnum(compactionStrategyKinds))
-		}
-	}
+	checkContextEnums(path, &cs, errs)
 	return &cs
 }
 
@@ -404,6 +457,13 @@ func decodeStepConfig(st StepType, raw json.RawMessage, path string, errs *errLi
 		// The structured-output schema (ticket 11.3) is opaque JSON; compact
 		// it so the in-memory value is canonical and the definition round-trips
 		// losslessly (the ToolConfig.Input / validator-config precedent).
+		if c.OutputFormat != nil {
+			compactRaw(&c.OutputFormat.Schema)
+		}
+	case *AgentConfig:
+		// An agent config carries the same opaque output_format schema as an
+		// llm config (ADR-016), compacted for the same lossless-round-trip
+		// reason.
 		if c.OutputFormat != nil {
 			compactRaw(&c.OutputFormat.Schema)
 		}

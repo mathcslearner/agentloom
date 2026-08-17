@@ -983,13 +983,13 @@ Targeted chaos: kill workers at each 13.1 boundary (pre-claim, mid-LLM, pre-comm
 
 **Exit criteria:** the research→write→critique loop fixture runs to convergence under scripted mock rejections, iteration cap enforced, thread visible on the blackboard; guards halt a runaway loop.
 
-#### 14.1 — ADR-016 & agent definitions
+#### 14.1 — ADR-016 & agent definitions ✅
 **Depends on:** 8.6, 12.3, 1.1
 **ADR-016** + schema: `agents:` section in the workflow definition (role name, system prompt, model + fallbacks, allowed toolset, default validators, default context spec); `agent` step type references an agent and merges step-level overrides over agent defaults. Validation: unknown agent refs, tool allowlist enforcement.
 **Done when:**
-- [ ] Agent defaults merge deterministically (override precedence tested)
-- [ ] `agent` step executes as a fully-configured LLM step (e2e with mock)
-- [ ] Tool calls outside the agent's allowlist rejected with typed error
+- [x] Agent defaults merge deterministically (override precedence tested)
+- [x] `agent` step executes as a fully-configured LLM step (e2e with mock)
+- [x] Tool calls outside the agent's allowlist rejected with typed error
 
 #### 14.2 — Handoff conventions & message thread
 **Depends on:** 14.1, 12.2

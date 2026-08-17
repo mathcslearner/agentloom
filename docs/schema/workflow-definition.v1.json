@@ -7,8 +7,83 @@
         "agent": {
           "type": "string"
         },
+        "system": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
         "prompt": {
           "type": "string"
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/LLMMessage"
+          },
+          "type": "array"
+        },
+        "max_tokens": {
+          "type": "integer"
+        },
+        "temperature": {
+          "type": "number"
+        },
+        "model_fallbacks": {
+          "items": {
+            "$ref": "#/$defs/ModelFallback"
+          },
+          "type": "array"
+        },
+        "output_format": {
+          "$ref": "#/$defs/OutputFormat"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "AgentDef": {
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "system": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "model_fallbacks": {
+          "items": {
+            "$ref": "#/$defs/ModelFallback"
+          },
+          "type": "array"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_tokens": {
+          "type": "integer"
+        },
+        "temperature": {
+          "type": "number"
+        },
+        "output_format": {
+          "$ref": "#/$defs/OutputFormat"
+        },
+        "validation": {
+          "$ref": "#/$defs/ValidationPolicy"
+        },
+        "context": {
+          "$ref": "#/$defs/ContextSpec"
         }
       },
       "additionalProperties": false,
@@ -293,6 +368,12 @@
           },
           "type": "object"
         },
+        "agents": {
+          "additionalProperties": {
+            "$ref": "#/$defs/AgentDef"
+          },
+          "type": "object"
+        },
         "params": {
           "additionalProperties": {
             "$ref": "#/$defs/ParamSpec"
@@ -485,6 +566,9 @@
     "LLMConfig": {
       "properties": {
         "model": {
+          "type": "string"
+        },
+        "system": {
           "type": "string"
         },
         "prompt": {

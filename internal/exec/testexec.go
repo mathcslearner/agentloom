@@ -81,7 +81,7 @@ func Builtins(providers *llm.Registry, toolReg *tools.Registry, retrievers *retr
 func CoreBuiltins(providers *llm.Registry, toolReg *tools.Registry, retrievers *retrieval.Registry) *Registry {
 	r, err := NewRegistry(NoopExecutor{}, EchoExecutor{}, NewSleep(), FailNTimesExecutor{},
 		JoinExecutor{}, BranchExecutor{}, MapExecutor{}, GatherExecutor{},
-		NewLLMExecutor(providers), NewPlannerExecutor(providers),
+		NewLLMExecutor(providers), NewPlannerExecutor(providers), NewAgentExecutor(providers),
 		NewToolExecutor(toolReg), NewRetrieveExecutor(retrievers))
 	if err != nil {
 		panic(err) // unreachable: a fixed set of distinct, non-empty types

@@ -43,7 +43,15 @@ type LLMMessage struct {
 // LLMConfig configures an llm step: one model call (executor: M8).
 // Requires model and exactly one of prompt or messages (enforced in 1.3).
 type LLMConfig struct {
-	Model     string       `json:"model,omitempty"`
+	Model string `json:"model,omitempty"`
+
+	// System is the optional system prompt, projected onto the provider
+	// request's system field (ADR-016). Empty means no system prompt — the
+	// prior behavior every unset step keeps. It coexists with prompt/messages
+	// (the system prompt is not one of the two conversational inputs), so the
+	// prompt-xor-messages rule is unaffected.
+	System string `json:"system,omitempty"`
+
 	Prompt    string       `json:"prompt,omitempty"`
 	Messages  []LLMMessage `json:"messages,omitempty"`
 	MaxTokens int          `json:"max_tokens,omitempty"`
@@ -253,11 +261,54 @@ type PlannerConfig struct {
 	MaxAddedSteps int `json:"max_added_steps,omitempty"`
 }
 
-// AgentConfig configures an agent step: an LLM step bound to a named role
-// from the agents section (executor: M14, ADR-016; provisional shape).
+// AgentConfig configures an agent step (ADR-016, ticket 14.1): an llm-family
+// step bound to a named role from the definition's `agents` section. The
+// authored form carries the agent ref plus the task (prompt/messages) and any
+// per-field overrides of the role's defaults. At run instantiation
+// ResolveAgentStep merges the role's defaults under these overrides and
+// materializes the fully-populated config onto the step's row, so at claim
+// time llmConfigView projects this config onto an LLMConfig exactly as the
+// planner projects a PlannerConfig — the whole llm pipeline is reused.
+//
+// Every field except Agent is an override: present on the step → used; absent
+// → the role's default (or, for prompt/messages, the step is the sole source —
+// a role has no prompt of its own). The step-level validation/context
+// overrides live on the step envelope (Step.Validation / Step.Context), not
+// here.
 type AgentConfig struct {
-	Agent  string `json:"agent,omitempty"`
+	// Agent names the role in the definition's agents section. Required.
+	Agent string `json:"agent,omitempty"`
+
+	// System overrides the role's system prompt when set.
+	System string `json:"system,omitempty"`
+
+	// Model overrides the role's default model when set.
+	Model string `json:"model,omitempty"`
+
+	// Prompt is the task, as a single user message. Mutually exclusive with
+	// Messages; the merged step requires exactly one of the two (a role
+	// supplies no prompt of its own).
 	Prompt string `json:"prompt,omitempty"`
+
+	// Messages is the task as a conversation. Mutually exclusive with Prompt.
+	Messages []LLMMessage `json:"messages,omitempty"`
+
+	// MaxTokens overrides the role's completion bound when non-zero.
+	MaxTokens int `json:"max_tokens,omitempty"`
+
+	// Temperature overrides the role's sampling temperature when non-nil.
+	Temperature *float64 `json:"temperature,omitempty"`
+
+	// ModelFallbacks overrides the role's downgrade chain wholesale when
+	// non-empty.
+	ModelFallbacks []ModelFallback `json:"model_fallbacks,omitempty"`
+
+	// OutputFormat overrides the role's structured-output policy when non-nil.
+	OutputFormat *OutputFormat `json:"output_format,omitempty"`
+
+	// Tools overrides the role's allowed toolset wholesale when non-nil (an
+	// explicit empty list forbids all tools).
+	Tools []string `json:"tools,omitempty"`
 }
 
 // HumanApprovalConfig configures a human_approval step: parks the run

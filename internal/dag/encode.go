@@ -66,6 +66,16 @@ func Encode(def *Definition) ([]byte, error) {
 			return nil, err
 		}
 	}
+	if len(def.Agents) > 0 {
+		// A role map is canonical under writeJSON: encoding/json sorts string
+		// map keys, omitempty drops absent fields, and every opaque payload the
+		// role carries (validator configs, the output_format schema) was
+		// compacted at decode — so this is byte-stable, like params.
+		buf.WriteString(`,"agents":`)
+		if err := writeJSON(&buf, def.Agents); err != nil {
+			return nil, err
+		}
+	}
 	if len(def.Params) > 0 {
 		buf.WriteString(`,"params":`)
 		if err := writeJSON(&buf, def.Params); err != nil {

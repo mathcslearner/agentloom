@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "agent-ref-unknown",
+  "agents": {
+    "critic": {
+      "role": "critic",
+      "model": "mock/sim-1"
+    }
+  },
+  "steps": [
+    {
+      "id": "review",
+      "type": "agent",
+      "config": {
+        "agent": "reviewer",
+        "prompt": "review it"
+      }
+    }
+  ],
+  "edges": []
+}

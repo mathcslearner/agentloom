@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "agent-merged-no-model",
+  "agents": {
+    "critic": {
+      "role": "critic",
+      "system": "be terse"
+    }
+  },
+  "steps": [
+    {
+      "id": "review",
+      "type": "agent",
+      "config": {
+        "agent": "critic",
+        "prompt": "review it"
+      }
+    }
+  ],
+  "edges": []
+}

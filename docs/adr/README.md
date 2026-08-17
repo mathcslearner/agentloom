@@ -31,3 +31,4 @@ are reserved and appear here once the ADR is written.
 | [013](013-output-validation-and-semantic-retries.md) | Output validation & semantic retries | Accepted | 2026-08-15 |
 | [014](014-context-and-memory-model.md) | Context & memory model — token counting, sources, budgets, compaction | Accepted | 2026-08-15 |
 | [015](015-dynamic-graph-expansion.md) | Dynamic graph expansion — planner steps, PlanOutput, caps & crash matrix | Accepted | 2026-08-15 |
+| [016](016-multi-agent-orchestration.md) | Multi-agent orchestration — agent roles, handoff, loop unrolling | Accepted | 2026-08-16 |

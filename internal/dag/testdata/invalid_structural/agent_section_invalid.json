@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "name": "agent-section-invalid",
+  "agents": {
+    "critic": {
+      "role": "critic",
+      "model": "mock/sim-1",
+      "tools": [
+        "Bad-Tool"
+      ]
+    }
+  },
+  "steps": [
+    {
+      "id": "review",
+      "type": "agent",
+      "config": {
+        "agent": "critic",
+        "prompt": "review it"
+      }
+    }
+  ],
+  "edges": []
+}

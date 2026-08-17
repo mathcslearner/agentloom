@@ -71,6 +71,17 @@ type Definition struct {
 	// templates key.
 	Templates map[string]*Template `json:"templates,omitempty"`
 
+	// Agents is the run's optional library of named agent roles (ADR-016,
+	// ticket 14.1): each carries a role's default model-call configuration
+	// (system prompt, model + fallbacks, allowed toolset, default validators,
+	// default context spec). An `agent` step references one by name and merges
+	// its own step-level overrides over the role's defaults (ResolveAgentStep).
+	// Like `templates`, agents are a library — never instantiated as active
+	// steps themselves — but unlike templates they are resolved into the run's
+	// materialized step rows at instantiation, so the agents section is not
+	// needed at claim time. Nil when the document had no agents key.
+	Agents map[string]*AgentDef `json:"agents,omitempty"`
+
 	Params map[string]ParamSpec `json:"params,omitempty"`
 	Steps  []Step               `json:"steps"`
 	Edges  []Edge               `json:"edges"`
@@ -94,6 +105,75 @@ type Definition struct {
 type Template struct {
 	Steps []Step `json:"steps"`
 	Edges []Edge `json:"edges,omitempty"`
+}
+
+// AgentDef is one named agent role in the definition's `agents` library
+// (ADR-016, ticket 14.1): the default model-call configuration a role brings
+// to every `agent` step that references it. An `agent` step supplies the task
+// (its prompt/messages) and may override any of these defaults; the effective
+// step is the per-field merge of the step over the role (ResolveAgentStep),
+// materialized into the run's step rows at instantiation so the executor and
+// the engine's validate/context stages see a fully-configured step and never
+// re-read this section at claim time.
+//
+// The role carries config-level defaults (System, Model, ModelFallbacks,
+// Tools, MaxTokens, Temperature, OutputFormat) and two envelope-level defaults
+// (Validation, Context) — the fields the multi-agent flows (M14.2+) share
+// across a role. Retry/timeout/cache/budget/blackboard stay step-level only
+// (a role has no opinion on transport policy). The role has no prompt of its
+// own: the task text always comes from the step.
+type AgentDef struct {
+	// Role is the human-readable role name (researcher/critic/writer). It is
+	// metadata for the handoff thread (M14.2) and observability; empty is
+	// allowed (the agents-map key already names the role).
+	Role string `json:"role,omitempty"`
+
+	// System is the role's system prompt — the standing instructions every
+	// step in this role carries. Projected onto the provider request's system
+	// field. Empty means no default system prompt.
+	System string `json:"system,omitempty"`
+
+	// Model is the role's default model id (routed through the same provider
+	// registry as an llm step). A step may override it. Empty means the step
+	// must supply the model (the merged step is invalid without one).
+	Model string `json:"model,omitempty"`
+
+	// ModelFallbacks is the role's default downgrade chain (ADR-012): the same
+	// ordered cheaper-model list an llm step carries. Overridden wholesale by a
+	// step-level chain when present.
+	ModelFallbacks []ModelFallback `json:"model_fallbacks,omitempty"`
+
+	// Tools is the role's allowed toolset (ADR-016): the tool names the agent
+	// may call. In 14.1 the toolset is enforced by rejection — a model
+	// response naming a tool outside this set fails the step permanently; the
+	// tools are not yet offered to the model or executed (deferred). Overridden
+	// wholesale by a step-level toolset (including an explicit empty list, which
+	// forbids all tools).
+	Tools []string `json:"tools,omitempty"`
+
+	// MaxTokens is the role's default completion bound; a step may override it.
+	// Zero means absent (the executor's default applies).
+	MaxTokens int `json:"max_tokens,omitempty"`
+
+	// Temperature is the role's default sampling temperature; a step may
+	// override it. Pointer so an explicit 0 survives; nil means absent.
+	Temperature *float64 `json:"temperature,omitempty"`
+
+	// OutputFormat is the role's default structured-output policy (ADR-013).
+	// Overridden wholesale by a step-level output_format when present.
+	OutputFormat *OutputFormat `json:"output_format,omitempty"`
+
+	// Validation is the role's default output-validation chain (ADR-013). A
+	// step-level `validation` block replaces it wholesale (block-level
+	// override, not a deep merge). Materialized onto the merged step's
+	// validation_policy so it flows through the engine's ordinary validate
+	// stage.
+	Validation *ValidationPolicy `json:"validation,omitempty"`
+
+	// Context is the role's default context-assembly spec (ADR-014). A
+	// step-level `context` block replaces it wholesale. Materialized onto the
+	// merged step's context_policy.
+	Context *ContextSpec `json:"context,omitempty"`
 }
 
 // ParamType is the declared type of a run parameter.

@@ -322,6 +322,19 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 	// origin (definition-authored), at graph_version 1.
 	steps := make([]gen.CreateRunStepsParams, len(p.def.Steps))
 	for i, step := range p.def.Steps {
+		// An agent step is resolved against its role here (ADR-016, ticket
+		// 14.1): the role's defaults are merged under the step's overrides and
+		// the fully-configured step is materialized, so the executor and the
+		// engine's validate/context stages see an ordinary llm-family step and
+		// never re-read the agents section at claim time. Validate already
+		// rejected an unknown ref / bad merge, so an error here is corrupt
+		// state — surfaced, not silently materialized as the raw agent stub.
+		if step.Type == dag.StepAgent {
+			step, err = dag.ResolveAgentStep(p.def, step)
+			if err != nil {
+				return gen.Run{}, fmt.Errorf("store: resolving agent step: %w", err)
+			}
+		}
 		status := StepStatusPending
 		if p.entrySet[step.ID] {
 			status = StepStatusReady

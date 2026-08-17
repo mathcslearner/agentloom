@@ -37,6 +37,7 @@ var exampleFiles = []string{
 	"context_window.json",
 	"planner.json",
 	"map_fanout.json",
+	"agent_pipeline.json",
 }
 
 // readExample loads one example definition document.
@@ -474,6 +475,38 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 		if !strategies[st] {
 			t.Errorf("no %q compaction strategy in kitchen_sink.json", st)
 		}
+	}
+
+	// Ticket 14.1 construct (ADR-016): an `agents` section declaring a role
+	// with defaults (system prompt + allowed toolset), and an `agent` step
+	// referencing it — so a schema edit that dropped the agents section or the
+	// agent step type would fail here.
+	if len(def.Agents) == 0 {
+		t.Error("no agents section in kitchen_sink.json")
+	}
+	var roleHasSystem, roleHasTools bool
+	for _, a := range def.Agents {
+		if a.System != "" {
+			roleHasSystem = true
+		}
+		if len(a.Tools) > 0 {
+			roleHasTools = true
+		}
+	}
+	if !roleHasSystem {
+		t.Error("no agent role with a system prompt in kitchen_sink.json")
+	}
+	if !roleHasTools {
+		t.Error("no agent role with an allowed toolset in kitchen_sink.json")
+	}
+	var refsAgent bool
+	for _, s := range def.Steps {
+		if c, ok := s.Config.(*dag.AgentConfig); ok && c.Agent != "" {
+			refsAgent = true
+		}
+	}
+	if !refsAgent {
+		t.Error("no agent step referencing a role in kitchen_sink.json")
 	}
 }
 
