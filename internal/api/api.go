@@ -22,6 +22,7 @@
 //	POST   /v1/runs/{id}/steps/{sid}/requeue        submit  submit  requeue a dead-lettered step (budget re-armed)
 //	GET    /v1/runs/{id}/steps/{sid}/logs           read    read    one attempt's captured executor logs (keyset pages)
 //	GET    /v1/runs/{id}/blackboard                 read    read    run-scoped blackboard entries (heads or history, keyset pages)
+//	GET    /v1/runs/{id}/graph                       read    read    versioned run graph with provenance + per-version expansion deltas (ticket 13.6)
 //	POST   /v1/definitions                          submit  submit  register a definition (version 1; name must be new)
 //	GET    /v1/definitions                          read    read    list definitions (latest version per name, keyset by name)
 //	GET    /v1/definitions/{id}                     read    read    one stored definition, spec included
@@ -254,6 +255,9 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/runs/{runID}/steps/{stepID}/logs", h.handleStepLogs)
 		// Run-scoped blackboard (ticket 12.2, ADR-014): heads or full history.
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/runs/{runID}/blackboard", h.handleRunBlackboard)
+		// Run-graph introspection (ticket 13.6, ADR-015): versioned graph with
+		// provenance + per-version expansion deltas.
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/runs/{runID}/graph", h.handleRunGraph)
 		// Definition registry (ticket 6.5).
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/definitions", h.handleCreateDefinition)
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/definitions", h.handleListDefinitions)

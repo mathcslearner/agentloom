@@ -1,0 +1,106 @@
+{
+  "run_id": "11111111-1111-1111-1111-111111111111",
+  "graph_version": 2,
+  "steps_total": 3,
+  "nodes": [
+    {
+      "id": "plan",
+      "type": "planner",
+      "status": "succeeded",
+      "depth": 0,
+      "graph_version": 1,
+      "origin": {
+        "kind": "definition"
+      },
+      "added_at": "2026-08-16T12:00:00Z"
+    },
+    {
+      "id": "join",
+      "type": "join",
+      "status": "succeeded",
+      "depth": 0,
+      "graph_version": 1,
+      "origin": {
+        "kind": "definition"
+      },
+      "added_at": "2026-08-16T12:00:00Z"
+    },
+    {
+      "id": "work#1",
+      "type": "llm",
+      "status": "succeeded",
+      "depth": 1,
+      "graph_version": 2,
+      "origin": {
+        "kind": "planner",
+        "step": "plan"
+      },
+      "added_at": "2026-08-16T12:00:05Z"
+    }
+  ],
+  "edges": [
+    {
+      "from": "plan",
+      "to": "join",
+      "type": "normal",
+      "resolution": "fired",
+      "graph_version": 1,
+      "origin": {
+        "kind": "definition"
+      }
+    },
+    {
+      "from": "plan",
+      "to": "work#1",
+      "type": "normal",
+      "resolution": "fired",
+      "graph_version": 2,
+      "origin": {
+        "kind": "planner",
+        "step": "plan"
+      }
+    },
+    {
+      "from": "work#1",
+      "to": "join",
+      "type": "normal",
+      "resolution": "fired",
+      "graph_version": 2,
+      "origin": {
+        "kind": "planner",
+        "step": "plan"
+      }
+    }
+  ],
+  "expansions": [
+    {
+      "version": 2,
+      "from_version": 1,
+      "origin_step": "plan",
+      "origin_kind": "planner",
+      "depth": 1,
+      "added_at": "2026-08-16T12:00:05Z",
+      "added_steps": [
+        "work#1"
+      ],
+      "added_edges": [
+        {
+          "from": "plan",
+          "to": "work#1",
+          "type": "normal"
+        },
+        {
+          "from": "work#1",
+          "to": "join",
+          "type": "normal"
+        }
+      ],
+      "readied": [
+        "work#1"
+      ],
+      "widened": [
+        "join"
+      ]
+    }
+  ]
+}

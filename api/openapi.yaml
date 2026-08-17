@@ -636,6 +636,47 @@ paths:
         "500":
           $ref: "#/components/responses/Internal"
 
+  /v1/runs/{run_id}/graph:
+    get:
+      operationId: getRunGraph
+      tags: [Runs]
+      summary: Get the run's versioned graph with provenance
+      description: |
+        Scope `read`, rate-limit class `read`. The run's current versioned
+        graph (ADR-015): every node and edge with its provenance — whether it
+        was authored in the definition or injected by a planner / map / loop
+        expansion, the step that injected it, the expansion nesting depth, the
+        graph version at which it was introduced, and the time it was added.
+        `graph_version` is the current (highest) version; the authored graph is
+        version 1 and each expansion bumps it (so `graph_version` equals the
+        run's expansion count + 1). `expansions` is the ordered per-version
+        delta feed reconstructed from the run's `graph_expanded` events — the
+        contract the dashboard uses to animate expansion. A client reconstructs
+        any version N by keeping the nodes and edges whose `graph_version` is at
+        most N. A run that never expanded returns its authored graph with an
+        empty `expansions` list. A missing run is `404 run_not_found`.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: The run's versioned graph.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunGraphResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
   /v1/definitions:
     post:
       operationId: createDefinition
@@ -1917,6 +1958,149 @@ components:
           description: The run's DLQ records — how a client discovers requeueable steps. Absent for healthy runs.
           items:
             $ref: "#/components/schemas/DeadLetterView"
+    RunGraphResponse:
+      type: object
+      description: >
+        A run's current versioned graph with provenance (ADR-015, ticket
+        13.6): the definition-authored graph is version 1, and each planner /
+        map / loop expansion bumps the version. Every node and edge carries the
+        version at which it was introduced; `expansions` is the ordered
+        per-version delta feed reconstructed from the run's `graph_expanded`
+        events. A client reconstructs any version N by keeping the nodes and
+        edges whose `graph_version` is at most N.
+      required: [run_id, graph_version, steps_total, nodes, edges, expansions]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        graph_version:
+          type: integer
+          description: The current (highest) version = expansion count + 1.
+        steps_total:
+          type: integer
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphNodeView"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphEdgeView"
+        expansions:
+          type: array
+          description: The ordered per-version expansion deltas; empty for a run that never expanded.
+          items:
+            $ref: "#/components/schemas/GraphExpansionView"
+    GraphOriginView:
+      type: object
+      description: >
+        A node's or edge's provenance. `kind` is `definition` for an authored
+        row, or the expansion kind (`planner` / `map` / `loop`) with `step`
+        naming the step whose completion injected the row.
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [definition, planner, map, loop]
+        step:
+          type: string
+          description: The injecting step id; absent for an authored (definition) row.
+    GraphNodeView:
+      type: object
+      description: One graph node with its live status and provenance.
+      required: [id, type, status, depth, graph_version, origin, added_at]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+        depth:
+          type: integer
+          description: Expansion nesting depth; 0 for an authored node.
+        graph_version:
+          type: integer
+          description: The version at which the node was introduced.
+        origin:
+          $ref: "#/components/schemas/GraphOriginView"
+        added_at:
+          type: string
+          format: date-time
+          description: Run creation time for authored nodes; the expansion event time for injected ones.
+    GraphEdgeView:
+      type: object
+      description: One graph edge with its resolution and provenance.
+      required: [from, to, type, resolution, graph_version, origin]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        type:
+          type: string
+          enum: [normal, loop]
+        when:
+          type: string
+          description: The edge's CEL guard, when conditioned; absent otherwise.
+        resolution:
+          type: string
+          enum: [unresolved, fired, skipped]
+        graph_version:
+          type: integer
+        origin:
+          $ref: "#/components/schemas/GraphOriginView"
+    GraphEdgeRef:
+      type: object
+      description: An edge introduced by an expansion, by endpoints and type.
+      required: [from, to, type]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        type:
+          type: string
+          enum: [normal, loop]
+    GraphExpansionView:
+      type: object
+      description: >
+        One expansion's delta, reconstructed from a `graph_expanded` event.
+        `version` is the version this expansion produced (`from_version` + 1);
+        `readied` are the injected steps made immediately runnable and `widened`
+        are the pre-existing pending steps whose dependency counts it grew.
+      required: [version, from_version, origin_step, origin_kind, depth, added_at, added_steps, added_edges]
+      properties:
+        version:
+          type: integer
+        from_version:
+          type: integer
+        origin_step:
+          type: string
+        origin_kind:
+          type: string
+          enum: [planner, map, loop]
+        depth:
+          type: integer
+        added_at:
+          type: string
+          format: date-time
+        added_steps:
+          type: array
+          items:
+            type: string
+        added_edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphEdgeRef"
+        readied:
+          type: array
+          items:
+            type: string
+        widened:
+          type: array
+          items:
+            type: string
     RunCostResponse:
       type: object
       description: >

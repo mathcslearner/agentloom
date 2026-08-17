@@ -119,18 +119,18 @@ type RunResponse struct {
 
 // RunView is the run row's client-facing projection.
 type RunView struct {
-	ID             string     `json:"id"`
-	DefinitionID   string     `json:"definition_id,omitempty"`
-	Status         string     `json:"status"`
-	OnFailure      string     `json:"on_failure"`
-	StepsTotal     int        `json:"steps_total"`
-	StepsSucceeded int        `json:"steps_succeeded"`
-	StepsFailed    int        `json:"steps_failed"`
-	StepsSkipped   int        `json:"steps_skipped"`
-	StepsCancelled int        `json:"steps_cancelled"`
+	ID             string `json:"id"`
+	DefinitionID   string `json:"definition_id,omitempty"`
+	Status         string `json:"status"`
+	OnFailure      string `json:"on_failure"`
+	StepsTotal     int    `json:"steps_total"`
+	StepsSucceeded int    `json:"steps_succeeded"`
+	StepsFailed    int    `json:"steps_failed"`
+	StepsSkipped   int    `json:"steps_skipped"`
+	StepsCancelled int    `json:"steps_cancelled"`
 	// StepsCollected counts map instances tolerated under collect_errors
 	// (ticket 13.4b): terminal failures the run did not fail on.
-	StepsCollected int `json:"steps_collected"`
+	StepsCollected int        `json:"steps_collected"`
 	ParkReason     string     `json:"park_reason,omitempty"`
 	CancelReason   string     `json:"cancel_reason,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
@@ -277,6 +277,89 @@ type DeadLetterView struct {
 	Error           json.RawMessage `json:"error,omitempty"`
 	AttemptsAtDeath int             `json:"attempts_at_death"`
 	CreatedAt       time.Time       `json:"created_at"`
+}
+
+// RunGraphResponse answers GET /v1/runs/{id}/graph (ticket 13.6, ADR-015):
+// the run's current versioned graph with per-row provenance, plus the ordered
+// per-version expansion deltas. It is the contract the M18 dashboard uses to
+// render and animate runtime graph expansion (planner / map / loop injection).
+//
+// GraphVersion is the current (highest) version — the definition-authored
+// graph is version 1, and each expansion bumps it, so GraphVersion equals the
+// run's expansion count + 1 (ADR-004). Every node and edge carries the version
+// at which it was introduced, so a client reconstructs any version N by
+// keeping the rows with graph_version <= N; Expansions replays the same
+// history as an ordered delta feed (built from the graph_expanded events).
+type RunGraphResponse struct {
+	RunID        string               `json:"run_id"`
+	GraphVersion int                  `json:"graph_version"`
+	StepsTotal   int                  `json:"steps_total"`
+	Nodes        []GraphNodeView      `json:"nodes"`
+	Edges        []GraphEdgeView      `json:"edges"`
+	Expansions   []GraphExpansionView `json:"expansions"`
+}
+
+// GraphOriginView is a node's or edge's provenance (ticket 13.6, ADR-015).
+// Kind is "definition" for an authored row (no injecting step), or the
+// expansion kind — "planner", "map", or "loop" — with Step naming the step
+// whose completion injected the row.
+type GraphOriginView struct {
+	Kind string `json:"kind"`
+	Step string `json:"step,omitempty"`
+}
+
+// GraphNodeView is one graph node: its identity, live status, expansion
+// nesting depth, the version at which it was introduced, its provenance, and
+// the time it was added (the run's creation time for authored nodes, the
+// expansion event's time for injected ones).
+type GraphNodeView struct {
+	ID           string          `json:"id"`
+	Type         string          `json:"type"`
+	Status       string          `json:"status"`
+	Depth        int             `json:"depth"`
+	GraphVersion int             `json:"graph_version"`
+	Origin       GraphOriginView `json:"origin"`
+	AddedAt      time.Time       `json:"added_at"`
+}
+
+// GraphEdgeView is one graph edge with its provenance and the version at
+// which it was spliced in. (Named distinctly from the run-detail EdgeView,
+// which omits provenance.)
+type GraphEdgeView struct {
+	From         string          `json:"from"`
+	To           string          `json:"to"`
+	Type         string          `json:"type"`
+	When         string          `json:"when,omitempty"`
+	Resolution   string          `json:"resolution"`
+	GraphVersion int             `json:"graph_version"`
+	Origin       GraphOriginView `json:"origin"`
+}
+
+// GraphEdgeRef names an edge introduced by an expansion, by its endpoints and
+// type — enough for a client to match it against the Edges list.
+type GraphEdgeRef struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	Type string `json:"type"`
+}
+
+// GraphExpansionView is one expansion's delta (ticket 13.6, ADR-015),
+// reconstructed from a graph_expanded event. Version is the version this
+// expansion produced (from_version + 1); AddedSteps / AddedEdges are what it
+// injected; Readied are the injected steps made immediately runnable; Widened
+// are the pre-existing pending steps whose dependency counts this expansion
+// grew (the "before"-splice targets).
+type GraphExpansionView struct {
+	Version     int            `json:"version"`
+	FromVersion int            `json:"from_version"`
+	OriginStep  string         `json:"origin_step"`
+	OriginKind  string         `json:"origin_kind"`
+	Depth       int            `json:"depth"`
+	AddedAt     time.Time      `json:"added_at"`
+	AddedSteps  []string       `json:"added_steps"`
+	AddedEdges  []GraphEdgeRef `json:"added_edges"`
+	Readied     []string       `json:"readied,omitempty"`
+	Widened     []string       `json:"widened,omitempty"`
 }
 
 // RunCostResponse answers GET /v1/runs/{id}/cost (ticket 10.2, ADR-012): the

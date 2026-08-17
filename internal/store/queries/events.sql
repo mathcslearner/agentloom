@@ -14,3 +14,12 @@ SELECT * FROM events
 WHERE run_id = $1 AND seq > $2
 ORDER BY seq
 LIMIT $3;
+
+-- ListEventsByType returns a run's events of one type in seq order — the
+-- run-graph introspection API (ticket 13.6) reads only 'graph_expanded'
+-- events to reconstruct the per-version expansion deltas, and those are few
+-- per run, so this bounded read avoids scanning the whole event log.
+-- name: ListEventsByType :many
+SELECT * FROM events
+WHERE run_id = $1 AND type = $2
+ORDER BY seq;

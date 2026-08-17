@@ -435,6 +435,10 @@ type EventRepo interface {
 	// List returns up to limit events with seq > afterSeq, in seq order —
 	// the M16 backfill shape.
 	List(ctx context.Context, runID uuid.UUID, afterSeq int64, limit int32) ([]gen.Event, error)
+	// ListByType returns a run's events of one type in seq order — the
+	// run-graph introspection API (ticket 13.6) reads only 'graph_expanded'
+	// events to reconstruct the per-version expansion deltas.
+	ListByType(ctx context.Context, runID uuid.UUID, eventType string) ([]gen.Event, error)
 }
 
 type eventRepo struct{ q *gen.Queries }
@@ -450,6 +454,11 @@ func (r eventRepo) Append(ctx context.Context, arg gen.AppendEventParams) (gen.E
 func (r eventRepo) List(ctx context.Context, runID uuid.UUID, afterSeq int64, limit int32) ([]gen.Event, error) {
 	evs, err := r.q.ListEvents(ctx, gen.ListEventsParams{RunID: runID, Seq: afterSeq, Limit: limit})
 	return evs, wrapErr("list events", err)
+}
+
+func (r eventRepo) ListByType(ctx context.Context, runID uuid.UUID, eventType string) ([]gen.Event, error) {
+	evs, err := r.q.ListEventsByType(ctx, gen.ListEventsByTypeParams{RunID: runID, Type: eventType})
+	return evs, wrapErr("list events by type", err)
 }
 
 // TraceContext is a W3C trace context pair (traceparent/tracestate)

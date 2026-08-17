@@ -495,6 +495,49 @@ longer surfaces the key. Entries page by an opaque `next_cursor` (limit up to
 steps in the worker, never through the API. `ctl blackboard <run-id>
 [--name k --tag t --history]` wraps it.
 
+## The run graph
+
+`GET /v1/runs/{id}/graph` (read scope) returns the run's current **versioned
+graph** with per-row provenance plus the ordered per-version expansion deltas
+(ADR-015). A definition-authored graph is version 1; each planner / map / loop
+expansion bumps the version, so `graph_version` equals the run's expansion count
++ 1. Every node and edge carries the version at which it was introduced and its
+`origin` — `definition` for an authored row, or the expansion `kind` (`planner`
+/ `map` / `loop`) with the injecting `step`:
+
+```bash
+curl -s "http://127.0.0.1:8080/v1/runs/$RUN_ID/graph" \
+  -H "Authorization: Bearer $KEY" | jq
+```
+
+```jsonc
+{
+  "run_id": "…",
+  "graph_version": 2,
+  "steps_total": 5,
+  "nodes": [
+    { "id": "plan", "type": "planner", "status": "succeeded", "depth": 0,
+      "graph_version": 1, "origin": { "kind": "definition" }, "added_at": "…" },
+    { "id": "work_a", "type": "llm", "status": "succeeded", "depth": 1,
+      "graph_version": 2, "origin": { "kind": "planner", "step": "plan" }, "added_at": "…" }
+  ],
+  "edges": [ { "from": "plan", "to": "work_a", "type": "normal",
+    "resolution": "fired", "graph_version": 2, "origin": { "kind": "planner", "step": "plan" } } ],
+  "expansions": [
+    { "version": 2, "from_version": 1, "origin_step": "plan", "origin_kind": "planner",
+      "depth": 1, "added_at": "…", "added_steps": ["work_a", "work_b"],
+      "added_edges": [ … ], "readied": ["work_a"], "widened": ["gather"] }
+  ]
+}
+```
+
+Two reconstruction paths hold: keep the nodes and edges whose `graph_version` is
+at most N to rebuild version N, or replay `expansions` in order from the
+version-1 base. `expansions` is reconstructed from the run's `graph_expanded`
+events (with each expansion's injection time as `added_at`) — the feed the M18
+dashboard animates. A run that never expanded returns its authored graph with an
+empty `expansions` list; a missing run is `404 run_not_found`.
+
 ## The plugin catalog
 
 `GET /v1/plugins` (read scope) lists every plugin compiled into the

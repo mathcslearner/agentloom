@@ -717,7 +717,48 @@ never false-positives; anchor-status and cap semantics stay covered by the
 deterministic tables in `expansion_test.go`. Over 1M+ executions the fuzzer found
 no panic and no over-acceptance.
 
-Not yet (after 13.5): the run-graph introspection API (13.6).
+### Run-graph introspection API (as built, 13.6)
+
+13.6 closes M13 with `GET /v1/runs/{id}/graph` — the read-only endpoint that
+surfaces a run's current versioned graph with per-row provenance plus the
+ordered per-version expansion deltas, so the M18 dashboard can render and
+animate runtime expansion. It is purely additive: **no migration, no new config
+var, no new metric** — every fact it reports was already persisted by 13.2
+(the `depth`/`origin_step`/`origin_kind`/`graph_version` columns) and the
+`graph_expanded` events. The only store change is a bounded read query,
+`ListEventsByType` (a run's `graph_expanded` events are few, so filtering the
+event log by type beats scanning it).
+
+**Sourcing — rows for the graph, events for the deltas.** The `nodes` and
+`edges` come from the `run_steps` / `run_edges` rows: they carry the live
+`status`/`resolution` plus the denormalized provenance columns, mapped onto a
+`GraphOriginView` (`kind: definition` when the origin columns are NULL, else the
+stored `origin_kind` with `origin_step`). The `expansions` come from the
+`graph_expanded` events, which carry the authoritative version transition
+(`from_version`/`to_version`), the injected `depth`, the delta, and — via the
+event row's `created_at` — the injection time. A node's `added_at` resolves
+through a version→time map: version 1 is the run's creation time, and each later
+version is its expansion event's time. The event delta is decoded to topology
+only (step ids/types, edge endpoints/types) — deliberately not into `dag.Step`,
+whose `Config` is a `StepConfig` interface only `DecodePlanOutput` can populate,
+and which the graph view surfaces nothing of.
+
+**Reconstructing any version.** Both DoD reconstruction paths hold by
+construction: every node and edge carries the `graph_version` it was introduced
+at, so a client reconstructs version *N* by keeping the rows with
+`graph_version ≤ N`; independently, `expansions` replays base-graph + ordered
+deltas. The consistency DoD (`graph_expanded` events and API versions agree) is
+a test: `graph_version = 1 + len(expansions) = run.graph_version`, every node's
+introducing version is 1 or belongs to an expansion, the row-derived and
+event-derived added sets coincide per version, and the delta feed is linear
+(`from_version[i] = to_version[i-1]`). A committed golden
+(`internal/api/testdata/run_graph_fixture.json`) is the exported fixture for the
+M17/M18 frontend tests; the `TestRunGraphIntrospection` integration test drives
+`planner.json` to completion and asserts the injected workers carry
+`origin.kind=planner`/`depth=1`/`graph_version=2`. Reads are non-transactional
+(three separate queries), matching the `GET /v1/runs/{id}` precedent — a torn
+read against a live-expanding run is a benign momentary inconsistency the next
+poll heals, and introspection needs no snapshot isolation.
 
 ## Consequences
 

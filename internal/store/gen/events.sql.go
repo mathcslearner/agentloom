@@ -87,3 +87,44 @@ func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]Event
 	}
 	return items, nil
 }
+
+const listEventsByType = `-- name: ListEventsByType :many
+SELECT run_id, seq, type, payload, created_at FROM events
+WHERE run_id = $1 AND type = $2
+ORDER BY seq
+`
+
+type ListEventsByTypeParams struct {
+	RunID uuid.UUID
+	Type  string
+}
+
+// ListEventsByType returns a run's events of one type in seq order — the
+// run-graph introspection API (ticket 13.6) reads only 'graph_expanded'
+// events to reconstruct the per-version expansion deltas, and those are few
+// per run, so this bounded read avoids scanning the whole event log.
+func (q *Queries) ListEventsByType(ctx context.Context, arg ListEventsByTypeParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, listEventsByType, arg.RunID, arg.Type)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Event
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.RunID,
+			&i.Seq,
+			&i.Type,
+			&i.Payload,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
