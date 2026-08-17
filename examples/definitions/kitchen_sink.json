@@ -462,7 +462,8 @@
       "to": "draft",
       "type": "loop",
       "condition": "output.verdict == 'revise'",
-      "max_iterations": 3
+      "max_iterations": 3,
+      "on_exhausted": "fail"
     },
     {
       "from": "critique",

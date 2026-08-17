@@ -57,6 +57,13 @@ type ExpandRunArgs struct {
 	// zero-indegree injected steps this expansion readies (ticket 7.3). Zero
 	// means no context.
 	Trace TraceContext
+	// DepthOverride, when non-nil, replaces the origin row's depth as the base
+	// for this expansion's nesting depth (ticket 14.3). Loop unrolling sets it to
+	// the loop source's *authored* depth so every iteration's instances carry the
+	// same constant depth — iterations are sequential, not nested, so they must
+	// not consume the MaxDepth budget (max_iterations bounds them instead). Nil
+	// keeps the default origin.Depth (planner/map).
+	DepthOverride *int
 	// Now is the injected current time. Required.
 	Now time.Time
 }
@@ -169,9 +176,17 @@ func ExpandRun(ctx context.Context, q Querier, args ExpandRunArgs) (ExpandRunRes
 		perExpansionCap = args.MaxAddedSteps
 	}
 
+	// The nesting depth this expansion injects at: the origin row's depth by
+	// default, or the caller's override (loop unrolling pins a constant depth so
+	// sequential iterations do not consume the MaxDepth budget, ticket 14.3).
+	baseDepth := int(origin.Depth)
+	if args.DepthOverride != nil {
+		baseDepth = *args.DepthOverride
+	}
+
 	in := dag.ExpansionInput{
 		Plan:             args.Plan,
-		Origin:           dag.ExpansionOrigin{Kind: args.Origin.Kind, StepID: args.Origin.StepID, Depth: int(origin.Depth)},
+		Origin:           dag.ExpansionOrigin{Kind: args.Origin.Kind, StepID: args.Origin.StepID, Depth: baseDepth},
 		Existing:         buildAnchors(steps, args.Origin.StepID),
 		ExistingEdges:    toDagEdges(edges),
 		RunParams:        run.Params,
@@ -187,7 +202,8 @@ func ExpandRun(ctx context.Context, q Querier, args ExpandRunArgs) (ExpandRunRes
 	}
 
 	newVersion := run.GraphVersion + 1
-	injectedDepth := origin.Depth + 1
+	//nolint:gosec // baseDepth is a small bounded nesting depth (≤ MaxDepth)
+	injectedDepth := int32(baseDepth) + 1
 	originStep := args.Origin.StepID
 	originKind := string(args.Origin.Kind)
 

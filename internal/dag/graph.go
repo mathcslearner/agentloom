@@ -140,6 +140,33 @@ func (g *Graph) Ancestors(stepID string) (map[string]bool, error) {
 	return ancestors, nil
 }
 
+// Descendants returns the set of step IDs reachable from stepID by a
+// non-empty normal-edge path. A step is never its own descendant. It is the
+// forward mirror of Ancestors, kept for runtime expansion (loop unrolling,
+// M14) which needs the whole descendant set to delimit a loop body.
+func (g *Graph) Descendants(stepID string) (map[string]bool, error) {
+	start, ok := g.index[stepID]
+	if !ok {
+		return nil, fmt.Errorf("dag: Descendants: unknown step %q", stepID)
+	}
+	descendants := make(map[string]bool)
+	visited := make([]bool, len(g.def.Steps))
+	queue := []int{start}
+	for len(queue) > 0 {
+		s := queue[0]
+		queue = queue[1:]
+		for _, e := range g.outNormal[s] {
+			t := g.toIdx(e)
+			if !visited[t] {
+				visited[t] = true
+				descendants[g.def.Steps[t].ID] = true
+				queue = append(queue, t)
+			}
+		}
+	}
+	return descendants, nil
+}
+
 // reaches reports whether a non-empty normal-edge path leads from step
 // index `from` to step index `to`. Starting and ending at the same step
 // requires an actual cycle through it, not the trivial empty path.

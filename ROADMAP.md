@@ -999,13 +999,13 @@ Standardized blackboard usage: agent outputs auto-appended to a `thread` (author
 - [x] Thread entries carry author/role/iteration metadata (asserted)
 - [x] Context preset respects compaction (long thread compacts, pinned handoff survives — test)
 
-#### 14.3 — Loop-edge runtime (unrolling)
+#### 14.3 — Loop-edge runtime (unrolling) ✅
 **Depends on:** 14.2, 13.2
 Execute M1's marked loop edges: when the loop-source step (critic) completes and its CEL condition signals "revise" with iteration < `max_iterations`, the engine expands iteration k+1 — cloning the loop-body segment as new step instances (`{node_id}#k+1`), placing the critic's feedback on the blackboard for the new iteration's context; condition false or cap reached → the loop-exit edge proceeds. All via `ExpandRun` (atomic, durable, crash-safe for free).
 **Done when:**
-- [ ] Writer⇄critic e2e: mock critic rejects twice then accepts → 3 writer instances, feedback threaded into each revision prompt
-- [ ] Cap reached → exit path taken with `loop_exhausted` event (policy: proceed vs fail — both tested)
-- [ ] Kill mid-iteration → resume completes the same iteration (no duplicate iteration)
+- [x] Writer⇄critic e2e: mock critic rejects twice then accepts → 3 writer instances, feedback threaded into each revision prompt
+- [x] Cap reached → exit path taken with `loop_exhausted` event (policy: proceed vs fail — both tested)
+- [x] Kill mid-iteration → resume completes the same iteration (no duplicate iteration)
 
 #### 14.4 — Run guards & termination policies
 **Depends on:** 14.3, 5.6

@@ -278,14 +278,17 @@ func TestCreateRunLoopEdgesExcluded(t *testing.T) {
 	if loop.EdgeType != store.EdgeTypeLoop {
 		t.Fatalf("edge 1 type = %q, want loop", loop.EdgeType)
 	}
-	if loop.Condition == nil || *loop.Condition != "output.verdict == 'revise'" {
+	if loop.Condition == nil || *loop.Condition != "output.json.verdict == 'revise'" {
 		t.Errorf("loop condition = %v", loop.Condition)
 	}
 	if loop.MaxIterations == nil || *loop.MaxIterations != 5 {
 		t.Errorf("loop max_iterations = %v", loop.MaxIterations)
 	}
-	if when := edges[2].WhenExpr; when == nil || *when != "output.verdict == 'approve'" {
-		t.Errorf("edge 2 when = %v", when)
+	// The exit edge (critique -> publish) is unconditioned: the loop condition
+	// is the sole brancher, and the before-splice keeps publish pending until the
+	// terminal iteration fires this edge (ticket 14.3).
+	if when := edges[2].WhenExpr; when != nil {
+		t.Errorf("edge 2 (exit) when = %v, want unconditioned", when)
 	}
 	if edges[0].WhenExpr != nil || edges[0].Condition != nil || edges[0].MaxIterations != nil {
 		t.Error("unconditioned normal edge has non-NULL predicates")

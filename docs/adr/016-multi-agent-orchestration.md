@@ -219,16 +219,104 @@ compaction unit (the whole conversation), which satisfies "long thread compacts,
 pinned handoff survives" without changing the 1-source-1-entry assembly model;
 per-message windowing is deferred.
 
-### What is deferred (M14.3+)
+### Loop-edge runtime — unrolling (as built, 14.3)
+
+14.3 executes M1's marked loop edges by **unrolling one iteration at a time
+through `store.ExpandRun`** — the same primitive planners (13.3) and maps (13.4)
+use, with an engine-generated delta. A loop is **edge-driven, not step-typed**:
+any completing step whose *authored* node (its id with the `#k` instance suffix
+stripped) has an outgoing marked loop edge is a loop source. The completion
+transaction evaluates the loop edge's `condition` against the step's output and
+branches — the loop logic sits beside the map path in `completeSuccess`, no new
+executor. **No migration, no new config var, no new metric.**
+
+**The unrolling model.** The loop body is the normal-edge span from the loop
+edge's `to` (the entry) to its `from` (the loop source), inclusive. On a
+*continue* (`condition` true, iteration `k < max_iterations`), a pure
+`dag.GenerateLoopExpansion` builds the iteration-`k+1` delta and the completion's
+`ExpandRun` applies it:
+
+- **after-splice** `<current loop-source instance> → <entry>#k+1` — readies the
+  next iteration's entry when the origin's fan-out runs.
+- internal body edges cloned with the `#k+1` suffix; the loop edge itself is
+  **not** cloned (the next loop-back is detected lazily when `<source>#k+1`
+  completes).
+- **before-splice** `<source>#k+1 → <exit target>` for each non-loop out-edge of
+  the loop source, carrying its `when`. This widens the pending exit target's
+  `remaining_deps`, so the completing iteration's own exit edge resolves and the
+  exit target waits on exactly the newest iteration until one fires it. The clean
+  idiom is an **unconditioned exit edge**: the loop condition is the sole
+  brancher, and the before-splice keeps the exit target pending across
+  iterations; a conditioned exit must be false whenever the loop continues.
+
+**Body-only reference rewriting** is the one divergence from map's
+rewrite-everything (`mapexpand.go`): a loop body may reference pre-loop steps, so
+only `${{ steps.<x> }}` / `step_output` context references to *body members* gain
+the `#k+1` suffix; references to steps outside the body and to `run.params` are
+left untouched. Agent body steps are resolved (`ResolveAgentStep`) before
+cloning, so an injected agent instance carries the same merged, self-describing
+config an authored agent step gets at instantiation.
+
+**Feedback threading reuses 14.2 with no bespoke path.** The critic is an agent,
+so its verdict is auto-appended to the run `thread`, tagged with
+`Iteration = threadIteration("#k")`; the writer's role context preset (a `thread`
+source filtered to the critic role, `on_missing: skip`) surfaces it, and
+`rewriteInstanceContext` leaves thread sources untouched so every cloned writer
+instance re-reads the growing thread. Each revision's prompt therefore carries
+the critic's prior notes.
+
+**Termination.** A new **loop-edge-only field `on_exhausted` (`proceed` default |
+`fail`)** governs the cap. When `condition` is true but `k >= max_iterations`:
+`proceed` records a `loop_exhausted` event inside the completion transaction and
+lets the ordinary fan-out route the loop source's normal exit edges (so an
+unconditioned exit runs `publish`); `fail` records the event and dead-letters the
+loop source permanently (the run fails via its `on_failure` disposition). A
+`condition`-false completion is an ordinary *exit* (no expansion, the exit edge
+fires); a malformed condition is a deterministic permanent step failure (like a
+`when` error). A rejected loop delta is **always permanent** (engine-generated —
+no model to re-prompt), routed like a map rejection (`expansion_cap_exceeded` for
+a run-guard cap, else `loop_expansion_invalid`).
+
+**Iterations do not nest depth.** A loop's iterations are sequential, not nested,
+so `ExpandRun` pins every iteration's instances to the loop source's *authored*
+depth (a new `ExpandRunArgs.DepthOverride`): each instance carries a constant
+depth and the loop is bounded by `max_iterations`, **not** by `MaxDepth` (which
+would otherwise cap a loop at 4 iterations). `max_iterations` semantics: expand
+iff the completing instance's iteration `k < max_iterations`; at `k ==
+max_iterations` the loop exhausts (so `max_iterations` is the maximum number of
+loop-backs, and total body runs = `max_iterations + 1`).
+
+**Crash-safety is inherited for free.** The loop expansion rides the same fenced
+completion transaction as a planner's (13.3/13.5): `SucceedStep` (claim-fenced) →
+`ExpandRun` → fan-out, all atomic. A zombie loop source is fenced at
+`SucceedStep` and never expands; a crash after `ExpandRun` but before commit
+rolls the whole iteration back, so a resumed takeover completes the *same*
+iteration exactly once — no duplicate or half-expanded iteration.
+
+**Decisions.** Edge-driven detection (any step type may be a loop source, keyed
+on an authored loop edge, not a step type); unconditioned exit as the idiom (the
+before-splice, not complementary `when`s, keeps the exit pending); reuse the
+14.2 thread for feedback (no per-iteration feedback record); constant iteration
+depth via `DepthOverride` (loops bounded by `max_iterations`, not `MaxDepth`);
+`on_exhausted` as a loop-edge field (proceed routes to the exit, fail
+dead-letters); permanent rejection routing (engine-generated deltas are not
+re-promptable). **Tests:** `dag/loopexpand_test.go` (body computation, body-only
+rewriting, splice structure, the delta passes `ValidateExpansion`); engine
+integration `TestLoopWriterCriticConverges` (reject twice → 3 writer instances,
+loop provenance, constant depth, feedback threaded into each revision),
+`TestLoopCapExhaustedProceed` / `TestLoopCapExhaustedFail` (the cap event under
+both policies), `TestLoopExpansionAtomicOnFailpoint` (abort after `ExpandRun`
+rolls back — no injected iteration). `critic_loop.json` updated to the runnable
+writer⇄critic shape; kitchen sinks carry `on_exhausted`.
+
+### What is deferred (M14.4+)
 
 - The autonomous tool-execution / ReAct loop, and offering tools to the model.
 - Planner-injected agent steps (only authored agent steps are resolved).
 - Thread configuration: a custom thread key, an opt-out, or opting a plain llm
   step into the thread; per-message (turn-level) compaction windowing.
-- **Loop-edge runtime** — executing M1's marked loop edges by unrolling each
-  iteration through `ExpandRun` (14.3, ADR-015), with the critic's feedback
-  threaded into the next iteration's prompt; loop termination and the
-  `loop_exhausted` event.
+- Loops nested inside a map body (nested expansion), and a body member other than
+  the loop source having an edge leaving the body (rejected defensively).
 - Run-level guards and no-progress detection (14.4).
 - The flagship research → write → critique example (14.5).
 

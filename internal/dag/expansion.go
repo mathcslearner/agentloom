@@ -476,6 +476,13 @@ func (v *validator) checkExpansionEdgeFields(path string, e Edge) {
 		case e.MaxIterations < 1 || e.MaxIterations > MaxLoopIterations:
 			v.add(CodeLimitExceeded, path+".max_iterations", "must be between 1 and %d, got %d", MaxLoopIterations, e.MaxIterations)
 		}
+		// An empty on_exhausted is the default (proceed); a decoded plan edge is
+		// normalized by decodeEdge, but an in-memory delta may leave it blank.
+		switch e.OnExhausted {
+		case "", ExhaustProceed, ExhaustFail:
+		default:
+			v.add(CodeConfigFieldInvalid, path+".on_exhausted", "must be %q or %q, got %q", ExhaustProceed, ExhaustFail, string(e.OnExhausted))
+		}
 		return
 	}
 	if e.Condition != "" {
@@ -483,6 +490,9 @@ func (v *validator) checkExpansionEdgeFields(path string, e Edge) {
 	}
 	if e.MaxIterations != 0 {
 		v.add(CodeLoopFieldForbidden, path+".max_iterations", "only valid on loop edges")
+	}
+	if e.OnExhausted != "" {
+		v.add(CodeLoopFieldForbidden, path+".on_exhausted", "only valid on loop edges")
 	}
 	switch {
 	case len(e.When) > MaxExprLen:

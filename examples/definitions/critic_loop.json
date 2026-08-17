@@ -1,13 +1,33 @@
 {
   "schema_version": 1,
   "name": "critic-loop",
-  "description": "Bounded writer↔critic refinement: a draft step feeds a critic, and a marked loop edge — the only sanctioned kind of cycle — sends the run back to the draft step while the critic asks for revisions, up to max_iterations. Demonstrates loop edges (condition + max_iterations, executed by unrolling), a conditioned exit edge, and an `agent` role (ADR-016) supplying the critic's model and system prompt.",
+  "description": "Bounded writer⇄critic refinement executed by loop unrolling (ADR-016, ticket 14.3): a writer agent drafts, a critic agent reviews in strict JSON, and a marked loop edge — the only sanctioned cycle — sends the run back to the writer while the critic asks for revisions, up to max_iterations. Each iteration is a fresh cloned instance ({id}#k) spliced in via ExpandRun; the critic's verdict is auto-appended to the run thread (14.2) and the writer's role carries a 'conversation view' context preset (the critic-filtered thread), so every revision addresses the prior notes. The loop condition (output.json.verdict) is the sole brancher; the exit edge is unconditioned — the before-splice keeps `publish` pending until the terminal iteration fires it. on_exhausted defaults to proceed (route to the exit edge); a run runs offline against a scripted mock critic.",
   "agents": {
+    "writer": {
+      "role": "writer",
+      "system": "You are a writer. Draft or revise an article for the brief. If the conversation carries critique notes, address every one of them.",
+      "model": "mock/sim-1",
+      "max_tokens": 2048,
+      "context": {
+        "sources": [
+          {
+            "kind": "thread",
+            "name": "critique_notes",
+            "key": "thread",
+            "role": "critic",
+            "on_missing": "skip"
+          }
+        ]
+      }
+    },
     "critic": {
       "role": "critic",
       "system": "You are a critic. Review the latest draft against the brief and decide whether it needs revision, responding in strict JSON.",
       "model": "mock/sim-1",
-      "max_tokens": 512
+      "max_tokens": 512,
+      "output_format": {
+        "type": "json"
+      }
     }
   },
   "params": {
@@ -19,11 +39,10 @@
   "steps": [
     {
       "id": "draft",
-      "type": "llm",
+      "type": "agent",
       "config": {
-        "model": "anthropic/claude-sonnet-5",
-        "prompt": "Write an article for this brief. If the blackboard has critique notes, address every one of them.\n\n${{ run.params.brief }}",
-        "max_tokens": 2048
+        "agent": "writer",
+        "prompt": "Write an article for this brief, addressing any critique notes in the conversation.\n\n${{ run.params.brief }}"
       }
     },
     {
@@ -31,7 +50,7 @@
       "type": "agent",
       "config": {
         "agent": "critic",
-        "prompt": "Review the latest draft against the brief. Output JSON like {\"verdict\": \"approve\"} or {\"verdict\": \"revise\", \"notes\": [\"...\"]}."
+        "prompt": "Review the latest draft against the brief:\n\n${{ steps.draft.output.text }}\n\nOutput JSON like {\"verdict\": \"approve\"} or {\"verdict\": \"revise\", \"notes\": [\"...\"]}."
       }
     },
     {
@@ -53,13 +72,12 @@
       "from": "critique",
       "to": "draft",
       "type": "loop",
-      "condition": "output.verdict == 'revise'",
+      "condition": "output.json.verdict == 'revise'",
       "max_iterations": 5
     },
     {
       "from": "critique",
-      "to": "publish",
-      "when": "output.verdict == 'approve'"
+      "to": "publish"
     }
   ]
 }

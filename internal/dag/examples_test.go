@@ -157,7 +157,7 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 		}
 	}
 
-	var loopEdge, conditionedEdge, hasGuard bool
+	var loopEdge, loopExhaustPolicy, conditionedEdge, hasGuard bool
 	outEdges := make(map[string][]dag.Edge) // normal out-edges, declaration order
 	for _, e := range def.Edges {
 		if strings.Contains(e.When, "has(") || strings.Contains(e.Condition, "has(") {
@@ -165,6 +165,9 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 		}
 		if e.IsLoop() {
 			loopEdge = true
+			if e.OnExhausted == dag.ExhaustFail {
+				loopExhaustPolicy = true
+			}
 			continue
 		}
 		if e.When != "" && !branchSteps[e.From] {
@@ -174,6 +177,9 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	}
 	if !loopEdge {
 		t.Error("no loop edge in kitchen_sink.json")
+	}
+	if !loopExhaustPolicy {
+		t.Error("no explicit on_exhausted policy on the loop edge in kitchen_sink.json")
 	}
 	if !conditionedEdge {
 		t.Error("no when-conditioned non-branch edge in kitchen_sink.json")

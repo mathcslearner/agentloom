@@ -132,11 +132,18 @@ func collectErrorMarker(class dag.ErrorClass) json.RawMessage {
 // dead-letters `map_expansion_invalid`. out carries the productive spend, so a
 // cost-bearing body's metering is unaffected by the routing.
 func (e *Engine) routeMapRejection(ctx context.Context, step gen.RunStep, out exec.Output, rej *store.ExpansionRejectedError, runTrace store.TraceContext) error {
-	reason := "map_expansion_invalid"
+	// The invalid-delta reason is origin-specific (ticket 14.3): a map step's
+	// completion generated a map delta; any other step reaching here is a loop
+	// source generating a loop delta. A cap exhaustion is the same permanent
+	// expansion_cap_exceeded for both.
+	reason := "loop_expansion_invalid"
+	if dag.StepType(step.StepType) == dag.StepMap {
+		reason = "map_expansion_invalid"
+	}
 	if rej.CapExceeded() {
 		reason = "expansion_cap_exceeded"
 	}
-	log.From(ctx).ErrorContext(ctx, "map expansion rejected; failing permanently",
+	log.From(ctx).ErrorContext(ctx, "engine-generated expansion rejected; failing permanently",
 		slog.String("reason", reason), slog.Any("error", rej))
 	return e.completeFailure(ctx, step, out, fmt.Errorf("%s: %w", reason, rej), dag.ClassPermanent, runTrace)
 }

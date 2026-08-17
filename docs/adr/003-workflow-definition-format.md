@@ -309,6 +309,12 @@ instance graph stays acyclic; every iteration is durably checkpointed;
 `condition` false or the cap reached routes execution to the loop source's
 normal (non-loop) outgoing edges.
 
+- `on_exhausted` (optional, loop edges only; `proceed` default | `fail`; added
+  14.3) — the termination policy at the `max_iterations` bound. `proceed`
+  records a `loop_exhausted` event and routes to the exit edges; `fail` records
+  the event and fails the run. See ADR-016 §"Loop-edge runtime" for the as-built
+  unrolling, the before/after-splice mechanics, and constant iteration depth.
+
 ### Readiness, skip propagation, and join semantics
 
 These rules are what `ReadySteps` (ticket 1.4) and the completion transaction

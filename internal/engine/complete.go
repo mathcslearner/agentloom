@@ -305,6 +305,54 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		plan = p
 	}
 
+	// Loop-edge unrolling (ticket 14.3, ADR-016): a completing step whose
+	// authored node has an outgoing marked loop edge is a loop source. Evaluated
+	// only when the step is not itself a plan-producing origin (a planner/map
+	// never carries a loop edge). The decision drives the same ExpandRun path
+	// (continue → an engine-generated loop delta), records a loop_exhausted event
+	// (exhaust), or does nothing (exit → the ordinary fan-out fires the loop
+	// source's normal exit edges). A malformed loop condition is a deterministic
+	// step failure, force-classified permanent (like a `when` failure, ADR-003).
+	var loopEvent *store.LoopExhaustedEvent
+	var loopDepthOverride *int
+	if plan == nil && originKind == "" {
+		dec, lerr := e.loopDecision(step, run, out, params)
+		if lerr != nil {
+			logger.WarnContext(ctx, "loop condition evaluation failed; recording step failure",
+				slog.Any("error", lerr))
+			return e.completeFailure(ctx, step, out, lerr, dag.ClassPermanent, store.TraceFromRun(run))
+		}
+		switch dec.kind {
+		case loopContinue:
+			plan = dec.plan
+			originKind = dag.OriginLoop
+			// Pin every iteration to the loop source's *authored* depth so
+			// sequential iterations carry a constant depth and are bounded by
+			// max_iterations, not MaxDepth (ticket 14.3). A loop instance was
+			// injected at authored_depth+1, so subtract 1 to recover it.
+			ad := loopAuthoredDepth(step)
+			loopDepthOverride = &ad
+		case loopExhaust:
+			if dec.fail {
+				// on_exhausted: fail — the loop gave up without converging. Record
+				// the event, then dead-letter the loop source permanently so the
+				// run fails via its on_failure disposition (ticket 14.3/14.4).
+				if eerr := e.recordLoopExhausted(ctx, step.RunID, dec.event); eerr != nil {
+					logger.WarnContext(ctx, "recording loop_exhausted event failed; failing anyway",
+						slog.Any("error", eerr))
+				}
+				return e.completeFailure(ctx, step, out,
+					fmt.Errorf("loop_exhausted: %q reached max_iterations %d", dec.event.LoopSourceStep, dec.event.MaxIterations),
+					dag.ClassPermanent, store.TraceFromRun(run))
+			}
+			// on_exhausted: proceed — record the event in the completion tx and
+			// let the ordinary fan-out route the loop source's normal exit edges.
+			loopEvent = &dec.event
+		case loopExit, loopNone:
+			// Nothing to do — the ordinary fan-out handles the exit edges.
+		}
+	}
+
 	// Declarative blackboard writes (ticket 12.2, ADR-014): planned pre-
 	// transaction (pure — resolve each write's From pointer into this step's
 	// output), applied in-transaction after the success CAS. Gated on a wired
@@ -479,6 +527,7 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 				Origin:        dag.ExpansionOrigin{Kind: originKind, StepID: step.StepID},
 				Plan:          *plan,
 				MaxAddedSteps: expansionCap,
+				DepthOverride: loopDepthOverride,
 				Trace:         enqTrace,
 				Now:           now,
 			})
@@ -498,6 +547,15 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 			maybeCrash(CrashStageAfterExpand, step.StepID)
 		}
 		if !cancelling {
+			// Loop exhaustion under on_exhausted: proceed (ticket 14.3): record
+			// the loop_exhausted event atomically with the completion, before the
+			// fan-out routes the loop source's normal exit edges — so the event
+			// precedes the resulting step_ready events in seq order.
+			if loopEvent != nil {
+				if err := store.RecordLoopExhausted(ctx, q, step.RunID, *loopEvent, now); err != nil {
+					return err
+				}
+			}
 			// The out-edge read + edge plan move UNDER the run lock, after any
 			// expansion (ADR-015): a planner's own ExpandRun (an origin→new
 			// "after" edge) and a concurrent parallel-to splice onto this
@@ -548,7 +606,10 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		// engine-generated, so every rejection is permanent — there is no model
 		// to re-prompt (ticket 13.4).
 		if rejected != nil {
-			if originKind == dag.OriginMap {
+			// Map and loop deltas are engine-generated (13.4 / 14.3): no model can
+			// re-prompt them, so every rejection is permanent. Only a planner's
+			// LLM-authored plan routes through the semantic-retry loop.
+			if originKind == dag.OriginMap || originKind == dag.OriginLoop {
 				return e.routeMapRejection(ctx, step, out, rejected, store.TraceFromRun(run))
 			}
 			return e.routeExpansionRejection(ctx, step, out, verdict, rejected, store.TraceFromRun(run))

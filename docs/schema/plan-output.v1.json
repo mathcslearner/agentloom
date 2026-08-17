@@ -320,6 +320,9 @@
         },
         "max_iterations": {
           "type": "integer"
+        },
+        "on_exhausted": {
+          "$ref": "#/$defs/ExhaustPolicy"
         }
       },
       "additionalProperties": false,
@@ -357,6 +360,13 @@
         "timeout",
         "cancelled",
         "validation_failed"
+      ]
+    },
+    "ExhaustPolicy": {
+      "type": "string",
+      "enum": [
+        "proceed",
+        "fail"
       ]
     },
     "FailNTimesConfig": {

@@ -185,6 +185,11 @@ func (EdgeType) JSONSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "string", Enum: enumAny([]EdgeType{EdgeNormal, EdgeLoop})}
 }
 
+// JSONSchema declares the loop-exhaustion-policy enum in the generated schema.
+func (ExhaustPolicy) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny([]ExhaustPolicy{ExhaustProceed, ExhaustFail})}
+}
+
 // JSONSchema declares the join-mode enum in the generated schema.
 func (JoinMode) JSONSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "string", Enum: enumAny([]JoinMode{JoinAll, JoinAny})}

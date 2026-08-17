@@ -1354,12 +1354,23 @@ func (v *validator) checkEdges(def *Definition, stepIndex map[string]int) {
 			case e.MaxIterations < 1 || e.MaxIterations > MaxLoopIterations:
 				v.add(CodeLimitExceeded, path+".max_iterations", "must be between 1 and %d, got %d", MaxLoopIterations, e.MaxIterations)
 			}
+			// An empty on_exhausted is the default (proceed); decode normalizes
+			// the JSON spelling, and a programmatically built loop edge may leave
+			// it blank.
+			switch e.OnExhausted {
+			case "", ExhaustProceed, ExhaustFail:
+			default:
+				v.add(CodeConfigFieldInvalid, path+".on_exhausted", "must be %q or %q, got %q", ExhaustProceed, ExhaustFail, string(e.OnExhausted))
+			}
 		} else {
 			if e.Condition != "" {
 				v.add(CodeLoopFieldForbidden, path+".condition", "only valid on loop edges")
 			}
 			if e.MaxIterations != 0 {
 				v.add(CodeLoopFieldForbidden, path+".max_iterations", "only valid on loop edges")
+			}
+			if e.OnExhausted != "" {
+				v.add(CodeLoopFieldForbidden, path+".on_exhausted", "only valid on loop edges")
 			}
 			switch {
 			case len(e.When) > MaxExprLen:

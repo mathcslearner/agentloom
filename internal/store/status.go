@@ -338,4 +338,14 @@ const (
 	// transaction as the context_assembled event (one atomic audit under the
 	// claim fence), one event per strategy that ran, before the assembled event.
 	EventContextRevision = "context_revision"
+
+	// EventLoopExhausted: a marked loop edge reached its max_iterations bound
+	// while its condition still signaled "iterate again" (ticket 14.3, ADR-016).
+	// The payload (LoopExhaustedEvent) carries the loop source, the body entry,
+	// the iteration reached and the configured cap, the condition, and the
+	// termination policy (proceed / fail) with the action taken. Appended in the
+	// loop source's completion transaction — no expansion happens on the
+	// exhausting completion; execution routes to the loop source's normal
+	// (non-loop) outgoing edges (proceed) or the run fails (fail).
+	EventLoopExhausted = "loop_exhausted"
 )

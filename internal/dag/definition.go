@@ -306,6 +306,19 @@ const (
 	EdgeLoop   EdgeType = "loop"
 )
 
+// ExhaustPolicy selects a loop edge's behavior when it reaches its
+// max_iterations bound while Condition still signals "iterate again"
+// (ticket 14.3). ExhaustProceed is the canonical default: emit a
+// loop_exhausted event and route through the loop source's normal
+// (non-loop) outgoing edges. ExhaustFail fails the run instead.
+type ExhaustPolicy string
+
+// Permitted loop-exhaustion policies.
+const (
+	ExhaustProceed ExhaustPolicy = "proceed"
+	ExhaustFail    ExhaustPolicy = "fail"
+)
+
 // Edge connects two steps. Loop edges (Type == EdgeLoop) are the only
 // sanctioned cycles and carry Condition and MaxIterations; readiness and
 // skip propagation ignore them (ADR-003 "Loop edges").
@@ -328,6 +341,12 @@ type Edge struct {
 	// MaxIterations is the hard iteration bound; loop edges only. Zero
 	// means the key was absent (invalid on a loop edge; enforced in 1.3).
 	MaxIterations int `json:"max_iterations,omitempty"`
+
+	// OnExhausted is the termination policy at the max_iterations bound;
+	// loop edges only (ticket 14.3). Decode normalizes an absent value on a
+	// loop edge to ExhaustProceed; Encode omits ExhaustProceed, so the
+	// canonical spelling of a proceed loop has no "on_exhausted" key.
+	OnExhausted ExhaustPolicy `json:"on_exhausted,omitempty"`
 }
 
 // IsLoop reports whether the edge is a marked loop edge.
@@ -340,6 +359,9 @@ func (e Edge) MarshalJSON() ([]byte, error) {
 	ej := edgeJSON(e)
 	if ej.Type == EdgeNormal {
 		ej.Type = ""
+	}
+	if ej.OnExhausted == ExhaustProceed {
+		ej.OnExhausted = ""
 	}
 	return marshalNoEscape(ej)
 }

@@ -545,6 +545,12 @@ func decodeEdge(raw json.RawMessage, path string, errs *errList) Edge {
 	default:
 		errs.add(path+".type", "unknown edge type %q (expected %q or %q)", string(edge.Type), EdgeNormal, EdgeLoop)
 	}
+	// Normalize an absent on_exhausted to the default only on loop edges;
+	// on a normal edge the field is forbidden and must stay empty so the
+	// validation error fires (checkEdges). The enum itself is checked there.
+	if edge.Type == EdgeLoop && edge.OnExhausted == "" {
+		edge.OnExhausted = ExhaustProceed
+	}
 	return edge
 }
 
