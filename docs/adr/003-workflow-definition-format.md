@@ -146,9 +146,12 @@ value.
 
 **`map`** — runtime-sized fan-out over a list, instances created via the
 expansion machinery (executor: 13.4; contract in ADR-015). Requires `items`
-(expression yielding the list) and `body` (the named sub-template to
-instantiate per item — ADR-015 reserves a definition-level `templates`
-section as its referent, added in 13.4).
+(an expression yielding the list, held as raw JSON so a whole-expression
+template renders an array into it) and `body` (the name of a **definition-level
+`templates` entry** to instantiate per item — added in 13.4); optional
+`max_items` caps the fan-out width. A `gather` step (a fan-in barrier emitting
+its resolved ordered `items` array) is generated per map to collect the ordered
+per-instance results; authoring one is legal (a literal array) but rare.
 
 ```json
 {"id": "summarize_each", "type": "map", "config": {
@@ -156,6 +159,16 @@ section as its referent, added in 13.4).
   "body": "summarize_one"
 }}
 ```
+
+**`templates`** (top-level, optional; ADR-015, 13.4) — a `name → {steps, edges}`
+library of reusable sub-graphs a `map` body instantiates. Templates are a
+library, **not active steps**: they are validated (each a self-contained
+single-sink sub-graph) but never instantiated at run creation, and ride in the
+run's definition snapshot so a map expansion reads them at runtime. A template
+body references the current item through the reserved `${{ item }}` /
+`${{ item_index }}` roots (valid only inside a template) and its own steps
+through ordinary `${{ steps.<id>.output }}` refs; the engine rewrites both per
+instance (`item` → the map's output, `steps.x` → `steps.x#k`).
 
 **`planner`** — an LLM call whose validated output (a `PlanOutput` document,
 ADR-015) injects new steps/edges into the running graph (executor: 13.3;

@@ -78,7 +78,7 @@ The AI-native layer lands immediately after the engine core and *before* any UI 
 | 10 | B | Cost tracking & budgets | Real-time $ ledger, budgets, model downgrade, park-on-exceed | 5 |
 | 11 | B | Validation & semantic retries | Validator chain, critique-augmented retry loop | 6 |
 | 12 | B | Context & memory management | Token accounting, blackboard, automatic compaction | 6 |
-| 13 | B | Dynamic DAG (planner steps) | Atomic runtime graph expansion + map fan-out | 6 |
+| 13 | B | Dynamic DAG (planner steps) | Atomic runtime graph expansion + map fan-out | 7 |
 | 14 | B | Multi-agent orchestration | Agent roles, handoffs, critic⇄writer loops | 5 |
 | 15 | B | Human-in-the-loop | Park-without-lease approvals, decide API, timeouts | 5 |
 | 16 | C | Realtime events & WebSocket | Ordered per-run event feed, backfill-then-tail protocol | 5 |
@@ -939,13 +939,21 @@ Registry of model context windows (in the pricing/model catalog); pre-flight har
 - [x] Malformed plan → semantic retry with verdict feedback → valid plan (scripted mock) *(a planner carries an implicit `json_schema` validator over the published `plan-output.v1.json` (JSON-shape gate) and `dag.ValidateExpansion` inside `ExpandRun` (graph gate); a plan-attributable rejection returns `*store.ExpansionRejectedError`, routed through `completeValidationFailure` as a synthesized `expansion`-validator fail verdict → 11.4's semantic-retry loop re-prompts with the issues as feedback. `TestPlannerMalformedPlanSemanticRetries`: an id-collision plan → attempt 1 `validation_failed` (verdict carries the expansion issue) → feedback-augmented attempt 2 valid → run succeeds, `graph_version` moved exactly once. A run-guard cap exhaustion (`CapExceeded`) instead fails permanent — `TestPlannerCapExceededPermanent` dead-letters `expansion_cap_exceeded`, no retry, graph unchanged.)*
 - [x] Zombie planner attempt (reclaimed mid-flight) cannot double-expand (fencing test) *(`TestZombiePlannerCannotDoubleExpand`: worker A stalls past its lease, worker B takes over and expands (`graph_version` 2), A resumes and its completion — `ExpandRun` included — is fenced on the lost claim at `SucceedStep` and abandoned without ACK (both claim ids logged); the graph stays at version 2, one `graph_expanded`, planner history `[lost, succeeded]`. `TestPlannerExpansionAtomicOnFailpoint` proves E3: an abort right after `ExpandRun` leaves no injected rows and `graph_version` unmoved.)*
 
-#### 13.4 — Dynamic map fan-out
+#### 13.4 — Dynamic map fan-out ✅
 **Depends on:** 13.2
 `map` step: over a runtime list (templated from an upstream output), instantiate N instances of a named sub-template + a gather join collecting ordered results; implemented as an engine-generated expansion (no LLM involved); N capped by config.
 **Done when:**
-- [ ] E2E: retrieve list of 20 → map llm-per-item (mock) → gather returns ordered array
-- [ ] N > cap rejected with typed error at expansion time
-- [ ] Item failures honor the map's failure policy (fail-fast vs collect-errors — both tested)
+- [x] E2E: retrieve list of 20 → map llm-per-item (mock) → gather returns ordered array *(a `map` step over a runtime list instantiates one instance of its `body` sub-template (the definition `templates` library) per item plus a generated `gather` join, applied through `store.ExpandRun` — the planner's primitive with an engine-generated delta. `dag.GenerateMapExpansion` mints `<body_step>#k` instances (item/`item_index`/internal-step refs rewritten per instance), after-splices `map → entry#k`, wires `sink#k → gather`, and gives the gather an ordered `["${{ steps.<sink>#k.output }}", …]` config so it emits results in list order. `TestMapFansOutAndGathers`: a 20-element list → 20 `analyze#k` llm instances (mock) → `process#gather` emits the ordered 20-element array; run succeeds at `graph_version` 2 / `steps_total` 23, one `graph_expanded` (origin process/map), instance rows carrying `depth` 1 / `origin_step` process / `origin_kind` map.)*
+- [x] N > cap rejected with typed error at expansion time *(two caps: `MapConfig.max_items` (executor, before any expansion — `TestMapMaxItemsPermanent`) and the run per-expansion step cap (`ValidateExpansion` inside `ExpandRun` — `TestMapCapExceededPermanent`). Both dead-letter the map **permanently** — an engine-generated delta has no model to re-prompt, so `routeMapRejection` never semantic-retries: `CapExceeded` → `expansion_cap_exceeded`, else `map_expansion_invalid`. The graph never moves and no `graph_expanded` fires.)*
+- [x] Item failures honor the map's failure policy — **fail-fast** *(an instance whose llm call fails permanently dead-letters, and under the default `fail_fast` the run fails before the gather gathers — `TestMapItemFailureFailFast`. **collect-errors split into 13.4b below** — it needs the gather to fire on all-terminal, not all-succeeded, which is new engine readiness.)*
+
+#### 13.4b — Map collect-errors policy
+**Depends on:** 13.4
+`map` failure policy `collect_errors`: an item failure is collected as an error slot in the gathered ordered array and the run still succeeds — the alternative to 13.4's fail-fast. Needs new readiness semantics (the gather fires when all instances are **terminal** — succeeded OR dead-lettered — not all-succeeded) plus error-slot collection and a `MapConfig.on_item_failure` field. *(Carved out of 13.4 to keep that ticket a focused session; ADR-015 §"Map fan-out (as built, 13.4)" records the split.)*
+**Done when:**
+- [ ] `on_item_failure: collect_errors` gathers succeeded outputs + error markers for failed items, run succeeds (tested)
+- [ ] Gather readiness fires on all-instances-terminal, not all-succeeded (tested)
+- [ ] fail-fast (13.4) and collect-errors selectable per map, both covered
 
 #### 13.5 — Expansion chaos & recovery matrix
 **Depends on:** 13.3, 5.8

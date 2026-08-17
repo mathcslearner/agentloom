@@ -61,8 +61,8 @@ func TestListPlugins(t *testing.T) {
 	if res := doAuth(t, srv, http.MethodGet, "/v1/plugins", rootKey, nil, &resp); res.StatusCode != http.StatusOK {
 		t.Fatalf("GET /v1/plugins = %d, want 200", res.StatusCode)
 	}
-	if len(resp.Plugins) != 13 {
-		t.Fatalf("catalog has %d plugins, want the 13 builtins", len(resp.Plugins))
+	if len(resp.Plugins) != 15 {
+		t.Fatalf("catalog has %d plugins, want the 15 builtins", len(resp.Plugins))
 	}
 	if !sort.SliceIsSorted(resp.Plugins, func(i, j int) bool {
 		a, b := resp.Plugins[i], resp.Plugins[j]
@@ -139,8 +139,8 @@ func TestListPluginsCoreSet(t *testing.T) {
 	if res := doAuth(t, srv, http.MethodGet, "/v1/plugins", rootKey, nil, &resp); res.StatusCode != http.StatusOK {
 		t.Fatalf("GET /v1/plugins = %d, want 200", res.StatusCode)
 	}
-	if len(resp.Plugins) != 10 {
-		t.Fatalf("core catalog has %d plugins, want 10", len(resp.Plugins))
+	if len(resp.Plugins) != 12 {
+		t.Fatalf("core catalog has %d plugins, want 12", len(resp.Plugins))
 	}
 	for _, p := range resp.Plugins {
 		if p.Name == "counter" || p.Name == "effectful_echo" {

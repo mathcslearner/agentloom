@@ -340,6 +340,13 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "GatherConfig": {
+      "properties": {
+        "items": true
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "HumanApprovalConfig": {
       "properties": {
         "prompt": {
@@ -419,11 +426,12 @@
     },
     "MapConfig": {
       "properties": {
-        "items": {
-          "type": "string"
-        },
+        "items": true,
         "body": {
           "type": "string"
+        },
+        "max_items": {
+          "type": "integer"
         }
       },
       "additionalProperties": false,
@@ -595,6 +603,16 @@
             },
             "config": {
               "$ref": "#/$defs/MapConfig"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "gather"
+            },
+            "config": {
+              "$ref": "#/$defs/GatherConfig"
             }
           }
         },
@@ -778,6 +796,7 @@
         "tool",
         "retrieve",
         "map",
+        "gather",
         "planner",
         "agent",
         "human_approval",

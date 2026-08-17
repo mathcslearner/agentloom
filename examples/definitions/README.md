@@ -81,9 +81,19 @@ each example's "header comment" is its top-level `description` field.
   `max_attempts` 3) and by the run's `expansion` caps. Runs offline on the
   mock — the planner's prompt *is* a valid `PlanOutput`, echoed back
   verbatim.
+- **[map_fanout.json](map_fanout.json)** — dynamic map fan-out (ticket 13.4,
+  ADR-015): a `map` step instantiates one instance of its `body` sub-template
+  (the `templates` library) per runtime list item plus a generated `gather`
+  join that collects the ordered per-instance results — an engine-generated
+  expansion (no LLM), applied through the same `store.ExpandRun` as a planner.
+  `source` emits a three-element list, `process` maps `analyze_one` over it
+  (each an `llm` call referencing its item through `${{ item }}` /
+  `${{ item_index }}`), and `process#gather` emits the ordered array of
+  analyses. `max_items` caps the width. Runs offline on the mock.
 - **[kitchen_sink.json](kitchen_sink.json)** — one coherent
-  research-and-publish pipeline exercising every construct: all 14 step
-  types, both join modes (`any` and `all`), conditioned and unconditioned
+  research-and-publish pipeline exercising every construct: every registered
+  step type (including a `map` over a `templates` sub-template and a `gather`),
+  both join modes (`any` and `all`), conditioned and unconditioned
   edges, `has()` guards, a branch with a trailing default, a loop edge,
   all five param types, explicit retry policies (one full block, one
   partial block inheriting engine defaults) with the

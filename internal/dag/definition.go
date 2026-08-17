@@ -62,6 +62,15 @@ type Definition struct {
 	// Uniform across the run, so it lives at the top level, not on a step.
 	Expansion *ExpansionPolicy `json:"expansion,omitempty"`
 
+	// Templates is the run's optional library of named sub-templates
+	// (ADR-015, ticket 13.4): each is a reusable sub-graph a `map` step
+	// (MapConfig.body) instantiates once per runtime list item. Templates are
+	// a library, NOT active steps — they are never instantiated at run
+	// creation, only validated and carried in the definition snapshot so a map
+	// expansion can read them at runtime. Nil when the document had no
+	// templates key.
+	Templates map[string]*Template `json:"templates,omitempty"`
+
 	Params map[string]ParamSpec `json:"params,omitempty"`
 	Steps  []Step               `json:"steps"`
 	Edges  []Edge               `json:"edges"`
@@ -70,6 +79,21 @@ type Definition struct {
 	// is never interpreted and is round-tripped byte-for-byte exactly as it
 	// appeared in the source document.
 	UI json.RawMessage `json:"ui,omitempty"`
+}
+
+// Template is one named sub-template in the definition's `templates` library
+// (ADR-015, ticket 13.4): a reusable sub-graph a `map` step instantiates once
+// per runtime list item. Its steps reference the current item through the
+// reserved `${{ item }}` / `${{ item_index }}` roots, and each other through
+// ordinary `${{ steps.<id>.output }}` refs; at expansion time the engine
+// rewrites both per instance (item → the map's output, `steps.x` → `steps.x#k`)
+// and splices the instances between the map step and a generated gather join.
+// Structurally identical to a mini definition graph (steps + edges), and
+// validated as one (unique local ids, acyclic, exactly one sink step whose
+// output the gather collects), but never a run's active graph.
+type Template struct {
+	Steps []Step `json:"steps"`
+	Edges []Edge `json:"edges,omitempty"`
 }
 
 // ParamType is the declared type of a run parameter.
@@ -104,6 +128,7 @@ const (
 	StepTool            StepType = "tool"
 	StepRetrieve        StepType = "retrieve"
 	StepMap             StepType = "map"
+	StepGather          StepType = "gather"
 	StepPlanner         StepType = "planner"
 	StepAgent           StepType = "agent"
 	StepHumanApproval   StepType = "human_approval"

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "name": "map-fanout",
+  "description": "The ticket 13.4 canonical dynamic map fan-out workflow (ADR-015). A `map` step fans a runtime list out into one instance of a named sub-template (the `templates` library) per item, plus a generated `gather` join that collects the ordered per-instance results — an engine-generated expansion (no LLM), applied atomically through store.ExpandRun exactly like a planner's. Here `source` emits a three-element list, `process` maps over it (instantiating `analyze_one` as `analyze#0..2`, each an `llm` call on `mock/sim-1` that references its item through the reserved `${{ item }}` / `${{ item_index }}` roots), and the generated gather `process#gather` emits the ordered array of the three analyses. It runs entirely offline on the mock: the mock echoes each prompt, so the gathered array cites each item verbatim. N is capped by `max_items` (and by the run's per-expansion cap); a list longer than the cap fails the map permanently at expansion time. Swap `source` for a `retrieve` and `mock/sim-1` for a real provider and the same shape maps an LLM call over a retrieved list.",
+  "templates": {
+    "analyze_one": {
+      "steps": [
+        {
+          "id": "analyze",
+          "type": "llm",
+          "config": {
+            "model": "mock/sim-1",
+            "prompt": "Analyze item ${{ item_index }}: ${{ item }}",
+            "max_tokens": 64,
+            "temperature": 0
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "id": "source",
+      "type": "echo",
+      "config": {
+        "input": {
+          "items": [
+            "alpha",
+            "beta",
+            "gamma"
+          ]
+        }
+      }
+    },
+    {
+      "id": "process",
+      "type": "map",
+      "config": {
+        "items": "${{ steps.source.output.items }}",
+        "body": "analyze_one",
+        "max_items": 100
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "source",
+      "to": "process"
+    }
+  ]
+}

@@ -11,7 +11,7 @@ import (
 // stepTypes enumerates the step-type catalog in documentation order; it
 // fixes the order of the generated schema's step variants.
 var stepTypes = []StepType{
-	StepLLM, StepTool, StepRetrieve, StepMap, StepPlanner, StepAgent,
+	StepLLM, StepTool, StepRetrieve, StepMap, StepGather, StepPlanner, StepAgent,
 	StepHumanApproval, StepJoin, StepBranch, StepNoop, StepEcho,
 	StepSleep, StepFailNTimes, StepCounter, StepEffectfulEcho,
 	StepBlackboardWrite,

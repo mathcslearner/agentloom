@@ -40,6 +40,8 @@ var builtinCapabilities = map[string]plugin.Capabilities{
 	"fail_n_times":     {},
 	"join":             {},
 	"branch":           {},
+	"map":              {},
+	"gather":           {},
 	"counter":          {SideEffectful: true},
 	"effectful_echo":   {SideEffectful: true},
 	"blackboard_write": {SideEffectful: true},

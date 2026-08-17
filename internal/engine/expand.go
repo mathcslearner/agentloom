@@ -10,11 +10,15 @@ package engine
 // the fail verdict a plan rejection routes through the semantic-retry loop.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/exec"
+	"github.com/mathcslearner/agentloom/internal/obs/log"
+	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 	"github.com/mathcslearner/agentloom/internal/validate"
 )
@@ -44,6 +48,64 @@ func planFromOutput(out exec.Output) (*dag.PlanOutput, error) {
 		return nil, fmt.Errorf("planner output carries no json plan")
 	}
 	return dag.DecodePlanOutput(o.JSON)
+}
+
+// mapPlanFromOutput generates the fan-out delta a map step's completion applies
+// (ticket 13.4, ADR-015): it reads the map's body sub-template from the run's
+// definition snapshot and the resolved item list from the completion's output
+// (the map executor emitted `{items, indices, count}`), then generates one
+// sub-template instance per item plus a gather join
+// (dag.GenerateMapExpansion) — the same PlanOutput shape a planner produces,
+// but engine-generated. Any failure here is deterministic (a corrupt
+// body/config, or a list that is not an array), so the caller fails the step
+// permanently rather than redelivering — there is no model to re-prompt.
+func mapPlanFromOutput(step gen.RunStep, run gen.Run, out exec.Output) (*dag.PlanOutput, error) {
+	cfg, err := dag.DecodeStepConfig(dag.StepMap, step.Config)
+	if err != nil {
+		return nil, fmt.Errorf("decoding map config: %w", err)
+	}
+	mc, ok := cfg.(*dag.MapConfig)
+	if !ok || mc == nil {
+		return nil, fmt.Errorf("map step %q carries no config", step.StepID)
+	}
+	def, err := dag.Decode(run.Definition)
+	if err != nil {
+		return nil, fmt.Errorf("decoding run definition snapshot: %w", err)
+	}
+	tmpl, ok := def.Templates[mc.Body]
+	if !ok || tmpl == nil {
+		return nil, fmt.Errorf("map body %q names no template in the definition", mc.Body)
+	}
+	var mo struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if len(out.Data) > 0 {
+		if err := json.Unmarshal(out.Data, &mo); err != nil {
+			return nil, fmt.Errorf("decoding map output: %w", err)
+		}
+	}
+	plan, err := dag.GenerateMapExpansion(tmpl, mo.Items, step.StepID)
+	if err != nil {
+		return nil, err
+	}
+	return &plan, nil
+}
+
+// routeMapRejection routes a rejected map expansion (ticket 13.4, ADR-015): the
+// delta is engine-generated, so no re-prompt can fix it — every rejection is
+// permanent. A run-guard cap exhaustion (too many instances for the run's
+// per-expansion / total-step caps) dead-letters `expansion_cap_exceeded`;
+// anything else (an internal bookkeeping error the pure validator caught)
+// dead-letters `map_expansion_invalid`. out carries the productive spend, so a
+// cost-bearing body's metering is unaffected by the routing.
+func (e *Engine) routeMapRejection(ctx context.Context, step gen.RunStep, out exec.Output, rej *store.ExpansionRejectedError, runTrace store.TraceContext) error {
+	reason := "map_expansion_invalid"
+	if rej.CapExceeded() {
+		reason = "expansion_cap_exceeded"
+	}
+	log.From(ctx).ErrorContext(ctx, "map expansion rejected; failing permanently",
+		slog.String("reason", reason), slog.Any("error", rej))
+	return e.completeFailure(ctx, step, out, fmt.Errorf("%s: %w", reason, rej), dag.ClassPermanent, runTrace)
 }
 
 // plannerMaxAddedSteps reads the origin planner's per-expansion cap override

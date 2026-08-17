@@ -82,6 +82,13 @@ type TemplateRef struct {
 	// nil when absent by design, so the lint skips them; they still count
 	// toward the set of upstream outputs the engine fetches.
 	Lenient bool
+
+	// ItemRef marks a reference to the map-item roots — `item` / `item.<path>`
+	// (the current list element) or `item_index` (its 0-based position) —
+	// valid only inside a map sub-template body (ADR-015, ticket 13.4). The map
+	// expansion rewrites it per instance into a `steps.<map>.output` reference
+	// before the instance config is stored, so it never resolves at runtime.
+	ItemRef bool
 }
 
 // TemplateError is one template that cannot be parsed or executed,
@@ -538,9 +545,11 @@ var tmplAllowedIdents = map[string]bool{
 }
 
 // isRefChar reports whether c may appear in a bare reference token
-// (dotted path of step IDs, JSON keys, and array indices).
+// (dotted path of step IDs, JSON keys, and array indices). `#` is admitted so
+// a reserved engine-generated instance id (`steps.<body>#<k>.output`, ADR-015)
+// tokenizes as one reference rather than splitting at the `#`.
 func isRefChar(c byte) bool {
-	return c == '.' || c == '_' || c == '-' ||
+	return c == '.' || c == '_' || c == '-' || c == '#' ||
 		(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
@@ -653,8 +662,9 @@ func isIdent(tok string) bool {
 // gets a typed unknown-root error instead of text/template's opaque
 // "function not defined".
 func isRefToken(tok string) bool {
-	if tok == "steps" || tok == "run" ||
-		strings.HasPrefix(tok, "steps.") || strings.HasPrefix(tok, "run.") {
+	if tok == "steps" || tok == "run" || tok == "item" || tok == "item_index" ||
+		strings.HasPrefix(tok, "steps.") || strings.HasPrefix(tok, "run.") ||
+		strings.HasPrefix(tok, "item.") {
 		return true
 	}
 	if !strings.Contains(tok, ".") {
@@ -681,13 +691,25 @@ func parseRef(tok, path string) (TemplateRef, error) {
 				Msg: "step references must have the form steps.<id>.output[.<path>] (only a step's output is addressable)",
 			}
 		}
-		if !stepIDRe.MatchString(segs[1]) {
+		// The id segment may be an authored id or a reserved engine-generated
+		// instance id (ADR-015): a map expansion emits configs that reference
+		// `steps.<body>#<k>.output`, rendered like any other step output.
+		if !validInstanceOrStepID(segs[1]) {
 			return TemplateRef{}, &TemplateRefError{
 				Path: path, Ref: tok,
 				Msg: fmt.Sprintf("step ID %q does not match %s", segs[1], stepIDRe),
 			}
 		}
 		return TemplateRef{ConfigPath: path, Raw: tok, StepID: segs[1]}, nil
+	case "item":
+		// The map-item root: `item` (the whole element) or `item.<path>`. Only
+		// meaningful inside a map sub-template body; the caller's lint scopes it.
+		return TemplateRef{ConfigPath: path, Raw: tok, ItemRef: true}, nil
+	case "item_index":
+		if len(segs) > 1 {
+			return TemplateRef{}, &TemplateRefError{Path: path, Ref: tok, Msg: "item_index takes no path"}
+		}
+		return TemplateRef{ConfigPath: path, Raw: tok, ItemRef: true}, nil
 	case "run":
 		if len(segs) < 2 || segs[1] != "params" {
 			return TemplateRef{}, &TemplateRefError{

@@ -12,6 +12,21 @@
     "max_expansions": 20,
     "max_depth": 3
   },
+  "templates": {
+    "summarize_source": {
+      "steps": [
+        {
+          "id": "summarize",
+          "type": "llm",
+          "config": {
+            "model": "mock/sim-1",
+            "prompt": "Summarize source ${{ item_index }}: ${{ item }}",
+            "max_tokens": 64
+          }
+        }
+      ]
+    }
+  },
   "params": {
     "goal": {
       "type": "string",
@@ -359,6 +374,15 @@
         "expected_version": 0,
         "read_key": "draft_text"
       }
+    },
+    {
+      "id": "collect",
+      "type": "gather",
+      "config": {
+        "items": [
+          "${{ steps.record.output }}"
+        ]
+      }
     }
   ],
   "edges": [
@@ -468,6 +492,10 @@
     {
       "from": "notify",
       "to": "record"
+    },
+    {
+      "from": "record",
+      "to": "collect"
     }
   ],
   "ui": {

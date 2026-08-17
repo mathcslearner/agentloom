@@ -101,6 +101,9 @@ func Decode(data []byte) (*Definition, error) {
 	if raw, ok := fields["expansion"]; ok {
 		def.Expansion = decodeExpansion(raw, "expansion", &errs)
 	}
+	if raw, ok := fields["templates"]; ok {
+		def.Templates = decodeTemplates(raw, &errs)
+	}
 	if raw, ok := fields["params"]; ok {
 		def.Params = decodeParams(raw, &errs)
 	}
@@ -125,8 +128,8 @@ func Decode(data []byte) (*Definition, error) {
 	topLevel := map[string]bool{
 		"schema_version": true, "name": true, "description": true,
 		"on_failure": true, "max_wall_clock": true, "budget_usd": true,
-		"on_budget_exceeded": true, "expansion": true, "params": true,
-		"steps": true, "edges": true, "ui": true,
+		"on_budget_exceeded": true, "expansion": true, "templates": true,
+		"params": true, "steps": true, "edges": true, "ui": true,
 	}
 	for _, k := range sortedKeys(fields) {
 		if !topLevel[k] {
@@ -161,6 +164,46 @@ func decodeParams(raw json.RawMessage, errs *errList) map[string]ParamSpec {
 		params[key] = spec
 	}
 	return params
+}
+
+// decodeTemplates decodes the definition's `templates` library (ADR-015,
+// ticket 13.4): a name→sub-template map, each a steps/edges sub-graph decoded
+// with the same strictness as the top-level graph. The sub-graph rules
+// (local-only edges, acyclicity, a single sink) are structural validation
+// (Validate), like the top-level graph rules.
+func decodeTemplates(raw json.RawMessage, errs *errList) map[string]*Template {
+	m, ok := decodeObjectMap(raw, "templates", errs)
+	if !ok || len(m) == 0 {
+		// An empty templates object decodes to nil, matching Encode's omission
+		// of empty templates, so decode→encode→decode stays lossless.
+		return nil
+	}
+	out := make(map[string]*Template, len(m))
+	for _, name := range sortedKeys(m) {
+		path := "templates." + name
+		tm, tok := decodeObjectMap(m[name], path, errs)
+		if !tok {
+			continue
+		}
+		t := &Template{}
+		if stepsRaw, present := tm["steps"]; present {
+			t.Steps = decodeSteps(stepsRaw, errs) // reuses steps[i] paths; template scoping is Validate's
+		} else {
+			errs.add(path+".steps", "required field is missing")
+		}
+		if edgesRaw, present := tm["edges"]; present {
+			t.Edges = decodeEdges(edgesRaw, errs)
+		}
+		for _, k := range sortedKeys(tm) {
+			switch k {
+			case "steps", "edges":
+			default:
+				errs.add(path+"."+k, "unknown field")
+			}
+		}
+		out[name] = t
+	}
+	return out
 }
 
 // decodeSteps decodes the steps array.
@@ -364,6 +407,10 @@ func decodeStepConfig(st StepType, raw json.RawMessage, path string, errs *errLi
 		if c.OutputFormat != nil {
 			compactRaw(&c.OutputFormat.Schema)
 		}
+	case *MapConfig:
+		compactRaw(&c.Items)
+	case *GatherConfig:
+		compactRaw(&c.Items)
 	case *BranchConfig:
 		compactRaw(&c.Input)
 	case *EchoConfig:

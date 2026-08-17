@@ -263,17 +263,21 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		}
 	}
 
-	// Planner expansion (ticket 13.3, ADR-015): decode the plan the completion
-	// carries from its output.json. The implicit json_schema validator already
-	// gated the plan's JSON shape (execute() routes a malformed plan to the
-	// semantic-retry loop before reaching here), so this normally succeeds; a
-	// residual decode defect is plan-attributable and routes the same way. An
-	// empty plan (a planner that legitimately adds nothing) is a no-op — no
-	// expansion, an ordinary success. plannerCap is the origin's per-expansion
-	// override.
+	// Graph expansion (ADR-015): both planner steps (13.3, an LLM-authored
+	// delta) and map steps (13.4, an engine-generated delta) apply a PlanOutput
+	// to the running graph atomically with their completion. The origin kind
+	// selects both how the plan is built and how a rejection routes: a planner's
+	// plan comes from its output.json and a plan-attributable rejection routes
+	// through the semantic-retry loop; a map's plan is generated from its body
+	// sub-template and its resolved list, and any rejection is permanent (there
+	// is no model to re-prompt). expansionCap is the origin's per-expansion cap
+	// override (a planner's max_added_steps; maps rely on the run cap).
 	var plan *dag.PlanOutput
-	plannerCap := 0
-	if dag.StepType(step.StepType) == dag.StepPlanner {
+	var originKind dag.ExpansionOriginKind
+	expansionCap := 0
+	switch dag.StepType(step.StepType) {
+	case dag.StepPlanner:
+		originKind = dag.OriginPlanner
 		p, derr := planFromOutput(out)
 		if derr != nil {
 			logger.WarnContext(ctx, "planner output is not a decodable plan; routing to semantic retry",
@@ -281,9 +285,24 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 			return e.completeValidationFailure(ctx, step, out, expansionVerdict(verdict, planDecodeIssue(derr)), store.TraceFromRun(run))
 		}
 		if len(p.Steps) > 0 {
+			// An empty plan (a planner that legitimately adds nothing) is a no-op.
 			plan = p
 		}
-		plannerCap = plannerMaxAddedSteps(step)
+		expansionCap = plannerMaxAddedSteps(step)
+	case dag.StepMap:
+		originKind = dag.OriginMap
+		p, derr := mapPlanFromOutput(step, run, out)
+		if derr != nil {
+			// Generating the fan-out delta failed deterministically (a corrupt
+			// body/config, or a resolved list that is not an array) — permanent,
+			// never a redelivery loop. There is no model to re-prompt.
+			logger.ErrorContext(ctx, "map fan-out could not be generated; failing permanently",
+				slog.Any("error", derr))
+			return e.completeFailure(ctx, step, out, fmt.Errorf("map_expansion_invalid: %w", derr), dag.ClassPermanent, store.TraceFromRun(run))
+		}
+		// A map always generates at least the gather (an empty list → an empty
+		// ordered result), so the plan is never nil.
+		plan = p
 	}
 
 	// Declarative blackboard writes (ticket 12.2, ADR-014): planned pre-
@@ -433,9 +452,9 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		if plan != nil && !cancelling {
 			res, xerr := store.ExpandRun(ctx, q, store.ExpandRunArgs{
 				RunID:         step.RunID,
-				Origin:        dag.ExpansionOrigin{Kind: dag.OriginPlanner, StepID: step.StepID},
+				Origin:        dag.ExpansionOrigin{Kind: originKind, StepID: step.StepID},
 				Plan:          *plan,
-				MaxAddedSteps: plannerCap,
+				MaxAddedSteps: expansionCap,
 				Trace:         enqTrace,
 				Now:           now,
 			})
@@ -492,12 +511,16 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 		if fenced != nil {
 			return e.abandonFenced(ctx, step, fenced, txErr)
 		}
-		// A rejected planner plan (ticket 13.3, ADR-015): the whole transaction
-		// rolled back (the expansion mutated nothing), so route the origin by
-		// rejection class — a run-guard cap exhaustion fails permanently (a
-		// better plan cannot lift a cap), everything else is plan-attributable
-		// and re-prompts the planner through 11.4's semantic-retry loop.
+		// A rejected expansion (ADR-015): the whole transaction rolled back (the
+		// expansion mutated nothing), so route the origin by kind. A planner's
+		// plan-attributable rejection re-prompts through 11.4's semantic-retry
+		// loop (only a run-guard cap is permanent); a map's delta is
+		// engine-generated, so every rejection is permanent — there is no model
+		// to re-prompt (ticket 13.4).
 		if rejected != nil {
+			if originKind == dag.OriginMap {
+				return e.routeMapRejection(ctx, step, out, rejected, store.TraceFromRun(run))
+			}
 			return e.routeExpansionRejection(ctx, step, out, verdict, rejected, store.TraceFromRun(run))
 		}
 		// A CEL edge-predicate failure captured inside the transaction

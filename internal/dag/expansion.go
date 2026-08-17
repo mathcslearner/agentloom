@@ -366,11 +366,17 @@ func ValidateExpansion(in ExpansionInput) ExpansionVerdict {
 			"injected steps would be at depth %d, exceeding max_depth %d", in.Origin.Depth+1, in.Caps.MaxDepth)
 	}
 
+	// Engine-generated expansions (map fan-out, loop unrolling) mint ids in the
+	// reserved `#`-suffixed instance space; a planner injects into the authored
+	// id space only (ADR-015).
+	allowInstanceIDs := plan.SchemaVersion == PlanSchemaVersion &&
+		(in.Origin.Kind == OriginMap || in.Origin.Kind == OriginLoop)
+
 	// Injected step identity + envelope/config validation.
 	deltaIDs := make(map[string]int, len(plan.Steps))
 	for i, s := range plan.Steps {
 		p := stepPath(i)
-		if !stepIDRe.MatchString(s.ID) {
+		if !(stepIDRe.MatchString(s.ID) || (allowInstanceIDs && instanceStepIDRe.MatchString(s.ID))) {
 			v.add(CodeInvalidStepID, p+".id", "step ID %q does not match %s", s.ID, stepIDRe)
 		}
 		if _, exists := in.Existing[s.ID]; exists {

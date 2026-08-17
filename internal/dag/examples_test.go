@@ -36,6 +36,7 @@ var exampleFiles = []string{
 	"context_summarization.json",
 	"context_window.json",
 	"planner.json",
+	"map_fanout.json",
 }
 
 // readExample loads one example definition document.

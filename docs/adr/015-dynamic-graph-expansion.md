@@ -524,6 +524,81 @@ engine-generated delta), the chaos/recovery matrix (13.5 — automating the E1�
 kill points and fuzzing `ValidateExpansion`), and the run-graph introspection
 API (13.6).
 
+### Map fan-out (as built, 13.4)
+
+13.4 ships the `map` step — the second producer of an expansion delta and the
+first **engine-generated** one (no LLM). It composes the same `ExpandRun`
+primitive as the planner: only how the plan is built and how a rejection routes
+differ. **No migration, no new config var, no new metric** — the `origin_kind`
+CHECK (0023) already admitted `'map'`, and the run's definition snapshot already
+carries everything the delta is generated from.
+
+- **The `templates` library.** `Definition.Templates` (`map[string]*Template`,
+  `Template = {steps, edges}`) is a definition-level library of reusable
+  sub-graphs — validated but **never instantiated at run creation**; it rides in
+  the run's definition snapshot so a map completion reads it at runtime. A
+  `map` step's `MapConfig.body` names one; `MapConfig.items` (now `json.RawMessage`,
+  so a whole-expression template renders an array into it) is the runtime list;
+  `MapConfig.max_items` is a per-map cap. `checkTemplateSection` validates each
+  template as a self-contained mini-definition — unique local ids, valid
+  per-step config/envelope, local-only edges, no normal-edge cycles, and
+  **exactly one sink** (the terminal step whose output the gather collects) —
+  and `checkMaps` requires every `body` to name a declared template.
+
+- **The reserved `#` instance space, finally used.** A map instance is
+  `<body_step>#<k>`; its generated gather is `<map>#gather`. `instanceStepIDRe`
+  (`^…(#[a-z0-9_]+)+$`) is disjoint from the authored `stepIDRe` (which forbids
+  `#`), so an engine-minted id can never collide with an authored one.
+  `ValidateExpansion` accepts instance ids **only for map/loop origins** (a
+  planner still injects into the authored space); the template grammar
+  (`parseRef`, `isRefChar`) accepts `steps.<body>#<k>.output` refs so instance
+  and gather configs parse at runtime; and two new reserved template roots,
+  `${{ item }}` / `${{ item_index }}`, are admitted **only inside a template
+  body** (an item root on an ordinary step is `template_ref_invalid`).
+
+- **Generation (pure `dag.GenerateMapExpansion`).** Per item `k`: one instance
+  of every body step (`<id>#k`), the body's internal edges rewritten
+  (`<from>#k → <to>#k`), an **after-splice** `map → <entry>#k` for each entry
+  step, and `<sink>#k → gather`. The body's config is rewritten per instance —
+  `item → steps.<map>.output.items.<k>`, `item_index →
+  steps.<map>.output.indices.<k>`, `steps.<local> → steps.<local>#<k>` — so the
+  item flows through the map step's own output and internal refs point at
+  instance siblings, all resolved by the ordinary runtime renderer (no partial
+  render engine). The gather step carries an ordered
+  `["${{ steps.<sink>#k.output }}", …]` config, so it emits the results **in
+  list order**. An empty list yields a gather-only delta (the empty ordered
+  array).
+
+- **Executors.** `MapExecutor` (no flags) resolves the rendered list, enforces
+  `max_items` (over → permanent, before any expansion), and emits `{items,
+  indices, count}` — the list the completion generates from and each instance
+  references. `GatherExecutor` (no flags) emits its resolved ordered items
+  array verbatim (all-mode readiness makes it a barrier over the instances).
+
+- **Completion + routing.** `completeSuccess` handles a `map` origin exactly
+  where it handles a planner: after the fenced `SucceedStep`, `store.ExpandRun`
+  (origin `map`), then the map's fan-out readies the after-spliced entries. A
+  rejected map delta is **always permanent** (`routeMapRejection`): the delta is
+  engine-generated, so no re-prompt can fix it — a run-guard cap exhaustion
+  dead-letters `expansion_cap_exceeded`, anything else `map_expansion_invalid`.
+  fail-fast falls out for free: an instance dead-letter fails the run under the
+  default `fail_fast` policy, and the gather never gathers.
+
+- **Scope split (13.4b).** collect-errors — an item failure collected as an
+  error slot in the gathered array with the run still succeeding — needs new
+  readiness semantics (the gather firing on *all-terminal*, not all-succeeded)
+  and is carved into a follow-up ticket **13.4b**; 13.4 ships map + fail-fast +
+  gather + the caps. Multi-step sub-template bodies are fully supported (the
+  rewriter is general); downstream consumption of the gathered array by an
+  authored step is deferred (the gather id is minted at runtime, so an authored
+  reference to it cannot be validated at submit) — 13.4's acceptance reads the
+  gather's own output. Canonical `examples/definitions/map_fanout.json`; both
+  kitchen sinks + the construct pin gained a `templates` section, a `map`, and a
+  `gather`.
+
+Not yet (after 13.4): map collect-errors (13.4b), the chaos/recovery matrix
+(13.5), and the run-graph introspection API (13.6).
+
 ## Consequences
 
 Positive:

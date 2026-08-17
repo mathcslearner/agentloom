@@ -287,6 +287,12 @@
         "expansion": {
           "$ref": "#/$defs/ExpansionPolicy"
         },
+        "templates": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Template"
+          },
+          "type": "object"
+        },
         "params": {
           "additionalProperties": {
             "$ref": "#/$defs/ParamSpec"
@@ -430,6 +436,13 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "GatherConfig": {
+      "properties": {
+        "items": true
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "HumanApprovalConfig": {
       "properties": {
         "prompt": {
@@ -509,11 +522,12 @@
     },
     "MapConfig": {
       "properties": {
-        "items": {
-          "type": "string"
-        },
+        "items": true,
         "body": {
           "type": "string"
+        },
+        "max_items": {
+          "type": "integer"
         }
       },
       "additionalProperties": false,
@@ -685,6 +699,16 @@
             },
             "config": {
               "$ref": "#/$defs/MapConfig"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "gather"
+            },
+            "config": {
+              "$ref": "#/$defs/GatherConfig"
             }
           }
         },
@@ -868,6 +892,7 @@
         "tool",
         "retrieve",
         "map",
+        "gather",
         "planner",
         "agent",
         "human_approval",
@@ -880,6 +905,27 @@
         "counter",
         "effectful_echo",
         "blackboard_write"
+      ]
+    },
+    "Template": {
+      "properties": {
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/Step"
+          },
+          "type": "array"
+        },
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/Edge"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "steps"
       ]
     },
     "ToolConfig": {

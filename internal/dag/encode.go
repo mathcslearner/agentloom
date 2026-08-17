@@ -60,6 +60,12 @@ func Encode(def *Definition) ([]byte, error) {
 			return nil, err
 		}
 	}
+	if len(def.Templates) > 0 {
+		buf.WriteString(`,"templates":`)
+		if err := writeTemplates(&buf, def.Templates); err != nil {
+			return nil, err
+		}
+	}
 	if len(def.Params) > 0 {
 		buf.WriteString(`,"params":`)
 		if err := writeJSON(&buf, def.Params); err != nil {
@@ -83,6 +89,35 @@ func Encode(def *Definition) ([]byte, error) {
 	}
 	buf.WriteByte('}')
 	return buf.Bytes(), nil
+}
+
+// writeTemplates renders the definition's `templates` library canonically:
+// sorted names, each a {"steps":[...],"edges":[...]} object with steps always
+// an array and edges omitted when empty (matching decode's absent-edges = nil).
+func writeTemplates(buf *bytes.Buffer, tmpls map[string]*Template) error {
+	buf.WriteByte('{')
+	for i, name := range sortedKeys(tmpls) {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		if err := writeJSON(buf, name); err != nil {
+			return err
+		}
+		buf.WriteString(`:{"steps":`)
+		t := tmpls[name]
+		if err := writeSlice(buf, t.Steps); err != nil {
+			return err
+		}
+		if len(t.Edges) > 0 {
+			buf.WriteString(`,"edges":`)
+			if err := writeJSON(buf, t.Edges); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte('}')
+	}
+	buf.WriteByte('}')
+	return nil
 }
 
 // writeSlice writes a slice as a JSON array, rendering nil as [] so the

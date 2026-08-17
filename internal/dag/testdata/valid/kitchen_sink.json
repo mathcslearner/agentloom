@@ -12,6 +12,36 @@
     "max_expansions": 20,
     "max_depth": 3
   },
+  "templates": {
+    "summarize_one": {
+      "steps": [
+        {
+          "id": "summarize",
+          "type": "llm",
+          "config": {
+            "model": "mock/sim-1",
+            "prompt": "Summarize item ${{ item_index }}: ${{ item }}",
+            "max_tokens": 64
+          }
+        },
+        {
+          "id": "score",
+          "type": "llm",
+          "config": {
+            "model": "mock/sim-1",
+            "prompt": "Rate this summary: ${{ steps.summarize.output.text }}",
+            "max_tokens": 16
+          }
+        }
+      ],
+      "edges": [
+        {
+          "from": "summarize",
+          "to": "score"
+        }
+      ]
+    }
+  },
   "params": {
     "goal": {
       "type": "string",
@@ -336,6 +366,15 @@
         "expected_version": 0,
         "read_key": "draft_text"
       }
+    },
+    {
+      "id": "collect",
+      "type": "gather",
+      "config": {
+        "items": [
+          "${{ steps.record.output }}"
+        ]
+      }
     }
   ],
   "edges": [
@@ -415,6 +454,10 @@
     {
       "from": "notify",
       "to": "record"
+    },
+    {
+      "from": "record",
+      "to": "collect"
     },
     {
       "from": "critique",
