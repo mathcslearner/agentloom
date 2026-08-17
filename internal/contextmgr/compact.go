@@ -487,10 +487,14 @@ func summarize(ctx context.Context, stgy dag.CompactionStrategy, st *compactStat
 		return strategyOutcome{}, ctx.Err()
 	}
 
+	// The persisted value carries NO cache_hit: it is durable content a
+	// downstream summarization re-renders (and thus a cache-key input), so a
+	// per-invocation cache flag would break the chain's determinism across runs
+	// (ticket 13.5). result.CacheHit rides SummaryAction (audit) + the ledger.
 	value, verr := json.Marshal(SummaryValue{
 		SchemaVersion: SummaryValueSchemaVersion, Text: result.Text,
 		SpanNames: spanNames, SpanTokens: spanTokens, SummaryTokens: summaryTokens,
-		Model: stgy.Model, Resource: result.Resource, CacheHit: result.CacheHit,
+		Model: stgy.Model, Resource: result.Resource,
 		ParentVersion: parentVersion,
 	})
 	if verr != nil {

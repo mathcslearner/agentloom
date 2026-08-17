@@ -55,9 +55,19 @@ const kindSummary = "summary"
 // SummaryValue is the JSON value a summarize strategy writes to the blackboard
 // (ticket 12.5): the summary text plus the provenance that makes the chained
 // summary auditable — which named span it replaced, the tokens before/after,
-// the model and resource, whether it was cache-served, and the prior version it
-// chained from (0 for the first summary under the key). The key's version
-// history is the chain.
+// the model and resource, and the prior version it chained from (0 for the
+// first summary under the key). The key's version history is the chain.
+//
+// It deliberately carries NO cache_hit flag. This value is durable content that
+// a downstream summarization re-renders and re-summarizes (a running-summary
+// context source folds it into the next span), so every field here becomes part
+// of the next summarizer request — and thus of its ADR-011 cache key. Whether
+// THIS summary was cache-served is a property of the invocation, not of the
+// summary, and it flips between an uncached first run and a cache-served repeat;
+// embedding it here would make an otherwise-identical downstream span differ
+// across runs and defeat the summarizer cache for the whole chain (ticket 13.5
+// fix). Per-invocation cache provenance lives on SummaryAction (the
+// context_revision audit) and the compaction ledger row instead.
 type SummaryValue struct {
 	SchemaVersion int      `json:"schema_version"`
 	Text          string   `json:"text"`
@@ -66,7 +76,6 @@ type SummaryValue struct {
 	SummaryTokens int      `json:"summary_tokens"`
 	Model         string   `json:"model"`
 	Resource      string   `json:"resource"`
-	CacheHit      bool     `json:"cache_hit"`
 	ParentVersion int      `json:"parent_version,omitempty"`
 }
 
