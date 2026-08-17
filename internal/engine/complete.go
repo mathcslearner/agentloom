@@ -466,6 +466,12 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 			if err := failpoint(stageAfterExpand); err != nil {
 				return err
 			}
+			// Crash seam (ticket 13.5): E3 — die after ExpandRun ran but before
+			// this transaction commits. The connection dropping rolls the whole
+			// transaction back (Postgres atomicity), so the expansion vanishes and
+			// the graph is left at its pre-expansion version. Inert unless
+			// AGENTLOOM_WORKER_CRASH_POINT arms after_expand on this step.
+			maybeCrash(CrashStageAfterExpand, step.StepID)
 		}
 		if !cancelling {
 			// The out-edge read + edge plan move UNDER the run lock, after any
@@ -554,6 +560,15 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 			slog.Any("error", txErr))
 		return txErr
 	}
+
+	// Crash seam (ticket 13.5): E5 — the completion transaction COMMITTED (the
+	// origin succeeded, any expansion applied, the injected steps' outbox rows
+	// written) but the entry is not yet acked and this worker's dispatcher has
+	// not drained those rows. Dying here proves the survivor path: reclaim
+	// ACK-drops the now-terminal origin (E4) and the transactional outbox
+	// dispatches the injected steps. Inert unless AGENTLOOM_WORKER_CRASH_POINT
+	// arms post_commit on this step.
+	maybeCrash(CrashStagePostCommit, step.StepID)
 
 	// Cost metrics (ticket 10.5): recorded post-commit from the priced row, so
 	// a fenced or rolled-back completion (which returned above) records nothing

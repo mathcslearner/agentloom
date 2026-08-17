@@ -235,6 +235,12 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	registry := exec.CoreBuiltins(providers, toolReg, retrievers)
 	if cfg.Worker.TestExecutors {
 		registry = exec.Builtins(providers, toolReg, retrievers)
+		// Crash-injection seam (ticket 13.5): arm the expansion crash matrix's
+		// kill-at-boundary points from AGENTLOOM_WORKER_CRASH_POINT. Gated to
+		// test-executor mode alongside the filesystem-writing test executors, so
+		// a real deployment never installs it — the seam is inert without the
+		// env anyway, and this gate keeps it doubly out of production paths.
+		engine.InstallCrashPointFromEnv(os.Getenv)
 	}
 	logger.InfoContext(ctx, "plugin registry built",
 		slog.Int("plugins", len(registry.Manifests())),

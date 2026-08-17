@@ -304,8 +304,10 @@ The invariant across the matrix: **the expansion is atomic with the claim-
 fenced completion**, so it commits exactly when the completion commits, at most
 once, and a crash at any boundary leaves either the pre-expansion graph (roll
 back / re-execute) or the fully-expanded graph (commit / ACK-drop) — never a
-partial one. 13.5 automates the kill-at-every-boundary matrix and fuzzes
-`ValidateExpansion` over generated deltas.
+partial one. 13.5 automates the kill-at-every-boundary matrix (E1/E2/E3/E5
+against real `cmd/worker` subprocesses, `TestExpansionKillAtBoundaryMatrix`; E6
+in-process at 13.3) and fuzzes `ValidateExpansion` over generated deltas — see
+the as-built §"Expansion chaos & recovery matrix (13.5)" below.
 
 ### Map fan-out and loop unrolling (contract; 13.4 / 14.3)
 
@@ -652,6 +654,70 @@ config var, no new metric.
 
 Not yet (after 13.4b): the chaos/recovery matrix
 (13.5), and the run-graph introspection API (13.6).
+
+### Expansion chaos & recovery matrix (as built, 13.5)
+
+13.5 turned the crash matrix above from an argued contract into an automated
+one, and fuzzed `ValidateExpansion`. It added **no migration, no config var, no
+new metric** — only a test-gated crash-injection seam and two test files.
+
+**The crash seam** (`engine/crashpoint.go`). The completion-transaction
+boundaries the matrix must hit — E3 (after `ExpandRun`, before commit) and E5
+(after commit, before the ACK/dispatch) — live *inside* the engine and cannot
+be provoked by a parent process's SIGKILL, which lands at an arbitrary
+instruction. This is the same gap the queue's `ConsumerConfig.PhaseHook` (3.6)
+and the in-process `completeFailpoint` fill for their boundaries. Unlike those,
+a crash point **hard-exits** the process (`os.Exit(137)`) with no deferred
+cleanup — the faithful SIGKILL analogue: heartbeats stop, the pgx connection
+drops (any in-flight transaction rolls back under Postgres atomicity), the PEL
+entry lingers un-acked, and recovery flows entirely through ADR-005's reclaim →
+takeover path. `maybeCrash(stage, stepID)` is a nil-pointer fast path when
+unarmed (the same negligible cost as the `failpoint` check already on these
+paths), armed only by `AGENTLOOM_WORKER_CRASH_POINT=<stage>:<step_id>` via
+`InstallCrashPointFromEnv`, which `cmd/worker` calls **only when test executors
+are enabled** — so it is doubly inert in any real deployment. Four boundaries
+are wired: `pre_claim` (E1, before the claim CAS in `Handle`), `pre_completion`
+(E2, after the executor returns, before the completion tx in `execute`),
+`after_expand` (E3, sharing the `stageAfterExpand` failpoint site in
+`completeSuccess`), and `post_commit` (E5, right after the completion tx commits,
+before the ACK). The stage constants are exported (`engine.CrashStage*`) so the
+subprocess matrix references one vocabulary — a rename is a compile error, not a
+silently-never-firing crash. Matching is by step id (uniform: the pre-claim
+boundary has only the envelope's step id).
+
+**The subprocess matrix** (`test/crash/expansion_chaos_integration_test.go`,
+`TestExpansionKillAtBoundaryMatrix`) runs the offline planner definition (the
+mock echoes the plan verbatim, as in `examples/definitions/planner.json`) and,
+per boundary × repeated runs, spawns **one armed worker** that crashes at that
+boundary on the planner step, waits for its process to exit (asserting the 137
+crash code, never a clean drain), then spawns an **unarmed survivor fleet** that
+recovers the run. The response cache is disabled for the run (it is global-scoped
+in the shared dev Redis, so an identical planner request would hit a prior run's
+entry and short-circuit the boundary — cache behavior is orthogonal to expansion
+recovery, exactly the E2 "may or may not re-plan via cache" note). The invariant
+proved across every boundary — the matrix's whole point — is **exactly one
+committed expansion and eventual completion**: `graph_version` 2, `steps_total`
+5, one `graph_expanded` event stepping 1→2 (a linear history, the "no orphan
+steps / linear graph_version" quiescence check), and every step (injected
+included) terminal `succeeded` with `step_succeeded` firing exactly once (no
+double-execution, no double-expansion). The reconciler stays out (10m interval)
+so reclaim + the transactional outbox are the recovery mechanisms under test.
+
+**The fuzzer** (`internal/dag/expansion_fuzz_test.go`, `FuzzValidateExpansion`)
+feeds arbitrary bytes through `DecodePlanOutput` — the same gate a planner's
+output passes before `ValidateExpansion` runs — and for every decodable plan
+asserts two properties: (1) `ValidateExpansion` never panics; (2) no
+acceptance-of-invalid — when the verdict is OK, an **independent oracle**
+(`NewGraph` + `TopoOrder` over the merged graph, sharing none of
+`ValidateExpansion`'s code path) confirms the structural invariants
+`ValidateExpansion` owns actually hold: every injected id unique and
+collision-free, every edge endpoint resolves, and the merged normal-edge graph
+is acyclic. The oracle checks necessary conditions only (graph structure), so it
+never false-positives; anchor-status and cap semantics stay covered by the
+deterministic tables in `expansion_test.go`. Over 1M+ executions the fuzzer found
+no panic and no over-acceptance.
+
+Not yet (after 13.5): the run-graph introspection API (13.6).
 
 ## Consequences
 

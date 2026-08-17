@@ -46,6 +46,10 @@ func (e *Engine) Handle(ctx context.Context, d queue.Delivery) error {
 	// records its own span context under (run_steps.trace_span).
 	ctx = log.With(ctx, log.WorkerID(e.workerID))
 
+	// Crash seam (ticket 13.5): E1 — die before the claim CAS. Inert unless
+	// AGENTLOOM_WORKER_CRASH_POINT arms pre_claim on this step.
+	maybeCrash(CrashStagePreClaim, d.Envelope.StepID)
+
 	now := e.now()
 	var step gen.RunStep
 	var origin store.ClaimOrigin
@@ -466,6 +470,11 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 	if cacheWB != nil {
 		e.cacheWrite(ctx, cacheWB, out)
 	}
+	// Crash seam (ticket 13.5): E2 — the executor produced its result (a planner
+	// has its plan) but no completion write has happened yet; die here to leave
+	// the step running under a dead claim with the graph unchanged. Inert unless
+	// AGENTLOOM_WORKER_CRASH_POINT arms pre_completion on this step.
+	maybeCrash(CrashStagePreCompletion, step.StepID)
 	// The token counter for this step's declarative blackboard writes (ticket
 	// 12.2): the model that actually served (sc.Config reflects any downgrade
 	// or feedback augmentation), or the chars/4 fallback for a non-model step.

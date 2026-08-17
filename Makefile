@@ -66,6 +66,11 @@ test-chaos-long: ## Run the sustained chaos suite in long mode (override with AG
 	AGENTLOOM_CHAOS_DURATION=$${AGENTLOOM_CHAOS_DURATION:-5m} \
 		go test -race -tags integration -run TestSustainedChaos -count=1 -timeout 20m -v ./test/crash
 
+.PHONY: test-expansion-chaos
+test-expansion-chaos: ## Run the 13.5 expansion kill-at-boundary matrix + a bounded ValidateExpansion fuzz (override with AGENTLOOM_FUZZTIME=2m)
+	go test -race -tags integration -run TestExpansionKillAtBoundaryMatrix -count=1 -timeout 10m -v ./test/crash
+	go test -run '^$$' -fuzz FuzzValidateExpansion -fuzztime $${AGENTLOOM_FUZZTIME:-30s} ./internal/dag
+
 .PHONY: migrate-up
 migrate-up: ## Apply all pending schema migrations (AGENTLOOM_POSTGRES_DSN overrides the target)
 	go run ./cmd/migrate up
