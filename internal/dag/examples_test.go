@@ -158,7 +158,7 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 		}
 	}
 
-	var loopEdge, loopExhaustPolicy, loopNoProgress, conditionedEdge, hasGuard bool
+	var loopEdge, loopExhaustPolicy, loopNoProgress, conditionedEdge, hasGuard, decisionEdge bool
 	outEdges := make(map[string][]dag.Edge) // normal out-edges, declaration order
 	for _, e := range def.Edges {
 		if strings.Contains(e.When, "has(") || strings.Contains(e.Condition, "has(") {
@@ -177,6 +177,9 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 		if e.When != "" && !branchSteps[e.From] {
 			conditionedEdge = true
 		}
+		if e.Decision != "" {
+			decisionEdge = true
+		}
 		outEdges[e.From] = append(outEdges[e.From], e)
 	}
 	if !loopEdge {
@@ -193,6 +196,9 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	}
 	if !hasGuard {
 		t.Error("no has() guard in any kitchen_sink.json predicate")
+	}
+	if !decisionEdge {
+		t.Error("no human_approval decision edge in kitchen_sink.json (ADR-017)")
 	}
 
 	var fanOut bool
@@ -521,6 +527,35 @@ func TestExampleKitchenSinkCoversEveryConstruct(t *testing.T) {
 	}
 	if !refsAgent {
 		t.Error("no agent step referencing a role in kitchen_sink.json")
+	}
+
+	// Ticket 15.1 construct (ADR-017): a human_approval step carrying an edit
+	// schema, a timeout + policy, and route-on-reject — so a schema edit that
+	// dropped a human_approval config field would fail here.
+	var approvalEditSchema, approvalTimeout, approvalRouteReject bool
+	for _, s := range def.Steps {
+		c, ok := s.Config.(*dag.HumanApprovalConfig)
+		if !ok {
+			continue
+		}
+		if c.AllowEdit && len(c.EditSchema) > 0 {
+			approvalEditSchema = true
+		}
+		if c.Timeout != "" && c.OnTimeout != "" {
+			approvalTimeout = true
+		}
+		if c.OnReject == dag.ApprovalRejectRoute {
+			approvalRouteReject = true
+		}
+	}
+	if !approvalEditSchema {
+		t.Error("no human_approval step with an edit schema in kitchen_sink.json")
+	}
+	if !approvalTimeout {
+		t.Error("no human_approval step with a timeout policy in kitchen_sink.json")
+	}
+	if !approvalRouteReject {
+		t.Error("no human_approval step with route-on-reject in kitchen_sink.json")
 	}
 }
 

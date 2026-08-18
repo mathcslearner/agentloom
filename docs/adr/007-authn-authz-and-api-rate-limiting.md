@@ -94,7 +94,7 @@ Four scopes, stored as a set (`TEXT[]`) on the key:
 |---|---|
 | `read` | Read-only inspection: runs, definitions, attempts, events. |
 | `submit` | Creating and steering work: submit runs, cancel, park/unpark, requeue dead-lettered steps, create definitions (6.5). |
-| `approve` | **Reserved for M15**: resolving human-approval steps. Assignable now so approval bots can be provisioned ahead of enforcement. |
+| `approve` | Resolving human-approval steps — `POST /v1/approvals/{id}:decide` (ADR-017; enforced from ticket 15.3). Assignable now so approval bots can be provisioned ahead of enforcement. |
 | `admin` | Everything, including key management. `admin` **implies all other scopes** — route checks test "has scope X or admin", so least-privilege keys simply never request admin. |
 
 The route→scope table (6.2 enforces it; 6.5/M15 rows are assigned now so
@@ -111,7 +111,8 @@ those tickets implement against a decided model):
 | `GET /v1/definitions*` | `read` | 6.5 |
 | `GET /v1/plugins` | `read` | 8.1 |
 | `POST /v1/cache/bust`, `GET /v1/cache/stats` | `admin` | 9.6 |
-| M15 approval resolution | `approve` | M15 |
+| `GET /v1/approvals` (list / filter pending) | `read` | 15.3 (arrives) |
+| `POST /v1/approvals/{id}:decide` | `approve` | 15.3 (arrives) |
 
 ### Lifecycle
 

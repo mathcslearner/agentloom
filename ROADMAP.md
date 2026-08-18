@@ -1035,13 +1035,13 @@ Run-level guards evaluated at expansion and claim time: `max_total_steps`, `max_
 
 **Exit criteria:** flagship example gains an approval gate before its side-effectful step; fleet keeps executing other work while parked; approve-with-edit resumes with the edited payload; timeout policy fires correctly; every decision attributable to a key.
 
-#### 15.1 — ADR-017 & approval step schema
+#### 15.1 — ADR-017 & approval step schema ✅
 **Depends on:** 5.6, 6.1
 **ADR-017** + schema: `human_approval` config — title/description templates rendering the proposed action, payload reference (typically the upstream step's output), allowed decisions, optional JSON Schema constraining edits, `timeout` + `on_timeout` (`reject` | `approve` | `park`), and reject routing (fail branch vs dedicated reject edge). Decision-precedence and race rules (human vs timeout) specified.
 **Done when:**
-- [ ] Schema + validation for all config combinations (incl. reject edge presence rules)
-- [ ] Race semantics (decision vs timeout) specified with a state diagram
-- [ ] Authz model: `approve` scope required; self-approval stance documented
+- [x] Schema + validation for all config combinations (incl. reject edge presence rules)
+- [x] Race semantics (decision vs timeout) specified with a state diagram
+- [x] Authz model: `approve` scope required; self-approval stance documented
 
 #### 15.2 — Park without lease
 **Depends on:** 15.1, 4.3

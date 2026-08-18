@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "name": "human-approval-missing-prompt",
+  "name": "human-approval-missing-title",
   "steps": [
     {
       "id": "gate",

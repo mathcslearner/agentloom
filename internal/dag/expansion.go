@@ -525,6 +525,10 @@ func (v *validator) checkExpansionEdgeFields(path string, e Edge) {
 				}
 			}
 		}
+		// A decision marker is normal-edge-only (ADR-017), mirroring checkEdges.
+		if e.Decision != "" {
+			v.add(CodeApprovalEdgeInvalid, path+".decision", "not valid on a loop edge")
+		}
 		return
 	}
 	if e.Condition != "" {
@@ -538,6 +542,13 @@ func (v *validator) checkExpansionEdgeFields(path string, e Edge) {
 	}
 	if e.NoProgress != nil {
 		v.add(CodeLoopFieldForbidden, path+".no_progress", "only valid on loop edges")
+	}
+	// A decision marker's enum is a codec/syntactic check; that it leaves a
+	// human_approval step degrades safely on an injected edge (a marker on a
+	// non-approval source simply never matches at routing time), so it is not
+	// re-checked against the merged graph — the checkExpansionRefs precedent.
+	if e.Decision != "" && !slices.Contains(approvalDecisions, e.Decision) {
+		v.add(CodeApprovalEdgeInvalid, path+".decision", "unknown decision %q", string(e.Decision))
 	}
 	switch {
 	case len(e.When) > MaxExprLen:

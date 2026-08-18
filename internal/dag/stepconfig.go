@@ -318,10 +318,117 @@ type AgentConfig struct {
 	Role string `json:"role,omitempty"`
 }
 
-// HumanApprovalConfig configures a human_approval step: parks the run
-// until a human decides (executor: M15; provisional shape).
+// ApprovalDecision names one decision a human (or the timeout policy) may
+// record on a human_approval step (ADR-017). It is also the value carried
+// by an outgoing edge's `decision` marker, selecting which edges fire when
+// the step is decided under the `route` reject policy.
+type ApprovalDecision string
+
+// Permitted approval decisions.
+const (
+	ApprovalApprove ApprovalDecision = "approve"
+	ApprovalReject  ApprovalDecision = "reject"
+)
+
+// approvalDecisions enumerates the valid ApprovalDecision values in
+// declaration order for schema generation and error messages.
+var approvalDecisions = []ApprovalDecision{ApprovalApprove, ApprovalReject}
+
+// ApprovalTimeoutPolicy selects what happens when a human_approval step's
+// `timeout` elapses with no decision (ADR-017). The decision the policy
+// records goes through the same compare-and-swap as a human decision, so
+// exactly one of human/timeout ever wins.
+type ApprovalTimeoutPolicy string
+
+// Permitted timeout policies.
+const (
+	// ApprovalTimeoutReject records a reject decision on expiry (the safe
+	// default): the step routes exactly as a human reject would.
+	ApprovalTimeoutReject ApprovalTimeoutPolicy = "reject"
+	// ApprovalTimeoutApprove auto-approves the original (never edited)
+	// payload on expiry. Deliberately available but documented as dangerous —
+	// it lets a side effect fire with no human in the loop.
+	ApprovalTimeoutApprove ApprovalTimeoutPolicy = "approve"
+	// ApprovalTimeoutPark leaves the approval pending and parks the run
+	// (park_reason = awaiting_human) as an escalation. The approval stays
+	// decidable; unpark resumes dispatch of the run's other work.
+	ApprovalTimeoutPark ApprovalTimeoutPolicy = "park"
+)
+
+// approvalTimeoutPolicies enumerates the valid ApprovalTimeoutPolicy values
+// in declaration order for schema generation and error messages.
+var approvalTimeoutPolicies = []ApprovalTimeoutPolicy{ApprovalTimeoutReject, ApprovalTimeoutApprove, ApprovalTimeoutPark}
+
+// ApprovalRejectPolicy selects how a rejected human_approval step routes
+// (ADR-017).
+type ApprovalRejectPolicy string
+
+// Permitted reject policies.
+const (
+	// ApprovalRejectFail dead-letters the step permanently (the default):
+	// the run then follows its on_failure disposition. A requeue re-runs the
+	// gate, producing a fresh pending approval.
+	ApprovalRejectFail ApprovalRejectPolicy = "fail"
+	// ApprovalRejectRoute makes the step succeed with a reject decision and
+	// fires only its outgoing edges marked `decision: reject`; the approve
+	// edges are skipped (ordinary skip propagation).
+	ApprovalRejectRoute ApprovalRejectPolicy = "route"
+)
+
+// approvalRejectPolicies enumerates the valid ApprovalRejectPolicy values in
+// declaration order for schema generation and error messages.
+var approvalRejectPolicies = []ApprovalRejectPolicy{ApprovalRejectFail, ApprovalRejectRoute}
+
+// HumanApprovalConfig configures a human_approval step: it parks the run —
+// holding no lease or worker slot — until a human (or the timeout policy)
+// decides, then resumes through the normal dispatch path (ADR-017,
+// executor: ticket 15.2). Title/Description/Payload are ordinary templated
+// config values (ticket 8.2): Payload is typically a whole-expression
+// reference to the upstream step's output ("${{ steps.draft.output }}").
 type HumanApprovalConfig struct {
-	Prompt string `json:"prompt,omitempty"`
+	// Title is the short headline shown to the approver; required. It is
+	// rendered (8.2 templating) before the approval is surfaced.
+	Title string `json:"title,omitempty"`
+
+	// Description is optional longer context, also rendered.
+	Description string `json:"description,omitempty"`
+
+	// Payload is the proposed action shown for review and — on approval —
+	// carried into the step's output (edited in place when an edit is
+	// supplied). Opaque JSON; typically a templated reference to an upstream
+	// output. Absent means no structured payload.
+	Payload json.RawMessage `json:"payload,omitempty"`
+
+	// AllowedDecisions restricts which decisions the API accepts; empty means
+	// the engine default [approve, reject]. Values must be distinct and drawn
+	// from the ApprovalDecision enum.
+	AllowedDecisions []ApprovalDecision `json:"allowed_decisions,omitempty"`
+
+	// AllowEdit permits an approver to supply an edited_payload with an
+	// approve decision. Requires `approve` to be an allowed decision.
+	AllowEdit bool `json:"allow_edit,omitempty"`
+
+	// EditSchema is an optional JSON Schema (2020-12, must be a JSON object)
+	// constraining an edited payload; requires AllowEdit. Compiled at claim
+	// pre-flight and enforced at decide time (the 11.3 output_format
+	// precedent). Absent means any JSON edit is accepted.
+	EditSchema json.RawMessage `json:"edit_schema,omitempty"`
+
+	// Timeout is how long the step waits for a decision before OnTimeout
+	// fires; a Go duration string, positive and at most MaxApprovalTimeout.
+	// Empty means wait indefinitely (bounded only by the run's
+	// max_wall_clock).
+	Timeout string `json:"timeout,omitempty"`
+
+	// OnTimeout is the policy applied when Timeout elapses; requires Timeout.
+	// Empty defaults to reject when a Timeout is set. When OnTimeout records
+	// a decision (reject/approve), that decision must be allowed.
+	OnTimeout ApprovalTimeoutPolicy `json:"on_timeout,omitempty"`
+
+	// OnReject routes a reject decision: fail (default, dead-letter) or route
+	// (succeed and fire the reject edges). `route` requires `reject` to be an
+	// allowed decision and at least one outgoing `decision: reject` edge.
+	OnReject ApprovalRejectPolicy `json:"on_reject,omitempty"`
 }
 
 // JoinConfig configures a join step: a fan-in synchronization barrier.

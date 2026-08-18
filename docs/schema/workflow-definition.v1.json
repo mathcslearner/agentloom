@@ -92,6 +92,28 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "ApprovalDecision": {
+      "type": "string",
+      "enum": [
+        "approve",
+        "reject"
+      ]
+    },
+    "ApprovalRejectPolicy": {
+      "type": "string",
+      "enum": [
+        "fail",
+        "route"
+      ]
+    },
+    "ApprovalTimeoutPolicy": {
+      "type": "string",
+      "enum": [
+        "reject",
+        "approve",
+        "park"
+      ]
+    },
     "BackoffSpec": {
       "properties": {
         "initial": {
@@ -445,6 +467,9 @@
         },
         "no_progress": {
           "$ref": "#/$defs/NoProgressPolicy"
+        },
+        "decision": {
+          "$ref": "#/$defs/ApprovalDecision"
         }
       },
       "additionalProperties": false,
@@ -546,8 +571,31 @@
     },
     "HumanApprovalConfig": {
       "properties": {
-        "prompt": {
+        "title": {
           "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "payload": true,
+        "allowed_decisions": {
+          "items": {
+            "$ref": "#/$defs/ApprovalDecision"
+          },
+          "type": "array"
+        },
+        "allow_edit": {
+          "type": "boolean"
+        },
+        "edit_schema": true,
+        "timeout": {
+          "type": "string"
+        },
+        "on_timeout": {
+          "$ref": "#/$defs/ApprovalTimeoutPolicy"
+        },
+        "on_reject": {
+          "$ref": "#/$defs/ApprovalRejectPolicy"
         }
       },
       "additionalProperties": false,

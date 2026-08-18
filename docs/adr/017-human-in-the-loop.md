@@ -1,0 +1,346 @@
+# ADR-017: Human-in-the-loop — approval steps, decisions, timeouts
+
+- **Status:** Accepted
+- **Date:** 2026-08-17
+- **Ticket:** ROADMAP.md ticket 15.1 (opens Milestone 15)
+
+<!--
+This ADR opens M15. Ticket 15.1 fixes the whole human-in-the-loop contract —
+the human_approval step config, the decision model, edit constraints, the
+timeout/decision race, the park-without-lease mechanics, and the authz/audit
+rules — so the later M15 tickets conform to it without re-litigating the design:
+
+  - 15.2 park without lease (awaiting_human step status, approvals row, ACK)
+  - 15.3 decision API (GET /v1/approvals, POST …:decide, CAS, routing, audit)
+  - 15.4 approval timeouts (delayed-queue expiry envelope, single winner)
+  - 15.5 notification webhook & the flagship approval gate
+
+Sections tagged "(arrives in 15.x)" state the contract now; those tickets add
+"### … (as built, 15.x)" subsections under ## Decision as they land, the way
+ADR-014 / ADR-015 / ADR-016 grew across their milestones.
+-->
+
+## Context
+
+Differentiator #6 is a human gate that a side-effectful agent workflow can pause
+at: a step surfaces a proposed action, a person approves / rejects / **edits**
+it, and the run resumes on that decision — or times out. The safety valve for
+"the agent drafted a customer reply; do not send it without sign-off."
+
+M15 builds this on primitives that already exist, so the milestone is careful
+semantics rather than new machinery:
+
+- **Park/resume (M5.6).** A parked run holds no lease and no worker slot; its
+  in-flight steps settle, new dispatch pauses, and unpark re-outboxes ready
+  steps. An approval is a *step-level* park: exactly one step waits while the
+  rest of the run's independent work keeps running.
+- **Delayed delivery (M3.5).** The `sched:delayed` ZSET already schedules
+  "deliver this later" for retry backoff (M5) and throttled requeue (M9);
+  approval timeouts are a third client. The ZADD dedup on a deterministic member
+  keeps a re-scheduled expiry idempotent.
+- **Scoped auth (M6).** The `approve` scope was reserved in ADR-007 and is
+  assignable today, so an approval bot can be provisioned before enforcement.
+- **The materialized graph copy (ADR-004).** Each run owns its step rows, so an
+  approval step's decision and (edited) payload live on the run's own rows;
+  an approval inside a loop body gets a fresh instance per iteration for free.
+
+The forces this ADR must resolve:
+
+- **No lease may be held while waiting.** A human decision can take days. The
+  step must ACK its queue message and leave the PEL empty — otherwise the lease
+  TTL would reclaim it and a worker slot would be pinned for the duration. This
+  is the defining constraint (ticket 15.2).
+- **The decision is data flowing downstream.** An approved (possibly edited)
+  payload becomes the step's output, so successors reference it with the
+  ordinary `${{ steps.gate.output… }}` templating — no bespoke channel.
+- **Edits must be constrained.** An approver may reshape the payload, but a
+  workflow that trusts the edited value needs a way to bound it: an optional
+  JSON Schema, enforced at decision time.
+- **Exactly one of {human, timeout} wins.** A decision arriving as the timeout
+  fires must not double-transition the step. One compare-and-swap on the
+  approval row is the single arbiter.
+- **Every decision is attributable.** Who decided, when, with what comment and
+  what edit — immutable, in the run's event log and status.
+
+The rest of the pipeline already fits: an approval step makes no provider call
+(no cost, no rate limit, no context assembly), produces no model output to
+validate, and holds no external resource. It is the simplest possible executor
+wrapped around the park primitive — which is exactly why the milestone is small.
+
+## Decision
+
+### The `human_approval` step (15.1)
+
+A `human_approval` step parks the run until a decision is recorded. Its config
+(`dag.HumanApprovalConfig`):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `title` | string, **required** | Short headline shown to the approver. Templated (8.2). |
+| `description` | string | Longer context. Templated. |
+| `payload` | JSON | The proposed action shown for review and carried into the step's output on approval. Typically a whole-expression reference to the upstream step's output, e.g. `"${{ steps.draft.output }}"`. |
+| `allowed_decisions` | `[approve\|reject]` | Which decisions the API accepts; empty = the engine default `[approve, reject]`. Distinct values. |
+| `allow_edit` | bool | Permits an `edited_payload` with an approve decision. Requires `approve` allowed. |
+| `edit_schema` | JSON Schema (object) | Constrains an edited payload; requires `allow_edit`. Compiled at claim pre-flight, enforced at decide time (the 11.3 `output_format` precedent). |
+| `timeout` | Go duration, ≤ `MaxApprovalTimeout` (30d) | How long to wait before `on_timeout` fires. Empty = wait indefinitely (bounded only by the run's `max_wall_clock`). |
+| `on_timeout` | `reject\|approve\|park` | Policy at expiry; requires `timeout`. Default `reject` when a timeout is set. |
+| `on_reject` | `fail\|route` | How a reject routes; default `fail`. |
+
+A worked example:
+
+```json
+{
+  "id": "approve_publish",
+  "type": "human_approval",
+  "config": {
+    "title": "Publish this article?",
+    "description": "Review the final draft before it goes live.",
+    "payload": "${{ steps.editor.output }}",
+    "allowed_decisions": ["approve", "reject"],
+    "allow_edit": true,
+    "edit_schema": { "type": "object", "properties": { "body": { "type": "string" } } },
+    "timeout": "48h",
+    "on_timeout": "reject",
+    "on_reject": "route"
+  }
+}
+```
+
+`title`, `description`, and `payload` are ordinary templated config values
+(ticket 8.2): the same rendering that flows data between any two steps builds
+the approval's content, so there is no new render path. The rendered config is
+what the executor persists into the `approvals` row (15.2) and surfaces to the
+approver — a snapshot, immune to later graph changes.
+
+**Validation (15.1, `internal/dag`).** All config combinations are checked at
+submit time, reporting every violation in one pass (the codes
+`config_field_required` / `config_field_invalid` for the config, plus two new
+edge codes below):
+
+- `title` required.
+- `allowed_decisions` distinct (the enum spelling is a codec check).
+- `edit_schema` requires `allow_edit` and must be a JSON object; `allow_edit`
+  requires `approve` to be an allowed decision.
+- `on_timeout` requires `timeout`; a `timeout` is parseable, positive, ≤ 30d;
+  when `on_timeout` records a decision (`reject`/`approve`) that decision must
+  be allowed (`park` records none).
+- `on_reject: route` requires `reject` to be an allowed decision.
+- The envelope `validation` and `timeout` blocks are **forbidden** on a
+  `human_approval` step: it produces no model output to validate (edits are
+  constrained by `edit_schema` instead), and a per-attempt execution timeout is
+  meaningless for a step that parks without a lease (the wait is
+  `config.timeout`). Reported as `validation_field_invalid` / `timeout_field_invalid`.
+
+The other envelope blocks stay legal: `retry` covers a transient failure of the
+park-write itself, `cache` is inert (a park is uncacheable), and `budget` never
+fires (no spend).
+
+### Decisions & the step's output contract
+
+A decision is one of the allowed `ApprovalDecision` values. On decision the
+step's output is:
+
+```json
+{
+  "approval_id": "<uuid>",
+  "decision": "approve",
+  "payload": <edited or original payload>,
+  "edited": false,
+  "comment": "<optional approver note>",
+  "decided_by": "<key_id> | system:timeout",
+  "decided_at": "<rfc3339>",
+  "source": "human | timeout"
+}
+```
+
+Downstream steps read `${{ steps.approve_publish.output.payload }}` (the
+approved value, edited in place when an edit was supplied) and may branch on
+`output.decision`.
+
+- **Approve** → the step succeeds with the output above; its outgoing edges fan
+  out normally (an edge with no `decision` marker is the approve/success path).
+- **Reject** → routed by `on_reject`:
+  - **`fail`** (default) — the step dead-letters permanently with the message
+    `approval_rejected: <comment>` (ADR-006 row 24, reusing the existing
+    `permanent` DLQ source — no new source), then the run follows its
+    `on_failure` disposition. A DLQ requeue re-runs the gate, producing a fresh
+    pending approval.
+  - **`route`** — the step succeeds with `decision: reject`, and **only** its
+    outgoing edges marked `decision: reject` fire; the approve edges are skipped
+    (ordinary skip propagation). This is the "dedicated reject edge" path — a
+    fail branch versus a reject branch, author's choice.
+
+### The `decision` edge marker
+
+Reject routing under `on_reject: route` uses a new normal-edge field
+`Edge.Decision` (`approve`/`reject`), not a synthesized CEL `when`. Rationale:
+
+- **Presence rules are statically checkable.** "A reject edge is meaningful only
+  under `route`" and "`route` needs a reject edge" are graph-shape rules the
+  validator enforces at submit time — a CEL predicate over the output could not
+  be checked that cleanly.
+- **The builder (M18) renders it.** A typed marker is a first-class edge
+  attribute the UI draws; a `when` string is opaque.
+- **The runtime gate is trivial.** 15.3's edge-firing rule is a comparison on
+  the materialized `run_edges.decision` column against the recorded decision,
+  not a rewritten-and-compiled predicate.
+
+Validation (15.1): the enum is a codec check; a `decision` marker is valid only
+on a **normal** edge leaving a **human_approval** step (else
+`approval_edge_invalid`); a `decision: reject` edge whose source's `on_reject`
+is not `route` is `approval_edge_invalid` (the edge could never fire); and a
+`route` step with no outgoing `decision: reject` edge is
+`approval_reject_edge_required`. An unmarked edge is decision-agnostic (fires on
+approve). On an engine-injected edge (map/loop/planner) the marker degrades
+safely — a marker on a non-approval source simply never matches at routing time
+— so, like the expansion ref lint, only the enum is re-checked there.
+
+### Timeouts & the decision-vs-timeout race (arrives in 15.4)
+
+On park, if `timeout` is set, the executor schedules an expiry envelope through
+the delayed queue (reason `approval_timeout`, built without an `EnqueuedAt` so
+the ZADD dedups to one pending expiry per approval — the `throttle`/`retry`
+precedent). When it fires, `on_timeout` is applied through the **same
+compare-and-swap** as a human decision, so exactly one winner exists:
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: executor parks (approvals row + step→awaiting_human, ACK)
+    pending --> approved: POST …:decide {approve} (CAS wins)
+    pending --> rejected: POST …:decide {reject} (CAS wins)
+    pending --> expired: delayed expiry fires (CAS wins)
+    pending --> cancelled: run cancel sweep
+    approved --> [*]: step succeeds → fan out
+    rejected --> [*]: on_reject → fail (DLQ) or route (reject edges)
+    expired --> [*]: on_timeout → reject / approve / park
+    cancelled --> [*]: step cancelled (attempt outcome cancelled)
+    note right of pending
+      One CAS on the approvals row is the single arbiter.
+      The loser (a decide racing the expiry) gets 409
+      approval_not_pending; a losing timeout delivery is
+      ACK-and-drop. An early decision best-effort ZREMs the
+      delayed member, but the CAS — not the ZREM — is the
+      authority, so a stale expiry that still fires finds the
+      row already decided and no-ops.
+    end note
+```
+
+`on_timeout` policies:
+
+- **`reject`** (default) — records a reject; routes exactly as a human reject
+  (`on_reject`).
+- **`approve`** — auto-approves the **original** payload (never an edit).
+  Deliberately available but documented as dangerous: it lets a side effect fire
+  with no human in the loop. Only for gates where "no answer means go."
+- **`park`** — records **no** decision. The approval stays `pending` and
+  decidable; the run parks with the reserved `park_reason = awaiting_human` as
+  an escalation. A decision arriving while parked completes the step through the
+  ordinary park-tolerant completion path (ADR-006 "Park semantics"); `unpark`
+  resumes dispatch of the run's other work, so "timeout policy `park` leaves the
+  run resumable via unpark" holds. Rejected alternative: expiring the approval
+  under `park` — that would strand the step with nothing left to decide.
+
+A **run cancel** while an approval is pending sweeps the `awaiting_human` step to
+`cancelled` (the 5.6 run-cancel sweep, its from-set widened to include
+`awaiting_human`) and marks the approval `cancelled`; the delayed expiry, if it
+later fires, finds the row non-pending and no-ops.
+
+### Park without lease — mechanics contract (arrives in 15.2)
+
+The executor path: render the config → in **one transaction** write the
+`approvals` row (status `pending`) and transition the step
+`running → awaiting_human` (fenced on the claim), optionally schedule the expiry
+→ **ACK the queue message**. After the ACK the PEL holds nothing for the step,
+the heartbeat stops, and the worker slot is freed. The reconciler treats
+`awaiting_human` as healthy-parked (never a stale-running takeover). A crash
+between commit and ACK is benign: redelivery sees the step already
+`awaiting_human` and ACK-and-drops (the ADR-005 duplicate-delivery rule).
+
+The **attempt spans the wait**: it is opened at claim and closed by the
+decision with the decision's outcome (`succeeded` on approve/route,
+`permanent` on reject-fail, `cancelled` on run-cancel), so there is no dangling
+attempt row and the attempt's duration is the human latency. Rejected
+alternative: closing the attempt at park with an administrative outcome and
+opening a new one at decision — that splits one logical wait across two attempt
+rows for no benefit and complicates the audit.
+
+Materialization sketch (owned by 15.2, stated here so the contract is fixed):
+an `approvals` table keyed by a UUID, carrying `run_id` / `step_id` / `attempt`,
+`status` (`pending` / `approved` / `rejected` / `expired` / `cancelled`), the
+rendered `title` / `description` / `payload`, the `edit_schema`, the
+`allowed_decisions`, `timeout_at`, the decision fields (`decision`,
+`edited_payload`, `comment`, `decided_by`, `decided_at`), and timestamps — with
+a **unique partial index on `(run_id, step_id) WHERE status = 'pending'`** so a
+step has at most one open approval. The step status gains `awaiting_human` via
+the ADR-004 CHECK-widening recipe; `park_reason` already reserves
+`awaiting_human` (migration 0007). Approval lifecycle events
+(`approval_requested` / `approval_decided` / `approval_expired` /
+`approval_cancelled`) ride the existing `events` table — ADR-018 already lists
+"approval lifecycle" in the M16 event envelope.
+
+### Authz & audit (arrives in 15.3)
+
+- `GET /v1/approvals` (list pending / filter) requires the **`read`** scope.
+- `POST /v1/approvals/{id}:decide` requires the **`approve`** scope (admin
+  implies it). An approval bot is minted `read` + `approve`.
+- The decision record — actor `key_id`, timestamp, comment, decision, and any
+  edit — is written immutably on the `approvals` row and in the
+  `approval_decided` event, and is exposed in run status. A timeout decision
+  carries the actor `system:timeout`.
+
+**Self-approval stance.** v1 has no principal below the API key and enforces no
+separation of duty: a key with both `submit` and `approve` may approve a run it
+submitted. This is permitted by default and documented; operators who want SoD
+mint distinct `submit` and `approve` keys and withhold `approve` from
+submitters. A `submitted_by` attribution on runs and an enforced SoD policy are
+deferred (they need per-user identity, which is out of scope for single-tenant
+v1).
+
+### Interplay with the rest of the engine
+
+- **Expansions (ADR-015).** An approval inside a loop body is unrolled to a
+  fresh `gate#k` instance per iteration, each parking independently; a planner
+  may inject one. `ValidateExpansion` reuses the same config/edge checks, and
+  the `decision` marker's syntactic rule is mirrored in
+  `checkExpansionEdgeFields`.
+- **Budgets / cost (ADR-012).** An approval step is not cost-bearing: no ledger
+  row, no budget check, no `max_tokens` cap (the config carries none).
+- **Cache (ADR-011).** The approval executor is side-effectful and uncacheable
+  (its ADR-009 flag row lands with the executor in 15.2); a decision is never
+  served from cache.
+- **Metrics (ADR-008).** A new `approval` subsystem — an `engine_approval_pending`
+  gauge and an `engine_approval_decisions_total{decision,source}` counter —
+  arrives with the executor/decision API (15.2/15.3); no metric is added in 15.1.
+- **Notifications (15.5).** An optional plugin POSTs a signed payload to a
+  webhook on each new pending approval, delivered effectively-once through the
+  side-effect journal; webhook failure never affects run correctness.
+
+### What is deferred (M15+)
+
+Per-user identity and enforced separation of duty; multi-approver quorum;
+approval reassignment / delegation; a per-field structured edit UI (M18.5 builds
+the inbox on this contract). These are listed so the sections above read as the
+complete v1 contract, not an accidental subset.
+
+## Consequences
+
+- **The park primitive pays off a third time.** Manual pause (5.6),
+  budget-exceeded halts (10.3), and now human approvals all reduce to
+  "park without a lease, resume via the outbox." No new waiting mechanism, no
+  worker slot pinned while a human deliberates for days.
+- **The decision is ordinary data flow.** Because the (edited) payload is the
+  step's output, successors consume it with the same templating as any other
+  step — the approval gate is transparent to the rest of the graph.
+- **One CAS arbitrates the race.** Human-vs-timeout, concurrent decides, and a
+  stale expiry all funnel through a single compare-and-swap on the approvals
+  row, so "exactly one wins" is true by construction, not by careful ordering.
+- **The reject-routing choice is the author's.** `fail` (dead-letter + run
+  disposition) and `route` (a dedicated reject branch) are both first-class; the
+  `decision` edge marker makes the branch explicit and UI-renderable.
+- **Edits are bounded, not free-form.** An `edit_schema` lets a workflow trust
+  an edited payload; without one, any JSON edit is accepted — the author opts
+  into the constraint.
+- **No migration, no new config var, no new metric in 15.1.** This ticket is the
+  contract half: `internal/dag` config + edge marker + validation + generated
+  schema. The `approvals` table, the `awaiting_human` status, the executor, the
+  decision API, the timeout wiring, the events, and the metrics land in 15.2–15.5.

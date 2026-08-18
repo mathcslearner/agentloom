@@ -32,3 +32,4 @@ are reserved and appear here once the ADR is written.
 | [014](014-context-and-memory-model.md) | Context & memory model — token counting, sources, budgets, compaction | Accepted | 2026-08-15 |
 | [015](015-dynamic-graph-expansion.md) | Dynamic graph expansion — planner steps, PlanOutput, caps & crash matrix | Accepted | 2026-08-15 |
 | [016](016-multi-agent-orchestration.md) | Multi-agent orchestration — agent roles, handoff, loop unrolling | Accepted | 2026-08-16 |
+| [017](017-human-in-the-loop.md) | Human-in-the-loop — approval steps, decisions, edits, timeouts | Accepted | 2026-08-17 |

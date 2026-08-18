@@ -195,6 +195,22 @@ func (JoinMode) JSONSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "string", Enum: enumAny([]JoinMode{JoinAll, JoinAny})}
 }
 
+// JSONSchema declares the approval-decision enum in the generated schema
+// (ADR-017): also the value of an edge's `decision` marker.
+func (ApprovalDecision) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny(approvalDecisions)}
+}
+
+// JSONSchema declares the approval-timeout-policy enum in the generated schema.
+func (ApprovalTimeoutPolicy) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny(approvalTimeoutPolicies)}
+}
+
+// JSONSchema declares the approval-reject-policy enum in the generated schema.
+func (ApprovalRejectPolicy) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny(approvalRejectPolicies)}
+}
+
 // JSONSchema declares the map item-failure-policy enum in the generated schema
 // (ADR-015, ticket 13.4b).
 func (ItemFailurePolicy) JSONSchema() *jsonschema.Schema {

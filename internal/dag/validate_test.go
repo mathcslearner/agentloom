@@ -1,6 +1,7 @@
 package dag_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -126,19 +127,25 @@ var structuralCases = map[string][]issueRef{
 		{dag.CodeExpansionFieldInvalid, "expansion.max_depth"},
 		{dag.CodeConfigFieldInvalid, "steps[0].config.max_added_steps"},
 	},
-	"agent_missing_agent.json":           {{dag.CodeConfigFieldRequired, "steps[0].config.agent"}},
-	"agent_ref_unknown.json":             {{dag.CodeAgentRefUnknown, "steps[0].config.agent"}},
-	"agent_section_invalid.json":         {{dag.CodeAgentSectionInvalid, "agents.critic.tools[0]"}},
-	"agent_merged_no_model.json":         {{dag.CodeConfigFieldRequired, "steps[0].config.model"}},
-	"human_approval_missing_prompt.json": {{dag.CodeConfigFieldRequired, "steps[0].config.prompt"}},
-	"join_missing_mode.json":             {{dag.CodeConfigFieldRequired, "steps[0].config.mode"}},
-	"branch_no_out_edges.json":           {{dag.CodeBranchNoOutEdges, "steps[1]"}},
-	"branch_default_not_last.json":       {{dag.CodeBranchEdgeUnconditioned, "edges[1]"}},
-	"branch_multiple_defaults.json":      {{dag.CodeBranchEdgeUnconditioned, "edges[1]"}},
-	"loop_missing_condition.json":        {{dag.CodeLoopFieldRequired, "edges[1].condition"}},
-	"loop_missing_max_iterations.json":   {{dag.CodeLoopFieldRequired, "edges[1].max_iterations"}},
-	"loop_max_iterations_range.json":     {{dag.CodeLimitExceeded, "edges[1].max_iterations"}},
-	"loop_edge_with_when.json":           {{dag.CodeLoopFieldForbidden, "edges[1].when"}},
+	"agent_missing_agent.json":          {{dag.CodeConfigFieldRequired, "steps[0].config.agent"}},
+	"agent_ref_unknown.json":            {{dag.CodeAgentRefUnknown, "steps[0].config.agent"}},
+	"agent_section_invalid.json":        {{dag.CodeAgentSectionInvalid, "agents.critic.tools[0]"}},
+	"agent_merged_no_model.json":        {{dag.CodeConfigFieldRequired, "steps[0].config.model"}},
+	"human_approval_missing_title.json": {{dag.CodeConfigFieldRequired, "steps[0].config.title"}},
+	"human_approval_bad.json": {
+		{dag.CodeConfigFieldInvalid, "steps[0].config.allowed_decisions[1]"},
+		{dag.CodeConfigFieldInvalid, "steps[0].config.timeout"},
+		{dag.CodeConfigFieldInvalid, "steps[0].config.on_reject"},
+		{dag.CodeApprovalRejectEdgeRequired, "steps[0].config.on_reject"},
+	},
+	"join_missing_mode.json":           {{dag.CodeConfigFieldRequired, "steps[0].config.mode"}},
+	"branch_no_out_edges.json":         {{dag.CodeBranchNoOutEdges, "steps[1]"}},
+	"branch_default_not_last.json":     {{dag.CodeBranchEdgeUnconditioned, "edges[1]"}},
+	"branch_multiple_defaults.json":    {{dag.CodeBranchEdgeUnconditioned, "edges[1]"}},
+	"loop_missing_condition.json":      {{dag.CodeLoopFieldRequired, "edges[1].condition"}},
+	"loop_missing_max_iterations.json": {{dag.CodeLoopFieldRequired, "edges[1].max_iterations"}},
+	"loop_max_iterations_range.json":   {{dag.CodeLimitExceeded, "edges[1].max_iterations"}},
+	"loop_edge_with_when.json":         {{dag.CodeLoopFieldForbidden, "edges[1].when"}},
 	"normal_edge_loop_fields.json": {
 		{dag.CodeLoopFieldForbidden, "edges[0].condition"},
 		{dag.CodeLoopFieldForbidden, "edges[0].max_iterations"},
@@ -816,6 +823,170 @@ func TestValidateTableDriven(t *testing.T) {
 				t.Fatal("Validate: want error, got nil")
 			}
 			wantIssues(t, issues, tc.wantErrs, tc.wantWarns)
+		})
+	}
+}
+
+// TestValidateHumanApproval exercises the human_approval config-combination
+// and decision-edge rules (ADR-017, ticket 15.1) programmatically, so the
+// combinatorial matrix stays exhaustive without a fixture per cell. Each case
+// isolates one rule, so the exact-match assertion is small.
+func TestValidateHumanApproval(t *testing.T) {
+	t.Parallel()
+
+	obj := json.RawMessage(`{"type":"object"}`)
+	// def builds a definition from an approval config plus extra steps/edges;
+	// "gate" is always the approval step and always an entry (in-degree 0).
+	def := func(c *dag.HumanApprovalConfig, extraSteps []dag.Step, edges []dag.Edge) *dag.Definition {
+		steps := append([]dag.Step{{ID: "gate", Type: dag.StepHumanApproval, Config: c}}, extraSteps...)
+		return &dag.Definition{SchemaVersion: dag.CurrentSchemaVersion, Name: "t", Steps: steps, Edges: edges}
+	}
+	echo := func(id string) dag.Step { return dag.Step{ID: id, Type: dag.StepEcho} }
+	noop := func(id string) dag.Step { return dag.Step{ID: id, Type: dag.StepNoop} }
+	// withStep0 mutates the first (gate) step's envelope, for the forbidden
+	// validation/timeout cases.
+	withStep0 := func(d *dag.Definition, f func(*dag.Step)) *dag.Definition {
+		f(&d.Steps[0])
+		return d
+	}
+
+	cases := []struct {
+		name     string
+		def      *dag.Definition
+		wantErrs []issueRef
+	}{
+		{
+			name: "valid full config with reject route",
+			def: def(&dag.HumanApprovalConfig{
+				Title:            "Publish?",
+				Description:      "Review first.",
+				Payload:          json.RawMessage(`{"x":1}`),
+				AllowedDecisions: []dag.ApprovalDecision{dag.ApprovalApprove, dag.ApprovalReject},
+				AllowEdit:        true,
+				EditSchema:       obj,
+				Timeout:          "24h",
+				OnTimeout:        dag.ApprovalTimeoutReject,
+				OnReject:         dag.ApprovalRejectRoute,
+			}, []dag.Step{echo("ok"), echo("rej")}, []dag.Edge{
+				{From: "gate", To: "ok"},
+				{From: "gate", To: "rej", Decision: dag.ApprovalReject},
+			}),
+		},
+		{
+			name:     "missing title",
+			def:      def(&dag.HumanApprovalConfig{}, nil, nil),
+			wantErrs: []issueRef{{dag.CodeConfigFieldRequired, "steps[0].config.title"}},
+		},
+		{
+			name: "duplicate allowed decision",
+			def: def(&dag.HumanApprovalConfig{Title: "t", AllowedDecisions: []dag.ApprovalDecision{
+				dag.ApprovalApprove, dag.ApprovalApprove,
+			}}, nil, nil),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.allowed_decisions[1]"}},
+		},
+		{
+			name:     "edit_schema without allow_edit",
+			def:      def(&dag.HumanApprovalConfig{Title: "t", EditSchema: obj}, nil, nil),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.edit_schema"}},
+		},
+		{
+			name:     "edit_schema not an object",
+			def:      def(&dag.HumanApprovalConfig{Title: "t", AllowEdit: true, EditSchema: json.RawMessage(`"nope"`)}, nil, nil),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.edit_schema"}},
+		},
+		{
+			name: "allow_edit but approve not allowed",
+			def: def(&dag.HumanApprovalConfig{Title: "t", AllowEdit: true, AllowedDecisions: []dag.ApprovalDecision{
+				dag.ApprovalReject,
+			}}, nil, nil),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.allow_edit"}},
+		},
+		{
+			name:     "on_timeout without timeout",
+			def:      def(&dag.HumanApprovalConfig{Title: "t", OnTimeout: dag.ApprovalTimeoutReject}, nil, nil),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.on_timeout"}},
+		},
+		{
+			name:     "timeout out of bounds",
+			def:      def(&dag.HumanApprovalConfig{Title: "t", Timeout: "9000h"}, nil, nil),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.timeout"}},
+		},
+		{
+			name: "on_timeout records a disallowed decision",
+			def: def(&dag.HumanApprovalConfig{Title: "t", Timeout: "1h", OnTimeout: dag.ApprovalTimeoutApprove,
+				AllowedDecisions: []dag.ApprovalDecision{dag.ApprovalReject}}, nil, nil),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.on_timeout"}},
+		},
+		{
+			name: "on_reject route with reject not allowed",
+			def: def(&dag.HumanApprovalConfig{Title: "t", OnReject: dag.ApprovalRejectRoute,
+				AllowedDecisions: []dag.ApprovalDecision{dag.ApprovalApprove}},
+				[]dag.Step{echo("ok"), echo("rej")}, []dag.Edge{
+					{From: "gate", To: "ok"},
+					{From: "gate", To: "rej", Decision: dag.ApprovalReject},
+				}),
+			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.on_reject"}},
+		},
+		{
+			name: "on_reject route with no reject edge",
+			def: def(&dag.HumanApprovalConfig{Title: "t", OnReject: dag.ApprovalRejectRoute,
+				AllowedDecisions: []dag.ApprovalDecision{dag.ApprovalApprove, dag.ApprovalReject}},
+				[]dag.Step{echo("ok")}, []dag.Edge{{From: "gate", To: "ok"}}),
+			wantErrs: []issueRef{{dag.CodeApprovalRejectEdgeRequired, "steps[0].config.on_reject"}},
+		},
+		{
+			name: "reject edge under fail policy",
+			def: def(&dag.HumanApprovalConfig{Title: "t",
+				AllowedDecisions: []dag.ApprovalDecision{dag.ApprovalApprove, dag.ApprovalReject}},
+				[]dag.Step{echo("ok"), echo("rej")}, []dag.Edge{
+					{From: "gate", To: "ok"},
+					{From: "gate", To: "rej", Decision: dag.ApprovalReject},
+				}),
+			wantErrs: []issueRef{{dag.CodeApprovalEdgeInvalid, "edges[1].decision"}},
+		},
+		{
+			name: "decision edge from a non-approval step",
+			def: def(&dag.HumanApprovalConfig{Title: "t"},
+				[]dag.Step{echo("ok"), noop("src"), echo("tgt")}, []dag.Edge{
+					{From: "gate", To: "ok"},
+					{From: "src", To: "gate"},
+					{From: "src", To: "tgt", Decision: dag.ApprovalReject},
+				}),
+			wantErrs: []issueRef{{dag.CodeApprovalEdgeInvalid, "edges[2].decision"}},
+		},
+		{
+			name: "decision on a loop edge",
+			def: &dag.Definition{SchemaVersion: dag.CurrentSchemaVersion, Name: "t",
+				Steps: []dag.Step{noop("a"), noop("b")},
+				Edges: []dag.Edge{
+					{From: "a", To: "b"},
+					{From: "b", To: "a", Type: dag.EdgeLoop, Condition: "true", MaxIterations: 3, Decision: dag.ApprovalReject},
+				}},
+			wantErrs: []issueRef{{dag.CodeApprovalEdgeInvalid, "edges[1].decision"}},
+		},
+		{
+			name:     "envelope validation forbidden",
+			def:      withStep0(def(&dag.HumanApprovalConfig{Title: "t"}, nil, nil), func(s *dag.Step) { s.Validation = &dag.ValidationPolicy{} }),
+			wantErrs: []issueRef{{dag.CodeValidationFieldInvalid, "steps[0].validation"}},
+		},
+		{
+			name:     "envelope timeout forbidden",
+			def:      withStep0(def(&dag.HumanApprovalConfig{Title: "t"}, nil, nil), func(s *dag.Step) { s.Timeout = "5s" }),
+			wantErrs: []issueRef{{dag.CodeTimeoutFieldInvalid, "steps[0].timeout"}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			issues, err := dag.Validate(tc.def)
+			if len(tc.wantErrs) == 0 && err != nil {
+				t.Fatalf("Validate: want nil error, got: %v", err)
+			}
+			if len(tc.wantErrs) > 0 && err == nil {
+				t.Fatal("Validate: want error, got nil")
+			}
+			wantIssues(t, issues, tc.wantErrs, nil)
 		})
 	}
 }

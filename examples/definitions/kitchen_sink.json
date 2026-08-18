@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "kitchen-sink",
-  "description": "A research-and-publish pipeline that exercises every construct of the definition format: all 16 step types (noop, planner, retrieve, tool, map, join, llm, agent, branch, echo, sleep, fail_n_times, counter, effectful_echo, human_approval, blackboard_write), unconditioned parallel fan-out, `when`-conditioned edges with has() guards, a branch with conditioned arms plus a trailing default, both join modes (any and all), a marked loop edge, all five param types, explicit retry policies (a full block and a partial one inheriting engine defaults, ADR-006), a per-step execution timeout (ticket 5.3), a run wall-clock deadline (ticket 5.6), a run spend budget with per-step caps and an llm model-downgrade chain (ticket 10.3/10.4, ADR-012), the continue_independent_branches failure policy, a journaled side effect (ticket 5.5), an opt-in response-cache policy (ticket 9.4, ADR-011), declarative blackboard writes with a pinned entry plus a blackboard_write step (ticket 12.2, ADR-014), and an engine-opaque ui block that round-trips byte-for-byte.",
+  "description": "A research-and-publish pipeline that exercises every construct of the definition format: all 16 step types (noop, planner, retrieve, tool, map, join, llm, agent, branch, echo, sleep, fail_n_times, counter, effectful_echo, human_approval, blackboard_write), unconditioned parallel fan-out, `when`-conditioned edges with has() guards, a branch with conditioned arms plus a trailing default, both join modes (any and all), a marked loop edge, all five param types, explicit retry policies (a full block and a partial one inheriting engine defaults, ADR-006), a per-step execution timeout (ticket 5.3), a run wall-clock deadline (ticket 5.6), a run spend budget with per-step caps and an llm model-downgrade chain (ticket 10.3/10.4, ADR-012), the continue_independent_branches failure policy, a journaled side effect (ticket 5.5), an opt-in response-cache policy (ticket 9.4, ADR-011), declarative blackboard writes with a pinned entry plus a blackboard_write step (ticket 12.2, ADR-014), a human_approval gate with an edit schema, a timeout policy, and route-on-reject with a `decision: reject` edge (ticket 15.1, ADR-017), and an engine-opaque ui block that round-trips byte-for-byte.",
   "on_failure": "continue_independent_branches",
   "max_wall_clock": "2h",
   "budget_usd": 5,
@@ -346,7 +346,34 @@
       "id": "approve",
       "type": "human_approval",
       "config": {
-        "prompt": "Content is formatted and ready. OK to publish?"
+        "title": "Ready to publish — approve, edit, or reject?",
+        "description": "Content is formatted and ready. Review the proposed payload before publishing.",
+        "payload": "${{ steps.gather.output }}",
+        "allowed_decisions": [
+          "approve",
+          "reject"
+        ],
+        "allow_edit": true,
+        "edit_schema": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string"
+            }
+          }
+        },
+        "timeout": "24h",
+        "on_timeout": "reject",
+        "on_reject": "route"
+      }
+    },
+    {
+      "id": "rejected",
+      "type": "echo",
+      "config": {
+        "input": {
+          "status": "rejected"
+        }
       }
     },
     {
@@ -508,6 +535,11 @@
     {
       "from": "approve",
       "to": "cooldown"
+    },
+    {
+      "from": "approve",
+      "to": "rejected",
+      "decision": "reject"
     },
     {
       "from": "cooldown",

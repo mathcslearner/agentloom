@@ -110,6 +110,13 @@ const (
 	// longest step by retries and queue wait — while still rejecting
 	// deadlines so distant they could never be an intentional bound.
 	MaxRunWallClock = 30 * 24 * time.Hour
+
+	// MaxApprovalTimeout caps a human_approval step's `timeout` field
+	// (ADR-017, ticket 15.1). A human decision may legitimately take days, so
+	// the ceiling matches the run wall-clock bound rather than the much
+	// tighter step-execution timeout — the step holds no lease or worker slot
+	// while it waits.
+	MaxApprovalTimeout = 30 * 24 * time.Hour
 )
 
 // RetryPolicy is a step's authored retry policy (ADR-006). Every field

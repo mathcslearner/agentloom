@@ -194,13 +194,27 @@ validation arrives with the `agents:` section itself.
 ```
 
 **`human_approval`** — parks the run (no lease held) until a human decides
-(executor: M15; config provisional). Requires `prompt`.
+(executor: M15; contract fixed by ADR-017, ticket 15.1). Requires `title`.
+Optional `description`, a templated `payload` (typically the upstream output),
+`allowed_decisions`, `allow_edit` + an `edit_schema`, a `timeout` + `on_timeout`
+(`reject` | `approve` | `park`), and reject routing `on_reject` (`fail` |
+`route`). On approval the (edited) payload is the step's output; a rejected step
+either dead-letters (`fail`) or fires its `decision: reject` edges (`route`).
 
 ```json
 {"id": "approve_send", "type": "human_approval", "config": {
-  "prompt": "OK to send this reply to the customer?"
+  "title": "OK to send this reply to the customer?",
+  "payload": "${{ steps.draft.output }}",
+  "allow_edit": true,
+  "timeout": "24h", "on_timeout": "reject",
+  "on_reject": "route"
 }}
 ```
+
+An edge leaving a `human_approval` step may carry a `decision` marker
+(`approve` | `reject`); under `on_reject: route` only the edges matching the
+recorded decision fire. An unmarked edge is the approve/success path. See
+ADR-017 for the full semantics.
 
 **`join`** — synchronization barrier for fan-in. Requires `mode`, one of
 `all` (default fan-in: wait for every incoming edge to resolve) or `any`

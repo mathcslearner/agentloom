@@ -482,6 +482,26 @@ func decodeStepConfig(st StepType, raw json.RawMessage, path string, errs *errLi
 		compactRaw(&c.Input)
 	case *BlackboardWriteConfig:
 		compactRaw(&c.Value)
+	case *HumanApprovalConfig:
+		// Payload and the edit schema are opaque JSON; compact them so the
+		// in-memory value is canonical and the definition round-trips
+		// losslessly (the ToolConfig.Input / output_format precedent).
+		compactRaw(&c.Payload)
+		compactRaw(&c.EditSchema)
+		// Closed enums the codec checks inline (the cache/retry precedent); the
+		// distinctness, requires-edit, and cross-field rules are structural
+		// validation (Validate).
+		for i, d := range c.AllowedDecisions {
+			if !slices.Contains(approvalDecisions, d) {
+				errs.add(fmt.Sprintf("%s.allowed_decisions[%d]", path, i), "unknown decision %q (expected one of: %s)", string(d), joinEnum(approvalDecisions))
+			}
+		}
+		if c.OnTimeout != "" && !slices.Contains(approvalTimeoutPolicies, c.OnTimeout) {
+			errs.add(path+".on_timeout", "unknown timeout policy %q (expected one of: %s)", string(c.OnTimeout), joinEnum(approvalTimeoutPolicies))
+		}
+		if c.OnReject != "" && !slices.Contains(approvalRejectPolicies, c.OnReject) {
+			errs.add(path+".on_reject", "unknown reject policy %q (expected one of: %s)", string(c.OnReject), joinEnum(approvalRejectPolicies))
+		}
 	case *JoinConfig:
 		if c.Mode != "" && c.Mode != JoinAll && c.Mode != JoinAny {
 			errs.add(path+".mode", "unknown join mode %q (expected %q or %q)", string(c.Mode), JoinAll, JoinAny)
@@ -550,6 +570,12 @@ func decodeEdge(raw json.RawMessage, path string, errs *errList) Edge {
 	// validation error fires (checkEdges). The enum itself is checked there.
 	if edge.Type == EdgeLoop && edge.OnExhausted == "" {
 		edge.OnExhausted = ExhaustProceed
+	}
+	// The decision marker (ADR-017): the codec checks the closed enum here;
+	// that it is valid only on a normal edge leaving a human_approval step is
+	// structural validation (checkEdges / checkApprovals).
+	if edge.Decision != "" && !slices.Contains(approvalDecisions, edge.Decision) {
+		errs.add(path+".decision", "unknown decision %q (expected one of: %s)", string(edge.Decision), joinEnum(approvalDecisions))
 	}
 	return edge
 }

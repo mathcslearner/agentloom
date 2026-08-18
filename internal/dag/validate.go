@@ -117,6 +117,15 @@ const (
 	CodeAgentSectionInvalid ValidationCode = "agent_section_invalid"
 	CodeAgentRefUnknown     ValidationCode = "agent_ref_unknown"
 
+	// Human-in-the-loop codes (ADR-017, ticket 15.1). ApprovalEdgeInvalid
+	// flags a `decision` marker on an edge that is not a normal edge leaving a
+	// human_approval step (or a reject marker under a non-route reject policy);
+	// ApprovalRejectEdgeRequired flags an `on_reject: route` step with no
+	// outgoing `decision: reject` edge. A human_approval step's own config
+	// problems reuse the shared config_field_* codes.
+	CodeApprovalEdgeInvalid        ValidationCode = "approval_edge_invalid"
+	CodeApprovalRejectEdgeRequired ValidationCode = "approval_reject_edge_required"
+
 	CodeLimitExceeded       ValidationCode = "limit_exceeded"
 	CodeCycle               ValidationCode = "cycle_detected"
 	CodeLoopEdgeNotAncestor ValidationCode = "loop_edge_not_ancestor"
@@ -182,6 +191,7 @@ func Validate(def *Definition) (issues []*ValidationIssue, err error) {
 	v.checkExpansion(def)
 	stepIndex := v.checkSteps(def)
 	v.checkEdges(def, stepIndex)
+	v.checkApprovals(def, stepIndex)
 	v.checkGraph(def, stepIndex)
 	// Map fan-out (ADR-015, ticket 13.4): the `templates` library is validated
 	// as a set of self-contained sub-graphs (its own ids, edges, acyclicity,
@@ -293,7 +303,12 @@ func (v *validator) checkSteps(def *Definition) map[string]int {
 		v.checkModelFallbacks(def, path, s)
 		v.checkOutputFormat(path, s)
 		v.checkRetry(path, s.Retry)
-		v.checkTimeout(path, s.Timeout)
+		// A human_approval step forbids the envelope `timeout` outright
+		// (checkHumanApproval owns that error, since the wait is config.timeout);
+		// skip the generic format check so it does not double-report.
+		if s.Type != StepHumanApproval {
+			v.checkTimeout(path, s.Timeout)
+		}
 		v.checkCache(path, s.Cache)
 		v.checkStepBudget(path, s.Type, s.Budget)
 		v.checkValidation(path, s)
@@ -636,6 +651,12 @@ func (v *validator) checkContextGraph(def *Definition, g *Graph) {
 func (v *validator) checkValidation(path string, s Step) {
 	vp := s.Validation
 	if vp == nil {
+		return
+	}
+	// A human_approval step forbids the `validation` block outright (checkHuman-
+	// Approval owns that error); skip here so the empty-chain rule below does
+	// not double-report.
+	if s.Type == StepHumanApproval {
 		return
 	}
 	path += ".validation"
@@ -999,9 +1020,7 @@ func (v *validator) checkStepConfig(path string, s Step) {
 			v.add(CodeConfigFieldRequired, path+".config.agent", "required field is missing")
 		}
 	case StepHumanApproval:
-		if cfg[HumanApprovalConfig](s).Prompt == "" {
-			v.add(CodeConfigFieldRequired, path+".config.prompt", "required field is missing")
-		}
+		v.checkHumanApproval(path, s)
 	case StepJoin:
 		if cfg[JoinConfig](s).Mode == "" {
 			v.add(CodeConfigFieldRequired, path+".config.mode", "required field is missing")
@@ -1069,6 +1088,96 @@ func (v *validator) checkStepConfig(path string, s Step) {
 		}
 	case StepBranch, StepNoop, StepEcho:
 		// No required config fields.
+	}
+}
+
+// checkHumanApproval validates a human_approval step's config and the two
+// envelope blocks it forbids (ADR-017, ticket 15.1). The codec already
+// rejected unknown fields, mistyped values, and unknown enum spellings; here
+// the required title, the allowed-decisions rules, the edit/timeout/reject
+// cross-field constraints, and the forbidden envelope blocks. The reject-edge
+// presence rule is a graph check (checkApprovals), like loop ancestry.
+func (v *validator) checkHumanApproval(path string, s Step) {
+	c := cfg[HumanApprovalConfig](s)
+	cp := path + ".config"
+
+	if c.Title == "" {
+		v.add(CodeConfigFieldRequired, cp+".title", "required field is missing")
+	}
+
+	// allowed_decisions: distinct (the enum spelling is a codec check). Empty
+	// means the engine default [approve, reject], so nothing to check there.
+	allowed := make(map[ApprovalDecision]bool, len(c.AllowedDecisions))
+	for i, d := range c.AllowedDecisions {
+		if allowed[d] {
+			v.add(CodeConfigFieldInvalid, fmt.Sprintf("%s.allowed_decisions[%d]", cp, i), "duplicate decision %q", string(d))
+		}
+		allowed[d] = true
+	}
+	// decisionAllowed reports whether a decision is permitted given the
+	// (possibly default) allowed set.
+	decisionAllowed := func(d ApprovalDecision) bool {
+		if len(c.AllowedDecisions) == 0 {
+			return true // default [approve, reject]
+		}
+		return allowed[d]
+	}
+
+	// Edits: an edit schema requires allow_edit, and allow_edit is meaningless
+	// unless approve is an allowed decision (edits ride an approve decision).
+	if len(c.EditSchema) > 0 {
+		if !c.AllowEdit {
+			v.add(CodeConfigFieldInvalid, cp+".edit_schema", "requires allow_edit to be true")
+		}
+		if jsonTypeOf(c.EditSchema) != "object" {
+			v.add(CodeConfigFieldInvalid, cp+".edit_schema", "must be a JSON object")
+		}
+	}
+	if c.AllowEdit && !decisionAllowed(ApprovalApprove) {
+		v.add(CodeConfigFieldInvalid, cp+".allow_edit", "requires %q to be an allowed decision", string(ApprovalApprove))
+	}
+
+	// Timeout: parseable/positive/bounded, and on_timeout requires it. When
+	// on_timeout records a decision (reject/approve), that decision must be
+	// allowed; park records no decision.
+	if c.Timeout != "" {
+		if d, err := time.ParseDuration(c.Timeout); err != nil {
+			v.add(CodeConfigFieldInvalid, cp+".timeout", "not a Go duration string: %v", err)
+		} else if d <= 0 {
+			v.add(CodeConfigFieldInvalid, cp+".timeout", "must be positive, got %q", c.Timeout)
+		} else if d > MaxApprovalTimeout {
+			v.add(CodeConfigFieldInvalid, cp+".timeout", "must be at most %s, got %q", MaxApprovalTimeout, c.Timeout)
+		}
+	} else if c.OnTimeout != "" {
+		v.add(CodeConfigFieldInvalid, cp+".on_timeout", "requires a timeout to be set")
+	}
+	switch c.OnTimeout {
+	case ApprovalTimeoutReject:
+		if !decisionAllowed(ApprovalReject) {
+			v.add(CodeConfigFieldInvalid, cp+".on_timeout", "records a %q decision, which is not allowed", string(ApprovalReject))
+		}
+	case ApprovalTimeoutApprove:
+		if !decisionAllowed(ApprovalApprove) {
+			v.add(CodeConfigFieldInvalid, cp+".on_timeout", "records an %q decision, which is not allowed", string(ApprovalApprove))
+		}
+	}
+
+	// Reject routing: `route` requires reject to be an allowed decision (the
+	// reject-edge presence is checked over the graph in checkApprovals).
+	if c.OnReject == ApprovalRejectRoute && !decisionAllowed(ApprovalReject) {
+		v.add(CodeConfigFieldInvalid, cp+".on_reject", "%q routing requires %q to be an allowed decision", string(ApprovalRejectRoute), string(ApprovalReject))
+	}
+
+	// Forbidden envelope blocks: a human_approval step makes no provider call
+	// and produces no model output, so an output-validation chain has nothing
+	// to judge (edits are constrained by edit_schema instead), and a per-attempt
+	// execution timeout is meaningless for a step that parks without a lease
+	// (the wait is config.timeout).
+	if s.Validation != nil {
+		v.add(CodeValidationFieldInvalid, path+".validation", "not valid on a human_approval step (it produces no model output to validate; constrain edits with config.edit_schema)")
+	}
+	if s.Timeout != "" {
+		v.add(CodeTimeoutFieldInvalid, path+".timeout", "not valid on a human_approval step (the wait is config.timeout)")
 	}
 }
 
@@ -1377,6 +1486,11 @@ func (v *validator) checkEdges(def *Definition, stepIndex map[string]int) {
 					}
 				}
 			}
+			// The decision marker is a normal-edge-only construct (ADR-017): a
+			// loop back-edge never carries a human decision.
+			if e.Decision != "" {
+				v.add(CodeApprovalEdgeInvalid, path+".decision", "not valid on a loop edge")
+			}
 		} else {
 			if e.Condition != "" {
 				v.add(CodeLoopFieldForbidden, path+".condition", "only valid on loop edges")
@@ -1390,12 +1504,62 @@ func (v *validator) checkEdges(def *Definition, stepIndex map[string]int) {
 			if e.NoProgress != nil {
 				v.add(CodeLoopFieldForbidden, path+".no_progress", "only valid on loop edges")
 			}
+			// A decision marker is valid only on a normal edge leaving a
+			// human_approval step (ADR-017). The enum spelling is a codec check;
+			// here the from-step type. Whether a reject marker is consistent with
+			// the step's on_reject policy is a graph aggregate (checkApprovals).
+			if e.Decision != "" {
+				if idx, ok := stepIndex[e.From]; !ok || def.Steps[idx].Type != StepHumanApproval {
+					v.add(CodeApprovalEdgeInvalid, path+".decision", "only valid on an edge leaving a human_approval step")
+				}
+			}
 			switch {
 			case len(e.When) > MaxExprLen:
 				v.add(CodeLimitExceeded, path+".when", "expression is %d bytes (max %d)", len(e.When), MaxExprLen)
 			case e.When != "":
 				v.checkExpr(path+".when", e.When)
 			}
+		}
+	}
+}
+
+// checkApprovals enforces the cross-edge human-approval routing rules
+// (ADR-017, ticket 15.1) that a single edge cannot express: a `decision:
+// reject` edge is meaningful only when its source step routes rejects (its
+// on_reject is `route`), and a step that routes rejects needs somewhere for a
+// reject to go. Per-edge syntactic rules (the enum, the normal-edge-from-
+// approval-step constraint) are in checkEdges; the config rules are in
+// checkHumanApproval. Runs after checkEdges, using its stepIndex, so it needs
+// no well-formed Graph.
+func (v *validator) checkApprovals(def *Definition, stepIndex map[string]int) {
+	// rejectEdge records, per approval step id, the index of its first
+	// outgoing decision:reject edge (or -1 if none), so the presence check and
+	// the policy-consistency flag share one pass.
+	hasRejectEdge := make(map[string]bool)
+	for i, e := range def.Edges {
+		if e.IsLoop() || e.Decision != ApprovalReject {
+			continue
+		}
+		fromIdx, ok := stepIndex[e.From]
+		if !ok || def.Steps[fromIdx].Type != StepHumanApproval {
+			continue // already flagged in checkEdges
+		}
+		hasRejectEdge[e.From] = true
+		// A reject edge only fires under the `route` policy; under `fail`
+		// (the default) a reject dead-letters the step and the edge is dead.
+		if c := cfg[HumanApprovalConfig](def.Steps[fromIdx]); c.OnReject != ApprovalRejectRoute {
+			v.add(CodeApprovalEdgeInvalid, fmt.Sprintf("edges[%d].decision", i),
+				"a %q edge requires the source step's on_reject to be %q", string(ApprovalReject), string(ApprovalRejectRoute))
+		}
+	}
+	// A step that routes rejects must have a reject edge to route them to.
+	for i, s := range def.Steps {
+		if s.Type != StepHumanApproval {
+			continue
+		}
+		if cfg[HumanApprovalConfig](s).OnReject == ApprovalRejectRoute && !hasRejectEdge[s.ID] {
+			v.add(CodeApprovalRejectEdgeRequired, fmt.Sprintf("steps[%d].config.on_reject", i),
+				"%q reject routing requires at least one outgoing edge with %q", string(ApprovalRejectRoute), `"decision": "reject"`)
 		}
 	}
 }

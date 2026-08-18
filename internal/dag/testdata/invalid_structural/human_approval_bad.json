@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "name": "human-approval-bad",
+  "steps": [
+    {
+      "id": "gate",
+      "type": "human_approval",
+      "config": {
+        "title": "Go?",
+        "allowed_decisions": [
+          "approve",
+          "approve"
+        ],
+        "timeout": "9000h",
+        "on_timeout": "approve",
+        "on_reject": "route"
+      }
+    },
+    {
+      "id": "ok",
+      "type": "echo",
+      "config": {
+        "input": {
+          "ok": true
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "gate",
+      "to": "ok"
+    }
+  ]
+}

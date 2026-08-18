@@ -331,7 +331,29 @@
       "id": "approve",
       "type": "human_approval",
       "config": {
-        "prompt": "OK to send?"
+        "title": "OK to send?",
+        "description": "Review the payload before it is sent.",
+        "payload": "${{ steps.gather.output }}",
+        "allowed_decisions": [
+          "approve",
+          "reject"
+        ],
+        "allow_edit": true,
+        "edit_schema": {
+          "type": "object"
+        },
+        "timeout": "48h",
+        "on_timeout": "park",
+        "on_reject": "route"
+      }
+    },
+    {
+      "id": "rejected",
+      "type": "echo",
+      "config": {
+        "input": {
+          "sent": false
+        }
       }
     },
     {
@@ -461,6 +483,11 @@
     {
       "from": "approve",
       "to": "cooldown"
+    },
+    {
+      "from": "approve",
+      "to": "rejected",
+      "decision": "reject"
     },
     {
       "from": "cooldown",

@@ -378,6 +378,14 @@ type Edge struct {
 	// spelling means proceed, read at runtime — the field is omitempty so an
 	// absent policy stays absent and the encoding round-trips.
 	NoProgress *NoProgressPolicy `json:"no_progress,omitempty"`
+
+	// Decision marks a normal edge leaving a human_approval step as the
+	// route for a particular decision (ADR-017, ticket 15.1): under the
+	// `route` reject policy, only edges whose Decision equals the recorded
+	// decision fire. Empty (the default) means the edge is decision-agnostic
+	// (it fires on approve, the success path). Valid only on a normal edge
+	// leaving a human_approval step; forbidden elsewhere.
+	Decision ApprovalDecision `json:"decision,omitempty"`
 }
 
 // IsLoop reports whether the edge is a marked loop edge.
