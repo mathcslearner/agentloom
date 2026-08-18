@@ -43,6 +43,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/obs/metrics"
 	"github.com/mathcslearner/agentloom/internal/obs/trace"
+	"github.com/mathcslearner/agentloom/internal/queue"
 	"github.com/mathcslearner/agentloom/internal/ratelimit"
 	"github.com/mathcslearner/agentloom/internal/retrieval"
 	"github.com/mathcslearner/agentloom/internal/retrieval/pgfts"
@@ -231,6 +232,16 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 			return fmt.Errorf("configuring cache ops: %w", err)
 		}
 		apiOpts = append(apiOpts, api.WithCacheOps(cacheStore))
+	}
+	// Approval-timeout early-decision cleanup (ticket 15.4): when Redis is
+	// reachable, an early human decision best-effort ZREMs the pending expiry
+	// through a delayed-queue handle. queue.New is pure (no bootstrap), and a
+	// ZREM is not a dispatch — ADR-002 (the API never dispatches) holds. When
+	// Redis is unwired the canceller is absent and a stale expiry fires and
+	// no-ops.
+	if rdb != nil {
+		delayed := queue.New(rdb, cfg.Queue.Stream, cfg.Queue.Group).NewDelayed(cfg.Queue.DelayedKey)
+		apiOpts = append(apiOpts, api.WithExpiryCanceller(delayed))
 	}
 
 	apiHandler, err := api.New(st, time.Now, logger, cfg.API.RootKey, rl, apiOpts...)

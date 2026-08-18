@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
@@ -240,6 +242,35 @@ type ApprovalDecidedEvent struct {
 	Source string `json:"source"`
 }
 
+// ApprovalExpiredEvent is the approval_expired event payload (ticket 15.4,
+// ADR-017): a pending approval's timeout passed and its on_timeout policy was
+// applied. Distinct from ApprovalDecidedEvent so the audit trail separates an
+// operator's decision from an automatic expiry.
+type ApprovalExpiredEvent struct {
+	ApprovalID string `json:"approval_id"`
+	StepID     string `json:"step_id"`
+	AttemptNo  int32  `json:"attempt"`
+	// Policy is the configured on_timeout policy (reject / approve / park).
+	Policy string `json:"policy"`
+	// Decision is the recorded decision for a reject/approve policy; empty for
+	// park (which records no decision).
+	Decision string `json:"decision,omitempty"`
+	// Action is what the expiry did: rejected / approved / run_parked /
+	// run_already_parked.
+	Action string `json:"action"`
+	// TimeoutAt is the deadline that fired.
+	TimeoutAt *time.Time `json:"timeout_at,omitempty"`
+}
+
+// Approval-timeout actions (ticket 15.4): the ApprovalExpiredEvent.Action and
+// the engine_approval_timeouts_total{action} metric value.
+const (
+	ApprovalActionRejected         = "rejected"
+	ApprovalActionApproved         = "approved"
+	ApprovalActionRunParked        = "run_parked"
+	ApprovalActionRunAlreadyParked = "run_already_parked"
+)
+
 // ApprovalNotPendingError is returned by DecideApproval when the arbiter CAS
 // matched no pending row: the approval was already decided, expired, or
 // cancelled (a concurrent decide or a timeout expiry won the race). Status is
@@ -263,11 +294,17 @@ type DecideApprovalArgs struct {
 	// attempt (for the event payload).
 	StepID    string
 	AttemptNo int32
-	// Status is the target approval status: ApprovalStatusApproved or
-	// ApprovalStatusRejected.
+	// Status is the target approval status: ApprovalStatusApproved,
+	// ApprovalStatusRejected (a human or timeout reject/approve decision), or
+	// ApprovalStatusExpired (a timeout reject/approve policy — ticket 15.4).
 	Status string
 	// Decision is the recorded decision string (approve / reject).
 	Decision string
+	// ExpiredAt, when non-nil, stamps approvals.expired_at (a timeout policy);
+	// nil on a human decision. Also selects the approval_expired event.
+	ExpiredAt *time.Time
+	// TimeoutAt is the deadline that fired (event payload, timeout path only).
+	TimeoutAt *time.Time
 	// EditedPayload is the approver-supplied edited payload (nil = none / not
 	// edited). Written verbatim onto the approvals row for audit; the step's
 	// output payload is chosen by the caller (engine).
@@ -297,7 +334,9 @@ func DecideApproval(ctx context.Context, q Querier, args DecideApprovalArgs) (ge
 	if err != nil {
 		return gen.Approval{}, err
 	}
-	if args.Status != ApprovalStatusApproved && args.Status != ApprovalStatusRejected {
+	switch args.Status {
+	case ApprovalStatusApproved, ApprovalStatusRejected, ApprovalStatusExpired:
+	default:
 		return gen.Approval{}, fmt.Errorf("store: %s: status %q is not a decision status", op, args.Status)
 	}
 	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
@@ -313,7 +352,8 @@ func DecideApproval(ctx context.Context, q Querier, args DecideApprovalArgs) (ge
 	approval, err := gq.DecideApproval(ctx, gen.DecideApprovalParams{
 		ID: args.ID, Status: args.Status, Decision: &decision,
 		EditedPayload: args.EditedPayload, Comment: comment,
-		DecidedBy: &decidedBy, DecisionSource: &source, Now: args.Now,
+		DecidedBy: &decidedBy, DecisionSource: &source,
+		ExpiredAt: args.ExpiredAt, Now: args.Now,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The CAS matched nothing — re-read to name the actual status.
@@ -329,6 +369,24 @@ func DecideApproval(ctx context.Context, q Querier, args DecideApprovalArgs) (ge
 	if err != nil {
 		return gen.Approval{}, wrapErr(op, err)
 	}
+	// A timeout reject/approve policy records status `expired` and emits the
+	// distinct approval_expired event (ticket 15.4); a human/timeout decision
+	// that lands on approved/rejected emits approval_decided. Both are the same
+	// arbiter CAS above — only the audit surface differs.
+	if args.Status == ApprovalStatusExpired {
+		action := ApprovalActionApproved
+		if args.Decision == string(dag.ApprovalReject) {
+			action = ApprovalActionRejected
+		}
+		if err := appendEvent(ctx, gq, op, args.RunID, EventApprovalExpired, ApprovalExpiredEvent{
+			ApprovalID: args.ID.String(), StepID: args.StepID, AttemptNo: args.AttemptNo,
+			Policy: args.Decision, Decision: args.Decision, Action: action,
+			TimeoutAt: args.TimeoutAt,
+		}); err != nil {
+			return gen.Approval{}, err
+		}
+		return approval, nil
+	}
 	if err := appendEvent(ctx, gq, op, args.RunID, EventApprovalDecided, ApprovalDecidedEvent{
 		ApprovalID: args.ID.String(), StepID: args.StepID, AttemptNo: args.AttemptNo,
 		Decision: args.Decision, Edited: len(args.EditedPayload) > 0,
@@ -337,6 +395,118 @@ func DecideApproval(ctx context.Context, q Querier, args DecideApprovalArgs) (ge
 		return gen.Approval{}, err
 	}
 	return approval, nil
+}
+
+// ApprovalAlreadyExpiredError is returned by ExpireApprovalPark when the
+// marker CAS matched nothing but the approval is still pending — its park
+// policy was already applied (expired_at is set). A redelivered expiry or the
+// reconciler heal lands here; the engine treats it as ack-and-drop (the run
+// was already parked once). errors.As-able.
+type ApprovalAlreadyExpiredError struct {
+	ID uuid.UUID
+}
+
+func (e *ApprovalAlreadyExpiredError) Error() string {
+	return "approval " + e.ID.String() + " timeout policy already applied (park)"
+}
+
+// ExpireApprovalParkArgs are the inputs to ExpireApprovalPark.
+type ExpireApprovalParkArgs struct {
+	// ID is the pending approval whose on_timeout: park policy fired.
+	ID uuid.UUID
+	// RunID / StepID / AttemptNo attribute the event to the parked step.
+	RunID     uuid.UUID
+	StepID    string
+	AttemptNo int32
+	// TimeoutAt is the deadline that fired (event payload).
+	TimeoutAt *time.Time
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// ExpireApprovalParkResult reports what ExpireApprovalPark did.
+type ExpireApprovalParkResult struct {
+	// Approval is the marked (still-pending) approval row.
+	Approval gen.Approval
+	// Run is the run row after the park attempt.
+	Run gen.Run
+	// Action is ApprovalActionRunParked (the run was running → parked) or
+	// ApprovalActionRunAlreadyParked (the run was already parked).
+	Action string
+}
+
+// ExpireApprovalPark applies the on_timeout: park policy (ticket 15.4,
+// ADR-017): the approval stays pending (still decidable) and the run parks as
+// an escalation. In one transaction under the run lock it CASes
+// approvals.expired_at on the still-pending row (the single-shot marker — a
+// redelivered expiry that races it matches nothing → *ApprovalAlreadyExpiredError
+// or *ApprovalNotPendingError), parks the run with reason `awaiting_human`
+// (skipping the park when the run is already parked), and appends the
+// approval_expired event. Because the approval is untouched, a decision
+// arriving while parked still resolves the step through the ordinary decision
+// path; `unpark` resumes the run's other work.
+func ExpireApprovalPark(ctx context.Context, q Querier, args ExpireApprovalParkArgs) (ExpireApprovalParkResult, error) {
+	const op = "expire approval park"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return ExpireApprovalParkResult{}, err
+	}
+	runRow, err := lockRun(ctx, gq, op, args.RunID)
+	if err != nil {
+		return ExpireApprovalParkResult{}, err
+	}
+	approval, err := gq.MarkApprovalExpiredPending(ctx, gen.MarkApprovalExpiredPendingParams{
+		ID: args.ID, Now: args.Now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The marker CAS matched nothing — the approval is either off pending
+		// (decided/expired/cancelled by a racing decision) or already
+		// park-expired. Re-read to distinguish; both are ack-and-drop.
+		cur, gerr := gq.GetApproval(ctx, args.ID)
+		if gerr != nil {
+			return ExpireApprovalParkResult{}, wrapErr(op, gerr)
+		}
+		if cur.Status != ApprovalStatusPending {
+			return ExpireApprovalParkResult{}, &ApprovalNotPendingError{ID: args.ID, Status: cur.Status}
+		}
+		return ExpireApprovalParkResult{}, &ApprovalAlreadyExpiredError{ID: args.ID}
+	}
+	if err != nil {
+		return ExpireApprovalParkResult{}, wrapErr(op, err)
+	}
+
+	res := ExpireApprovalParkResult{Approval: approval}
+	if runRow.Status == RunStatusParked {
+		// The run is already parked (a manual park, or a sibling gate's park).
+		// Leave it — the approval marker is enough. Re-read the run row for the
+		// result.
+		run, gerr := gq.GetRun(ctx, args.RunID)
+		if gerr != nil {
+			return ExpireApprovalParkResult{}, wrapErr(op+": get run", gerr)
+		}
+		res.Run = run
+		res.Action = ApprovalActionRunAlreadyParked
+	} else {
+		// ParkRun (transition-style) takes the run lock itself; we already hold
+		// it in this tx, so a re-lock is a no-op re-entry within one pgx tx.
+		run, perr := ParkRun(ctx, q, ParkRunArgs{RunID: args.RunID, Reason: ParkReasonAwaitingHuman, Now: args.Now})
+		if perr != nil {
+			return ExpireApprovalParkResult{}, perr
+		}
+		res.Run = run
+		res.Action = ApprovalActionRunParked
+	}
+
+	if err := appendEvent(ctx, gq, op, args.RunID, EventApprovalExpired, ApprovalExpiredEvent{
+		ApprovalID: args.ID.String(), StepID: args.StepID, AttemptNo: args.AttemptNo,
+		Policy: string(dag.ApprovalTimeoutPark), Action: res.Action, TimeoutAt: args.TimeoutAt,
+	}); err != nil {
+		return ExpireApprovalParkResult{}, err
+	}
+	log.From(ctx).InfoContext(ctx, "approval timeout policy applied: park",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID),
+		slog.String("action", res.Action))
+	return res, nil
 }
 
 // SucceedAwaitingHumanStepArgs are the inputs to SucceedAwaitingHumanStep.
@@ -483,8 +653,17 @@ type ListApprovalsArgs struct {
 type ApprovalRepo interface {
 	// Get reads one approval by id (15.3's decide path).
 	Get(ctx context.Context, id uuid.UUID) (gen.Approval, error)
+	// GetPendingByStep reads a step's open (pending) approval (15.4's timeout
+	// handler): the expiry envelope names the step, not the approval id, so a
+	// requeue-minted fresh approval is resolved here. ErrNotFound when the step
+	// has no pending approval (already decided / expired / cancelled).
+	GetPendingByStep(ctx context.Context, runID uuid.UUID, stepID string) (gen.Approval, error)
 	// ListByRun returns a run's approvals, newest first.
 	ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.Approval, error)
+	// ListOverdue returns pending approvals whose timeout has passed but whose
+	// policy has not been applied (expired_at IS NULL), oldest deadline first —
+	// the reconciler's delayed-queue safety net (15.4).
+	ListOverdue(ctx context.Context, before time.Time, limit int32) ([]gen.Approval, error)
 	// List returns approvals filtered by status/run, keyset paginated
 	// oldest-first (the GET /v1/approvals inbox).
 	List(ctx context.Context, args ListApprovalsArgs) ([]gen.Approval, error)
@@ -497,6 +676,16 @@ type approvalRepo struct{ q *gen.Queries }
 func (r approvalRepo) Get(ctx context.Context, id uuid.UUID) (gen.Approval, error) {
 	a, err := r.q.GetApproval(ctx, id)
 	return a, wrapErr("get approval", err)
+}
+
+func (r approvalRepo) GetPendingByStep(ctx context.Context, runID uuid.UUID, stepID string) (gen.Approval, error) {
+	a, err := r.q.GetPendingApprovalByStep(ctx, gen.GetPendingApprovalByStepParams{RunID: runID, StepID: stepID})
+	return a, wrapErr("get pending approval by step", err)
+}
+
+func (r approvalRepo) ListOverdue(ctx context.Context, before time.Time, limit int32) ([]gen.Approval, error) {
+	rows, err := r.q.ListOverdueApprovals(ctx, gen.ListOverdueApprovalsParams{Before: before, RowLimit: limit})
+	return rows, wrapErr("list overdue approvals", err)
 }
 
 func (r approvalRepo) ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.Approval, error) {

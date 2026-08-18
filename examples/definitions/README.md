@@ -125,6 +125,19 @@ each example's "header comment" is its top-level `description` field.
   unmarked approve edge (to `publish`) is skipped. An approve fires the approve
   edge instead. Either way the run completes; the `decision` edge marker makes
   the reject branch explicit and UI-renderable.
+- **[approval_timeout_approve.json](approval_timeout_approve.json)** —
+  auto-approve on timeout (ticket 15.4, ADR-017): a `human_approval` gate whose
+  `on_timeout` policy is `approve` (documented as dangerous — a side effect
+  fires with no human in the loop). When the delayed-queue expiry fires it
+  auto-approves the **original** payload through the same single-arbiter CAS a
+  human decision uses, records the approval `expired` / `source: timeout`, and
+  `publish` runs. A human decision arriving first wins and cancels the expiry.
+- **[approval_timeout_park.json](approval_timeout_park.json)** — escalate on
+  timeout (ticket 15.4, ADR-017): a `human_approval` gate whose `on_timeout`
+  policy is `park`. On expiry the approval stays `pending` (still decidable) and
+  the **run** parks with `park_reason = awaiting_human` — the side effect never
+  fires unattended. The park is idempotent (a stamped `expired_at` marks it), a
+  later human decision resolves the gate, and `unpark` resumes the run.
 - **[kitchen_sink.json](kitchen_sink.json)** — one coherent
   research-and-publish pipeline exercising every construct: every registered
   step type (including a `map` over a `templates` sub-template and a `gather`),

@@ -132,7 +132,9 @@ type WorkerMetrics struct {
 	contextUtilization *prometheus.HistogramVec
 	contextRejections  *prometheus.CounterVec
 
-	approvalPending prometheus.Gauge
+	approvalPending  prometheus.Gauge
+	approvalDecided  *prometheus.CounterVec
+	approvalTimeouts *prometheus.CounterVec
 }
 
 // NewWorkerMetrics registers the worker instrument set on reg (ADR-008:
@@ -346,6 +348,14 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 			Namespace: Namespace, Subsystem: "approval", Name: "pending",
 			Help: "Human-approval steps currently parked awaiting a decision (ticket 15.2, ADR-017), fleet-wide as this worker's periodic sample observed it.",
 		}),
+		approvalDecided: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "approval", Name: "decisions_total",
+			Help: "Human-approval decisions recorded on the worker path (ticket 15.4, ADR-017), by decision (approve/reject) and source — the worker records timeout-sourced decisions; the API server records human-sourced ones on its own instrument set (same series, distinct registries).",
+		}, []string{"decision", "source"}),
+		approvalTimeouts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "approval", Name: "timeouts_total",
+			Help: "Approval timeout policy applications (ticket 15.4, ADR-017), by action (rejected/approved/run_parked/run_already_parked).",
+		}, []string{"action"}),
 	}
 	reg.MustRegister(
 		m.queueReadyDepth, m.queueStreamLength, m.queuePELSize, m.queueDelayedDepth,
@@ -366,7 +376,7 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 		m.validateVerdicts, m.validatorResults, m.semanticDepth,
 		m.outputRepairs, m.judgeScore,
 		m.contextUtilization, m.contextRejections,
-		m.approvalPending,
+		m.approvalPending, m.approvalDecided, m.approvalTimeouts,
 	)
 	return m
 }
@@ -571,6 +581,18 @@ func (m *WorkerMetrics) SetActiveWorkers(n int) { m.workerActive.Set(float64(n))
 // SetApprovalPending updates the parked-approval gauge (ticket 15.2) from
 // the worker's periodic sample of the store's pending-approval count.
 func (m *WorkerMetrics) SetApprovalPending(n int64) { m.approvalPending.Set(float64(n)) }
+
+// ApprovalDecided records one worker-path approval decision (ticket 15.4) — the
+// timeout handler's reject/approve policy applications.
+func (m *WorkerMetrics) ApprovalDecided(decision, source string) {
+	m.approvalDecided.WithLabelValues(decision, source).Inc()
+}
+
+// ApprovalTimeout records one approval timeout policy application (ticket 15.4)
+// by action (rejected/approved/run_parked/run_already_parked).
+func (m *WorkerMetrics) ApprovalTimeout(action string) {
+	m.approvalTimeouts.WithLabelValues(action).Inc()
+}
 
 // The methods below satisfy steplog.Metrics (ticket 7.4).
 

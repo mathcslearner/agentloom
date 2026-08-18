@@ -2164,6 +2164,14 @@ components:
         decision_source:
           type: string
           enum: [human, timeout]
+        expired_at:
+          type: string
+          format: date-time
+          description: >
+            Set once a timeout policy fired (ticket 15.4). A reject/approve
+            policy sets status `expired`; a `park` policy leaves status
+            `pending` (still decidable) with this marking that the run was
+            parked.
         created_at:
           type: string
           format: date-time

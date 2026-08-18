@@ -41,7 +41,7 @@ func columnExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table, 
 // latestVersion is the highest migration in internal/store/migrations —
 // bump when adding a migration (the round-trip test below walks every
 // down migration regardless, so forgetting only fails the version check).
-const latestVersion = 26
+const latestVersion = 27
 
 func TestMigrateUpDownRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -84,17 +84,30 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 	}
 
 	// Down rolls back one step: the newest migration's additions are gone,
-	// earlier ones untouched. 0026 drops run_edges.decision (the approval edge
+	// earlier ones untouched. 0027 drops approvals.expired_at (the timeout
 	// marker) — its revert is observable while everything below it survives,
-	// starting with 0025's approvals table.
+	// starting with 0026's run_edges.decision.
+	if err := mg.Down(); err != nil {
+		t.Fatalf("Down (0027): %v", err)
+	}
+	if columnExists(ctx, t, pool, "approvals", "expired_at") {
+		t.Fatal("after one Down: approvals.expired_at was not dropped by 0027")
+	}
+	if !columnExists(ctx, t, pool, "run_edges", "decision") {
+		t.Fatal("after one Down: run_edges.decision (0026) was dropped prematurely")
+	}
+
+	// Down again rolls back 0026: it drops run_edges.decision (the approval
+	// edge marker) — its revert is observable while everything below it
+	// survives, starting with 0025's approvals table.
 	if err := mg.Down(); err != nil {
 		t.Fatalf("Down (0026): %v", err)
 	}
 	if columnExists(ctx, t, pool, "run_edges", "decision") {
-		t.Fatal("after one Down: run_edges.decision was not dropped by 0026")
+		t.Fatal("after two Downs: run_edges.decision was not dropped by 0026")
 	}
 	if !tableExists(ctx, t, pool, "approvals") {
-		t.Fatal("after one Down: approvals (0025) was dropped prematurely")
+		t.Fatal("after two Downs: approvals (0025) was dropped prematurely")
 	}
 
 	// Down again rolls back 0025: it drops the approvals table (and narrows
@@ -105,10 +118,10 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 		t.Fatalf("Down (0025): %v", err)
 	}
 	if tableExists(ctx, t, pool, "approvals") {
-		t.Fatal("after two Downs: approvals table was not dropped by 0025")
+		t.Fatal("after three Downs: approvals table was not dropped by 0025")
 	}
 	if !columnExists(ctx, t, pool, "runs", "steps_collected") {
-		t.Fatal("after two Downs: runs.steps_collected (0024) was dropped prematurely")
+		t.Fatal("after three Downs: runs.steps_collected (0024) was dropped prematurely")
 	}
 
 	// Down again rolls back 0024: it drops runs.steps_collected — its revert

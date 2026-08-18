@@ -43,6 +43,7 @@ type Approval struct {
 	DecisionSource   *string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	ExpiredAt        *time.Time
 }
 
 type BlackboardEntry struct {

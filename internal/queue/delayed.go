@@ -89,6 +89,25 @@ func (d *Delayed) Schedule(ctx context.Context, env Envelope, fireAt time.Time) 
 	return nil
 }
 
+// Cancel removes the envelope from the delayed set if present (ticket 15.4):
+// the best-effort early-decision cleanup for approval timeouts. It ZREMs the
+// byte-identical member Schedule would have added — so an early human decision
+// drops the pending expiry rather than letting it fire and no-op. Removing an
+// absent member is not an error (ZREM returns 0): a stale-but-harmless expiry
+// is tolerated (the approvals CAS is the authority, ADR-017), so a failed or
+// missed Cancel never affects correctness — only whether one no-op delivery
+// fires later.
+func (d *Delayed) Cancel(ctx context.Context, env Envelope) error {
+	member, err := encodeDelayedMember(env)
+	if err != nil {
+		return err
+	}
+	if err := d.client.ZRem(ctx, d.key, member).Err(); err != nil {
+		return fmt.Errorf("queue: ZREM from %s: %w", d.key, err)
+	}
+	return nil
+}
+
 // Len returns the number of entries waiting in the delayed set — the M7
 // depth metric and 3.6's delayed-empty quiescence assertion.
 func (d *Delayed) Len(ctx context.Context) (int64, error) {

@@ -270,9 +270,16 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	// StepContext.Logger into the step_logs store; its flusher runs on
 	// loopCtx below so lines from steps finishing during the consumer's
 	// drain still land, with one final bounded flush at shutdown.
+	// One delayed-delivery handle drives both the retry scheduler and the
+	// approval-timeout expiry scheduler/canceller (ticket 15.4).
+	delayed := q.NewDelayed(cfg.Queue.DelayedKey)
 	engineOpts := []engine.Option{
 		engine.WithDispatchNudge(dispatcher.Nudge),
-		engine.WithRetryScheduler(q.NewDelayed(cfg.Queue.DelayedKey)),
+		engine.WithRetryScheduler(delayed),
+		// Approval-timeout scheduling + early-decision cancellation (ticket
+		// 15.4): a parked human_approval step schedules its expiry through this
+		// handle, and an early human decision ZREMs it.
+		engine.WithExpiryCanceller(delayed),
 		engine.WithStrictEffects(cfg.Worker.EffectsStrict),
 		engine.WithCancelPollInterval(cfg.Worker.CancelPollInterval),
 		engine.WithMetrics(engineMetrics),

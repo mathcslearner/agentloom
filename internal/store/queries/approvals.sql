@@ -35,6 +35,9 @@ RETURNING *;
 -- exactly one winner — the loser matches nothing and gets a 409. It records
 -- the immutable decision fields (decision, edited payload, comment, actor,
 -- timestamp, source) that the run view and the approval_decided event expose.
+-- A timeout `reject`/`approve` policy (ticket 15.4) reuses this CAS with
+-- @status = 'expired' and @expired_at set, so the same pending guard arbitrates
+-- human-vs-timeout; @expired_at is NULL on a human decision.
 -- name: DecideApproval :one
 UPDATE approvals
 SET status          = @status,
@@ -44,9 +47,46 @@ SET status          = @status,
     decided_by      = @decided_by,
     decided_at      = @now::timestamptz,
     decision_source = @decision_source,
+    expired_at      = @expired_at,
     updated_at      = @now::timestamptz
 WHERE id = @id AND status = 'pending'
 RETURNING *;
+
+-- MarkApprovalExpiredPending is the `on_timeout: park` marker CAS (ticket
+-- 15.4): it stamps expired_at on a still-pending, not-yet-expired approval
+-- WITHOUT moving it off pending — the approval stays decidable while the run
+-- parks. The (status='pending' AND expired_at IS NULL) guard makes it
+-- single-shot: a redelivered expiry (or the reconciler heal) that races it
+-- matches nothing, so the run is parked at most once per timeout.
+-- name: MarkApprovalExpiredPending :one
+UPDATE approvals
+SET expired_at = @now::timestamptz,
+    updated_at = @now::timestamptz
+WHERE id = @id AND status = 'pending' AND expired_at IS NULL
+RETURNING *;
+
+-- GetPendingApprovalByStep reads a step's open approval (ticket 15.4): the
+-- timeout handler resolves the current pending approval for the (run, step)
+-- named by the expiry envelope — the envelope carries no approval id, so a
+-- requeue-minted fresh approval is found here, not a stale one. The unique
+-- partial index (run_id, step_id) WHERE status = 'pending' makes this at most
+-- one row.
+-- name: GetPendingApprovalByStep :one
+SELECT * FROM approvals
+WHERE run_id = @run_id AND step_id = @step_id AND status = 'pending';
+
+-- ListOverdueApprovals is the reconciler's delayed-queue safety net (ticket
+-- 15.4): pending approvals whose timeout has passed but whose policy has not
+-- been applied (expired_at IS NULL), scanned via approvals_overdue_idx oldest
+-- first. The reconciler re-outboxes an approval_timeout envelope for each, so a
+-- crash before the post-commit schedule (or a Redis data loss) still fires the
+-- policy.
+-- name: ListOverdueApprovals :many
+SELECT * FROM approvals
+WHERE status = 'pending' AND expired_at IS NULL
+  AND timeout_at IS NOT NULL AND timeout_at <= @before::timestamptz
+ORDER BY timeout_at, id
+LIMIT @row_limit;
 
 -- GetApproval reads one approval by id (15.3's decide path; the run view
 -- reads via ListApprovalsByRun).

@@ -195,7 +195,7 @@ approve). On an engine-injected edge (map/loop/planner) the marker degrades
 safely — a marker on a non-approval source simply never matches at routing time
 — so, like the expansion ref lint, only the enum is re-checked there.
 
-### Timeouts & the decision-vs-timeout race (arrives in 15.4)
+### Timeouts & the decision-vs-timeout race (contract; as built in 15.4 below)
 
 On park, if `timeout` is set, the executor schedules an expiry envelope through
 the delayed queue (reason `approval_timeout`, built without an `EnqueuedAt` so
@@ -451,6 +451,109 @@ decisions counter is on `APIMetrics` (the human path); the worker's timeout path
 will need the same-named counter on its instrument set — noted for 15.4 to place
 it on a shared set or split the conformance harness.
 
+### Approval timeouts (as built, 15.4)
+
+15.4 built the timeout half exactly to the contract above, reusing the 15.3
+arbiter: **one migration (0027), no new config var, two new worker metrics**
+(`engine_approval_timeouts_total{action}` and the worker-side
+`engine_approval_decisions_total{decision,source}`). The delayed-delivery queue
+(M3.5) gains a third client; nothing new was needed beyond the expiry envelope,
+one durable marker column, and a reconciler safety net.
+
+- **The expiry is a pointer envelope, scheduled on park.** When a
+  `human_approval` step parks with a `timeout`, the executor path schedules an
+  `approval_timeout` envelope through the delayed queue, due at `timeout_at`,
+  **best-effort post-commit** (the `scheduleRetry` discipline — a nil scheduler
+  or a failed ZADD only logs; the reconciler heals it). The envelope names the
+  **step**, not the approval (`{run_id, step_id, reason: approval_timeout}`,
+  ADR-005's pointer-not-payload rule), carrying the run's durable root trace
+  context and **no `EnqueuedAt`**, so re-scheduling the same expiry encodes to a
+  byte-identical delayed member and ZADD dedups to one pending expiry per step —
+  and a DLQ-requeue-minted *fresh* approval is resolved by the handler through
+  `GetPendingApprovalByStep` (the envelope carries no approval id), so a stale
+  id can never be acted on.
+
+- **The handler branches before the claim.** `Engine.Handle` routes an
+  `approval_timeout` delivery to `handleApprovalTimeout` ahead of the claim CAS
+  — a parked step holds no lease, so there is nothing to claim. The handler
+  resolves the step's current pending approval; a missing one (already decided /
+  cancelled), a nil deadline, or an already-applied marker is **ack-and-drop**;
+  a not-yet-due delivery (an AOF replay ahead of the score) is rescheduled at
+  the real deadline and dropped. Otherwise it reads the materialized
+  `on_timeout` policy (never templated, so the config decode is authoritative;
+  an unreadable one defaults to `reject`) and applies it.
+
+- **`reject` / `approve` reuse `Control.Decide`.** The handler calls the same
+  `Decide` a human uses, with `Source: timeout` / `DecidedBy: system:timeout`,
+  so the **single arbiter CAS** on the approvals row settles the human-vs-timeout
+  race by construction. `store.DecideApproval` gains a timeout branch: the CAS
+  target is status **`expired`** (not `approved`/`rejected` — the audit trail
+  separates an automatic expiry from an operator's decision, and
+  `?status=expired` is a real inbox filter), it stamps `expired_at`, records the
+  `decision` (`reject`/`approve`) with `decision_source: timeout`, and appends a
+  distinct **`approval_expired`** event (policy + action + timeout_at). The
+  reject then routes through the same `on_reject` logic (dead-letter + run
+  disposition, or the reject edges); the approve auto-approves the **original**
+  payload (never an edit). A lost race (`*ApprovalNotPendingError`) or a
+  non-live run (`ConflictRunNotRunning`) is ack-and-drop; a transport error
+  redelivers.
+
+- **`park` records no decision.** `store.ExpireApprovalPark` CASes the durable
+  marker `approvals.expired_at` on the still-pending row (the single-shot guard
+  `status='pending' AND expired_at IS NULL`), parks the run with
+  `park_reason = awaiting_human` (skipping the park when the run is already
+  parked → action `run_already_parked`), and appends `approval_expired` with
+  policy `park`. Because status stays `pending`, the marker — not the status —
+  is what makes a redelivered or reconciler-healed expiry idempotent
+  (`*ApprovalAlreadyExpiredError` → ack-drop, no re-park). A decision arriving
+  while parked settles the gate through the ordinary park-tolerant `Decide`
+  path, and `unpark` resumes the run — so "timeout policy `park` leaves the run
+  resumable via unpark" holds.
+
+- **Migration 0027** adds `approvals.expired_at TIMESTAMPTZ` and a partial index
+  `approvals_overdue_idx (timeout_at) WHERE status='pending' AND expired_at IS
+  NULL AND timeout_at IS NOT NULL` for the reconciler scan. The status column
+  cannot double as the park-policy marker (a `park` approval must stay
+  `pending`), which is why the marker column exists.
+
+- **Early-decision cleanup is best-effort; the CAS is the authority.** A human
+  decision on an approval that had a scheduled timeout best-effort ZREMs the
+  pending expiry (`queue.Delayed.Cancel`, the new `ExpiryCanceller` seam on both
+  the worker engine and the API's `Control`). A failed or missed Cancel only
+  means one stale expiry fires later and finds the row already decided
+  (ack-drop). The API wiring is a ZREM, not a dispatch, so ADR-002 (the API
+  never dispatches) holds; when the API's Redis is unwired the canceller is
+  absent and the stale expiry no-ops.
+
+- **The reconciler is the safety net** (ADR-005 P3 analogue). A pending approval
+  whose deadline is well past due (grace = the existing `RetryStale`, so **no
+  new config var**) with no policy applied means its delayed expiry was lost or
+  never scheduled; a new sweep duty re-outboxes an `approval_timeout` envelope
+  (`OutboxReasonApprovalTimeout`), which lands on the same handler. A duplicate
+  (a healed expiry racing a late delayed one) is arbitrated by the CAS.
+
+- **Metrics.** `engine_approval_timeouts_total{action}` (rejected / approved /
+  run_parked / run_already_parked) and the worker-side
+  `engine_approval_decisions_total{decision,source}` (the timeout path — the
+  same series the API records human decisions on, on a distinct registry, the
+  `build_info` precedent), both post-commit. The conformance harness now
+  registers the worker and API instrument sets on **separate** registries
+  (mirroring the two processes), since they share the decisions series.
+
+**Decisions.** The arbiter is `Control.Decide`, shared verbatim with the human
+path (one CAS, "exactly one winner" by construction); status `expired` +
+`approval_expired` distinct from a human decision (honest audit, real inbox
+filter); `expired_at` as the durable park-policy idempotence marker (status
+can't be it — park stays pending); the expiry envelope names the step and
+carries no approval id (a requeue-minted fresh approval is resolved live);
+scheduling and cancellation both best-effort with the reconciler as the net and
+the CAS as the authority; the reconciler grace reuses `RetryStale` (no new
+config var); the API best-effort ZREM is not a dispatch (ADR-002 intact).
+**Accepted residual:** a repeatedly-failing expiry envelope crossing the poison
+threshold would `PoisonDeadLetterStep` the `awaiting_human` step (leaving the
+approval `pending`) — a transport-only failure mode, the same class as a
+poisoned retry envelope, noted rather than special-cased.
+
 ### Interplay with the rest of the engine
 
 - **Expansions (ADR-015).** An approval inside a loop body is unrolled to a
@@ -466,6 +569,9 @@ it on a shared set or split the conformance harness.
 - **Metrics (ADR-008).** A new `approval` subsystem — an `engine_approval_pending`
   gauge and an `engine_approval_decisions_total{decision,source}` counter —
   arrives with the executor/decision API (15.2/15.3); no metric is added in 15.1.
+  15.4 adds `engine_approval_timeouts_total{action}` and places the decisions
+  counter on the worker instrument set too (the timeout path), so the two
+  deployables share the series on distinct registries.
 - **Notifications (15.5).** An optional plugin POSTs a signed payload to a
   webhook on each new pending approval, delivered effectively-once through the
   side-effect journal; webhook failure never affects run correctness.

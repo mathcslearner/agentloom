@@ -42,6 +42,8 @@ var exampleFiles = []string{
 	"research-critic-writer.json",
 	"approval_gate.json",
 	"approval_reject_route.json",
+	"approval_timeout_approve.json",
+	"approval_timeout_park.json",
 }
 
 // readExample loads one example definition document.

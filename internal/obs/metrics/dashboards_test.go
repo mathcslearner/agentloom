@@ -37,14 +37,23 @@ func TestDashboardsAndRulesReferenceRegisteredMetrics(t *testing.T) {
 	// Gather the registered families exactly as a deployable exposes them:
 	// the build-info registry plus both instrument sets, every vec child
 	// touched so Gather sees each family.
-	reg := metrics.NewRegistry(metrics.ServiceWorker)
-	exercise(metrics.NewWorkerMetrics(reg), metrics.NewAPIMetrics(reg))
-	families, err := reg.Gather()
+	// Worker and API on separate registries (one process each in production);
+	// they share engine_approval_decisions_total (ticket 15.4), so a single
+	// registry would reject the duplicate. Union both gathers into the
+	// registered-name set.
+	regW := metrics.NewRegistry(metrics.ServiceWorker)
+	regA := metrics.NewRegistry(metrics.ServiceAPI)
+	exercise(metrics.NewWorkerMetrics(regW), metrics.NewAPIMetrics(regA))
+	famW, err := regW.Gather()
 	if err != nil {
-		t.Fatalf("Gather: %v", err)
+		t.Fatalf("Gather (worker): %v", err)
 	}
-	registered := make(map[string]bool, len(families))
-	for _, fam := range families {
+	famA, err := regA.Gather()
+	if err != nil {
+		t.Fatalf("Gather (api): %v", err)
+	}
+	registered := make(map[string]bool, len(famW)+len(famA))
+	for _, fam := range append(famW, famA...) {
 		registered[fam.GetName()] = true
 	}
 

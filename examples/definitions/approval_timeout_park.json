@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "name": "approval-timeout-park",
+  "description": "The ticket 15.4 escalate-on-timeout demonstration: a `human_approval` gate whose `on_timeout` policy is `park`. When the expiry fires, the approval stays `pending` (still decidable) and the RUN parks with the reserved `park_reason = awaiting_human` as an escalation — no decision is recorded, the side effect never fires unattended. The park is idempotent (a stamped `expired_at` marks the run was parked once, so a redelivered or reconciler-healed expiry never re-parks). A later human decision resolves the gate through the ordinary park-tolerant decision path, and `unpark` resumes the run's other work — so \"timeout policy park leaves the run resumable via unpark\" holds.",
+  "params": {
+    "topic": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "draft",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Draft an article about ${{ run.params.topic }}.",
+        "max_tokens": 128
+      }
+    },
+    {
+      "id": "approve_publish",
+      "type": "human_approval",
+      "config": {
+        "title": "Publish this article?",
+        "description": "Review the draft before it goes live; no answer escalates.",
+        "payload": "${{ steps.draft.output }}",
+        "allowed_decisions": ["approve", "reject"],
+        "timeout": "24h",
+        "on_timeout": "park",
+        "on_reject": "fail"
+      }
+    },
+    {
+      "id": "publish",
+      "type": "echo",
+      "config": {
+        "input": {
+          "published": "${{ steps.approve_publish.output.payload }}"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "draft",
+      "to": "approve_publish"
+    },
+    {
+      "from": "approve_publish",
+      "to": "publish"
+    }
+  ]
+}

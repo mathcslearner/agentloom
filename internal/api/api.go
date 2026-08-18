@@ -121,6 +121,12 @@ type Handler struct {
 	// ADR-002's Redis independence is untouched (the API never reads the
 	// cache for dispatch; this is an opt-in ops extra like rate limiting).
 	cacheOps CacheOps
+	// expiryCanceller, when set (WithExpiryCanceller), lets the run-control
+	// surface best-effort ZREM an approval's pending timeout expiry on an early
+	// human decision (ticket 15.4). It is wired onto the Control built by New.
+	// A ZREM is not a dispatch, so ADR-002 (the API never dispatches) holds.
+	// Nil leaves a stale expiry to fire and no-op.
+	expiryCanceller engine.ExpiryCanceller
 }
 
 // CacheOps is the API's seam onto the response-cache store (ticket 9.6,
@@ -185,6 +191,15 @@ func WithCacheOps(ops CacheOps) Option {
 	return func(h *Handler) { h.cacheOps = ops }
 }
 
+// WithExpiryCanceller wires the delayed-delivery cancellation seam (ticket
+// 15.4): an early human decision on an approval that had a scheduled timeout
+// best-effort ZREMs the pending expiry. cmd/api passes a queue Delayed handle
+// when Redis is reachable. Nil (the default) leaves a stale expiry to fire and
+// no-op — the approvals CAS is the authority, so correctness is unaffected.
+func WithExpiryCanceller(c engine.ExpiryCanceller) Option {
+	return func(h *Handler) { h.expiryCanceller = c }
+}
+
 // New builds the Handler. now is the injected clock (project invariant —
 // cmd/api passes time.Now); logger is the base request logger (nil means
 // slog.Default()); rootKey is the optional bootstrap admin credential
@@ -209,14 +224,20 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 	if rl.Metrics == nil {
 		rl.Metrics = nopRateLimitMetrics{}
 	}
-	ctl, err := engine.NewControl(st, engine.WithControlClock(now))
-	if err != nil {
-		return nil, err
-	}
-	h := &Handler{st: st, ctl: ctl, now: now, logger: logger, keyRand: cryptoRand, rl: rl, metrics: nopRequestMetrics{}}
+	h := &Handler{st: st, now: now, logger: logger, keyRand: cryptoRand, rl: rl, metrics: nopRequestMetrics{}}
 	for _, opt := range opts {
 		opt(h)
 	}
+	// Build the run-control surface after opts so an optionally-wired expiry
+	// canceller (ticket 15.4) reaches it. No dispatcher nudge — the API's
+	// outbox rows drain on the fleet's cadence (ADR-002).
+	ctl, err := engine.NewControl(st,
+		engine.WithControlClock(now),
+		engine.WithControlExpiryCanceller(h.expiryCanceller))
+	if err != nil {
+		return nil, err
+	}
+	h.ctl = ctl
 	if rootKey != "" {
 		if !keyShapeOK(rootKey) {
 			// Deliberately no detail: the message must never echo the value.

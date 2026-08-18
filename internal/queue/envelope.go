@@ -51,6 +51,16 @@ const (
 	// through the transactional outbox in the completion transaction, not the
 	// delayed set — a semantic retry has no backoff.
 	ReasonSemanticRetry = "semantic_retry"
+	// ReasonApprovalTimeout: a human_approval step's expiry envelope (ticket
+	// 15.4, ADR-017). Scheduled through the delayed set on park (due at the
+	// approval's timeout_at) and, as a safety net, re-outboxed by the
+	// reconciler when the schedule was lost. Like ReasonRetry/ReasonThrottle
+	// the delayed envelope carries no EnqueuedAt, so re-scheduling the same
+	// (run, step) expiry encodes to a byte-identical delayed member — ZADD's
+	// move-the-fire-time dedup keeps at most one pending expiry per step. The
+	// envelope names the step, not the approval (a pointer, never a payload):
+	// the handler resolves the step's current pending approval.
+	ReasonApprovalTimeout = "approval_timeout"
 )
 
 // Envelope is a task message: a pointer to durable state, never a payload

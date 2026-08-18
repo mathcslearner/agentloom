@@ -113,6 +113,36 @@ func TestScheduleMovesFireTime(t *testing.T) {
 	}
 }
 
+// TestCancelRemovesScheduledMember (ticket 15.4): Cancel ZREMs the exact
+// member Schedule added, so the early-decision cleanup empties the delayed set;
+// cancelling an absent member is a no-op (the stale-but-harmless case).
+func TestCancelRemovesScheduledMember(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+
+	h := queuetest.New(t)
+	d := h.Delayed()
+	env := minimalEnvelope()
+
+	if err := d.Schedule(ctx, env, t0.Add(time.Hour)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if n := h.DelayedLen(ctx); n != 1 {
+		t.Fatalf("Len after Schedule = %d, want 1", n)
+	}
+	if err := d.Cancel(ctx, env); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if n := h.DelayedLen(ctx); n != 0 {
+		t.Errorf("Len after Cancel = %d, want 0", n)
+	}
+	// Cancelling again (or an unscheduled member) is a no-op, not an error.
+	if err := d.Cancel(ctx, env); err != nil {
+		t.Errorf("Cancel of absent member: %v, want nil (no-op)", err)
+	}
+}
+
 // TestPromoteDueBatchBound: one pass promotes at most limit entries,
 // oldest first; the rest stay for later passes.
 func TestPromoteDueBatchBound(t *testing.T) {

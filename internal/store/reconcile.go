@@ -173,6 +173,39 @@ func ListOverdueRetryingSteps(ctx context.Context, q Querier, staleBefore time.T
 	return steps, nil
 }
 
+// OverdueApproval is a pending approval whose timeout passed with no policy
+// applied — the delayed-expiry crash gap (ticket 15.4, ADR-005 P3 analogue):
+// the post-commit Schedule call was never reached, or the delayed member was
+// lost. The reconciler re-outboxes an approval_timeout envelope for it.
+type OverdueApproval struct {
+	RunID  uuid.UUID
+	StepID string
+}
+
+// ListOverdueApprovals returns up to limit pending approvals whose timeout is
+// before the threshold and whose policy has not been applied (expired_at IS
+// NULL) — approvals whose delayed expiry was never scheduled or was lost. The
+// heal is an approval_timeout outbox row alone (the reconcile safety net): the
+// engine's timeout handler applies the on_timeout policy through the same CAS
+// as a human decision, so a duplicate delivery (delayed + healed) is arbitrated
+// there.
+func ListOverdueApprovals(ctx context.Context, q Querier, before time.Time, limit int32) ([]OverdueApproval, error) {
+	const op = "list overdue approvals"
+	gq, err := reconcileQueries(ctx, q, op)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := gq.ListOverdueApprovals(ctx, gen.ListOverdueApprovalsParams{Before: before, RowLimit: limit})
+	if err != nil {
+		return nil, wrapErr(op, err)
+	}
+	out := make([]OverdueApproval, len(rows))
+	for i, r := range rows {
+		out[i] = OverdueApproval{RunID: r.RunID, StepID: r.StepID}
+	}
+	return out, nil
+}
+
 // ListStaleRunningStepsInCancellingRuns returns up to limit steps still
 // running in a *cancelling* run since before staleBefore — ticket 5.6's
 // crash cell: the in-flight worker died before settling its step, and

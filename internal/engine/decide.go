@@ -189,18 +189,26 @@ func (c *Control) Decide(ctx context.Context, approvalID uuid.UUID, req DecideRe
 			}
 		}
 
-		// The arbiter CAS: pending → approved|rejected. A loser matches nothing
-		// and gets *ApprovalNotPendingError (rolls the tx back — nothing else
-		// written).
+		// The arbiter CAS: pending → approved|rejected (a human or timeout
+		// decision), or pending → expired (a timeout reject/approve policy —
+		// ticket 15.4, so the audit trail separates an automatic expiry from an
+		// operator's decision). A loser matches nothing and gets
+		// *ApprovalNotPendingError (rolls the tx back — nothing else written).
 		target := store.ApprovalStatusApproved
 		if req.Decision == dag.ApprovalReject {
 			target = store.ApprovalStatusRejected
+		}
+		var expiredAt *time.Time
+		if req.Source == store.ApprovalSourceTimeout {
+			target = store.ApprovalStatusExpired
+			expiredAt = &now
 		}
 		decided, derr := store.DecideApproval(ctx, q, store.DecideApprovalArgs{
 			ID: approvalID, RunID: approval.RunID, StepID: approval.StepID,
 			AttemptNo: approval.Attempt, Status: target, Decision: string(req.Decision),
 			EditedPayload: req.EditedPayload, Comment: req.Comment,
-			DecidedBy: req.DecidedBy, Source: req.Source, Now: now,
+			DecidedBy: req.DecidedBy, Source: req.Source,
+			ExpiredAt: expiredAt, TimeoutAt: approval.TimeoutAt, Now: now,
 		})
 		if derr != nil {
 			errors.As(derr, &notPending)
@@ -220,6 +228,21 @@ func (c *Control) Decide(ctx context.Context, approvalID uuid.UUID, req DecideRe
 		return DecideResult{}, txErr
 	}
 
+	// Early-decision cleanup (ticket 15.4): a human decision on an approval
+	// that had a scheduled timeout best-effort ZREMs the pending expiry so it
+	// never fires. Best-effort by design — the approvals CAS above is the
+	// authority, so a failed or missed Cancel only means one stale expiry
+	// fires later and no-ops. A timeout-sourced decision skips this (the expiry
+	// is the thing firing).
+	if req.Source == store.ApprovalSourceHuman && c.canceller != nil && approval.TimeoutAt != nil {
+		env := approvalTimeoutEnvelope(approval.RunID, approval.StepID,
+			store.TraceContext{Parent: deref(run.TraceParent), State: deref(run.TraceState)})
+		if cerr := c.canceller.Cancel(ctx, env); cerr != nil {
+			log.From(ctx).WarnContext(ctx, "failed to cancel approval expiry; a stale expiry will fire and no-op",
+				slog.String("approval_id", approvalID.String()), slog.Any("error", cerr))
+		}
+	}
+
 	log.From(ctx).InfoContext(ctx, "approval decided",
 		slog.String("approval_id", approvalID.String()),
 		slog.String("decision", string(req.Decision)),
@@ -232,6 +255,15 @@ func (c *Control) Decide(ctx context.Context, approvalID uuid.UUID, req DecideRe
 		c.nudge()
 	}
 	return res, nil
+}
+
+// deref returns the string value of a *string, or "" for nil — used to project
+// a run row's nullable trace columns onto a store.TraceContext.
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // decisionOutput is the ADR-017 step output an approve/route decision writes;

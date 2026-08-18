@@ -89,6 +89,9 @@ func exercise(w *metrics.WorkerMetrics, a *metrics.APIMetrics) {
 	w.JudgeScore("llm_judge", 0.9)
 	w.ContextUtilization("mock:sim-1", 0.75)
 	w.ContextWindowRejection("mock:small")
+	w.SetApprovalPending(3)
+	w.ApprovalDecided("reject", "timeout")
+	w.ApprovalTimeout("rejected")
 	a.Request("/v1/runs", "POST", 200, 20*time.Millisecond)
 	a.RequestStarted()
 	a.RequestFinished()
@@ -104,13 +107,24 @@ func exercise(w *metrics.WorkerMetrics, a *metrics.APIMetrics) {
 // that skips the ADR tables fails here.
 func TestInstrumentConformance(t *testing.T) {
 	t.Parallel()
-	reg := prometheus.NewRegistry()
-	exercise(metrics.NewWorkerMetrics(reg), metrics.NewAPIMetrics(reg))
+	// Worker and API register on SEPARATE registries — mirroring production,
+	// where each is a distinct process. They deliberately share one metric name
+	// (engine_approval_decisions_total, ticket 15.4: recorded by the API on a
+	// human decision and by the worker on a timeout), which a single registry
+	// would reject as a duplicate; the conformance checks below run over the
+	// union of both.
+	regW, regA := prometheus.NewRegistry(), prometheus.NewRegistry()
+	exercise(metrics.NewWorkerMetrics(regW), metrics.NewAPIMetrics(regA))
 
-	families, err := reg.Gather()
+	famW, err := regW.Gather()
 	if err != nil {
-		t.Fatalf("Gather: %v", err)
+		t.Fatalf("Gather (worker): %v", err)
 	}
+	famA, err := regA.Gather()
+	if err != nil {
+		t.Fatalf("Gather (api): %v", err)
+	}
+	families := append(famW, famA...)
 	if len(families) == 0 {
 		t.Fatal("no metric families gathered")
 	}
@@ -170,9 +184,16 @@ func TestInstrumentConformance(t *testing.T) {
 // exact wiring both deployables use — without duplicate registration.
 func TestInstrumentsRegisterOnBuildInfoRegistry(t *testing.T) {
 	t.Parallel()
-	reg := metrics.NewRegistry(metrics.ServiceWorker)
-	exercise(metrics.NewWorkerMetrics(reg), metrics.NewAPIMetrics(reg))
-	if _, err := reg.Gather(); err != nil {
-		t.Fatalf("Gather after full registration: %v", err)
+	// One build-info registry per deployable (worker / api), as production
+	// wires them — the two sets share engine_approval_decisions_total (ticket
+	// 15.4) and so cannot coexist on one registry.
+	regW := metrics.NewRegistry(metrics.ServiceWorker)
+	regA := metrics.NewRegistry(metrics.ServiceAPI)
+	exercise(metrics.NewWorkerMetrics(regW), metrics.NewAPIMetrics(regA))
+	if _, err := regW.Gather(); err != nil {
+		t.Fatalf("Gather worker after full registration: %v", err)
+	}
+	if _, err := regA.Gather(); err != nil {
+		t.Fatalf("Gather api after full registration: %v", err)
 	}
 }

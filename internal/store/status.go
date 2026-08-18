@@ -158,6 +158,15 @@ const (
 	// completion transaction — the reconcile_retry scan still heals a crash
 	// between commit and dispatch, since the row is `retrying` and due now.
 	OutboxReasonSemanticRetry = "semantic_retry"
+	// OutboxReasonApprovalTimeout: the reconciler re-outboxed an
+	// approval_timeout expiry for a pending approval whose timeout has passed
+	// but whose policy was never applied — the delayed expiry was lost or
+	// never scheduled (ticket 15.4, ADR-005 P3 analogue). The engine's
+	// approval-timeout handler applies the on_timeout policy through the same
+	// CAS as a human decision. This reason rides straight from the outbox row
+	// into the queue envelope, so a healed expiry lands on the same handler
+	// path as a delayed-queue one.
+	OutboxReasonApprovalTimeout = "approval_timeout"
 )
 
 // Dead-letter sources (ticket 5.4, ADR-006 "Dead-letter model"): why a
@@ -416,4 +425,14 @@ const (
 	// carries the decision, whether the payload was edited, the actor, the
 	// comment, and the source (human / timeout). Immutable audit.
 	EventApprovalDecided = "approval_decided"
+
+	// EventApprovalExpired: a pending approval's timeout passed and its
+	// on_timeout policy was applied (ticket 15.4, ADR-017). The payload
+	// (ApprovalExpiredEvent) carries the approval id, the policy
+	// (reject / approve / park), the recorded decision (for reject/approve;
+	// empty for park), the action taken (rejected / approved / run_parked /
+	// run_already_parked), and the timeout deadline. Distinct from
+	// approval_decided so the audit trail separates an operator's decision from
+	// an automatic expiry, and status=expired is a real inbox filter.
+	EventApprovalExpired = "approval_expired"
 )

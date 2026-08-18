@@ -1059,13 +1059,13 @@ Executor path: render payload → write `approvals` row (pending) + step → `aw
 - [x] Invalid edit rejected 422 with schema errors; double-decide → 409
 - [x] Audit: decision record immutable and exposed in run status + events
 
-#### 15.4 — Approval timeouts
+#### 15.4 — Approval timeouts ✅
 **Depends on:** 15.3, 3.5
 On park, schedule an expiry envelope via the delayed queue; on firing, apply `on_timeout` through the same CAS as human decisions (single winner under race), emit events, and clean up the schedule on early decision.
 **Done when:**
-- [ ] Fake-clock test: timeout fires → policy applied; early decision cancels the expiry (no double transition)
-- [ ] Race test: near-simultaneous decide + expiry → exactly one wins, event history coherent
-- [ ] Timeout policy `park` leaves the run resumable via unpark (tested)
+- [x] Fake-clock test: timeout fires → policy applied; early decision cancels the expiry (no double transition)
+- [x] Race test: near-simultaneous decide + expiry → exactly one wins, event history coherent
+- [x] Timeout policy `park` leaves the run resumable via unpark (tested)
 
 #### 15.5 — Notification webhook & example update
 **Depends on:** 15.3, 8.7, 14.5

@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "name": "approval-timeout-approve",
+  "description": "The ticket 15.4 auto-approve-on-timeout demonstration: a `human_approval` gate whose `on_timeout` policy is `approve` (documented as dangerous — a side effect fires with no human in the loop; only for gates where \"no answer means go\"). On park the executor schedules an expiry through the delayed queue due at `timeout_at`; when it fires, the timeout policy auto-approves the ORIGINAL payload (never an edit) through the same single-arbiter CAS a human decision uses, records the approval `expired` with `decision: approve` / `source: timeout` / `decided_by: system:timeout`, and `publish` consumes the approved payload. A human decision arriving first wins the CAS and best-effort cancels the pending expiry.",
+  "params": {
+    "topic": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "draft",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Draft an article about ${{ run.params.topic }}.",
+        "max_tokens": 128
+      }
+    },
+    {
+      "id": "approve_publish",
+      "type": "human_approval",
+      "config": {
+        "title": "Publish this article?",
+        "description": "Review the draft before it goes live; no answer means go.",
+        "payload": "${{ steps.draft.output }}",
+        "allowed_decisions": ["approve", "reject"],
+        "timeout": "24h",
+        "on_timeout": "approve"
+      }
+    },
+    {
+      "id": "publish",
+      "type": "echo",
+      "config": {
+        "input": {
+          "published": "${{ steps.approve_publish.output.payload }}"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "draft",
+      "to": "approve_publish"
+    },
+    {
+      "from": "approve_publish",
+      "to": "publish"
+    }
+  ]
+}

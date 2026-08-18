@@ -140,6 +140,18 @@ type Metrics interface {
 	// the model context window and compaction was absent or insufficient, so the
 	// step failed permanently before any provider call, by resolved resource.
 	ContextWindowRejection(resource string)
+	// ApprovalDecided records one human-approval decision (ticket 15.3/15.4,
+	// ADR-017/008) by decision (approve/reject) and source (human/timeout). The
+	// worker records the timeout-sourced decisions here; the API server records
+	// human-sourced ones on its own instrument set (the same
+	// engine_approval_decisions_total series, distinct registries — the
+	// build_info precedent).
+	ApprovalDecided(decision, source string)
+	// ApprovalTimeout records one approval timeout policy application (ticket
+	// 15.4) by action (rejected/approved/run_parked/run_already_parked) —
+	// engine_approval_timeouts_total. Recorded post-commit from the worker's
+	// timeout handler.
+	ApprovalTimeout(action string)
 }
 
 // nopMetrics is the default Metrics: every test layer runs with recording
@@ -178,3 +190,5 @@ func (nopMetrics) OutputRepair(string)                        {}
 func (nopMetrics) JudgeScore(string, float64)                 {}
 func (nopMetrics) ContextUtilization(string, float64)         {}
 func (nopMetrics) ContextWindowRejection(string)              {}
+func (nopMetrics) ApprovalDecided(string, string)             {}
+func (nopMetrics) ApprovalTimeout(string)                     {}

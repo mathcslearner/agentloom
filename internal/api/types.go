@@ -321,7 +321,12 @@ type ApprovalView struct {
 	DecidedBy      string          `json:"decided_by,omitempty"`
 	DecidedAt      *time.Time      `json:"decided_at,omitempty"`
 	DecisionSource string          `json:"decision_source,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
+	// ExpiredAt is set once a timeout policy fired (ticket 15.4): for a
+	// reject/approve policy the status is `expired`; for a park policy the
+	// approval stays `pending` (still decidable) with ExpiredAt marking that the
+	// run was parked.
+	ExpiredAt *time.Time `json:"expired_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // ApprovalListResponse is GET /v1/approvals (ticket 15.3, ADR-017): one keyset

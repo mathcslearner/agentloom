@@ -18,7 +18,7 @@ UPDATE approvals
 SET status     = 'cancelled',
     updated_at = $1::timestamptz
 WHERE run_id = $2 AND step_id = $3 AND status = 'pending'
-RETURNING id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at
+RETURNING id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at, expired_at
 `
 
 type CancelPendingApprovalByStepParams struct {
@@ -56,6 +56,7 @@ func (q *Queries) CancelPendingApprovalByStep(ctx context.Context, arg CancelPen
 		&i.DecisionSource,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ExpiredAt,
 	)
 	return i, err
 }
@@ -82,9 +83,10 @@ SET status          = $1,
     decided_by      = $5,
     decided_at      = $6::timestamptz,
     decision_source = $7,
+    expired_at      = $8,
     updated_at      = $6::timestamptz
-WHERE id = $8 AND status = 'pending'
-RETURNING id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at
+WHERE id = $9 AND status = 'pending'
+RETURNING id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at, expired_at
 `
 
 type DecideApprovalParams struct {
@@ -95,6 +97,7 @@ type DecideApprovalParams struct {
 	DecidedBy      *string
 	Now            time.Time
 	DecisionSource *string
+	ExpiredAt      *time.Time
 	ID             uuid.UUID
 }
 
@@ -104,6 +107,9 @@ type DecideApprovalParams struct {
 // exactly one winner — the loser matches nothing and gets a 409. It records
 // the immutable decision fields (decision, edited payload, comment, actor,
 // timestamp, source) that the run view and the approval_decided event expose.
+// A timeout `reject`/`approve` policy (ticket 15.4) reuses this CAS with
+// @status = 'expired' and @expired_at set, so the same pending guard arbitrates
+// human-vs-timeout; @expired_at is NULL on a human decision.
 func (q *Queries) DecideApproval(ctx context.Context, arg DecideApprovalParams) (Approval, error) {
 	row := q.db.QueryRow(ctx, decideApproval,
 		arg.Status,
@@ -113,6 +119,7 @@ func (q *Queries) DecideApproval(ctx context.Context, arg DecideApprovalParams) 
 		arg.DecidedBy,
 		arg.Now,
 		arg.DecisionSource,
+		arg.ExpiredAt,
 		arg.ID,
 	)
 	var i Approval
@@ -137,12 +144,13 @@ func (q *Queries) DecideApproval(ctx context.Context, arg DecideApprovalParams) 
 		&i.DecisionSource,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ExpiredAt,
 	)
 	return i, err
 }
 
 const getApproval = `-- name: GetApproval :one
-SELECT id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at FROM approvals WHERE id = $1
+SELECT id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at, expired_at FROM approvals WHERE id = $1
 `
 
 // GetApproval reads one approval by id (15.3's decide path; the run view
@@ -171,6 +179,52 @@ func (q *Queries) GetApproval(ctx context.Context, id uuid.UUID) (Approval, erro
 		&i.DecisionSource,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ExpiredAt,
+	)
+	return i, err
+}
+
+const getPendingApprovalByStep = `-- name: GetPendingApprovalByStep :one
+SELECT id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at, expired_at FROM approvals
+WHERE run_id = $1 AND step_id = $2 AND status = 'pending'
+`
+
+type GetPendingApprovalByStepParams struct {
+	RunID  uuid.UUID
+	StepID string
+}
+
+// GetPendingApprovalByStep reads a step's open approval (ticket 15.4): the
+// timeout handler resolves the current pending approval for the (run, step)
+// named by the expiry envelope — the envelope carries no approval id, so a
+// requeue-minted fresh approval is found here, not a stale one. The unique
+// partial index (run_id, step_id) WHERE status = 'pending' makes this at most
+// one row.
+func (q *Queries) GetPendingApprovalByStep(ctx context.Context, arg GetPendingApprovalByStepParams) (Approval, error) {
+	row := q.db.QueryRow(ctx, getPendingApprovalByStep, arg.RunID, arg.StepID)
+	var i Approval
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.StepID,
+		&i.Attempt,
+		&i.Status,
+		&i.Title,
+		&i.Description,
+		&i.Payload,
+		&i.AllowedDecisions,
+		&i.AllowEdit,
+		&i.EditSchema,
+		&i.TimeoutAt,
+		&i.Decision,
+		&i.EditedPayload,
+		&i.Comment,
+		&i.DecidedBy,
+		&i.DecidedAt,
+		&i.DecisionSource,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ExpiredAt,
 	)
 	return i, err
 }
@@ -185,7 +239,7 @@ VALUES (
     $1, $2, $3, $4, 'pending',
     $5, $6, $7, $8, $9, $10,
     $11, $12::timestamptz, $12::timestamptz)
-RETURNING id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at
+RETURNING id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at, expired_at
 `
 
 type InsertApprovalParams struct {
@@ -247,12 +301,13 @@ func (q *Queries) InsertApproval(ctx context.Context, arg InsertApprovalParams) 
 		&i.DecisionSource,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ExpiredAt,
 	)
 	return i, err
 }
 
 const listApprovals = `-- name: ListApprovals :many
-SELECT id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at FROM approvals
+SELECT id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at, expired_at FROM approvals
 WHERE ($1::text IS NULL OR status = $1::text)
   AND ($2::uuid IS NULL OR run_id = $2::uuid)
   AND ($3::timestamptz IS NULL
@@ -309,6 +364,7 @@ func (q *Queries) ListApprovals(ctx context.Context, arg ListApprovalsParams) ([
 			&i.DecisionSource,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ExpiredAt,
 		); err != nil {
 			return nil, err
 		}
@@ -321,7 +377,7 @@ func (q *Queries) ListApprovals(ctx context.Context, arg ListApprovalsParams) ([
 }
 
 const listApprovalsByRun = `-- name: ListApprovalsByRun :many
-SELECT id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at FROM approvals
+SELECT id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at, expired_at FROM approvals
 WHERE run_id = $1
 ORDER BY created_at DESC, id DESC
 `
@@ -358,6 +414,7 @@ func (q *Queries) ListApprovalsByRun(ctx context.Context, runID uuid.UUID) ([]Ap
 			&i.DecisionSource,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ExpiredAt,
 		); err != nil {
 			return nil, err
 		}
@@ -367,4 +424,113 @@ func (q *Queries) ListApprovalsByRun(ctx context.Context, runID uuid.UUID) ([]Ap
 		return nil, err
 	}
 	return items, nil
+}
+
+const listOverdueApprovals = `-- name: ListOverdueApprovals :many
+SELECT id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at, expired_at FROM approvals
+WHERE status = 'pending' AND expired_at IS NULL
+  AND timeout_at IS NOT NULL AND timeout_at <= $1::timestamptz
+ORDER BY timeout_at, id
+LIMIT $2
+`
+
+type ListOverdueApprovalsParams struct {
+	Before   time.Time
+	RowLimit int32
+}
+
+// ListOverdueApprovals is the reconciler's delayed-queue safety net (ticket
+// 15.4): pending approvals whose timeout has passed but whose policy has not
+// been applied (expired_at IS NULL), scanned via approvals_overdue_idx oldest
+// first. The reconciler re-outboxes an approval_timeout envelope for each, so a
+// crash before the post-commit schedule (or a Redis data loss) still fires the
+// policy.
+func (q *Queries) ListOverdueApprovals(ctx context.Context, arg ListOverdueApprovalsParams) ([]Approval, error) {
+	rows, err := q.db.Query(ctx, listOverdueApprovals, arg.Before, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Approval
+	for rows.Next() {
+		var i Approval
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.StepID,
+			&i.Attempt,
+			&i.Status,
+			&i.Title,
+			&i.Description,
+			&i.Payload,
+			&i.AllowedDecisions,
+			&i.AllowEdit,
+			&i.EditSchema,
+			&i.TimeoutAt,
+			&i.Decision,
+			&i.EditedPayload,
+			&i.Comment,
+			&i.DecidedBy,
+			&i.DecidedAt,
+			&i.DecisionSource,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ExpiredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markApprovalExpiredPending = `-- name: MarkApprovalExpiredPending :one
+UPDATE approvals
+SET expired_at = $1::timestamptz,
+    updated_at = $1::timestamptz
+WHERE id = $2 AND status = 'pending' AND expired_at IS NULL
+RETURNING id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at, expired_at
+`
+
+type MarkApprovalExpiredPendingParams struct {
+	Now time.Time
+	ID  uuid.UUID
+}
+
+// MarkApprovalExpiredPending is the `on_timeout: park` marker CAS (ticket
+// 15.4): it stamps expired_at on a still-pending, not-yet-expired approval
+// WITHOUT moving it off pending — the approval stays decidable while the run
+// parks. The (status='pending' AND expired_at IS NULL) guard makes it
+// single-shot: a redelivered expiry (or the reconciler heal) that races it
+// matches nothing, so the run is parked at most once per timeout.
+func (q *Queries) MarkApprovalExpiredPending(ctx context.Context, arg MarkApprovalExpiredPendingParams) (Approval, error) {
+	row := q.db.QueryRow(ctx, markApprovalExpiredPending, arg.Now, arg.ID)
+	var i Approval
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.StepID,
+		&i.Attempt,
+		&i.Status,
+		&i.Title,
+		&i.Description,
+		&i.Payload,
+		&i.AllowedDecisions,
+		&i.AllowEdit,
+		&i.EditSchema,
+		&i.TimeoutAt,
+		&i.Decision,
+		&i.EditedPayload,
+		&i.Comment,
+		&i.DecidedBy,
+		&i.DecidedAt,
+		&i.DecisionSource,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ExpiredAt,
+	)
+	return i, err
 }

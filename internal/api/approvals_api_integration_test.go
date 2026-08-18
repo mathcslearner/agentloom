@@ -214,3 +214,46 @@ func TestDecideUnknownReturns404(t *testing.T) {
 		t.Fatalf("unknown decide = %d code %q, want 404 approval_not_found", res.StatusCode, errResp.Error.Code)
 	}
 }
+
+// TestExpiredApprovalSurfacedInInbox (ticket 15.4): a timeout-expired approval
+// is filterable by status=expired and its view carries expired_at plus the
+// timeout-sourced decision — the audit surface for an automatic expiry.
+func TestExpiredApprovalSurfacedInInbox(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, srv, approver, _ := approvalsServer(t)
+	runID, approvalID := parkGateViaStore(t, s)
+
+	// Apply a reject timeout policy at the store level (the worker's CAS):
+	// pending → expired with a timeout source.
+	now := time.Now().UTC()
+	if err := s.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+		_, derr := store.DecideApproval(ctx, q, store.DecideApprovalArgs{
+			ID: approvalID, RunID: runID, StepID: "gate", AttemptNo: 1,
+			Status: store.ApprovalStatusExpired, Decision: "reject",
+			DecidedBy: store.ApprovalActorTimeout, Source: store.ApprovalSourceTimeout,
+			ExpiredAt: &now, Now: now,
+		})
+		return derr
+	}); err != nil {
+		t.Fatalf("expire approval: %v", err)
+	}
+
+	var list api.ApprovalListResponse
+	if code := getJSON(t, srv, approver, "/v1/approvals?status=expired", &list); code != http.StatusOK {
+		t.Fatalf("GET /v1/approvals?status=expired = %d, want 200", code)
+	}
+	if len(list.Approvals) != 1 {
+		t.Fatalf("expired approvals = %+v, want one", list.Approvals)
+	}
+	a := list.Approvals[0]
+	if a.ID != approvalID.String() || a.Status != store.ApprovalStatusExpired {
+		t.Errorf("approval = %+v, want the expired gate", a)
+	}
+	if a.ExpiredAt == nil {
+		t.Error("view is missing expired_at")
+	}
+	if a.DecisionSource != store.ApprovalSourceTimeout || a.DecidedBy != store.ApprovalActorTimeout {
+		t.Errorf("decision fields = source %q by %q, want timeout / system:timeout", a.DecisionSource, a.DecidedBy)
+	}
+}

@@ -217,6 +217,7 @@ func buildApprovalView(a gen.Approval) ApprovalView {
 		TimeoutAt:        a.TimeoutAt,
 		EditedPayload:    a.EditedPayload,
 		DecidedAt:        a.DecidedAt,
+		ExpiredAt:        a.ExpiredAt,
 		CreatedAt:        a.CreatedAt,
 	}
 	if a.Decision != nil {

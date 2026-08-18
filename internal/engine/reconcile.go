@@ -151,6 +151,10 @@ type ReconcileResult struct {
 	// RetriesHealed lists the overdue retrying steps this sweep
 	// re-outboxed — their delayed re-dispatch was lost (ticket 5.2).
 	RetriesHealed []store.OverdueRetryingStep
+	// ApprovalsHealed lists the overdue approvals this sweep re-outboxed an
+	// approval_timeout expiry for — their delayed expiry was lost or never
+	// scheduled (ticket 15.4).
+	ApprovalsHealed []store.OverdueApproval
 	// DeadlineCancelled lists the runs this sweep cancelled for exceeding
 	// their materialized wall-clock deadline (ticket 5.6, reason
 	// deadline_exceeded).
@@ -270,6 +274,24 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 			}
 		}
 		res.RetriesHealed = overdue
+		// Overdue-approvals heal (ticket 15.4, ADR-005 P3 analogue): a pending
+		// approval whose timeout is well past due with no policy applied means
+		// its delayed expiry was lost or never scheduled. Re-outbox an
+		// approval_timeout expiry; the engine's timeout handler applies the
+		// on_timeout policy through the same CAS as a human decision, so a
+		// duplicate (a healed expiry that races a late delayed one) is
+		// arbitrated there. The grace is RetryStale — the same "how far past due
+		// before the reconciler distrusts the delayed queue" bound.
+		overdueApprovals, err := store.ListOverdueApprovals(ctx, q, now.Add(-r.cfg.RetryStale), limit)
+		if err != nil {
+			return err
+		}
+		for _, ap := range overdueApprovals {
+			if _, err := q.Outbox().Create(ctx, ap.RunID, ap.StepID, store.OutboxReasonApprovalTimeout); err != nil {
+				return err
+			}
+		}
+		res.ApprovalsHealed = overdueApprovals
 		// Deadline enforcement (ticket 5.6): runs past their materialized
 		// max_wall_clock get the same cancel sweep an operator's cancel op
 		// runs, reason deadline_exceeded. A typed conflict means the run
@@ -329,6 +351,7 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 		}
 		res.LimitHit = len(res.Requeued) == int(limit) ||
 			len(staleRunning) == int(limit) || len(overdue) == int(limit) ||
+			len(overdueApprovals) == int(limit) ||
 			len(deadline) == int(limit) || len(staleCancelling) == int(limit) ||
 			len(res.StalledRuns) == int(limit)
 		return nil
@@ -353,6 +376,9 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 	if n := len(res.RetriesHealed); n > 0 {
 		r.metrics.ReconcileHealed(store.OutboxReasonReconcileRetry, n)
 	}
+	if n := len(res.ApprovalsHealed); n > 0 {
+		r.metrics.ReconcileHealed(store.OutboxReasonApprovalTimeout, n)
+	}
 	for range len(res.TakenOver) + len(res.CancelHealed) {
 		r.metrics.Takeover()
 	}
@@ -373,6 +399,10 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 		logger.WarnContext(ctx, "reconciler re-outboxed an overdue retrying step (lost delayed re-dispatch)",
 			log.RunID(st.RunID.String()), log.StepID(st.StepID),
 			slog.Time("was_due_at", st.NextAttemptAt))
+	}
+	for _, ap := range res.ApprovalsHealed {
+		logger.WarnContext(ctx, "reconciler re-outboxed an overdue approval timeout (lost delayed expiry)",
+			log.RunID(ap.RunID.String()), log.StepID(ap.StepID))
 	}
 	for _, runID := range res.DeadlineCancelled {
 		logger.WarnContext(ctx, "reconciler cancelled a run past its wall-clock deadline",
@@ -403,16 +433,19 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 			slog.Int("limit", r.cfg.Limit))
 	}
 	if len(res.Requeued) > 0 || len(res.TakenOver) > 0 || len(res.RetriesHealed) > 0 ||
-		len(res.DeadlineCancelled) > 0 || len(res.CancelHealed) > 0 || len(res.StalledRuns) > 0 {
+		len(res.ApprovalsHealed) > 0 || len(res.DeadlineCancelled) > 0 ||
+		len(res.CancelHealed) > 0 || len(res.StalledRuns) > 0 {
 		logger.InfoContext(ctx, "reconciler sweep complete",
 			slog.Int("requeued", len(res.Requeued)),
 			slog.Int("taken_over", len(res.TakenOver)),
 			slog.Int("retries_healed", len(res.RetriesHealed)),
+			slog.Int("approvals_healed", len(res.ApprovalsHealed)),
 			slog.Int("deadline_cancelled", len(res.DeadlineCancelled)),
 			slog.Int("cancel_healed", len(res.CancelHealed)),
 			slog.Int("stalled_runs", len(res.StalledRuns)))
 	}
-	if (len(res.Requeued) > 0 || len(res.TakenOver) > 0 || len(res.RetriesHealed) > 0) && r.nudge != nil {
+	if (len(res.Requeued) > 0 || len(res.TakenOver) > 0 || len(res.RetriesHealed) > 0 ||
+		len(res.ApprovalsHealed) > 0) && r.nudge != nil {
 		r.nudge()
 	}
 	return res, nil

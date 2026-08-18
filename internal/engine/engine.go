@@ -74,6 +74,16 @@ type RetryScheduler interface {
 	Schedule(ctx context.Context, env queue.Envelope, fireAt time.Time) error
 }
 
+// ExpiryCanceller is the engine's (and Control's) seam onto delayed-delivery
+// cancellation (ticket 15.4) — satisfied by *queue.Delayed. On an early human
+// decision, Control.Decide best-effort removes the pending approval-timeout
+// expiry so it never fires; a failure (or a nil canceller) only logs — the
+// approvals CAS is the single arbiter (ADR-017), so a stale expiry that still
+// fires finds the row already decided and no-ops.
+type ExpiryCanceller interface {
+	Cancel(ctx context.Context, env queue.Envelope) error
+}
+
 // StepLogSink is the engine's seam onto per-step log capture (ticket
 // 7.4) — satisfied by *steplog.Sink. LoggerFor returns base teed into the
 // durable step_logs store for one attempt; implementations must keep the
@@ -111,6 +121,12 @@ type Engine struct {
 	// scheduling — retries then re-dispatch only via the reconciler's
 	// overdue-retrying heal (degraded latency, same convergence).
 	scheduler RetryScheduler
+	// expiryCanceller, when set, is the delayed-delivery cancellation seam
+	// (ticket 15.4): a human decision on an approval that had a scheduled
+	// timeout best-effort ZREMs the pending expiry. Copied into the embedded
+	// Control by New. Nil means no cancellation — a stale expiry fires and
+	// no-ops.
+	expiryCanceller ExpiryCanceller
 	// jitterRand supplies the [0,1) draw for full-jitter backoff.
 	jitterRand func() float64
 	// effects is the side-effect journal (ticket 5.5), bound per claimed
@@ -234,6 +250,15 @@ func WithDispatchNudge(nudge func()) Option {
 // cadence instead of on time.
 func WithRetryScheduler(s RetryScheduler) Option {
 	return func(e *Engine) { e.scheduler = s }
+}
+
+// WithExpiryCanceller sets the delayed-delivery cancellation seam (ticket
+// 15.4) — wire the queue's Delayed handle here (cmd/worker does). It is used
+// both by the worker (nothing yet) and the embedded Control's Decide to ZREM
+// an approval's pending timeout on an early human decision. Nil is legal: a
+// stale expiry then fires and no-ops on the already-decided approval.
+func WithExpiryCanceller(c ExpiryCanceller) Option {
+	return func(e *Engine) { e.expiryCanceller = c }
 }
 
 // WithJitterRand overrides the [0,1) source full-jitter backoff draws
@@ -412,6 +437,6 @@ func New(s *store.Store, r *exec.Registry, workerID string, opts ...Option) (*En
 	}
 	// The lifecycle control surface shares the engine's store, clock, and
 	// dispatcher nudge (both read-only after New, so copying is safe).
-	e.Control = &Control{store: e.store, now: e.now, nudge: e.nudge}
+	e.Control = &Control{store: e.store, now: e.now, nudge: e.nudge, canceller: e.expiryCanceller}
 	return e, nil
 }

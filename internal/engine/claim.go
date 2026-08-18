@@ -46,6 +46,14 @@ func (e *Engine) Handle(ctx context.Context, d queue.Delivery) error {
 	// records its own span context under (run_steps.trace_span).
 	ctx = log.With(ctx, log.WorkerID(e.workerID))
 
+	// Approval-timeout deliveries (ticket 15.4) never claim a step: the parked
+	// human_approval step holds no lease, and the expiry applies its on_timeout
+	// policy through the same arbiter CAS as a human decision. Branch before the
+	// claim path so the delivery is not treated as a step to execute.
+	if d.Envelope.Reason == queue.ReasonApprovalTimeout {
+		return e.handleApprovalTimeout(ctx, d)
+	}
+
 	// Crash seam (ticket 13.5): E1 — die before the claim CAS. Inert unless
 	// AGENTLOOM_WORKER_CRASH_POINT arms pre_claim on this step.
 	maybeCrash(CrashStagePreClaim, d.Envelope.StepID)
