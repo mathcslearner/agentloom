@@ -106,6 +106,10 @@ down: ## Stop the dev stack, app services included (data volumes are kept)
 demo-crash: ## SIGKILL a worker mid-run against compose and watch the run recover (docs/demos/crash-recovery.md)
 	bash scripts/demo-crash.sh
 
+.PHONY: demo-research
+demo-research: ## Run the flagship research → write → critique example on compose with a scripted mock (docs/examples/research-critic-writer.md)
+	bash scripts/demo-research.sh
+
 .PHONY: smoke-metrics
 smoke-metrics: ## Boot app+obs, drive a workload, and assert every 7.2 metric is visible in Prometheus
 	bash scripts/metrics-smoke.sh

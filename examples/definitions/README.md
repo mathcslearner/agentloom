@@ -98,6 +98,18 @@ each example's "header comment" is its top-level `description` field.
   handoff), so the researcher's findings reach the writer automatically —
   the writer's task never names the topic, yet its output carries it. Runs
   offline on the mock (the mock echoes the assembled context).
+- **[research-critic-writer.json](research-critic-writer.json)** — the M14
+  flagship (ticket 14.5, ADR-016): a `researcher` (retrieve → agent) → `writer`
+  → `critic` refinement loop → `editor` → `publish` pipeline that composes
+  nearly every AI-native feature at once — the blackboard handoff thread
+  (14.2), loop unrolling (14.3), a cost-bearing `llm_judge` with semantic-retry
+  feedback (11.4/11.5), `model_fallbacks` (10.4) under a run `budget_usd`
+  (10.3), a `context` preset with `summarize` compaction under `budget_tokens`
+  (12.4/12.5), and run guards incl. an opt-in `no_progress` detector (14.4).
+  Runs offline on the mock (loop iterations need the env-scripted mock — see
+  [docs/examples/research-critic-writer.md](../../docs/examples/research-critic-writer.md)
+  and `make demo-research`); swap the `mock/*` model ids for real providers to
+  run it live.
 - **[kitchen_sink.json](kitchen_sink.json)** — one coherent
   research-and-publish pipeline exercising every construct: every registered
   step type (including a `map` over a `templates` sub-template and a `gather`),

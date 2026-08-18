@@ -401,7 +401,60 @@ carry a `no_progress` guard.
 - Body-membership re-check of a `no_progress.step` on a *planner-injected* loop
   (degrades safely — the guard simply never fires — so it is not re-validated
   against the merged graph); a guard-trip metric (events are the surface).
-- The flagship research → write → critique example (14.5).
+
+### Flagship example — research → write → critique (as built, 14.5)
+
+14.5 ships the flagship that composes the whole milestone into one runnable
+definition, [`examples/definitions/research-critic-writer.json`](../../examples/definitions/research-critic-writer.json):
+a `search` (retrieve) → `researcher` agent → `writer` agent → `critic` loop →
+`editor` agent → `publish` pipeline. It is **pure composition — no new engine
+code**: agent roles (14.1), the handoff thread (14.2), loop unrolling (14.3),
+run guards (14.4), the `llm_judge` + semantic-retry feedback loop (11.4/11.5),
+`budget_usd` + `model_fallbacks` (10.3/10.4), and a `context` preset with
+`summarize` compaction under `budget_tokens` (12.4/12.5) all flow through the
+existing stages.
+
+**Reading the final draft — the one non-obvious constraint.** A step *after*
+the loop cannot template the terminal iteration's output: loop exit-target
+references are not rewritten (§14.3), so `${{ steps.draft.output.text }}` in a
+post-loop step resolves to iteration 0. The flagship uses the blackboard idiom
+instead — the writer `blackboard.write`s a `draft` key each iteration (one
+version per instance) and the `editor` reads the **head** via a pinned
+`blackboard` context source, then `publish` echoes the editor's output. This is
+the payload a human-approval gate (M15) slots in front of. **Deferred quirk:** a
+`blackboard.<key>` template read root, or rewriting a post-loop reference to the
+terminal instance, would let a plain (non-agent) step read the final draft
+directly; until then the exit target must be an agent with a blackboard-head
+context source.
+
+**`budget_tokens` vs a pinned brief.** The writer's pinned `research_brief`
+context source is untouchable by compaction, so `budget_tokens` must exceed it
+or assembly fails permanent with `context over budget: pinned sources alone …`.
+The fixture sets `budget_tokens: 4000` (comfortably above the brief), so on the
+terse mock the `summarize`/`drop_lowest_priority` pipeline is declared but
+dormant; it engages under real model verbosity when the conversation grows.
+
+**The env-scripted mock.** The stock echo mock never returns a `revise`
+verdict, so the loop would not iterate on the compose stack. 14.5 adds an
+optional mock **script** (`AGENTLOOM_LLM_MOCK_SCRIPT[_FILE]`, parsed by
+`llm.ParseMockScript` — a strict wire subset of `MockConfig`; the config
+package only carries the source string, the `AGENTLOOM_PRICING` precedent) so a
+deployment can drive scripted critic verdicts and judge scores offline. The
+script's per-rule response *sequence* is per worker process, so the demo runs a
+single worker for determinism; the CI test shares one mock instance across two
+workers.
+
+**As built:** the fixture (registered in the golden corpus and the examples
+README); `internal/llm/mockscript.go` + `LLMConfig.MockScript[File]` +
+`cmd/worker` wiring + compose/`.env.example` passthrough;
+`internal/engine/flagship_integration_test.go` —
+`TestFlagshipResearchCriticWriter` (mock: loop unrolls twice, judge semantic
+retry, feedback threaded, judge overhead ledgered, cost aggregate == ledger
+sum, blackboard thread/draft versions) and `TestFlagshipLive` (`LIVE_LLM_TESTS`
+gated); `scripts/demo-research.sh` + `make demo-research` +
+`docs/examples/research-critic-writer.md` (narrative with real captured
+output). **No migration, no new metric.** The one new config surface is the
+mock script (test/dev only).
 
 ## Consequences
 

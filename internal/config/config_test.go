@@ -624,6 +624,29 @@ func TestLoadLLMOverrides(t *testing.T) {
 	if _, err := config.Load(lookupFrom(map[string]string{config.EnvLLMMockEnabled: "maybe"})); err == nil {
 		t.Error("non-boolean mock toggle: want a load error, got nil")
 	}
+
+	// Mock script (ticket 14.5): inline and file sources carried opaquely,
+	// mutually exclusive.
+	cfg, err = config.Load(lookupFrom(map[string]string{config.EnvLLMMockScript: `{"rules":[]}`}))
+	if err != nil {
+		t.Fatalf("Load with mock script: %v", err)
+	}
+	if cfg.LLM.MockScript != `{"rules":[]}` {
+		t.Errorf("mock script = %q, want the inline JSON", cfg.LLM.MockScript)
+	}
+	cfg, err = config.Load(lookupFrom(map[string]string{config.EnvLLMMockScriptFile: "/etc/mock.json"}))
+	if err != nil {
+		t.Fatalf("Load with mock script file: %v", err)
+	}
+	if cfg.LLM.MockScriptFile != "/etc/mock.json" {
+		t.Errorf("mock script file = %q, want the path", cfg.LLM.MockScriptFile)
+	}
+	if _, err := config.Load(lookupFrom(map[string]string{
+		config.EnvLLMMockScript:     `{"rules":[]}`,
+		config.EnvLLMMockScriptFile: "/etc/mock.json",
+	})); err == nil {
+		t.Error("both mock script sources set: want a load error, got nil")
+	}
 }
 
 func TestLoadPostgresDSNOverride(t *testing.T) {

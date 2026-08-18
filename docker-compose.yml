@@ -166,6 +166,11 @@ services:
       # default so llm steps run offline on the mock; the 8.6 executor
       # consumes it. Keep in sync with the api service's value.
       AGENTLOOM_LLM_MOCK_ENABLED: ${AGENTLOOM_LLM_MOCK_ENABLED:-true}
+      # Optional mock script (ticket 14.5): scripted rules that replace the
+      # mock's echo, so an offline run drives real behavior — e.g. the flagship
+      # example's writer⇄critic loop. Empty = echo-only (the default). Only the
+      # worker executes llm steps. `make demo-research` sets the inline form.
+      AGENTLOOM_LLM_MOCK_SCRIPT: ${AGENTLOOM_LLM_MOCK_SCRIPT:-}
       # Built-in tools (ticket 8.7, ADR-009). http_request's allowlist is
       # the SSRF guard — empty (the default) denies every host, so
       # http_request is inert until hosts are opted in. json_transform is

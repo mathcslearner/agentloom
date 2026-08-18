@@ -9,11 +9,11 @@
 - [Operations runbook](ops-runbook.md) — operational procedures. Currently: response-cache invalidation (TTL / version bump / admin bust), reading cache stats, disabling the cache. Grows with later milestones. The design record is [ADR-011](adr/011-response-cache.md).
 - [`schema/`](schema/) — the generated workflow definition JSON Schema (do not edit by hand: regenerate with `make generate`; CI fails on drift).
 - [Canonical example definitions](../examples/definitions/README.md) (repo root, `examples/definitions/`) — the golden workflow fixture corpus: linear pipeline, fan-out/fan-in, conditional branch, critic loop, and a kitchen-sink exercising every construct.
+- [Annotated example walkthroughs](examples/) — narrated tours of flagship workflows with real captured output. Currently: [research → write → critique](examples/research-critic-writer.md), the M14 multi-agent flagship (`make demo-research`).
+- [Demo scripts](demos/) — self-narrating compose-driven demos. Currently: [crash recovery](demos/crash-recovery.md) (`make demo-crash`).
 - [ROADMAP.md](../ROADMAP.md) (repo root) — the milestone/ticket build plan and source of truth for sequencing.
 - [Progress log](progress.md) — per-ticket implementation history: what each ticket delivered, non-obvious decisions, deferred quirks. Appended as tickets complete.
 
 Planned (arriving with later milestones):
 
-- `demos/` — crash-recovery and feature demo scripts.
 - `load/` — load-test methodology and published numbers.
-- `examples/` — annotated workflow walkthroughs (the canonical JSON fixtures themselves already live in [`examples/definitions/`](../examples/definitions/) at the repo root).

@@ -145,7 +145,16 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 		OpenAI:    cfg.LLM.OpenAIAPIKey,
 	}
 	if cfg.LLM.MockEnabled {
-		providerKeys.Mock = &llm.MockConfig{}
+		// The mock defaults to config-free echo; an optional script
+		// (AGENTLOOM_LLM_MOCK_SCRIPT[_FILE]) drives scripted rules offline —
+		// e.g. the flagship example's writer⇄critic loop (ticket 14.5), which
+		// only iterates when the critic returns a scripted revise verdict. A
+		// malformed script fails boot, not the first llm step.
+		mockCfg, mErr := loadMockScript(cfg.LLM)
+		if mErr != nil {
+			return fmt.Errorf("loading mock script: %w", mErr)
+		}
+		providerKeys.Mock = &mockCfg
 	}
 	providers, err := llm.NewRegistryFromKeys(providerKeys)
 	if err != nil {
@@ -470,6 +479,33 @@ func pricingOverrideSource(cfg config.CostConfig) string {
 	default:
 		return "defaults"
 	}
+}
+
+// loadMockScript builds the mock provider's config from an optional inline or
+// file script (ticket 14.5). No script (both empty) means the config-free echo
+// mock — the M8/CI default. Config has already rejected setting both sources.
+func loadMockScript(cfg config.LLMConfig) (llm.MockConfig, error) {
+	raw := []byte(cfg.MockScript)
+	if cfg.MockScriptFile != "" {
+		data, err := os.ReadFile(cfg.MockScriptFile) // #nosec G304 -- operator-supplied config path, like the pricing/resources overrides
+		if err != nil {
+			return llm.MockConfig{}, fmt.Errorf("reading %s: %w", cfg.MockScriptFile, err)
+		}
+		raw = data
+	}
+	if len(raw) == 0 {
+		return llm.MockConfig{}, nil
+	}
+	mockCfg, err := llm.ParseMockScript(raw)
+	if err != nil {
+		return llm.MockConfig{}, err
+	}
+	// Validate the compiled rules now (bad regex, empty response sequence) so a
+	// mis-scripted mock fails boot, not the first llm step.
+	if _, err := llm.NewMock(mockCfg); err != nil {
+		return llm.MockConfig{}, err
+	}
+	return mockCfg, nil
 }
 
 // sampleLoop periodically samples the depth gauges (ticket 7.2): queue

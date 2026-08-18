@@ -1,10 +1,14 @@
 package config
 
+import "fmt"
+
 // Environment variables read by LLMConfig.
 const (
-	EnvAnthropicAPIKey = "AGENTLOOM_ANTHROPIC_API_KEY" //nolint:gosec // G101 false positive: the variable's NAME, not a credential
-	EnvOpenAIAPIKey    = "AGENTLOOM_OPENAI_API_KEY"    //nolint:gosec // G101 false positive: the variable's NAME, not a credential
-	EnvLLMMockEnabled  = "AGENTLOOM_LLM_MOCK_ENABLED"
+	EnvAnthropicAPIKey   = "AGENTLOOM_ANTHROPIC_API_KEY" //nolint:gosec // G101 false positive: the variable's NAME, not a credential
+	EnvOpenAIAPIKey      = "AGENTLOOM_OPENAI_API_KEY"    //nolint:gosec // G101 false positive: the variable's NAME, not a credential
+	EnvLLMMockEnabled    = "AGENTLOOM_LLM_MOCK_ENABLED"
+	EnvLLMMockScript     = "AGENTLOOM_LLM_MOCK_SCRIPT"
+	EnvLLMMockScriptFile = "AGENTLOOM_LLM_MOCK_SCRIPT_FILE"
 )
 
 // LLMConfig configures the model providers (tickets 8.3/8.4,
@@ -32,6 +36,20 @@ type LLMConfig struct {
 	// it to run llm/planner/agent steps offline against scripted or echo
 	// responses.
 	MockEnabled bool
+	// MockScript is an inline mock-provider script (AGENTLOOM_LLM_MOCK_SCRIPT):
+	// scripted matching rules and response sequences that replace the mock's
+	// config-free echo, so a compose/worker run drives real behavior offline
+	// (e.g. the flagship example's writer⇄critic loop, ticket 14.5). Parsed and
+	// validated by llm.ParseMockScript + llm.NewMock — the config package never
+	// touches it beyond carrying the string. Mutually exclusive with
+	// MockScriptFile; only meaningful when MockEnabled is true. Empty leaves the
+	// mock in its echo-only default.
+	MockScript string
+	// MockScriptFile is a path to a mock-provider script JSON file
+	// (AGENTLOOM_LLM_MOCK_SCRIPT_FILE). Read by cmd/worker via os.ReadFile; the
+	// config package never touches the filesystem. Mutually exclusive with
+	// MockScript.
+	MockScriptFile string
 }
 
 func defaultLLMConfig() LLMConfig {
@@ -49,5 +67,11 @@ func (c *LLMConfig) applyEnv(fn LookupFunc) []error {
 	if raw, ok := lookup(fn, EnvOpenAIAPIKey); ok {
 		c.OpenAIAPIKey = raw
 	}
-	return applyBool(nil, fn, EnvLLMMockEnabled, &c.MockEnabled)
+	applyString(fn, EnvLLMMockScript, &c.MockScript)
+	applyString(fn, EnvLLMMockScriptFile, &c.MockScriptFile)
+	errs := applyBool(nil, fn, EnvLLMMockEnabled, &c.MockEnabled)
+	if c.MockScript != "" && c.MockScriptFile != "" {
+		errs = append(errs, fmt.Errorf("%s and %s are mutually exclusive — set only one", EnvLLMMockScript, EnvLLMMockScriptFile))
+	}
+	return errs
 }

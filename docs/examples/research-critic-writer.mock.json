@@ -1,0 +1,19 @@
+{
+  "rules": [
+    {
+      "substring": "editorial critic",
+      "respond": [
+        {"structured": {"verdict": "revise", "notes": ["ground the claims in the research brief"]}},
+        {"structured": {"verdict": "revise", "notes": ["tighten the conclusion and cite a document id"]}},
+        {"structured": {"verdict": "approve"}}
+      ]
+    },
+    {
+      "substring": "output-quality judge",
+      "respond": [
+        {"text": "{\"score\": 0.4, \"rationale\": \"too terse; add detail and cite the research brief\"}"},
+        {"text": "{\"score\": 0.9, \"rationale\": \"detailed and well grounded in the brief\"}"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "name": "research-critic-writer",
+  "description": "The M14 flagship (ticket 14.5, ADR-016): a three-role agent pipeline that researches a topic, drafts an article, and refines it through a bounded writer⇄critic loop — composing nearly every AI-native feature the engine has. A `search` retrieve step (pg_fulltext) grounds a `researcher` agent, whose findings are pinned to the blackboard (`research_brief`) and auto-threaded (14.2). A `writer` agent drafts from that brief; its role carries a cost-bearing `llm_judge` validator (11.5) with a semantic-retry `feedback` loop (11.4), a `model_fallbacks` cheapening chain (10.4) triggered as the run approaches its `budget_usd` (10.3), and a `context` preset (12.3) — the critic-filtered thread plus the pinned brief — with a `summarize` + `drop_lowest_priority` compaction pipeline (12.4/12.5) that keeps the growing conversation under `budget_tokens`. A `critic` agent reviews in strict JSON; the marked loop edge (14.3) sends the run back to the writer while the verdict is `revise`, up to `max_iterations`, unrolling each revision as fresh `{id}#k` instances through `ExpandRun`. Run guards (14.4) — `max_wall_clock`, expansion caps, and an opt-in `no_progress` detector — bound a runaway loop. On convergence (or exhaustion — `on_exhausted: proceed`) an `editor` agent polishes the latest draft (read from the blackboard head, since a post-loop step cannot template the terminal iteration's output), and `publish` emits the final article — the side-effect surface a human-approval gate slots in front of (M15). It runs offline against the mock provider (echo + an env-scripted mock for real loop iterations); swapping the `mock/*` model ids for real providers makes it a live agent workflow unchanged.",
+  "on_failure": "fail_fast",
+  "max_wall_clock": "30m",
+  "budget_usd": 1.0,
+  "on_budget_exceeded": "park",
+  "expansion": {
+    "max_added_steps": 8,
+    "max_total_steps": 100,
+    "max_expansions": 12,
+    "max_depth": 3
+  },
+  "agents": {
+    "researcher": {
+      "role": "researcher",
+      "system": "You are a diligent researcher. Read the retrieved source material and state the key facts for the topic plainly and without embellishment. Cite document ids where you rely on them.",
+      "model": "mock/sim-1",
+      "max_tokens": 512
+    },
+    "writer": {
+      "role": "writer",
+      "system": "You are a writer. Draft or revise a short, well-supported article for the topic, grounded in the pinned research brief. If the conversation carries critique notes, address every one of them.",
+      "model": "mock/sim-1",
+      "max_tokens": 1024,
+      "temperature": 0,
+      "model_fallbacks": [
+        {
+          "model": "mock/cheap",
+          "at_budget_fraction": 0.85
+        }
+      ],
+      "validation": {
+        "validators": [
+          {
+            "name": "llm_judge",
+            "config": {
+              "model": "mock/judge-1",
+              "fallback_models": ["mock/judge-2"],
+              "rubric": "Score 1 if the article is detailed, grounded in the research brief, and addresses any critique notes; score 0 if it is terse, unsupported, or ignores the notes.",
+              "threshold": 0.7,
+              "max_tokens": 256,
+              "temperature": 0,
+              "on_error": "skip"
+            },
+            "target": "/text"
+          }
+        ],
+        "max_attempts": 2,
+        "feedback": {
+          "template": "This is attempt ${{ feedback.attempt }} of ${{ feedback.max_attempts }}. A quality judge rejected your previous draft:\n${{ feedback.issues }}\n\nPrevious draft:\n${{ feedback.prior_output }}\n\nRevise it to satisfy the rubric.",
+          "max_output_chars": 2000
+        }
+      },
+      "context": {
+        "sources": [
+          {
+            "kind": "blackboard",
+            "name": "research_brief",
+            "key": "research_brief",
+            "pinned": true
+          },
+          {
+            "kind": "thread",
+            "name": "critique_notes",
+            "key": "thread",
+            "role": "critic",
+            "on_missing": "skip"
+          }
+        ],
+        "budget_tokens": 4000,
+        "compaction": [
+          {
+            "strategy": "summarize",
+            "model": "mock/cheap",
+            "key": "context_summary",
+            "max_tokens": 96,
+            "timeout": "30s"
+          },
+          {
+            "strategy": "drop_lowest_priority"
+          }
+        ]
+      }
+    },
+    "critic": {
+      "role": "critic",
+      "system": "You are a strict editorial critic. Review the latest draft against the topic and the research brief, and decide whether it needs revision, responding in strict JSON.",
+      "model": "mock/sim-1",
+      "max_tokens": 512,
+      "output_format": {
+        "type": "json"
+      }
+    },
+    "editor": {
+      "role": "editor",
+      "system": "You are the managing editor. Produce the final, publication-ready version of the approved draft, preserving its substance and citations.",
+      "model": "mock/sim-1",
+      "max_tokens": 1024,
+      "context": {
+        "sources": [
+          {
+            "kind": "blackboard",
+            "name": "latest_draft",
+            "key": "draft",
+            "pinned": true
+          },
+          {
+            "kind": "thread",
+            "name": "conversation",
+            "key": "thread"
+          }
+        ]
+      }
+    }
+  },
+  "params": {
+    "topic": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "search",
+      "type": "retrieve",
+      "config": {
+        "retriever": "pg_fulltext",
+        "query": "${{ run.params.topic }}",
+        "top_k": 5
+      }
+    },
+    {
+      "id": "research",
+      "type": "agent",
+      "config": {
+        "agent": "researcher",
+        "prompt": "Research this topic and report the key facts, drawing on the retrieved source material.\n\nTopic: ${{ run.params.topic }}\n\nRetrieved documents:\n${{ steps.search.output.results }}"
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "research_brief",
+            "from": "/text",
+            "pinned": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "draft",
+      "type": "agent",
+      "config": {
+        "agent": "writer",
+        "prompt": "Write (or revise) a short article on the topic \"${{ run.params.topic }}\". Ground it in the pinned research brief and address any critique notes in the conversation above."
+      },
+      "budget": {
+        "max_usd": 0.5
+      },
+      "blackboard": {
+        "write": [
+          {
+            "key": "draft",
+            "from": "/text"
+          }
+        ]
+      }
+    },
+    {
+      "id": "critique",
+      "type": "agent",
+      "config": {
+        "agent": "critic",
+        "prompt": "Review the latest draft against the topic and the research brief:\n\n${{ steps.draft.output.text }}\n\nOutput JSON like {\"verdict\": \"approve\"} or {\"verdict\": \"revise\", \"notes\": [\"...\"]}."
+      }
+    },
+    {
+      "id": "finalize",
+      "type": "agent",
+      "config": {
+        "agent": "editor",
+        "prompt": "Produce the final, publication-ready version of the approved draft (the pinned latest draft above), preserving its substance and any citations."
+      }
+    },
+    {
+      "id": "publish",
+      "type": "echo",
+      "config": {
+        "input": {
+          "topic": "${{ run.params.topic }}",
+          "article": "${{ steps.finalize.output.text }}",
+          "status": "published"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "search",
+      "to": "research"
+    },
+    {
+      "from": "research",
+      "to": "draft"
+    },
+    {
+      "from": "draft",
+      "to": "critique"
+    },
+    {
+      "from": "critique",
+      "to": "draft",
+      "type": "loop",
+      "condition": "has(output.json.verdict) && output.json.verdict == 'revise'",
+      "max_iterations": 3,
+      "on_exhausted": "proceed",
+      "no_progress": {
+        "step": "draft",
+        "path": "/text",
+        "policy": "proceed"
+      }
+    },
+    {
+      "from": "critique",
+      "to": "finalize"
+    },
+    {
+      "from": "finalize",
+      "to": "publish"
+    }
+  ]
+}
