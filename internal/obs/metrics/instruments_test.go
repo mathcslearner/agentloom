@@ -9,6 +9,7 @@ import (
 
 	"github.com/mathcslearner/agentloom/internal/api"
 	"github.com/mathcslearner/agentloom/internal/engine"
+	"github.com/mathcslearner/agentloom/internal/event/pubsub"
 	"github.com/mathcslearner/agentloom/internal/exec/steplog"
 	"github.com/mathcslearner/agentloom/internal/obs/metrics"
 	"github.com/mathcslearner/agentloom/internal/queue"
@@ -23,12 +24,14 @@ var (
 	_ steplog.Metrics       = (*metrics.WorkerMetrics)(nil)
 	_ api.RequestMetrics    = (*metrics.APIMetrics)(nil)
 	_ api.RateLimitMetrics  = (*metrics.APIMetrics)(nil)
+	_ pubsub.Metrics        = (*metrics.WorkerMetrics)(nil)
+	_ pubsub.Metrics        = (*metrics.APIMetrics)(nil)
 )
 
 // allowedSubsystems is ADR-008's subsystem vocabulary; extending it is an
 // ADR amendment first.
 var allowedSubsystems = []string{
-	"build", "queue", "outbox", "dispatch", "reconcile", "step", "steplog", "run", "api", "worker", "ratelimit", "cache", "cost", "validate", "context", "approval",
+	"build", "queue", "outbox", "dispatch", "reconcile", "step", "steplog", "run", "api", "worker", "ratelimit", "cache", "cost", "validate", "context", "approval", "events",
 }
 
 // allowedLabels is ADR-008's label allowlist. run_id, step_id, attempt,
@@ -42,7 +45,7 @@ var allowedLabels = map[string]bool{
 	"duty": true, "result": true, "bucket": true, "decision": true,
 	"resource": true, "plugin": true,
 	"limit": true, "action": true, "trigger": true,
-	"validator": true,
+	"validator": true, "channel": true,
 }
 
 // exercise touches every instrument at least once so vec children exist
@@ -93,6 +96,11 @@ func exercise(w *metrics.WorkerMetrics, a *metrics.APIMetrics) {
 	w.ApprovalDecided("reject", "timeout")
 	w.ApprovalTimeout("rejected")
 	w.ApprovalNotified("delivered")
+	w.EventPublished("run")
+	w.EventPublished("firehose")
+	w.PublishFailed()
+	w.PublishDropped(1)
+	w.PublishLatency(3 * time.Millisecond)
 	a.Request("/v1/runs", "POST", 200, 20*time.Millisecond)
 	a.RequestStarted()
 	a.RequestFinished()
@@ -100,6 +108,10 @@ func exercise(w *metrics.WorkerMetrics, a *metrics.APIMetrics) {
 	a.Decision("submit", false, true)
 	a.Decision("submit", true, false)
 	a.FailOpen("read")
+	a.EventPublished("run")
+	a.PublishFailed()
+	a.PublishDropped(1)
+	a.PublishLatency(3 * time.Millisecond)
 }
 
 // TestInstrumentConformance is ADR-008's cardinality audit in executable

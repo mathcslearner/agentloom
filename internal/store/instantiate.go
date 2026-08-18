@@ -393,8 +393,13 @@ func (p *instantiationPlan) appendEvent(ctx context.Context, q Querier, runID uu
 	if err != nil {
 		return fmt.Errorf("marshaling %s payload: %w", typ, err)
 	}
-	_, err = q.Events().Append(ctx, gen.AppendEventParams{RunID: runID, Seq: seq, Type: typ, Payload: body})
-	return err
+	row, err := q.Events().Append(ctx, gen.AppendEventParams{RunID: runID, Seq: seq, Type: typ, Payload: body})
+	if err != nil {
+		return err
+	}
+	// Record the projected envelope for the after-commit sink (ticket 16.2).
+	recordEnvelope(ctx, event.NewEnvelope(runID, seq, row.CreatedAt, payload))
+	return nil
 }
 
 // idempotencyFingerprint binds an idempotency token to its payload: the hex

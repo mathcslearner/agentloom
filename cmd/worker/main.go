@@ -35,6 +35,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/contextmgr"
 	"github.com/mathcslearner/agentloom/internal/cost"
 	"github.com/mathcslearner/agentloom/internal/engine"
+	"github.com/mathcslearner/agentloom/internal/event/pubsub"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/exec/steplog"
 	"github.com/mathcslearner/agentloom/internal/limits"
@@ -72,12 +73,9 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	}
 	logger := log.New(cfg.Log, logSink)
 
-	st, err := store.Open(ctx, cfg.Postgres.DSN)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-
+	// The Redis client (and the metrics set) are built before the store so the
+	// event pub/sub publisher (ticket 16.2) can be wired as the store's
+	// after-commit event sink at construction.
 	client, err := queue.Open(ctx, cfg.Redis.Addr)
 	if err != nil {
 		return err
@@ -119,6 +117,37 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 			return fmt.Errorf("obs: binding admin listener on %s: %w", cfg.Obs.MetricsAddr, err)
 		}
 	}
+
+	// Event pub/sub publisher (ticket 16.2, ADR-018): fan committed events out to
+	// Redis best-effort, over the shared queue Redis client. It is the store's
+	// after-commit event sink — a publish failure never affects a transaction.
+	// Closed after the consumer drains and the dispatch loops stop (registered
+	// after client.Close so LIFO runs it first, while it still has the client;
+	// before wg.Wait below so it runs after the event-writing loops have stopped).
+	var storeOpts []store.Option
+	if cfg.Events.PubSubEnabled {
+		publisher := pubsub.NewPublisher(client, pubsub.Options{
+			Prefix:         cfg.Events.ChannelPrefix,
+			Buffer:         cfg.Events.PublishBuffer,
+			PublishTimeout: cfg.Events.PublishTimeout,
+			Logger:         logger,
+			Metrics:        engineMetrics,
+		})
+		defer func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), cfg.Events.PublishTimeout+time.Second)
+			defer cancel()
+			if err := publisher.Close(closeCtx); err != nil {
+				logger.Warn("worker: event publisher close incomplete", slog.Any("error", err))
+			}
+		}()
+		storeOpts = append(storeOpts, store.WithEventSink(publisher))
+	}
+
+	st, err := store.Open(ctx, cfg.Postgres.DSN, storeOpts...)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
 
 	dispatcher, err := engine.NewDispatcher(st, q, engine.DispatcherConfig{
 		Interval: cfg.Worker.DispatchInterval,

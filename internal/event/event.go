@@ -13,6 +13,8 @@
 package event
 
 import (
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -93,6 +95,41 @@ func NewEnvelope(runID uuid.UUID, seq int64, ts time.Time, p Payload) Envelope {
 		env.StepID = sc.EventStepID()
 	}
 	return env
+}
+
+// envelopeWire is the on-the-wire shape of an envelope with the payload left as
+// raw JSON, so ParseEnvelope can decode the outer fields, dispatch on the type,
+// and unmarshal the payload through the catalog. It mirrors Envelope's JSON tags.
+type envelopeWire struct {
+	SchemaVersion int             `json:"schema_version"`
+	RunID         uuid.UUID       `json:"run_id"`
+	Seq           int64           `json:"seq"`
+	Type          Type            `json:"type"`
+	Ts            time.Time       `json:"ts"`
+	Payload       json.RawMessage `json:"payload"`
+}
+
+// ParseEnvelope decodes a serialized envelope (the wire form produced by
+// json.Marshal(Envelope)) back into a typed Envelope: it reads the outer fields,
+// rejects an envelope schema version this build does not understand, and decodes
+// the payload by type through the catalog (lifting StepID). It is the read path
+// the pub/sub subscriber (16.2) and the WS server (16.3) turn a received message
+// into a typed envelope with — the counterpart of marshaling an Envelope for
+// publish. A malformed message, an unknown envelope version, or an unknown/
+// undecodable payload is an error the caller drops (and heals via DB backfill).
+func ParseEnvelope(raw []byte) (Envelope, error) {
+	var w envelopeWire
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return Envelope{}, fmt.Errorf("event: decoding envelope: %w", err)
+	}
+	if w.SchemaVersion != SchemaVersion {
+		return Envelope{}, fmt.Errorf("event: unsupported envelope schema_version %d (want %d)", w.SchemaVersion, SchemaVersion)
+	}
+	env, err := DecodeEnvelope(w.RunID, w.Seq, w.Ts, w.Type, w.Payload)
+	if err != nil {
+		return Envelope{}, err
+	}
+	return env, nil
 }
 
 // Event-type vocabulary (ADR-018). Grouped by producer; the doc comments name

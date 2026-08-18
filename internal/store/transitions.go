@@ -1617,8 +1617,15 @@ func appendEvent(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUI
 	if err != nil {
 		return wrapErr(op+": allocate event seq", err)
 	}
-	_, err = gq.AppendEvent(ctx, gen.AppendEventParams{RunID: runID, Seq: seq, Type: typ, Payload: body})
-	return wrapErr(op+": append event", err)
+	row, err := gq.AppendEvent(ctx, gen.AppendEventParams{RunID: runID, Seq: seq, Type: typ, Payload: body})
+	if err != nil {
+		return wrapErr(op+": append event", err)
+	}
+	// Record the projected envelope for the after-commit sink (ticket 16.2).
+	// Build it from the payload in hand + the row's append time, so no re-decode
+	// is needed; the buffer is drained only if the tx commits.
+	recordEnvelope(ctx, event.NewEnvelope(runID, seq, row.CreatedAt, payload))
+	return nil
 }
 
 // finishAttempt closes the step's current attempt row with its outcome.

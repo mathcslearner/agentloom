@@ -186,3 +186,34 @@ Delivery is **best-effort and effectively-once**: retries are capped
 and fully decidable via `POST /v1/approvals/{id}:decide` regardless. A webhook
 outage never affects run correctness; `GET /v1/approvals?status=pending` is the
 source of truth for what is awaiting a decision.
+
+## Tailing a run's live event feed (ticket 16.2)
+
+After each transaction commits, the worker and API fan the new event envelopes
+out to Redis pub/sub best-effort: a per-run channel `<prefix>:run:{id}` and a
+firehose `<prefix>:firehose` (`<prefix>` is `AGENTLOOM_EVENTS_CHANNEL_PREFIX`,
+default `events`). The durable truth is always the Postgres event log
+(`GET /v1/runs/{id}` and the M16.3 WebSocket); pub/sub is a low-latency hint, so
+a subscriber that misses a message heals by re-reading rows after its `last_seq`.
+
+Tail one run's events from the command line:
+
+```bash
+redis-cli SUBSCRIBE events:run:<run-id>
+```
+
+Or the whole fleet:
+
+```bash
+redis-cli SUBSCRIBE events:firehose
+```
+
+Each message is one event envelope as JSON (`schema_version`, `run_id`, `seq`,
+`type`, `ts`, `step_id`, `payload`) — the same shape a DB backfill returns.
+
+**Health.** `engine_events_publish_failures_total` and
+`engine_events_publish_dropped_total` (ADR-008 `events` subsystem, on both
+deployables) rising means Redis pub/sub is degraded — a stalled or unreachable
+Redis. This never loses events (they are durable in Postgres and WebSocket
+clients heal via backfill); it only raises tail latency. To run with only the
+durable log and no pub/sub, set `AGENTLOOM_EVENTS_PUBSUB_ENABLED=false`.

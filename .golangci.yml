@@ -39,6 +39,12 @@ linters:
         linters:
           - revive
         text: "(should have comment or be unexported|comment on exported type .* should be of the form)"
+      # NopMetrics (ticket 16.2) is the no-op pubsub.Metrics: four trivial
+      # one-line marker methods a doc comment per method would only clutter.
+      - path: internal/event/pubsub/metrics\.go
+        linters:
+          - revive
+        text: "exported method NopMetrics\\.(EventPublished|PublishFailed|PublishDropped|PublishLatency) should have comment"
 
 formatters:
   enable:

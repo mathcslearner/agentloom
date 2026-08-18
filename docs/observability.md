@@ -121,6 +121,17 @@ so no token reconciliation).
 **Fleet row.** Active workers (consumer-group members recently active),
 scrape-target health, and `engine_build_info` per instance.
 
+**Event pub/sub (ticket 16.2).** The live event-feed publisher exports the
+`events` subsystem on **both** deployables (both fan committed events out to
+Redis): `engine_events_published_total{channel}` (`run`/`firehose`),
+`engine_events_publish_failures_total`, `engine_events_publish_dropped_total`,
+and `engine_events_publish_latency_seconds` (commit-to-published, local budget
+under 100ms). These have no dedicated dashboard row yet — the Events row lands
+with the connection/backpressure metrics in ticket 16.4 — but a non-zero
+failures or dropped rate means Redis pub/sub is degraded (the events stay durable
+in Postgres and consumers heal via DB backfill, so this is a latency-hint
+degradation, never data loss).
+
 ## The API dashboard (`agentloom-api`)
 
 ![API dashboard under the smoke workload](img/dashboard-api.png)

@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/mathcslearner/agentloom/internal/event"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
 
@@ -40,15 +41,39 @@ type Querier interface {
 	Approvals() ApprovalRepo
 }
 
+// EventSink receives the projected envelopes of every event a transaction
+// committed, after the commit succeeds (ticket 16.2, ADR-018). It is the seam
+// the Redis pub/sub publisher plugs into so the durable-truth layer stays a leaf
+// (the store depends on internal/event, never on internal/queue or a Redis
+// client). Implementations must be non-blocking and must not panic — a slow or
+// broken sink can never affect the engine transaction, which has already
+// committed. The batch is in per-run seq order for a single-run transaction.
+type EventSink interface {
+	EventsCommitted(ctx context.Context, envs []event.Envelope)
+}
+
+// Option configures a Store at construction (ticket 16.2). Options are optional
+// and additive, so existing callers that pass none are unaffected.
+type Option func(*Store)
+
+// WithEventSink installs the after-commit event sink (ticket 16.2, ADR-018): the
+// worker and API build a pub/sub publisher and pass it here so every committed
+// event is fanned out to Redis best-effort. Passing nil, or no option at all,
+// leaves the store with no sink (its default) at zero cost.
+func WithEventSink(sink EventSink) Option {
+	return func(s *Store) { s.eventSink = sink }
+}
+
 // Store is the pool-backed entry point to the persistence layer.
 type Store struct {
 	repos
-	pool *pgxpool.Pool
+	pool      *pgxpool.Pool
+	eventSink EventSink
 }
 
 // Open connects a pool to the given DSN and verifies the connection with a
 // ping. The caller owns the returned Store and must Close it.
-func Open(ctx context.Context, dsn string) (*Store, error) {
+func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		// Never echo the DSN or the parse error: both can embed credentials.
@@ -62,13 +87,17 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("store: pinging Postgres: %w", err)
 	}
-	return NewFromPool(pool), nil
+	return NewFromPool(pool, opts...), nil
 }
 
 // NewFromPool wraps an existing pool (the integration-test harness hands
 // these out). The caller keeps ownership of the pool's lifecycle.
-func NewFromPool(pool *pgxpool.Pool) *Store {
-	return &Store{repos: repos{q: gen.New(pool)}, pool: pool}
+func NewFromPool(pool *pgxpool.Pool, opts ...Option) *Store {
+	s := &Store{repos: repos{q: gen.New(pool)}, pool: pool}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Close releases the connection pool.

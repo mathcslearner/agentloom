@@ -163,6 +163,94 @@ channel. Publishing is **after-commit, async, and never affects the engine
 transaction** — a publish failure is logged and metered, nothing more. A
 consumer that misses a message recovers via the gap-detected DB backfill above.
 
+### Live publish path (as built, 16.2)
+
+The publish path hangs off **one seam at the store's transaction boundary**, not
+the engine, so all ~52 event-append sites — the engine's completion/fan-out
+writers, `engine.Control`'s API-side cancel/park/decide/budget, and API-side run
+instantiation (`run_created`, `step_ready`) — publish through it with **zero
+call-site change**.
+
+- **`store.EventSink`** — `EventsCommitted(ctx, []event.Envelope)`. `WithTx`
+  carries a per-transaction `*txState` buffer on its context; both sanctioned
+  `appendEvent` helpers, right after the `AppendEvent` `RETURNING` row lands,
+  record the **projected envelope** (built from the payload in hand +
+  `row.created_at` via `event.NewEnvelope` — no re-decode, no possibility of a
+  projection error). After the tx **commits**, `WithTx` hands the buffer to the
+  sink (via `context.WithoutCancel`, so a caller context cancelled right after
+  commit cannot drop the fan-out). A rolled-back tx delivers nothing; a
+  committed tx that appended no event delivers nothing; with no sink wired the
+  path costs nothing. `WithEventSink(sink)` is a `store.Option` on
+  `Open`/`NewFromPool` (variadic — every existing caller is unaffected). The
+  contract is **best-effort, non-blocking, never-panics**: the tx has already
+  committed, so the sink can never affect correctness.
+
+- **New leaf `internal/event/pubsub`** (imports `internal/event` + go-redis,
+  never `internal/store` — the `cache/redisstore` / `retrieval/pgfts`
+  precedent). It owns:
+  - **Channels** — `RunChannel(prefix, runID)` = `<prefix>:run:<uuid>`,
+    `FirehoseChannel(prefix)` = `<prefix>:firehose`.
+  - **`Publisher`** — satisfies `store.EventSink` structurally.
+    `EventsCommitted` copies the batch and does a **non-blocking** enqueue into a
+    bounded channel (`select { default: PublishDropped }`); a single **drain
+    goroutine** publishes each envelope's marshaled JSON to its run channel and
+    the firehose under a per-batch timeout. One drain goroutine ⇒ per-process
+    publish order = commit order; cross-process interleaving of one run's events
+    is legal (it is a gap → backfill → dupe-drop by the contract above). A
+    publish error / a marshal error is logged (rate-limited by go-redis' own
+    pool logging) and metered; `Close(ctx)` drains the buffer bounded by ctx.
+    Internal `publishFn` seam (`export_test.go`) drives the overflow/failure
+    unit tests with no live Redis.
+  - **`Subscription`** — `SubscribeRun` / `SubscribeFirehose` **block until the
+    SUBSCRIBE is confirmed** (so 16.3's subscribe → snapshot → backfill ordering
+    has no window), then pump `event.ParseEnvelope`'d envelopes onto a channel; a
+    message that fails to parse (unknown type / bad JSON / unsupported envelope
+    version) is logged and dropped — a gap the consumer heals via backfill.
+  - **`Tailer`** — the pure, single-run gap/dedupe/backfill state machine (the
+    `Backfiller` interface reads a run's events after a seq cursor; the store
+    side adapts `Events().List` + `EventEnvelope`). `Offer(env)` drops a dupe
+    (seq ≤ last), delivers the next (seq = last+1), and on a gap (seq > last+1)
+    **backfills to head** (paged) before re-evaluating the live envelope —
+    delivering it if now-next, else dropping it as already-backfilled. `Catchup`
+    is the initial/resume backfill. This is the exact assembly 16.3's WS server
+    and 16.5's TS client reuse.
+
+- **`ParseEnvelope([]byte)`** on the leaf: decode the outer envelope, reject an
+  unknown `schema_version`, decode the payload by type through the catalog. The
+  wire form is the envelope JSON itself, so a published message parses back into
+  the same typed envelope the store projected — publish and backfill agree by
+  construction.
+
+- **Config** — `AGENTLOOM_EVENTS_PUBSUB_ENABLED` (default true),
+  `_CHANNEL_PREFIX` (default `events`), `_PUBLISH_BUFFER` (1024 batches),
+  `_PUBLISH_TIMEOUT` (2s). Both deployables build the publisher over the **same
+  Redis client the queue/cache use** (the shared coordination Redis, ADR-002 — a
+  latency hint is neither a dispatch nor a correctness read) and pass it as the
+  store's sink; the API's client stays fail-soft, so Postgres remains its only
+  hard dependency.
+
+- **Metrics** — new ADR-008 subsystem `events`, embedded in **both**
+  `WorkerMetrics` and `APIMetrics` (both deployables publish):
+  `engine_events_published_total{channel}` (`run`/`firehose`),
+  `engine_events_publish_failures_total`, `engine_events_publish_dropped_total`,
+  `engine_events_publish_latency_seconds`.
+
+**Decisions.** The store transaction boundary is the seam (one hook covers every
+writer; the engine never learns pub/sub exists). The buffer holds
+already-projected envelopes built at append time (no re-decode, no projection
+error, and what publishes is exactly what committed). Fire-and-forget with a
+bounded drop-on-overflow buffer (a slow Redis degrades the hint, never the
+engine — the events stay durable and backfill heals). One drain goroutine
+(per-process order = commit order; cross-process reorder is a legal gap).
+`WithTx` does **not** recover a sink panic — the enqueue is trivially
+non-panicking, and swallowing panics in the store would hide real bugs.
+
+**Accepted residuals.** A crash strictly between a commit and its publish loses
+that one live message (the event is durable in Postgres; the next consumer
+backfill heals it). A full buffer drops a batch (metered; healed by backfill).
+Cross-process publish interleaving of one run's events can arrive out of order at
+a firehose subscriber (a gap → backfill → dupe-drop, no event lost).
+
 ### Run WebSocket endpoint (arrives in 16.3)
 
 `GET /v1/runs/{id}/ws`, authenticated by a **short-lived signed ticket** minted

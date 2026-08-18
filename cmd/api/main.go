@@ -38,6 +38,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/api"
 	"github.com/mathcslearner/agentloom/internal/cache/redisstore"
 	"github.com/mathcslearner/agentloom/internal/config"
+	"github.com/mathcslearner/agentloom/internal/event/pubsub"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/llm"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
@@ -113,31 +114,57 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 		logger.InfoContext(ctx, "api admin listener started", slog.String("addr", admin.Addr()))
 	}
 
-	st, err := store.Open(ctx, cfg.Postgres.DSN)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-
 	// Redis client, opened without a hard boot-time dependency — go-redis
-	// dials lazily and both consumers below fail soft, so a down Redis
-	// degrades rate limiting and the cache ops surface instead of preventing
-	// the API from serving (ADR-002 — Postgres stays the only hard
-	// dependency). One client serves two opt-in uses: the 6.4 rate-limit
-	// token buckets and the 9.6 cache ops surface. Built only when at least
-	// one is enabled; the advisory ping surfaces a misconfigured address in
-	// the boot logs.
+	// dials lazily and every consumer below fails soft, so a down Redis
+	// degrades rate limiting, the cache ops surface, and the event publish hint
+	// instead of preventing the API from serving (ADR-002 — Postgres stays the
+	// only hard dependency). One client serves three opt-in uses: the 6.4
+	// rate-limit token buckets, the 9.6 cache ops surface, and the 16.2 event
+	// pub/sub publisher. Built (before the store, so the publisher can be the
+	// store's after-commit sink) only when at least one is enabled; the advisory
+	// ping surfaces a misconfigured address in the boot logs.
 	var rdb *redis.Client
-	if cfg.API.RateLimit.Enabled || cfg.Cache.Enabled {
+	if cfg.API.RateLimit.Enabled || cfg.Cache.Enabled || cfg.Events.PubSubEnabled {
 		rdb = redis.NewClient(&redis.Options{Addr: cfg.Redis.Addr})
 		defer rdb.Close() //nolint:errcheck // best-effort close on shutdown
 		pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		if err := rdb.Ping(pingCtx).Err(); err != nil {
-			logger.WarnContext(ctx, "api: redis unreachable at boot — rate limiting and cache ops fail soft until it recovers",
+			logger.WarnContext(ctx, "api: redis unreachable at boot — rate limiting, cache ops, and event pub/sub fail soft until it recovers",
 				slog.String("addr", cfg.Redis.Addr), slog.Any("error", err))
 		}
 		cancel()
 	}
+
+	// Event pub/sub publisher (ticket 16.2, ADR-018): the API also appends events
+	// (run_created/step_ready on submit, lifecycle events via engine.Control), so
+	// it fans them out best-effort too. Publishing a latency hint is neither a
+	// dispatch nor a correctness dependency, so ADR-002 holds. Closed after the
+	// HTTP server drains (deferred after rdb.Close so LIFO runs it first, while
+	// the client is still open).
+	var storeOpts []store.Option
+	if cfg.Events.PubSubEnabled && rdb != nil {
+		publisher := pubsub.NewPublisher(rdb, pubsub.Options{
+			Prefix:         cfg.Events.ChannelPrefix,
+			Buffer:         cfg.Events.PublishBuffer,
+			PublishTimeout: cfg.Events.PublishTimeout,
+			Logger:         logger,
+			Metrics:        apiMetrics,
+		})
+		defer func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), cfg.Events.PublishTimeout+time.Second)
+			defer cancel()
+			if err := publisher.Close(closeCtx); err != nil {
+				logger.Warn("api: event publisher close incomplete", slog.Any("error", err))
+			}
+		}()
+		storeOpts = append(storeOpts, store.WithEventSink(publisher))
+	}
+
+	st, err := store.Open(ctx, cfg.Postgres.DSN, storeOpts...)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
 
 	// Rate limiting (ticket 6.4): the per-client token buckets over the
 	// shared Redis client. The middleware fails open on a Redis error.

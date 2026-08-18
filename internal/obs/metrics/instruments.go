@@ -136,6 +136,68 @@ type WorkerMetrics struct {
 	approvalDecided       *prometheus.CounterVec
 	approvalTimeouts      *prometheus.CounterVec
 	approvalNotifications *prometheus.CounterVec
+
+	// The event pub/sub publisher instruments (ticket 16.2). Both deployables
+	// publish (both wire the store's after-commit sink), so this set is embedded
+	// in WorkerMetrics and APIMetrics alike; its promoted methods satisfy
+	// pubsub.Metrics structurally.
+	eventsInstruments
+}
+
+// eventsInstruments is the ADR-008 "events" subsystem (ticket 16.2): the live
+// pub/sub publish path's health. It is embedded in both metric sets, and its
+// methods satisfy the pubsub.Metrics seam by structural typing — the worker and
+// API pass their metrics set straight to the publisher.
+type eventsInstruments struct {
+	eventsPublished        *prometheus.CounterVec
+	eventsPublishFailures  prometheus.Counter
+	eventsPublishDropped   prometheus.Counter
+	eventsPublishLatencies prometheus.Histogram
+}
+
+func newEventsInstruments() eventsInstruments {
+	return eventsInstruments{
+		eventsPublished: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "events", Name: "published_total",
+			Help: "Event envelopes published to Redis pub/sub after commit (ticket 16.2, ADR-018), by channel kind (run or firehose). Best-effort — a failed publish is metered separately and never affects the engine transaction; consumers heal any miss via a DB backfill.",
+		}, []string{"channel"}),
+		eventsPublishFailures: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "events", Name: "publish_failures_total",
+			Help: "Failed event PUBLISH calls (Redis error or timeout). The event stays durable in Postgres; consumers heal via backfill.",
+		}),
+		eventsPublishDropped: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "events", Name: "publish_dropped_total",
+			Help: "Event envelopes dropped because the publish buffer was full (a stalled Redis). The events stay durable in Postgres; consumers heal via backfill.",
+		}),
+		eventsPublishLatencies: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: Namespace, Subsystem: "events", Name: "publish_latency_seconds",
+			Help:    "Commit-to-published latency of one event envelope (ticket 16.2). The dashboard budget is under 100ms locally.",
+			Buckets: prometheus.DefBuckets,
+		}),
+	}
+}
+
+func (e eventsInstruments) collectors() []prometheus.Collector {
+	return []prometheus.Collector{e.eventsPublished, e.eventsPublishFailures, e.eventsPublishDropped, e.eventsPublishLatencies}
+}
+
+// EventPublished, PublishFailed, PublishDropped, and PublishLatency satisfy
+// pubsub.Metrics (ticket 16.2).
+
+// EventPublished records one successful PUBLISH to a channel kind (run/firehose).
+func (e eventsInstruments) EventPublished(channel string) {
+	e.eventsPublished.WithLabelValues(channel).Inc()
+}
+
+// PublishFailed records one failed PUBLISH.
+func (e eventsInstruments) PublishFailed() { e.eventsPublishFailures.Inc() }
+
+// PublishDropped records n envelopes dropped by a full buffer.
+func (e eventsInstruments) PublishDropped(n int) { e.eventsPublishDropped.Add(float64(n)) }
+
+// PublishLatency records one envelope's commit-to-published latency.
+func (e eventsInstruments) PublishLatency(d time.Duration) {
+	e.eventsPublishLatencies.Observe(d.Seconds())
 }
 
 // NewWorkerMetrics registers the worker instrument set on reg (ADR-008:
@@ -383,6 +445,8 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 		m.contextUtilization, m.contextRejections,
 		m.approvalPending, m.approvalDecided, m.approvalTimeouts, m.approvalNotifications,
 	)
+	m.eventsInstruments = newEventsInstruments()
+	reg.MustRegister(m.collectors()...)
 	return m
 }
 
@@ -626,6 +690,11 @@ type APIMetrics struct {
 	rlDecisions      *prometheus.CounterVec
 	rlFailOpen       *prometheus.CounterVec
 	approvalDecided  *prometheus.CounterVec
+
+	// The API also publishes committed events (run_created/step_ready from
+	// instantiation, lifecycle events from engine.Control), so it carries the
+	// same events instruments (ticket 16.2).
+	eventsInstruments
 }
 
 // NewAPIMetrics registers the API instrument set on reg and returns the
@@ -660,6 +729,8 @@ func NewAPIMetrics(reg *prometheus.Registry) *APIMetrics {
 		}, []string{"decision", "source"}),
 	}
 	reg.MustRegister(m.requests, m.requestDuration, m.requestsInFlight, m.rlDecisions, m.rlFailOpen, m.approvalDecided)
+	m.eventsInstruments = newEventsInstruments()
+	reg.MustRegister(m.collectors()...)
 	return m
 }
 

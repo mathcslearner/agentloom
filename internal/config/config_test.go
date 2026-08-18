@@ -549,6 +549,49 @@ func TestLoadCostInvalid(t *testing.T) {
 	}
 }
 
+func TestLoadEventsDefaultsAndOverrides(t *testing.T) {
+	t.Parallel()
+
+	// Defaults.
+	cfg, err := config.Load(lookupFrom(nil))
+	if err != nil {
+		t.Fatalf("Load defaults: %v", err)
+	}
+	wantEvents := config.EventsConfig{
+		PubSubEnabled:  true,
+		ChannelPrefix:  config.DefaultEventsChannelPrefix,
+		PublishBuffer:  config.DefaultEventsPublishBuffer,
+		PublishTimeout: config.DefaultEventsPublishTimeout,
+	}
+	if cfg.Events != wantEvents {
+		t.Errorf("default Events config = %+v, want %+v", cfg.Events, wantEvents)
+	}
+
+	// Overrides.
+	cfg, err = config.Load(lookupFrom(map[string]string{
+		config.EnvEventsPubSubEnabled:  "false",
+		config.EnvEventsChannelPrefix:  "custom",
+		config.EnvEventsPublishBuffer:  "64",
+		config.EnvEventsPublishTimeout: "5s",
+	}))
+	if err != nil {
+		t.Fatalf("Load overrides: %v", err)
+	}
+	if cfg.Events.PubSubEnabled || cfg.Events.ChannelPrefix != "custom" ||
+		cfg.Events.PublishBuffer != 64 || cfg.Events.PublishTimeout != 5*time.Second {
+		t.Errorf("Events overrides = %+v", cfg.Events)
+	}
+}
+
+func TestLoadEventsInvalid(t *testing.T) {
+	t.Parallel()
+	for _, env := range []string{config.EnvEventsPublishBuffer, config.EnvEventsPublishTimeout} {
+		if _, err := config.Load(lookupFrom(map[string]string{env: "-1"})); err == nil {
+			t.Errorf("Load with %s=-1: want error, got nil", env)
+		}
+	}
+}
+
 func TestLoadRedisAddrOverride(t *testing.T) {
 	t.Parallel()
 

@@ -63,7 +63,7 @@ Rules, following Prometheus upstream conventions:
 - Subsystem vocabulary (extended only by ADR amendment): `build`,
   `queue`, `outbox`, `dispatch`, `reconcile`, `step`, `steplog` (7.4),
   `run`, `api`, `worker`, `ratelimit` (9.2), `cache` (9.5), `cost` (10.5),
-  `validate` (11.6), `context` (12.6).
+  `validate` (11.6), `context` (12.6), `approval` (15.2), `events` (16.2).
 - Base units and suffixes: durations in seconds (`_seconds`), sizes in
   bytes (`_bytes`), token counts in tokens (`_tokens`, 9.3's
   estimate-error histogram), attempt counts in `_attempts` and
@@ -112,6 +112,7 @@ requires amending this table first, and must be a closed vocabulary.
 | `limit` | budget limit crossed (10.5): `run`, `step_usd`, `step_tokens` | 3 |
 | `action` | budget action taken (10.5): `park`, `fail` | 2 |
 | `trigger` | model-downgrade trigger (10.5): `budget_threshold`, `budget_projection` | 2 |
+| `channel` | event pub/sub channel kind (16.2): `run`, `firehose` — never the concrete `run:{id}` channel name (that would be unbounded) | 2 |
 
 Worst-case series count per metric is the product of its label bounds;
 any metric whose product exceeds ~1,000 needs an explicit justification
@@ -185,6 +186,10 @@ from the allowlist above.
 | `engine_approval_decisions_total` | counter | `decision`, `source` | human-in-the-loop (15.3/15.4): approval decisions recorded, by decision (`approve`/`reject`) and source (`human`/`timeout`). Recorded on **both** instrument sets — `APIMetrics` for a human decide, `WorkerMetrics` for a timeout policy — so the two deployables share the series on distinct per-process registries (the `build_info` precedent); the conformance harness registers the two sets on separate registries |
 | `engine_approval_timeouts_total` | counter | `action` | human-in-the-loop (15.4): approval timeout policy applications, by action (`rejected`/`approved`/`run_parked`/`run_already_parked`). On `WorkerMetrics`, recorded post-commit from the timeout handler |
 | `engine_approval_notifications_total` | counter | `result` | human-in-the-loop (15.5): approval-notification webhook deliveries, by result (`delivered`/`failed`). On `WorkerMetrics`, recorded post-delivery from the park path. Best-effort — a failed delivery never affects run correctness |
+| `engine_events_published_total` | counter | `channel` | event pub/sub (16.2): event envelopes published to Redis after commit, by channel kind (`run`/`firehose`). Recorded on **both** deployables (both wire the store's after-commit sink) on distinct per-process registries |
+| `engine_events_publish_failures_total` | counter | – | event pub/sub (16.2): failed PUBLISH calls (Redis error/timeout). The event stays durable in Postgres; consumers heal via backfill |
+| `engine_events_publish_dropped_total` | counter | – | event pub/sub (16.2): envelopes dropped by a full publish buffer (a stalled Redis). Durable in Postgres; healed via backfill |
+| `engine_events_publish_latency_seconds` | histogram | – | event pub/sub (16.2): commit-to-published latency of one envelope (local budget under 100ms) |
 
 The `cost` counters label only by the pricing-catalog `resource` (or the
 tiny `limit`/`action`/`trigger` vocabularies) — never by run/step — so the

@@ -36,6 +36,7 @@ type Config struct {
 	Cache     CacheConfig
 	Cost      CostConfig
 	Notify    NotifyConfig
+	Events    EventsConfig
 }
 
 // Load builds a Config by applying environment overrides from lookup on top
@@ -56,6 +57,7 @@ func Load(lookup LookupFunc) (Config, error) {
 		Cache:     defaultCacheConfig(),
 		Cost:      defaultCostConfig(),
 		Notify:    defaultNotifyConfig(),
+		Events:    defaultEventsConfig(),
 	}
 	var errs []error
 	errs = append(errs, cfg.Log.applyEnv(lookup)...)
@@ -71,6 +73,7 @@ func Load(lookup LookupFunc) (Config, error) {
 	errs = append(errs, cfg.Cache.applyEnv(lookup)...)
 	errs = append(errs, cfg.Cost.applyEnv(lookup)...)
 	errs = append(errs, cfg.Notify.applyEnv(lookup)...)
+	errs = append(errs, cfg.Events.applyEnv(lookup)...)
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration:\n%w", err)
 	}
