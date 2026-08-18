@@ -250,6 +250,36 @@ WHERE run_id = @run_id AND step_id = @step_id
   AND status = 'awaiting_human'
 RETURNING *;
 
+-- Resolve a parked approval step on an approve/route decision:
+-- awaiting_human → succeeded (ticket 15.3, ADR-017). No claim fence — the
+-- step holds no lease while parked; the approvals-row CAS (DecideApproval)
+-- is the single arbiter, so a second decision cannot reach this. The
+-- decision output (with the edited-or-original payload) becomes the step's
+-- output, consumed downstream by ordinary templating.
+-- name: SucceedAwaitingHumanRunStep :one
+UPDATE run_steps
+SET status      = 'succeeded',
+    output      = @output,
+    finished_at = @now::timestamptz,
+    updated_at  = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id
+  AND status = 'awaiting_human'
+RETURNING *;
+
+-- Dead-letter a parked approval step on a reject under on_reject: fail
+-- (ticket 15.3, ADR-006 row 24): awaiting_human → dead_lettered. No claim
+-- fence (the step holds no lease); the approvals-row CAS is the arbiter.
+-- error carries the approval_rejected summary.
+-- name: DeadLetterAwaitingHumanRunStep :one
+UPDATE run_steps
+SET status      = 'dead_lettered',
+    error       = @error,
+    finished_at = @now::timestamptz,
+    updated_at  = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id
+  AND status = 'awaiting_human'
+RETURNING *;
+
 -- Edge resolution bookkeeping (not a status transition): the unresolved
 -- guard is what makes retried completion transactions idempotent — an
 -- already-resolved edge matches nothing, so counters can never

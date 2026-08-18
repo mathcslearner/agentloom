@@ -5,6 +5,7 @@ package store_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -234,4 +235,137 @@ func containsEvent(types []string, typ string) bool {
 		}
 	}
 	return false
+}
+
+// parkGate seeds a running gate, parks it, and returns the run id and the
+// pending approval — the state 15.3's decide path starts from.
+func parkGate(t *testing.T, s *store.Store) (uuid.UUID, store.ApprovalRow) {
+	t.Helper()
+	ctx := t.Context()
+	runID, claim := seedRunningApproval(t, s)
+	row := sampleApprovalRow()
+	if err := s.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+		_, err := store.AwaitHumanStep(ctx, q, store.AwaitHumanStepArgs{
+			RunID: runID, StepID: "gate", ClaimID: claim, Approval: row, Now: testNow,
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("parkGate: %v", err)
+	}
+	return runID, row
+}
+
+// TestDecideApprovalCAS: the decide CAS moves pending → approved, records the
+// decision fields, appends approval_decided, and a second decide on the now
+// non-pending row returns *ApprovalNotPendingError (the single arbiter).
+func TestDecideApprovalCAS(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := t.Context()
+	runID, row := parkGate(t, s)
+
+	var decided gen.Approval
+	if err := s.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+		var err error
+		decided, err = store.DecideApproval(ctx, q, store.DecideApprovalArgs{
+			ID: row.ID, RunID: runID, StepID: "gate", AttemptNo: 1,
+			Status: store.ApprovalStatusApproved, Decision: "approve",
+			EditedPayload: json.RawMessage(`{"text":"edited"}`), Comment: "ok",
+			DecidedBy: "key_op", Source: store.ApprovalSourceHuman, Now: testNow,
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("DecideApproval: %v", err)
+	}
+	if decided.Status != store.ApprovalStatusApproved || decided.Decision == nil || *decided.Decision != "approve" {
+		t.Errorf("decided = %+v, want approved/approve", decided)
+	}
+	if decided.DecidedBy == nil || *decided.DecidedBy != "key_op" || len(decided.EditedPayload) == 0 {
+		t.Errorf("decision fields not recorded: %+v", decided)
+	}
+	if got := eventTypes(t, s, runID); !containsEvent(got, store.EventApprovalDecided) {
+		t.Errorf("events = %v, want approval_decided", got)
+	}
+
+	// A second decide on the non-pending row loses the CAS.
+	err := s.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+		_, derr := store.DecideApproval(ctx, q, store.DecideApprovalArgs{
+			ID: row.ID, RunID: runID, StepID: "gate", AttemptNo: 1,
+			Status: store.ApprovalStatusRejected, Decision: "reject",
+			DecidedBy: "key_op2", Source: store.ApprovalSourceHuman, Now: testNow,
+		})
+		return derr
+	})
+	var notPending *store.ApprovalNotPendingError
+	if !errors.As(err, &notPending) {
+		t.Fatalf("second decide err = %v, want *ApprovalNotPendingError", err)
+	}
+	if notPending.Status != store.ApprovalStatusApproved {
+		t.Errorf("not-pending status = %q, want approved", notPending.Status)
+	}
+}
+
+// TestSucceedAwaitingHumanStep: settles a parked gate awaiting_human →
+// succeeded, closes the open attempt succeeded, bumps steps_succeeded, and
+// appends step_succeeded.
+func TestSucceedAwaitingHumanStep(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := t.Context()
+	runID, _ := parkGate(t, s)
+
+	output := json.RawMessage(`{"decision":"approve","payload":{"text":"x"}}`)
+	var settled gen.RunStep
+	if err := s.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+		var err error
+		settled, err = store.SucceedAwaitingHumanStep(ctx, q, store.SucceedAwaitingHumanStepArgs{
+			RunID: runID, StepID: "gate", Output: output, Now: testNow,
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("SucceedAwaitingHumanStep: %v", err)
+	}
+	if settled.Status != store.StepStatusSucceeded {
+		t.Errorf("step status = %q, want succeeded", settled.Status)
+	}
+	run, _ := s.Runs().Get(ctx, runID)
+	if run.StepsSucceeded != 1 {
+		t.Errorf("steps_succeeded = %d, want 1", run.StepsSucceeded)
+	}
+	attempts, _ := s.Attempts().ListByRun(ctx, runID)
+	if len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != store.StepStatusSucceeded {
+		t.Errorf("attempt outcome = %v, want succeeded", attempts)
+	}
+}
+
+// TestDeadLetterAwaitingHumanStep: settles a rejected gate awaiting_human →
+// dead_lettered with a permanent attempt outcome and a permanent DLQ record.
+func TestDeadLetterAwaitingHumanStep(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := t.Context()
+	runID, _ := parkGate(t, s)
+
+	errPayload := json.RawMessage(`{"message":"approval_rejected: no","class":"permanent"}`)
+	var settled gen.RunStep
+	if err := s.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+		var err error
+		settled, err = store.DeadLetterAwaitingHumanStep(ctx, q, store.DeadLetterAwaitingHumanStepArgs{
+			RunID: runID, StepID: "gate", Error: errPayload, Now: testNow,
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("DeadLetterAwaitingHumanStep: %v", err)
+	}
+	if settled.Status != store.StepStatusDeadLettered {
+		t.Errorf("step status = %q, want dead_lettered", settled.Status)
+	}
+	dls, _ := s.DeadLetters().ListByRun(ctx, runID)
+	if len(dls) != 1 || dls[0].Source != store.DeadLetterSourcePermanent {
+		t.Fatalf("dead letters = %+v, want one permanent", dls)
+	}
+	attempts, _ := s.Attempts().ListByRun(ctx, runID)
+	if len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != store.AttemptOutcomePermanent {
+		t.Errorf("attempt outcome = %v, want permanent", attempts)
+	}
 }

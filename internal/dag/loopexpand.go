@@ -91,9 +91,10 @@ func GenerateLoopExpansion(def *Definition, loopEdge Edge, currentInstanceID str
 			continue
 		}
 		plan.Edges = append(plan.Edges, Edge{
-			From: instanceID(e.From, nextIter),
-			To:   instanceID(e.To, nextIter),
-			When: e.When,
+			From:     instanceID(e.From, nextIter),
+			To:       instanceID(e.To, nextIter),
+			When:     e.When,
+			Decision: e.Decision,
 		})
 	}
 
@@ -115,9 +116,10 @@ func GenerateLoopExpansion(def *Definition, loopEdge Edge, currentInstanceID str
 		}
 		if e.From == from && !body[e.To] {
 			plan.Edges = append(plan.Edges, Edge{
-				From: instanceID(from, nextIter),
-				To:   e.To,
-				When: e.When,
+				From:     instanceID(from, nextIter),
+				To:       e.To,
+				When:     e.When,
+				Decision: e.Decision,
 			})
 			continue
 		}

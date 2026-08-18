@@ -80,7 +80,7 @@ const createRunEdge = `-- name: CreateRunEdge :one
 INSERT INTO run_edges (run_id, ordinal, from_step, to_step, edge_type,
                        when_expr, condition, max_iterations, graph_version, origin_step, origin_kind)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-RETURNING run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind
+RETURNING run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind, decision
 `
 
 type CreateRunEdgeParams struct {
@@ -127,6 +127,7 @@ func (q *Queries) CreateRunEdge(ctx context.Context, arg CreateRunEdgeParams) (R
 		&i.GraphVersion,
 		&i.OriginStep,
 		&i.OriginKind,
+		&i.Decision,
 	)
 	return i, err
 }
@@ -143,6 +144,7 @@ type CreateRunEdgesParams struct {
 	GraphVersion  int32
 	OriginStep    *string
 	OriginKind    *string
+	Decision      *string
 }
 
 const createRunStep = `-- name: CreateRunStep :one
@@ -406,7 +408,7 @@ func (q *Queries) ListFiringParentTraceSpans(ctx context.Context, arg ListFiring
 }
 
 const listRunEdges = `-- name: ListRunEdges :many
-SELECT run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind FROM run_edges WHERE run_id = $1 ORDER BY ordinal
+SELECT run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind, decision FROM run_edges WHERE run_id = $1 ORDER BY ordinal
 `
 
 // ordinal order is semantic: the branch first-match rule evaluates
@@ -433,6 +435,7 @@ func (q *Queries) ListRunEdges(ctx context.Context, runID uuid.UUID) ([]RunEdge,
 			&i.GraphVersion,
 			&i.OriginStep,
 			&i.OriginKind,
+			&i.Decision,
 		); err != nil {
 			return nil, err
 		}
@@ -445,7 +448,7 @@ func (q *Queries) ListRunEdges(ctx context.Context, runID uuid.UUID) ([]RunEdge,
 }
 
 const listRunEdgesFromStep = `-- name: ListRunEdgesFromStep :many
-SELECT run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind FROM run_edges WHERE run_id = $1 AND from_step = $2 ORDER BY ordinal
+SELECT run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind, decision FROM run_edges WHERE run_id = $1 AND from_step = $2 ORDER BY ordinal
 `
 
 type ListRunEdgesFromStepParams struct {
@@ -477,6 +480,7 @@ func (q *Queries) ListRunEdgesFromStep(ctx context.Context, arg ListRunEdgesFrom
 			&i.GraphVersion,
 			&i.OriginStep,
 			&i.OriginKind,
+			&i.Decision,
 		); err != nil {
 			return nil, err
 		}

@@ -73,6 +73,74 @@ func (q *Queries) CountPendingApprovals(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const decideApproval = `-- name: DecideApproval :one
+UPDATE approvals
+SET status          = $1,
+    decision        = $2,
+    edited_payload  = $3,
+    comment         = $4,
+    decided_by      = $5,
+    decided_at      = $6::timestamptz,
+    decision_source = $7,
+    updated_at      = $6::timestamptz
+WHERE id = $8 AND status = 'pending'
+RETURNING id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at
+`
+
+type DecideApprovalParams struct {
+	Status         string
+	Decision       *string
+	EditedPayload  json.RawMessage
+	Comment        *string
+	DecidedBy      *string
+	Now            time.Time
+	DecisionSource *string
+	ID             uuid.UUID
+}
+
+// DecideApproval is the single-arbiter CAS of the decision API (ticket 15.3,
+// ADR-017): pending → approved|rejected, keyed by id with a pending guard, so
+// two concurrent decisions (or a decision racing 15.4's timeout expiry) have
+// exactly one winner — the loser matches nothing and gets a 409. It records
+// the immutable decision fields (decision, edited payload, comment, actor,
+// timestamp, source) that the run view and the approval_decided event expose.
+func (q *Queries) DecideApproval(ctx context.Context, arg DecideApprovalParams) (Approval, error) {
+	row := q.db.QueryRow(ctx, decideApproval,
+		arg.Status,
+		arg.Decision,
+		arg.EditedPayload,
+		arg.Comment,
+		arg.DecidedBy,
+		arg.Now,
+		arg.DecisionSource,
+		arg.ID,
+	)
+	var i Approval
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.StepID,
+		&i.Attempt,
+		&i.Status,
+		&i.Title,
+		&i.Description,
+		&i.Payload,
+		&i.AllowedDecisions,
+		&i.AllowEdit,
+		&i.EditSchema,
+		&i.TimeoutAt,
+		&i.Decision,
+		&i.EditedPayload,
+		&i.Comment,
+		&i.DecidedBy,
+		&i.DecidedAt,
+		&i.DecisionSource,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getApproval = `-- name: GetApproval :one
 SELECT id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at FROM approvals WHERE id = $1
 `
@@ -181,6 +249,75 @@ func (q *Queries) InsertApproval(ctx context.Context, arg InsertApprovalParams) 
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listApprovals = `-- name: ListApprovals :many
+SELECT id, run_id, step_id, attempt, status, title, description, payload, allowed_decisions, allow_edit, edit_schema, timeout_at, decision, edited_payload, comment, decided_by, decided_at, decision_source, created_at, updated_at FROM approvals
+WHERE ($1::text IS NULL OR status = $1::text)
+  AND ($2::uuid IS NULL OR run_id = $2::uuid)
+  AND ($3::timestamptz IS NULL
+       OR (created_at, id) > ($3::timestamptz, $4::uuid))
+ORDER BY created_at, id
+LIMIT $5
+`
+
+type ListApprovalsParams struct {
+	Status         *string
+	RunID          *uuid.UUID
+	AfterCreatedAt *time.Time
+	AfterID        *uuid.UUID
+	RowLimit       int32
+}
+
+// ListApprovals is the GET /v1/approvals list (ticket 15.3): optional status
+// and run filters, keyset paginated oldest-first (created_at, id) — the
+// inbox order the approvals_pending_idx serves. A NULL @status / @run_id
+// disables that filter; the cursor is the last row's (created_at, id).
+func (q *Queries) ListApprovals(ctx context.Context, arg ListApprovalsParams) ([]Approval, error) {
+	rows, err := q.db.Query(ctx, listApprovals,
+		arg.Status,
+		arg.RunID,
+		arg.AfterCreatedAt,
+		arg.AfterID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Approval
+	for rows.Next() {
+		var i Approval
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.StepID,
+			&i.Attempt,
+			&i.Status,
+			&i.Title,
+			&i.Description,
+			&i.Payload,
+			&i.AllowedDecisions,
+			&i.AllowEdit,
+			&i.EditSchema,
+			&i.TimeoutAt,
+			&i.Decision,
+			&i.EditedPayload,
+			&i.Comment,
+			&i.DecidedBy,
+			&i.DecidedAt,
+			&i.DecisionSource,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listApprovalsByRun = `-- name: ListApprovalsByRun :many

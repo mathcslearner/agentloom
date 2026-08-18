@@ -140,5 +140,14 @@ func edgeRowParams(runID uuid.UUID, e dag.Edge, ordinal, graphVersion int32, ori
 		maxIter := int32(e.MaxIterations) //nolint:gosec // validation-bounded
 		edge.MaxIterations = &maxIter
 	}
+	// The decision marker (ticket 15.3, ADR-017): a normal edge leaving a
+	// human_approval step under on_reject: route. NULL for an unmarked edge,
+	// so 15.3's reject-routing gate is a column comparison. Carried on both
+	// authored edges and engine-injected instances (a gate inside a loop keeps
+	// its reject edge across `#k`).
+	if e.Decision != "" {
+		dec := string(e.Decision)
+		edge.Decision = &dec
+	}
 	return edge
 }

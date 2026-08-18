@@ -592,6 +592,7 @@ type APIMetrics struct {
 	requestsInFlight prometheus.Gauge
 	rlDecisions      *prometheus.CounterVec
 	rlFailOpen       *prometheus.CounterVec
+	approvalDecided  *prometheus.CounterVec
 }
 
 // NewAPIMetrics registers the API instrument set on reg and returns the
@@ -620,8 +621,12 @@ func NewAPIMetrics(reg *prometheus.Registry) *APIMetrics {
 			Namespace: Namespace, Subsystem: "api", Name: "ratelimit_failopen_total",
 			Help: "Rate-limit acquires that errored (Redis unavailable) and were allowed through, by route class.",
 		}, []string{"class"}),
+		approvalDecided: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "approval", Name: "decisions_total",
+			Help: "Human-approval decisions recorded (ticket 15.3, ADR-017), by decision (approve/reject) and source (human/timeout). The pending gauge is engine_approval_pending (ticket 15.2).",
+		}, []string{"decision", "source"}),
 	}
-	reg.MustRegister(m.requests, m.requestDuration, m.requestsInFlight, m.rlDecisions, m.rlFailOpen)
+	reg.MustRegister(m.requests, m.requestDuration, m.requestsInFlight, m.rlDecisions, m.rlFailOpen, m.approvalDecided)
 	return m
 }
 
@@ -656,3 +661,9 @@ func (m *APIMetrics) Decision(class string, global, allowed bool) {
 // FailOpen satisfies api.RateLimitMetrics: one errored acquire allowed
 // through.
 func (m *APIMetrics) FailOpen(class string) { m.rlFailOpen.WithLabelValues(class).Inc() }
+
+// ApprovalDecided satisfies api.RequestMetrics: one human-approval decision
+// (ticket 15.3). decision is approve/reject; source is human/timeout.
+func (m *APIMetrics) ApprovalDecided(decision, source string) {
+	m.approvalDecided.WithLabelValues(decision, source).Inc()
+}

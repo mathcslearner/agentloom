@@ -147,6 +147,7 @@ type RunEdge struct {
 	GraphVersion  int32
 	OriginStep    *string
 	OriginKind    *string
+	Decision      *string
 }
 
 type RunStep struct {

@@ -696,6 +696,70 @@ func (q *Queries) CollectFailRunStep(ctx context.Context, arg CollectFailRunStep
 	return i, err
 }
 
+const deadLetterAwaitingHumanRunStep = `-- name: DeadLetterAwaitingHumanRunStep :one
+UPDATE run_steps
+SET status      = 'dead_lettered',
+    error       = $1,
+    finished_at = $2::timestamptz,
+    updated_at  = $2::timestamptz
+WHERE run_id = $3 AND step_id = $4
+  AND status = 'awaiting_human'
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind
+`
+
+type DeadLetterAwaitingHumanRunStepParams struct {
+	Error  json.RawMessage
+	Now    time.Time
+	RunID  uuid.UUID
+	StepID string
+}
+
+// Dead-letter a parked approval step on a reject under on_reject: fail
+// (ticket 15.3, ADR-006 row 24): awaiting_human → dead_lettered. No claim
+// fence (the step holds no lease); the approvals-row CAS is the arbiter.
+// error carries the approval_rejected summary.
+func (q *Queries) DeadLetterAwaitingHumanRunStep(ctx context.Context, arg DeadLetterAwaitingHumanRunStepParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, deadLetterAwaitingHumanRunStep,
+		arg.Error,
+		arg.Now,
+		arg.RunID,
+		arg.StepID,
+	)
+	var i RunStep
+	err := row.Scan(
+		&i.RunID,
+		&i.StepID,
+		&i.StepType,
+		&i.Config,
+		&i.Status,
+		&i.RemainingDeps,
+		&i.FiredDeps,
+		&i.ClaimID,
+		&i.AttemptCount,
+		&i.Output,
+		&i.Error,
+		&i.GraphVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
+		&i.Timeout,
+		&i.TraceSpan,
+		&i.CachePolicy,
+		&i.BudgetPolicy,
+		&i.ValidationPolicy,
+		&i.Feedback,
+		&i.BlackboardPolicy,
+		&i.ContextPolicy,
+		&i.Depth,
+		&i.OriginStep,
+		&i.OriginKind,
+	)
+	return i, err
+}
+
 const deadLetterRunStep = `-- name: DeadLetterRunStep :one
 UPDATE run_steps
 SET status      = 'dead_lettered',
@@ -877,7 +941,7 @@ func (q *Queries) FailRunRollup(ctx context.Context, arg FailRunRollupParams) (R
 }
 
 const getRunEdge = `-- name: GetRunEdge :one
-SELECT run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind FROM run_edges WHERE run_id = $1 AND ordinal = $2
+SELECT run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind, decision FROM run_edges WHERE run_id = $1 AND ordinal = $2
 `
 
 type GetRunEdgeParams struct {
@@ -901,6 +965,7 @@ func (q *Queries) GetRunEdge(ctx context.Context, arg GetRunEdgeParams) (RunEdge
 		&i.GraphVersion,
 		&i.OriginStep,
 		&i.OriginKind,
+		&i.Decision,
 	)
 	return i, err
 }
@@ -1151,7 +1216,7 @@ UPDATE run_edges
 SET resolution = $1
 WHERE run_id = $2 AND ordinal = $3
   AND edge_type = 'normal' AND resolution = 'unresolved'
-RETURNING run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind
+RETURNING run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind, decision
 `
 
 type ResolveRunEdgeParams struct {
@@ -1180,6 +1245,7 @@ func (q *Queries) ResolveRunEdge(ctx context.Context, arg ResolveRunEdgeParams) 
 		&i.GraphVersion,
 		&i.OriginStep,
 		&i.OriginKind,
+		&i.Decision,
 	)
 	return i, err
 }
@@ -1453,6 +1519,72 @@ type SkipRunStepParams struct {
 // resolved and none fired. finished_at stays NULL — the step never ran.
 func (q *Queries) SkipRunStep(ctx context.Context, arg SkipRunStepParams) (RunStep, error) {
 	row := q.db.QueryRow(ctx, skipRunStep, arg.Now, arg.RunID, arg.StepID)
+	var i RunStep
+	err := row.Scan(
+		&i.RunID,
+		&i.StepID,
+		&i.StepType,
+		&i.Config,
+		&i.Status,
+		&i.RemainingDeps,
+		&i.FiredDeps,
+		&i.ClaimID,
+		&i.AttemptCount,
+		&i.Output,
+		&i.Error,
+		&i.GraphVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
+		&i.Timeout,
+		&i.TraceSpan,
+		&i.CachePolicy,
+		&i.BudgetPolicy,
+		&i.ValidationPolicy,
+		&i.Feedback,
+		&i.BlackboardPolicy,
+		&i.ContextPolicy,
+		&i.Depth,
+		&i.OriginStep,
+		&i.OriginKind,
+	)
+	return i, err
+}
+
+const succeedAwaitingHumanRunStep = `-- name: SucceedAwaitingHumanRunStep :one
+UPDATE run_steps
+SET status      = 'succeeded',
+    output      = $1,
+    finished_at = $2::timestamptz,
+    updated_at  = $2::timestamptz
+WHERE run_id = $3 AND step_id = $4
+  AND status = 'awaiting_human'
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind
+`
+
+type SucceedAwaitingHumanRunStepParams struct {
+	Output json.RawMessage
+	Now    time.Time
+	RunID  uuid.UUID
+	StepID string
+}
+
+// Resolve a parked approval step on an approve/route decision:
+// awaiting_human → succeeded (ticket 15.3, ADR-017). No claim fence — the
+// step holds no lease while parked; the approvals-row CAS (DecideApproval)
+// is the single arbiter, so a second decision cannot reach this. The
+// decision output (with the edited-or-original payload) becomes the step's
+// output, consumed downstream by ordinary templating.
+func (q *Queries) SucceedAwaitingHumanRunStep(ctx context.Context, arg SucceedAwaitingHumanRunStepParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, succeedAwaitingHumanRunStep,
+		arg.Output,
+		arg.Now,
+		arg.RunID,
+		arg.StepID,
+	)
 	var i RunStep
 	err := row.Scan(
 		&i.RunID,

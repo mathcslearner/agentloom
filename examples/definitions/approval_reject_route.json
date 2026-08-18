@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "name": "approval-reject-route",
+  "description": "The ticket 15.3 reject-routing demonstration: a `human_approval` gate with `on_reject: route`. A rejected decision does not fail the run — the gate *succeeds* with `decision: reject` and fires only its `decision: reject` edge (to `notify_rejected`), while the unmarked approve edge (to `publish`) is skipped by ordinary skip propagation (ADR-017). An approve decision fires the approve edge and skips the reject edge instead. Either way the run completes; the author's choice of a dedicated reject branch versus a fail branch (`on_reject: fail`, the default in approval_gate.json) is a graph-shape decision the `decision` edge marker makes explicit and UI-renderable.",
+  "params": {
+    "topic": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "draft",
+      "type": "llm",
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Draft an article about ${{ run.params.topic }}.",
+        "max_tokens": 128
+      }
+    },
+    {
+      "id": "review",
+      "type": "human_approval",
+      "config": {
+        "title": "Publish or send back?",
+        "description": "Approve to publish, reject to route the draft back for revision.",
+        "payload": "${{ steps.draft.output }}",
+        "allowed_decisions": ["approve", "reject"],
+        "on_reject": "route"
+      }
+    },
+    {
+      "id": "publish",
+      "type": "echo",
+      "config": {
+        "input": {
+          "published": "${{ steps.review.output.payload }}"
+        }
+      }
+    },
+    {
+      "id": "notify_rejected",
+      "type": "echo",
+      "config": {
+        "input": {
+          "rejected": true,
+          "comment": "${{ steps.review.output.comment }}"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "draft",
+      "to": "review"
+    },
+    {
+      "from": "review",
+      "to": "publish"
+    },
+    {
+      "from": "review",
+      "to": "notify_rejected",
+      "decision": "reject"
+    }
+  ]
+}

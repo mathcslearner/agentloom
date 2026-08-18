@@ -89,7 +89,7 @@ func (HumanApprovalExecutor) Execute(_ context.Context, sc StepContext) (Output,
 	// attempt (the 11.3 output_format claim-pre-flight precedent). The
 	// compiled artifact is not persisted; 15.3 recompiles at decide time.
 	if len(c.EditSchema) > 0 {
-		if err := compileEditSchema(c.EditSchema); err != nil {
+		if _, err := CompileEditSchema(c.EditSchema); err != nil {
 			return Output{}, Permanentf("human_approval: edit_schema does not compile: %v", err)
 		}
 	}
@@ -123,19 +123,20 @@ func (HumanApprovalExecutor) Execute(_ context.Context, sc StepContext) (Output,
 	return Output{Data: data}, nil
 }
 
-// compileEditSchema compiles an edit-constraint JSON Schema, mirroring the
+// CompileEditSchema compiles an edit-constraint JSON Schema, mirroring the
 // json_schema validator's compilation (self-contained schemas; no external
-// $ref resolution).
-func compileEditSchema(raw json.RawMessage) error {
+// $ref resolution). It is the shared compiler for both the 15.2 park
+// pre-flight (schema must compile before the step parks) and 15.3's decide
+// path (validate an edited payload against the returned schema).
+func CompileEditSchema(raw json.RawMessage) (*jsonschema.Schema, error) {
 	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	c := jsonschema.NewCompiler()
 	const loc = "mem://human-approval/edit-schema.json"
 	if err := c.AddResource(loc, doc); err != nil {
-		return err
+		return nil, err
 	}
-	_, err = c.Compile(loc)
-	return err
+	return c.Compile(loc)
 }

@@ -92,6 +92,7 @@ func exercise(w *metrics.WorkerMetrics, a *metrics.APIMetrics) {
 	a.Request("/v1/runs", "POST", 200, 20*time.Millisecond)
 	a.RequestStarted()
 	a.RequestFinished()
+	a.ApprovalDecided("approve", "human")
 	a.Decision("submit", false, true)
 	a.Decision("submit", true, false)
 	a.FailOpen("read")

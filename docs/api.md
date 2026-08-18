@@ -614,6 +614,50 @@ curl -s -X POST http://127.0.0.1:8080/v1/cache/bust \
 
 Both render through `ctl cache stats` and `ctl cache bust [--kind K] [--name N]`.
 
+## Human approvals
+
+A `human_approval` step (ADR-017) parks its branch — holding no lease or worker
+slot — until a decision resumes it. Two endpoints drive the decision.
+
+`GET /v1/approvals` (scope `read`) lists approvals oldest-first — the pending
+inbox — filterable by `status` (`pending`/`approved`/`rejected`/`expired`/
+`cancelled`) and `run_id`, keyset-paginated like the run list:
+
+```bash
+curl -s -H "Authorization: Bearer $KEY" \
+  "$API/v1/approvals?status=pending" | jq '.approvals[] | {id, run_id, step_id, title}'
+```
+
+`POST /v1/approvals/{id}:decide` (scope `approve`) resolves one approval. The
+body is `{decision, edited_payload?, comment?}`:
+
+```bash
+# Approve, optionally editing the payload (must satisfy the gate's edit schema):
+curl -s -X POST -H "Authorization: Bearer $APPROVE_KEY" \
+  -d '{"decision":"approve","edited_payload":{"text":"final copy"},"comment":"lgtm"}' \
+  "$API/v1/approvals/$ID:decide" | jq '{status: .approval.status, readied: .readied_steps}'
+
+# Reject (routes per the gate's on_reject: fail dead-letters the step; route fires the reject edge):
+curl -s -X POST -H "Authorization: Bearer $APPROVE_KEY" \
+  -d '{"decision":"reject","comment":"needs work"}' "$API/v1/approvals/$ID:decide"
+```
+
+On approve (or a reject routed via `on_reject: route`) the step succeeds with the
+decision output `{approval_id, decision, payload, edited, comment, decided_by,
+decided_at, source}` — downstream steps read `${{ steps.<gate>.output.payload }}`
+— and its successors dispatch on the worker fleet's cadence. A reject under
+`on_reject: fail` dead-letters the step (`approval_rejected: <comment>`) and the
+run follows its `on_failure` disposition; a DLQ requeue re-runs the gate,
+producing a fresh pending approval.
+
+One compare-and-swap on the approvals row is the sole arbiter: a second decision
+(or a race with the timeout policy) gets `409 approval_not_pending`. An edited
+payload that violates the gate's edit schema is `422 approval_decision_invalid`
+with the schema `issues`. The decision — actor key id, timestamp, comment,
+decision, edit — is immutable in the run view's `approvals[]` and the
+`approval_decided` event. `ctl approvals`, `ctl approve <id> [--edit @file]
+[--comment ...]`, and `ctl reject <id> [--comment ...]` mirror the endpoints.
+
 ## Errors and rate limits
 
 Every non-2xx response carries one envelope:

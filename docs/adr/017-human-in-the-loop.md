@@ -365,6 +365,92 @@ submitters. A `submitted_by` attribution on runs and an enforced SoD policy are
 deferred (they need per-user identity, which is out of scope for single-tenant
 v1).
 
+### Decision API (as built, 15.3)
+
+15.3 built the decision half exactly to the contract above: **one migration
+(0026), no new config var, one new metric** (the `approval` subsystem's
+decisions counter on the API instrument set). No timeout scheduling — that is
+15.4 — but the whole human decision path is complete and usable headlessly and
+by `ctl`.
+
+- **The arbiter lives on `engine.Control`.** `Control.Decide(ctx, approvalID,
+  DecideRequest)` is the single decision op, on the registry-free control
+  surface (no executor registry, no queue — the API server holds one, ADR-002).
+  It is deliberately the *shared* path: 15.4's timeout policy calls the same
+  `Decide` with `Source: timeout` and `DecidedBy: system:timeout`, so "the same
+  compare-and-swap as a human decision" holds by construction. Successors are
+  dispatched through the transactional outbox on the fleet's drain cadence (the
+  API's Control carries no dispatch nudge — the `Unpark`/`Requeue` precedent).
+
+- **One transaction, the CAS is the fence.** Pre-transaction, `Decide` loads the
+  approval, its step, and its run, and validates the decision against the gate
+  (below) — a rejection here is a client error before anything is written. Then
+  one transaction: `LockRunStatus` gates on the run being **running or parked**
+  (the fail-fast note — a run may have failed with an approval still pending;
+  such a decision is a 409), `store.DecideApproval` CASes the `approvals` row
+  `pending → approved|rejected` (the single arbiter — a loser matches nothing and
+  returns `*store.ApprovalNotPendingError` → 409, rolling the whole transaction
+  back so nothing is written), and the parked step is settled in the same tx.
+
+- **Settlement by decision.** Approve, or a reject routed via `on_reject: route`,
+  calls `store.SucceedAwaitingHumanStep` (an **unfenced** `awaiting_human →
+  succeeded` — the step holds no lease; the approvals CAS is the fence) with the
+  ADR-017 decision output as the step's result, then reads the out-edges under
+  the run lock, plans them (`planEdges` for the `when` predicates), **filters by
+  the decision edge marker** (`filterDecisionVerdicts`: on approve, unmarked and
+  `approve`-marked edges fire; on reject-route, only `reject`-marked edges fire —
+  the unmarked approve edge is skipped by ordinary skip propagation), fans out,
+  and writes the outbox rows. A reject under `on_reject: fail` calls
+  `store.DeadLetterAwaitingHumanStep` (unfenced `awaiting_human → dead_lettered`,
+  attempt outcome `permanent`, a `permanent` DLQ record with message
+  `approval_rejected: <comment>` — ADR-006 row 24) and applies the run's
+  `on_failure` disposition (`deadLetterDisposition`). A DLQ requeue re-runs the
+  gate, minting a fresh pending approval (the unique-pending index is satisfied
+  because the old row is now `rejected`).
+
+- **The decision edge marker is materialized.** Migration 0026 adds
+  `run_edges.decision` (`approve`/`reject`/NULL), stamped by the shared
+  `edgeRowParams` so authored edges and engine-injected instances (a gate inside
+  a loop keeps its reject edge across `#k`) carry it identically. The runtime
+  gate is then a column comparison, never a re-decode of the definition snapshot
+  (which could not cleanly see injected instances).
+
+- **Edit validation reuses the json_schema validator.** An `edited_payload` is
+  accepted only on an approve and only when the gate permits edits; when the gate
+  carries an `edit_schema`, the payload is checked through the built-in
+  `validate.JSONSchema` validator, so the issue flattening (RFC 6901 pointers,
+  structure-only messages) is the same tested mapping the validate stage uses. A
+  violation is a `*engine.DecisionInvalidError` → **422** with the issues; the
+  approval stays pending.
+
+- **API surface.** `GET /v1/approvals` (`read` scope, `read` rate class) — a
+  keyset page of approvals, oldest-first (the inbox), filterable by `status` and
+  `run_id`. `POST /v1/approvals/{id}:decide` (`approve` scope, **`submit`** rate
+  class — a mutating op reusing the submit bucket rather than a new class) —
+  `{decision, edited_payload?, comment?}`, actor taken from the authenticated
+  key. Error codes: `approval_not_found` (404), `approval_not_pending` (409),
+  `approval_decision_invalid` (422 with issues), `conflict` (409, wrong run
+  state). `ctl approvals` / `ctl approve` / `ctl reject` mirror them.
+
+- **Audit & metric.** The decision — actor, timestamp, comment, decision, and any
+  edit — is written immutably on the `approvals` row and in the `approval_decided`
+  event (`store.ApprovalDecidedEvent`), and surfaced in the run view's
+  `approvals[]`. The `engine_approval_decisions_total{decision,source}` counter
+  (ADR-008 `approval` subsystem, on `APIMetrics`) is recorded post-commit from
+  the decide handler.
+
+**Decisions.** The arbiter on `Control` (shared by the human path now and the
+15.4 timeout path); the CAS as the sole fence for the claimless
+`awaiting_human →` transitions; `parked` runs accept decisions (a decision on a
+parked run settles the step; `unpark` resumes the rest); the decision edge
+marker materialized on `run_edges` rather than re-decoded; edit validation via
+the existing json_schema validator; the decide endpoint under the `submit` rate
+class (no new class); a re-read of the run for the response rollup (Control
+returns the terminal run only when it terminalized it). **Deferred to 15.4:** the
+decisions counter is on `APIMetrics` (the human path); the worker's timeout path
+will need the same-named counter on its instrument set — noted for 15.4 to place
+it on a shared set or split the conformance harness.
+
 ### Interplay with the rest of the engine
 
 - **Expansions (ADR-015).** An approval inside a loop body is unrolled to a

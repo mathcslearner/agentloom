@@ -72,6 +72,8 @@ tags:
     description: Submit, inspect, and steer workflow runs.
   - name: Definitions
     description: The stored, versioned workflow-definition registry.
+  - name: Approvals
+    description: Human-in-the-loop approval inbox and decisions (ADR-017).
   - name: Plugins
     description: The plugin catalog — manifests and config schemas (ADR-009).
   - name: Cache
@@ -851,6 +853,123 @@ paths:
         "500":
           $ref: "#/components/responses/Internal"
 
+  /v1/approvals:
+    get:
+      operationId: listApprovals
+      tags: [Approvals]
+      summary: List human-approval requests
+      description: |
+        Scope `read`, rate-limit class `read`. One keyset page of human-approval
+        records (ADR-017, ticket 15.3), oldest-first — the pending-approval
+        inbox. Filter by `status` (pending / approved / rejected / expired /
+        cancelled) and/or `run_id`. Pagination is stable: a page's `next_cursor`
+        feeds the next request verbatim.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, approved, rejected, expired, cancelled]
+          description: Filter to one approval status (default = all).
+        - name: run_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Filter to one run's approvals.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          description: Page size (default 50, max 200).
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque cursor from a previous page's next_cursor.
+      responses:
+        "200":
+          description: One page of approvals, oldest-first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/approvals/{approvalID}:decide:
+    post:
+      operationId: decideApproval
+      tags: [Approvals]
+      summary: Decide a pending approval
+      description: |
+        Scope `approve`, rate-limit class `submit`. Resolves one pending
+        human-approval request (ADR-017, ticket 15.3) through the single
+        compare-and-swap arbiter: approve (or a reject routed via
+        `on_reject: route`) succeeds the parked step with the decision output
+        `{approval_id, decision, payload, edited, comment, decided_by,
+        decided_at, source}` and dispatches its successors on the fleet's drain
+        cadence; a reject under `on_reject: fail` dead-letters the step
+        (permanent) and applies the run's `on_failure` disposition. An
+        `edited_payload` is accepted only on approve and only when the gate
+        permits edits, and is validated against the gate's edit schema. The
+        actor key id, timestamp, and comment are recorded immutably. The run
+        must be running or parked; a decision on a run that has since failed or
+        finished is a 409. A double-decide (or a decision racing a timeout
+        expiry) is a 409 `approval_not_pending`.
+      parameters:
+        - name: approvalID
+          in: path
+          required: true
+          description: The approval's UUID.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        description: The decision, an optional edited payload, and an optional comment.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecideApprovalRequest"
+      responses:
+        "200":
+          description: The decision was recorded and the step settled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecideApprovalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/DecisionInvalid"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+
   /v1/plugins:
     get:
       operationId: listPlugins
@@ -1295,6 +1414,23 @@ components:
             $ref: "#/components/schemas/Error"
           example:
             error: { code: cache_unavailable, message: response cache is not enabled on this API }
+    DecisionInvalid:
+      description: >
+        The decision is not permitted by the gate (code
+        `approval_decision_invalid`, ADR-017, ticket 15.3) — a decision outside
+        the allowed set, an edit where none is permitted, an edit on a
+        non-approve decision, or an edited payload that violates the edit
+        schema. The `issues` carry the schema violations (RFC 6901 pointers).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: approval_decision_invalid
+              message: edited payload does not satisfy the edit schema
+              issues:
+                - { severity: error, path: /text, msg: "got number, want string" }
 
   schemas:
     # --- The workflow definition contract (generated; do not inline). ---
@@ -1352,6 +1488,9 @@ components:
         - method_not_allowed
         - internal
         - cache_unavailable
+        - approval_not_found
+        - approval_not_pending
+        - approval_decision_invalid
     Issue:
       type: object
       description: One path-qualified definition problem.
@@ -1977,6 +2116,10 @@ components:
         id:
           type: string
           format: uuid
+        run_id:
+          type: string
+          format: uuid
+          description: The approval's run. Present on the GET /v1/approvals list; omitted on the run-status view (already run-scoped).
         step_id:
           type: string
         attempt:
@@ -2024,6 +2167,57 @@ components:
         created_at:
           type: string
           format: date-time
+    ApprovalListResponse:
+      type: object
+      description: >
+        One keyset page of approvals (ADR-017, ticket 15.3), oldest-first — the
+        pending-approval inbox. `next_cursor` is the opaque cursor for the next
+        page; absent on the last page.
+      required: [approvals]
+      properties:
+        approvals:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApprovalView"
+        next_cursor:
+          type: string
+          description: Opaque cursor for the next page; absent when the page is the last.
+    DecideApprovalRequest:
+      type: object
+      additionalProperties: false
+      description: >
+        A decision on a pending approval (ADR-017, ticket 15.3): the decision,
+        an optional edited payload (approve only, constrained by the gate's
+        edit schema), and an optional comment recorded in the audit trail.
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [approve, reject]
+        edited_payload:
+          description: >
+            Replaces the original payload as the step's output payload (approve
+            only, and only when the gate permits edits). Any JSON value.
+        comment:
+          type: string
+          description: Optional approver note, recorded immutably.
+    DecideApprovalResponse:
+      type: object
+      description: >
+        The decision result (ticket 15.3): the decided approval (carrying the
+        immutable decision record), the run rollup after settlement, and the
+        successors this decision made ready. The settled step's status is
+        visible via GET /v1/runs/{id}.
+      required: [approval, run, readied_steps]
+      properties:
+        approval:
+          $ref: "#/components/schemas/ApprovalView"
+        run:
+          $ref: "#/components/schemas/RunView"
+        readied_steps:
+          type: array
+          items:
+            type: string
     RunGraphResponse:
       type: object
       description: >

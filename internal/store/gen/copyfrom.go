@@ -40,6 +40,7 @@ func (r iteratorForCreateRunEdges) Values() ([]interface{}, error) {
 		r.rows[0].GraphVersion,
 		r.rows[0].OriginStep,
 		r.rows[0].OriginKind,
+		r.rows[0].Decision,
 	}, nil
 }
 
@@ -50,7 +51,7 @@ func (r iteratorForCreateRunEdges) Err() error {
 // CreateRunEdges is the batch (COPY) form for run instantiation (2.5) and
 // expansion (13.2).
 func (q *Queries) CreateRunEdges(ctx context.Context, arg []CreateRunEdgesParams) (int64, error) {
-	return q.db.CopyFrom(ctx, []string{"run_edges"}, []string{"run_id", "ordinal", "from_step", "to_step", "edge_type", "when_expr", "condition", "max_iterations", "graph_version", "origin_step", "origin_kind"}, &iteratorForCreateRunEdges{rows: arg})
+	return q.db.CopyFrom(ctx, []string{"run_edges"}, []string{"run_id", "ordinal", "from_step", "to_step", "edge_type", "when_expr", "condition", "max_iterations", "graph_version", "origin_step", "origin_kind", "decision"}, &iteratorForCreateRunEdges{rows: arg})
 }
 
 // iteratorForCreateRunSteps implements pgx.CopyFromSource.

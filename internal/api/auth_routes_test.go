@@ -40,6 +40,8 @@ var routeScopes = map[string]Scope{
 	"GET /v1/definitions/{defID}":                  ScopeRead,
 	"GET /v1/definitions/{name}/versions":          ScopeRead,
 	"POST /v1/definitions/{name}/versions":         ScopeSubmit,
+	"GET /v1/approvals":                            ScopeRead,
+	"POST /v1/approvals/{approvalID}:decide":       ScopeApprove,
 	"GET /v1/plugins":                              ScopeRead,
 	"POST /v1/cache/bust":                          ScopeAdmin,
 	"GET /v1/cache/stats":                          ScopeAdmin,

@@ -118,6 +118,13 @@ each example's "header comment" is its top-level `description` field.
   and default `on_reject: fail` routing. Running it stops at `approve_publish`
   in `awaiting_human` while the fleet keeps executing other runs; the decision
   API (15.3) resumes it.
+- **[approval_reject_route.json](approval_reject_route.json)** — reject routing
+  (ticket 15.3, ADR-017): a `human_approval` gate with `on_reject: route`. A
+  reject does not fail the run — the gate *succeeds* with `decision: reject` and
+  fires only its `decision: reject` edge (to `notify_rejected`), while the
+  unmarked approve edge (to `publish`) is skipped. An approve fires the approve
+  edge instead. Either way the run completes; the `decision` edge marker makes
+  the reject branch explicit and UI-renderable.
 - **[kitchen_sink.json](kitchen_sink.json)** — one coherent
   research-and-publish pipeline exercising every construct: every registered
   step type (including a `map` over a `templates` sub-template and a `gather`),

@@ -162,6 +162,30 @@ func (c *client) requeueStep(ctx context.Context, runID, stepID string) (api.Req
 	return resp, err
 }
 
+// listApprovals GETs one page of human-approval records (ticket 15.3). query
+// is the raw query string (status/run_id/limit/cursor), already assembled.
+func (c *client) listApprovals(ctx context.Context, query string) (api.ApprovalListResponse, error) {
+	var resp api.ApprovalListResponse
+	path := "/v1/approvals"
+	if query != "" {
+		path += "?" + query
+	}
+	err := c.do(ctx, http.MethodGet, path, nil, &resp)
+	return resp, err
+}
+
+// decideApproval POSTs a decision on a pending approval (ticket 15.3).
+func (c *client) decideApproval(ctx context.Context, approvalID string, req api.DecideApprovalRequest) (api.DecideApprovalResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return api.DecideApprovalResponse{}, fmt.Errorf("encoding request: %w", err)
+	}
+	var resp api.DecideApprovalResponse
+	// The decide verb rides as a literal ":decide" suffix on the id segment.
+	err = c.do(ctx, http.MethodPost, "/v1/approvals/"+url.PathEscape(approvalID)+":decide", body, &resp)
+	return resp, err
+}
+
 // listPlugins GETs the plugin catalog (ticket 8.1).
 func (c *client) listPlugins(ctx context.Context) (api.ListPluginsResponse, error) {
 	var resp api.ListPluginsResponse

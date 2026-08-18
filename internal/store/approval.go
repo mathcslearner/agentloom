@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -218,16 +219,275 @@ func CancelAwaitingHumanStep(ctx context.Context, q Querier, args CancelAwaiting
 	return step, nil
 }
 
-// ApprovalRepo reads the approvals table (ticket 15.2, ADR-017). Writes go
-// through the transition-style helpers above (AwaitHumanStep,
-// CancelAwaitingHumanStep) so the approval row, the step CAS, and the events
-// are one atomic unit — like the cost ledger. These reads serve the
-// run-status view (ListByRun) and the pending-approvals gauge (CountPending).
+// ApprovalDecidedEvent is the approval_decided event payload (ticket 15.3,
+// ADR-017): a pending approval was decided through the single arbiter CAS.
+// The M16 event feed and the M18 inbox read it to reflect a decision without
+// re-reading the approvals table.
+type ApprovalDecidedEvent struct {
+	ApprovalID string `json:"approval_id"`
+	StepID     string `json:"step_id"`
+	AttemptNo  int32  `json:"attempt"`
+	// Decision is the recorded decision (approve / reject).
+	Decision string `json:"decision"`
+	// Edited reports whether an edited payload replaced the original.
+	Edited bool `json:"edited,omitempty"`
+	// Comment is the optional approver note.
+	Comment string `json:"comment,omitempty"`
+	// DecidedBy is the actor: a key_id for a human decision, or the reserved
+	// ApprovalActorTimeout for a timeout decision (15.4).
+	DecidedBy string `json:"decided_by"`
+	// Source is `human` or `timeout` (ApprovalSource*).
+	Source string `json:"source"`
+}
+
+// ApprovalNotPendingError is returned by DecideApproval when the arbiter CAS
+// matched no pending row: the approval was already decided, expired, or
+// cancelled (a concurrent decide or a timeout expiry won the race). Status is
+// the actual current status, surfaced to the caller as a 409. errors.As-able.
+type ApprovalNotPendingError struct {
+	ID     uuid.UUID
+	Status string
+}
+
+func (e *ApprovalNotPendingError) Error() string {
+	return "approval " + e.ID.String() + " is not pending (status " + e.Status + ")"
+}
+
+// DecideApprovalArgs are the inputs to DecideApproval.
+type DecideApprovalArgs struct {
+	// ID is the approval to decide.
+	ID uuid.UUID
+	// RunID is the approval's run (for the run lock and the event append).
+	RunID uuid.UUID
+	// StepID / AttemptNo attribute the approval to its parked step's open
+	// attempt (for the event payload).
+	StepID    string
+	AttemptNo int32
+	// Status is the target approval status: ApprovalStatusApproved or
+	// ApprovalStatusRejected.
+	Status string
+	// Decision is the recorded decision string (approve / reject).
+	Decision string
+	// EditedPayload is the approver-supplied edited payload (nil = none / not
+	// edited). Written verbatim onto the approvals row for audit; the step's
+	// output payload is chosen by the caller (engine).
+	EditedPayload json.RawMessage
+	// Comment is the optional approver note; empty stores NULL.
+	Comment string
+	// DecidedBy is the actor's key_id (or ApprovalActorTimeout for a timeout).
+	DecidedBy string
+	// Source is ApprovalSourceHuman or ApprovalSourceTimeout.
+	Source string
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// DecideApproval is the single-arbiter CAS of the decision API (ticket 15.3,
+// ADR-017): under the run lock it CASes the approvals row
+// pending → approved|rejected, keyed by id with a pending guard, and appends
+// the approval_decided event. It writes ONLY the approvals row and the event
+// — the caller settles the parked step (succeed / dead-letter) in the same
+// transaction, so the whole decision is atomic. A CAS that matches nothing
+// (already decided / expired / cancelled) returns a *ApprovalNotPendingError,
+// which the caller turns into a 409; the transaction rolls back and nothing
+// is written (the loser of the race changes nothing).
+func DecideApproval(ctx context.Context, q Querier, args DecideApprovalArgs) (gen.Approval, error) {
+	const op = "decide approval"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.Approval{}, err
+	}
+	if args.Status != ApprovalStatusApproved && args.Status != ApprovalStatusRejected {
+		return gen.Approval{}, fmt.Errorf("store: %s: status %q is not a decision status", op, args.Status)
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.Approval{}, err
+	}
+	var comment *string
+	if args.Comment != "" {
+		comment = &args.Comment
+	}
+	decision := args.Decision
+	decidedBy := args.DecidedBy
+	source := args.Source
+	approval, err := gq.DecideApproval(ctx, gen.DecideApprovalParams{
+		ID: args.ID, Status: args.Status, Decision: &decision,
+		EditedPayload: args.EditedPayload, Comment: comment,
+		DecidedBy: &decidedBy, DecisionSource: &source, Now: args.Now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The CAS matched nothing — re-read to name the actual status.
+		cur, gerr := gq.GetApproval(ctx, args.ID)
+		if errors.Is(gerr, pgx.ErrNoRows) {
+			return gen.Approval{}, wrapErr(op, gerr) // vanished (ErrNotFound)
+		}
+		if gerr != nil {
+			return gen.Approval{}, wrapErr(op, gerr)
+		}
+		return gen.Approval{}, &ApprovalNotPendingError{ID: args.ID, Status: cur.Status}
+	}
+	if err != nil {
+		return gen.Approval{}, wrapErr(op, err)
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventApprovalDecided, ApprovalDecidedEvent{
+		ApprovalID: args.ID.String(), StepID: args.StepID, AttemptNo: args.AttemptNo,
+		Decision: args.Decision, Edited: len(args.EditedPayload) > 0,
+		Comment: args.Comment, DecidedBy: args.DecidedBy, Source: args.Source,
+	}); err != nil {
+		return gen.Approval{}, err
+	}
+	return approval, nil
+}
+
+// SucceedAwaitingHumanStepArgs are the inputs to SucceedAwaitingHumanStep.
+type SucceedAwaitingHumanStepArgs struct {
+	RunID  uuid.UUID
+	StepID string
+	// Output is the ADR-017 decision output that becomes the step's result —
+	// the {approval_id, decision, payload, ...} object downstream steps read.
+	Output json.RawMessage
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// SucceedAwaitingHumanStep settles a parked approval step on an approve (or a
+// reject routed via on_reject: route) — awaiting_human → succeeded (ticket
+// 15.3, ADR-017). It closes the open attempt (which spanned the human wait)
+// succeeded, bumps steps_succeeded, and appends step_succeeded. No claim
+// fence — the step holds no lease while parked; the DecideApproval CAS the
+// caller ran first is the single arbiter, so a second decision cannot reach
+// here. The out-edge fan-out is the caller's next move in the same tx.
+func SucceedAwaitingHumanStep(ctx context.Context, q Querier, args SucceedAwaitingHumanStepArgs) (gen.RunStep, error) {
+	const op = "succeed awaiting human step"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.RunStep{}, err
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.RunStep{}, err
+	}
+	step, err := gq.SucceedAwaitingHumanRunStep(ctx, gen.SucceedAwaitingHumanRunStepParams{
+		RunID: args.RunID, StepID: args.StepID, Output: args.Output, Now: args.Now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.RunStep{}, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
+			want: StepStatusAwaitingHuman, to: StepStatusSucceeded,
+		})
+	}
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op, err)
+	}
+	if err := finishAttempt(ctx, gq, op, step, StepStatusSucceeded, nil, nil, nil, nil, args.Now); err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DSucceeded: 1}); err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepSucceeded, stepFinishedPayload{
+		StepID: args.StepID, AttemptNo: step.AttemptCount,
+	}); err != nil {
+		return gen.RunStep{}, err
+	}
+	log.From(ctx).DebugContext(ctx, "approval step resolved: succeeded",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID), log.Attempt(int(step.AttemptCount)))
+	return step, nil
+}
+
+// DeadLetterAwaitingHumanStepArgs are the inputs to DeadLetterAwaitingHumanStep.
+type DeadLetterAwaitingHumanStepArgs struct {
+	RunID  uuid.UUID
+	StepID string
+	// Error is the approval_rejected failure summary stored on the step, the
+	// attempt, and the dead_letters record.
+	Error json.RawMessage
+	// Now is the injected current time. Required.
+	Now time.Time
+}
+
+// DeadLetterAwaitingHumanStep settles a parked approval step on a reject under
+// on_reject: fail — awaiting_human → dead_lettered (ticket 15.3, ADR-006 row
+// 24). It closes the open attempt with the administrative outcome `permanent`
+// (a reject is not a content failure of the executor — no retry, no budget
+// consumption), bumps steps_failed, inserts the dead_letters record (source
+// permanent), and appends step_dead_lettered. No claim fence (no lease held);
+// the DecideApproval CAS is the arbiter. The run disposition (FailRun or the
+// write-off walk) is the caller's next move in the same transaction.
+func DeadLetterAwaitingHumanStep(ctx context.Context, q Querier, args DeadLetterAwaitingHumanStepArgs) (gen.RunStep, error) {
+	const op = "dead-letter awaiting human step"
+	gq, err := transitionQueries(ctx, q, op, args.Now)
+	if err != nil {
+		return gen.RunStep{}, err
+	}
+	if _, err := lockRun(ctx, gq, op, args.RunID); err != nil {
+		return gen.RunStep{}, err
+	}
+	step, err := gq.DeadLetterAwaitingHumanRunStep(ctx, gen.DeadLetterAwaitingHumanRunStepParams{
+		RunID: args.RunID, StepID: args.StepID, Error: args.Error, Now: args.Now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gen.RunStep{}, stepConflict(ctx, gq, op, args.RunID, args.StepID, stepConflictArgs{
+			want: StepStatusAwaitingHuman, to: StepStatusDeadLettered,
+		})
+	}
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op, err)
+	}
+	// A reject is a permanent disposition but not a retryable-class failure —
+	// record the attempt outcome as permanent (ADR-006 row 24).
+	class := AttemptOutcomePermanent
+	if err := finishAttempt(ctx, gq, op, step, class, args.Error, nil, nil, nil, args.Now); err != nil {
+		return gen.RunStep{}, err
+	}
+	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DFailed: 1}); err != nil {
+		return gen.RunStep{}, err
+	}
+	dl, err := gq.CreateDeadLetter(ctx, gen.CreateDeadLetterParams{
+		RunID: args.RunID, StepID: args.StepID, Source: DeadLetterSourcePermanent, Class: &class,
+		Error: args.Error, AttemptsAtDeath: step.AttemptCount, CreatedAt: args.Now,
+	})
+	if err != nil {
+		return gen.RunStep{}, wrapErr(op+": insert dead letter", err)
+	}
+	if err := appendEvent(ctx, gq, op, args.RunID, EventStepDeadLettered, stepDeadLetteredPayload{
+		StepID: args.StepID, Source: DeadLetterSourcePermanent, Class: class,
+		Attempts: step.AttemptCount, Seq: dl.Seq,
+	}); err != nil {
+		return gen.RunStep{}, err
+	}
+	log.From(ctx).InfoContext(ctx, "approval step resolved: rejected → dead-lettered",
+		log.RunID(args.RunID.String()), log.StepID(args.StepID), log.Attempt(int(step.AttemptCount)))
+	return step, nil
+}
+
+// ListApprovalsArgs parameterize ApprovalRepo.List (ticket 15.3).
+type ListApprovalsArgs struct {
+	// Status, when non-empty, filters to one approval status.
+	Status string
+	// RunID, when non-nil, filters to one run.
+	RunID *uuid.UUID
+	// AfterCreatedAt / AfterID are the keyset cursor (nil = first page).
+	AfterCreatedAt *time.Time
+	AfterID        *uuid.UUID
+	// Limit is the max rows to return (the handler passes limit+1 to detect a
+	// next page).
+	Limit int32
+}
+
+// ApprovalRepo reads the approvals table (ticket 15.2/15.3, ADR-017). Writes
+// go through the transition-style helpers above (AwaitHumanStep,
+// CancelAwaitingHumanStep, DecideApproval, SucceedAwaitingHumanStep,
+// DeadLetterAwaitingHumanStep) so the approval row, the step CAS, and the
+// events are one atomic unit — like the cost ledger. These reads serve the
+// run-status view (ListByRun), the decision API list (List), and the
+// pending-approvals gauge (CountPending).
 type ApprovalRepo interface {
 	// Get reads one approval by id (15.3's decide path).
 	Get(ctx context.Context, id uuid.UUID) (gen.Approval, error)
 	// ListByRun returns a run's approvals, newest first.
 	ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.Approval, error)
+	// List returns approvals filtered by status/run, keyset paginated
+	// oldest-first (the GET /v1/approvals inbox).
+	List(ctx context.Context, args ListApprovalsArgs) ([]gen.Approval, error)
 	// CountPending is the fleet-wide pending-approval count (the gauge source).
 	CountPending(ctx context.Context) (int64, error)
 }
@@ -242,6 +502,19 @@ func (r approvalRepo) Get(ctx context.Context, id uuid.UUID) (gen.Approval, erro
 func (r approvalRepo) ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.Approval, error) {
 	rows, err := r.q.ListApprovalsByRun(ctx, runID)
 	return rows, wrapErr("list approvals by run", err)
+}
+
+func (r approvalRepo) List(ctx context.Context, args ListApprovalsArgs) ([]gen.Approval, error) {
+	var status *string
+	if args.Status != "" {
+		status = &args.Status
+	}
+	rows, err := r.q.ListApprovals(ctx, gen.ListApprovalsParams{
+		Status: status, RunID: args.RunID,
+		AfterCreatedAt: args.AfterCreatedAt, AfterID: args.AfterID,
+		RowLimit: args.Limit,
+	})
+	return rows, wrapErr("list approvals", err)
 }
 
 func (r approvalRepo) CountPending(ctx context.Context) (int64, error) {

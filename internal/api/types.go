@@ -58,6 +58,18 @@ const (
 	// independence means the cache ops are an opt-in extra, never a boot
 	// dependency; an operator who wants them enables the cache.
 	ErrCodeCacheUnavailable = "cache_unavailable"
+	// ErrCodeApprovalNotFound: no approval with the requested id (404,
+	// ticket 15.3).
+	ErrCodeApprovalNotFound = "approval_not_found"
+	// ErrCodeApprovalNotPending: the approval was already decided, expired,
+	// or cancelled — a concurrent decide or a timeout expiry won the arbiter
+	// CAS (409, ticket 15.3).
+	ErrCodeApprovalNotPending = "approval_not_pending"
+	// ErrCodeApprovalDecisionInvalid: the decision is not permitted by the
+	// gate — outside the allowed set, an edit where none is allowed, an edit
+	// on a non-approve decision, or an edited payload violating the edit
+	// schema (422, ticket 15.3). The issues carry the schema violations.
+	ErrCodeApprovalDecisionInvalid = "approval_decision_invalid"
 )
 
 // ErrorBody is the envelope every non-2xx response carries.
@@ -288,7 +300,10 @@ type DeadLetterView struct {
 // decided (15.3), the immutable decision. In 15.2 only pending and cancelled
 // statuses appear; the decision fields fill in with the decision API.
 type ApprovalView struct {
-	ID               string          `json:"id"`
+	ID string `json:"id"`
+	// RunID is the approval's run. Present on the GET /v1/approvals list (the
+	// run-status view already scopes to one run); omitted there.
+	RunID            string          `json:"run_id,omitempty"`
 	StepID           string          `json:"step_id"`
 	Attempt          int             `json:"attempt"`
 	Status           string          `json:"status"`
@@ -307,6 +322,34 @@ type ApprovalView struct {
 	DecidedAt      *time.Time      `json:"decided_at,omitempty"`
 	DecisionSource string          `json:"decision_source,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
+}
+
+// ApprovalListResponse is GET /v1/approvals (ticket 15.3, ADR-017): one keyset
+// page of approvals, oldest-first, plus the opaque cursor for the next page
+// (empty on the last page).
+type ApprovalListResponse struct {
+	Approvals  []ApprovalView `json:"approvals"`
+	NextCursor string         `json:"next_cursor,omitempty"`
+}
+
+// DecideApprovalRequest is the POST /v1/approvals/{id}:decide body (ticket
+// 15.3, ADR-017): the operator's decision, an optional edited payload
+// (approve only, constrained by the gate's edit schema), and an optional
+// comment recorded in the audit trail.
+type DecideApprovalRequest struct {
+	Decision      string          `json:"decision"`
+	EditedPayload json.RawMessage `json:"edited_payload,omitempty"`
+	Comment       string          `json:"comment,omitempty"`
+}
+
+// DecideApprovalResponse is the decision result (ticket 15.3): the decided
+// approval (carrying the immutable decision record), the run rollup after
+// settlement, and the successors this decision made ready. The settled step's
+// status is visible on the run via GET /v1/runs/{id}.
+type DecideApprovalResponse struct {
+	Approval     ApprovalView `json:"approval"`
+	Run          RunView      `json:"run"`
+	ReadiedSteps []string     `json:"readied_steps"`
 }
 
 // RunGraphResponse answers GET /v1/runs/{id}/graph (ticket 13.6, ADR-015):

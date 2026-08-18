@@ -55,6 +55,7 @@ func newRootCmd(lookup func(string) (string, bool)) *cobra.Command {
 	root.PersistentFlags().String("key", defaultKey, "bearer API key (default AGENTLOOM_API_KEY)")
 	root.AddCommand(newValidateCmd(), newSubmitCmd(), newWatchCmd(), newRunsCmd(),
 		newCancelCmd(), newParkCmd(), newUnparkCmd(), newBudgetCmd(), newRequeueCmd(),
-		newKeysCmd(), newPluginsCmd(), newCacheCmd(), newBlackboardCmd())
+		newKeysCmd(), newPluginsCmd(), newCacheCmd(), newBlackboardCmd(),
+		newApprovalsCmd(), newApproveCmd(), newRejectCmd())
 	return root
 }

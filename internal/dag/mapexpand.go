@@ -59,6 +59,7 @@ func GenerateMapExpansion(tmpl *Template, items []json.RawMessage, mapStepID str
 			plan.Edges = append(plan.Edges, Edge{
 				From: instanceID(e.From, k), To: instanceID(e.To, k),
 				When: e.When, Type: e.Type, Condition: e.Condition, MaxIterations: e.MaxIterations,
+				Decision: e.Decision,
 			})
 		}
 		// Splice: the map step readies each entry instance (after-splice), and

@@ -96,6 +96,17 @@ const (
 	ApprovalStatusCancelled = "cancelled"
 )
 
+// Approval decision sources (ticket 15.3/15.4, ADR-017): what recorded a
+// decision. A human decision carries the actor's key_id in decided_by; a
+// timeout decision carries the reserved actor ApprovalActorTimeout.
+const (
+	ApprovalSourceHuman   = "human"
+	ApprovalSourceTimeout = "timeout"
+	// ApprovalActorTimeout is decided_by for a decision the 15.4 timeout
+	// policy recorded — there is no human principal.
+	ApprovalActorTimeout = "system:timeout"
+)
+
 // Edge types.
 const (
 	EdgeTypeNormal = "normal"
@@ -398,4 +409,11 @@ const (
 	// was cancelled while its step was parked (ticket 15.2, ADR-017). The
 	// payload (ApprovalCancelledEvent) carries the approval id and the reason.
 	EventApprovalCancelled = "approval_cancelled"
+
+	// EventApprovalDecided: a pending approval was decided — approved or
+	// rejected — by an operator (or 15.4's timeout policy) through the single
+	// decision CAS (ticket 15.3, ADR-017). The payload (ApprovalDecidedEvent)
+	// carries the decision, whether the payload was edited, the actor, the
+	// comment, and the source (human / timeout). Immutable audit.
+	EventApprovalDecided = "approval_decided"
 )

@@ -41,6 +41,7 @@ var exampleFiles = []string{
 	"agent_handoff.json",
 	"research-critic-writer.json",
 	"approval_gate.json",
+	"approval_reject_route.json",
 }
 
 // readExample loads one example definition document.

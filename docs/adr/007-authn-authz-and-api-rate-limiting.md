@@ -111,8 +111,8 @@ those tickets implement against a decided model):
 | `GET /v1/definitions*` | `read` | 6.5 |
 | `GET /v1/plugins` | `read` | 8.1 |
 | `POST /v1/cache/bust`, `GET /v1/cache/stats` | `admin` | 9.6 |
-| `GET /v1/approvals` (list / filter pending) | `read` | 15.3 (arrives) |
-| `POST /v1/approvals/{id}:decide` | `approve` | 15.3 (arrives) |
+| `GET /v1/approvals` (list / filter pending) | `read` | 15.3 |
+| `POST /v1/approvals/{id}:decide` | `approve` | 15.3 (rate class `submit`) |
 
 ### Lifecycle
 

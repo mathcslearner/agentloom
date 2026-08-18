@@ -1051,13 +1051,13 @@ Executor path: render payload → write `approvals` row (pending) + step → `aw
 - [x] Crash-before-ACK scenario converges via ACK-and-drop (integration)
 - [x] Pending approval visible in run status + events
 
-#### 15.3 — Decision API
+#### 15.3 — Decision API ✅
 **Depends on:** 15.2, 6.5
 `GET /v1/approvals?status=pending` (filterable, paginated) and `POST /v1/approvals/{id}:decide` — `{decision: approve|reject, edited_payload?, comment?}`; edits validated against the step's edit schema; CAS `pending → decided` (concurrent decide → 409); approve → step succeeds with (edited) payload as its output → outbox successors; reject → per-config routing. Actor key ID + timestamp + comment recorded.
 **Done when:**
-- [ ] Full decision matrix integration-tested (approve, approve+edit, reject→fail, reject→edge)
-- [ ] Invalid edit rejected 422 with schema errors; double-decide → 409
-- [ ] Audit: decision record immutable and exposed in run status + events
+- [x] Full decision matrix integration-tested (approve, approve+edit, reject→fail, reject→edge)
+- [x] Invalid edit rejected 422 with schema errors; double-decide → 409
+- [x] Audit: decision record immutable and exposed in run status + events
 
 #### 15.4 — Approval timeouts
 **Depends on:** 15.3, 3.5

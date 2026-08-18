@@ -149,6 +149,10 @@ type RequestMetrics interface {
 	// in-flight gauge keyed on anything request-derived would leak.
 	RequestStarted()
 	RequestFinished()
+	// ApprovalDecided records one human-approval decision (ticket 15.3,
+	// ADR-017/008): the engine_approval_decisions_total{decision,source}
+	// counter. Recorded from the decide handler on a committed decision.
+	ApprovalDecided(decision, source string)
 }
 
 // nopRequestMetrics is the default RequestMetrics.
@@ -157,6 +161,7 @@ type nopRequestMetrics struct{}
 func (nopRequestMetrics) Request(string, string, int, time.Duration) {}
 func (nopRequestMetrics) RequestStarted()                            {}
 func (nopRequestMetrics) RequestFinished()                           {}
+func (nopRequestMetrics) ApprovalDecided(string, string)             {}
 
 // Option customizes a Handler beyond New's required arguments.
 type Option func(*Handler)
@@ -264,6 +269,11 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/definitions/{defID}", h.handleGetDefinition)
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/definitions/{name}/versions", h.handleListDefinitionVersions)
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/definitions/{name}/versions", h.handleCreateDefinitionVersion)
+		// Human-approval decisions (ticket 15.3, ADR-017): the pending-approval
+		// inbox (read) and the decide arbiter (approve scope). The decide route
+		// carries a literal ":decide" verb suffix on the id segment.
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/approvals", h.handleListApprovals)
+		r.With(h.requireScope(ScopeApprove), h.rateLimit(classSubmit)).Post("/approvals/{approvalID}:decide", h.handleDecideApproval)
 		// Plugin catalog (ticket 8.1, ADR-009).
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/plugins", h.handleListPlugins)
 		// Response-cache ops (ticket 9.6, ADR-011): bust-by-namespace and

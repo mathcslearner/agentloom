@@ -549,35 +549,7 @@ func buildRunResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge, att
 		resp.DeadLetters = append(resp.DeadLetters, v)
 	}
 	for _, a := range approvals {
-		v := ApprovalView{
-			ID:               a.ID.String(),
-			StepID:           a.StepID,
-			Attempt:          int(a.Attempt),
-			Status:           a.Status,
-			Title:            a.Title,
-			Description:      a.Description,
-			Payload:          a.Payload,
-			AllowedDecisions: a.AllowedDecisions,
-			AllowEdit:        a.AllowEdit,
-			EditSchema:       a.EditSchema,
-			TimeoutAt:        a.TimeoutAt,
-			EditedPayload:    a.EditedPayload,
-			DecidedAt:        a.DecidedAt,
-			CreatedAt:        a.CreatedAt,
-		}
-		if a.Decision != nil {
-			v.Decision = *a.Decision
-		}
-		if a.Comment != nil {
-			v.Comment = *a.Comment
-		}
-		if a.DecidedBy != nil {
-			v.DecidedBy = *a.DecidedBy
-		}
-		if a.DecisionSource != nil {
-			v.DecisionSource = *a.DecisionSource
-		}
-		resp.Approvals = append(resp.Approvals, v)
+		resp.Approvals = append(resp.Approvals, buildApprovalView(a))
 	}
 	for _, s := range steps {
 		transport, validation := failureCounts(byStep[s.StepID])

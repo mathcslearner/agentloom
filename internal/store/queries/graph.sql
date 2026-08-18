@@ -70,8 +70,8 @@ RETURNING *;
 -- expansion (13.2).
 -- name: CreateRunEdges :copyfrom
 INSERT INTO run_edges (run_id, ordinal, from_step, to_step, edge_type,
-                       when_expr, condition, max_iterations, graph_version, origin_step, origin_kind)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+                       when_expr, condition, max_iterations, graph_version, origin_step, origin_kind, decision)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
 
 -- ordinal order is semantic: the branch first-match rule evaluates
 -- out-edges in declaration order (ADR-004).
