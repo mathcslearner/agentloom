@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/mathcslearner/agentloom/internal/event"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
@@ -24,31 +25,6 @@ const (
 	// BudgetLimitStepTokens is a step's max_tokens cap.
 	BudgetLimitStepTokens = "step_tokens"
 )
-
-// BudgetExceededEvent is the budget_exceeded event payload (ticket 10.3,
-// ADR-012): which limit a claim's projected spend crossed, the numbers that
-// made the projection, and the action taken. Money fields are integer
-// nano-USD; the token fields carry the projection for a step_tokens limit.
-type BudgetExceededEvent struct {
-	StepID    string `json:"step_id"`
-	AttemptNo int32  `json:"attempt"`
-	// Resource is the ADR-010/ADR-012 resource the claim would bill to
-	// ("mock:sim-1", "tool:paid_search"); empty when unknown pre-flight.
-	Resource string `json:"resource,omitempty"`
-	// Limit is which cap was crossed: run | step_usd | step_tokens.
-	Limit string `json:"limit"`
-	// Action is what the engine did: park | fail.
-	Action string `json:"action"`
-	// SpentNanoUSD / EstimateNanoUSD / ProjectedNanoUSD / BudgetNanoUSD
-	// describe a USD projection (run or step_usd limits).
-	SpentNanoUSD     int64 `json:"spent_nano_usd,omitempty"`
-	EstimateNanoUSD  int64 `json:"estimate_nano_usd,omitempty"`
-	ProjectedNanoUSD int64 `json:"projected_nano_usd,omitempty"`
-	BudgetNanoUSD    int64 `json:"budget_nano_usd,omitempty"`
-	// ProjectedTokens / MaxTokens describe a step_tokens projection.
-	ProjectedTokens int64 `json:"projected_tokens,omitempty"`
-	MaxTokens       int64 `json:"max_tokens,omitempty"`
-}
 
 // BudgetParkStepArgs are the inputs to BudgetParkStep.
 type BudgetParkStepArgs struct {
@@ -100,13 +76,13 @@ func BudgetParkStep(ctx context.Context, q Querier, args BudgetParkStepArgs) (ge
 		return gen.RunStep{}, wrapErr(op, err)
 	}
 	args.Event.StepID = args.StepID
-	args.Event.AttemptNo = step.AttemptCount
+	args.Event.Attempt = step.AttemptCount
 	args.Event.Action = "park"
 	errPayload, _ := json.Marshal(args.Event) // small fixed struct; cannot fail
 	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeBudgetExceeded, errPayload, nil, nil, nil, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventBudgetExceeded, args.Event); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, args.Event); err != nil {
 		return gen.RunStep{}, err
 	}
 	// Park the run only if it is still running under the lock. A sibling
@@ -119,7 +95,7 @@ func BudgetParkStep(ctx context.Context, q Querier, args BudgetParkStepArgs) (ge
 		if _, perr := gq.ParkRun(ctx, gen.ParkRunParams{RunID: args.RunID, Reason: &reason}); perr != nil {
 			return gen.RunStep{}, wrapErr(op+": park run", perr)
 		}
-		if err := appendEvent(ctx, gq, op, args.RunID, EventRunParked, runReasonPayload{Reason: reason}); err != nil {
+		if err := appendEvent(ctx, gq, op, args.RunID, event.RunParked{Reason: reason}); err != nil {
 			return gen.RunStep{}, err
 		}
 	}
@@ -171,19 +147,13 @@ func SetRunBudget(ctx context.Context, q Querier, args SetRunBudgetArgs) (gen.Ru
 	if err != nil {
 		return gen.Run{}, wrapErr(op, err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventRunBudgetUpdated, runBudgetPayload{
+	if err := appendEvent(ctx, gq, op, args.RunID, event.RunBudgetUpdated{
 		PreviousNanoUSD: previous, BudgetNanoUSD: args.BudgetNanoUSD,
 	}); err != nil {
 		return gen.Run{}, err
 	}
 	log.From(ctx).InfoContext(ctx, "run budget updated", log.RunID(args.RunID.String()))
 	return run, nil
-}
-
-// runBudgetPayload is the run_budget_updated event body.
-type runBudgetPayload struct {
-	PreviousNanoUSD int64 `json:"previous_nano_usd"`
-	BudgetNanoUSD   int64 `json:"budget_nano_usd"`
 }
 
 // Model-downgrade trigger kinds, recorded on the model_downgraded event's
@@ -197,37 +167,6 @@ const (
 	// cheaper model that fits — the hard trigger.
 	DowngradeTriggerProjection = "budget_projection"
 )
-
-// ModelDowngradedEvent is the model_downgraded event payload (ticket 10.4,
-// ADR-012): which models the claim moved between, why, and the projection
-// that made the decision. Money fields are integer nano-USD.
-type ModelDowngradedEvent struct {
-	StepID    string `json:"step_id"`
-	AttemptNo int32  `json:"attempt"`
-	// FromModel/ToModel are the authored model ids (as written in the step
-	// config, e.g. "anthropic/claude-opus-5" → "anthropic/claude-haiku-4-5").
-	FromModel string `json:"from_model"`
-	ToModel   string `json:"to_model"`
-	// FromResource/ToResource are the resolved ADR-010 pricing keys
-	// ("anthropic:...", "mock:cheap") the two models bill to.
-	FromResource string `json:"from_resource"`
-	ToResource   string `json:"to_resource"`
-	// Trigger is why the downgrade fired: budget_threshold | budget_projection.
-	Trigger string `json:"trigger"`
-	// Limit is which budget the projection trigger was measured against
-	// (run | step_usd); empty for a pure threshold trigger.
-	Limit string `json:"limit,omitempty"`
-	// ThresholdFraction is the fallback's at_budget_fraction (threshold
-	// trigger only).
-	ThresholdFraction float64 `json:"threshold_fraction,omitempty"`
-	// SpentNanoUSD / BudgetNanoUSD describe the run's spend and budget at the
-	// decision; FromEstimateNanoUSD / ToEstimateNanoUSD are the priced
-	// pre-flight estimates of the two models.
-	SpentNanoUSD        int64 `json:"spent_nano_usd,omitempty"`
-	BudgetNanoUSD       int64 `json:"budget_nano_usd,omitempty"`
-	FromEstimateNanoUSD int64 `json:"from_estimate_nano_usd,omitempty"`
-	ToEstimateNanoUSD   int64 `json:"to_estimate_nano_usd,omitempty"`
-}
 
 // RecordModelDowngradeArgs are the inputs to RecordModelDowngrade.
 type RecordModelDowngradeArgs struct {
@@ -269,8 +208,8 @@ func RecordModelDowngrade(ctx context.Context, q Querier, args RecordModelDowngr
 		})
 	}
 	args.Event.StepID = args.StepID
-	args.Event.AttemptNo = step.AttemptCount
-	if err := appendEvent(ctx, gq, op, args.RunID, EventModelDowngraded, args.Event); err != nil {
+	args.Event.Attempt = step.AttemptCount
+	if err := appendEvent(ctx, gq, op, args.RunID, args.Event); err != nil {
 		return err
 	}
 	log.From(ctx).InfoContext(ctx, "model downgraded for budget",

@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/mathcslearner/agentloom/internal/event"
 	"github.com/mathcslearner/agentloom/internal/notify"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store"
@@ -71,7 +72,7 @@ func (e *Engine) notifyApproval(ctx context.Context, step gen.RunStep, approval 
 		// The intent is left dangling (no result journaled). A parked step is
 		// never re-claimed, so this simply means the notification was not
 		// delivered — correctness is unaffected. Record a warning event + metric.
-		e.recordApprovalNotification(ctx, step.RunID, store.EventApprovalNotificationFailed,
+		e.recordApprovalNotification(ctx, step.RunID,
 			store.ApprovalNotificationFailedEvent{
 				ApprovalID: approval.ID.String(), StepID: step.StepID,
 				TargetHost: notifierHost(e.notifier), Attempts: notifyAttempts(nerr),
@@ -92,7 +93,7 @@ func (e *Engine) notifyApproval(ctx context.Context, step gen.RunStep, approval 
 		logger.WarnContext(ctx, "approval notification delivered but journal result unwritten",
 			slog.String("approval_id", approval.ID.String()), slog.Any("error", cerr))
 	}
-	e.recordApprovalNotification(ctx, step.RunID, store.EventApprovalNotified,
+	e.recordApprovalNotification(ctx, step.RunID,
 		store.ApprovalNotifiedEvent{
 			ApprovalID: approval.ID.String(), StepID: step.StepID,
 			TargetHost: notifierHost(e.notifier), Attempts: res.Attempts, StatusCode: res.StatusCode,
@@ -106,13 +107,13 @@ func (e *Engine) notifyApproval(ctx context.Context, step gen.RunStep, approval 
 // recordApprovalNotification appends a best-effort notification event. A
 // failure only logs — the notification's audit line is not a correctness
 // record, so it never blocks the park path.
-func (e *Engine) recordApprovalNotification(ctx context.Context, runID uuid.UUID, typ string, payload any) {
+func (e *Engine) recordApprovalNotification(ctx context.Context, runID uuid.UUID, payload event.Payload) {
 	err := e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
-		return store.RecordApprovalNotification(ctx, q, runID, typ, payload, e.now())
+		return store.RecordApprovalNotification(ctx, q, runID, payload, e.now())
 	})
 	if err != nil {
 		log.From(ctx).WarnContext(ctx, "recording approval notification event failed",
-			slog.String("event", typ), slog.Any("error", err))
+			slog.String("event", string(payload.EventType())), slog.Any("error", err))
 	}
 }
 

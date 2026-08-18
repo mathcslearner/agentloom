@@ -234,11 +234,20 @@ number.
 `step_ready`, `step_claimed`, `step_succeeded`, `step_failed`,
 `step_skipped`, `run_succeeded`, `run_failed`; 4.5 adds
 `step_reclaimed` for the lease-expiry takeover, payload carrying the
-displaced holder's `claim_id` and the attempt it strands); ADR-018 (M16)
-owns formalizing the envelope and payload versioning. Append-only is a
-discipline enforced by code review and the store layer's API surface (no
-update/delete queries generated), not by triggers — a trigger would add a
-hot-path cost to guard against a write the codebase never issues.
+displaced holder's `claim_id` and the attempt it strands). **Since 16.1
+(ADR-018)** the type vocabulary and the payload structs live in the
+`internal/event` leaf package (one struct per type, projected into a
+normalized envelope with a lifted `step_id`), the store's `Event*` string
+constants derive from it, and the **two typed `appendEvent` helpers are the
+only sanctioned event writers** — both derive the type from an
+`event.Payload`, and `TestNoAdHocEventWrites` fails any other physical
+`AppendEvent` call site. The physical `type` column stays free-form `TEXT`
+(no migration); the envelope's `schema_version` is stamped at projection
+time from a constant, not stored. Append-only is a discipline enforced by
+code review and the store layer's API surface (`EventRepo` exposes no
+update/delete, and its write primitive is reachable only through the typed
+helpers), not by triggers — a trigger would add a hot-path cost to guard
+against a write the codebase never issues.
 
 ### Table-by-table
 
@@ -401,7 +410,10 @@ CHECK with the administrative outcome `budget_exceeded` (the drop/re-add
 recipe, as 0014 did for `throttled`).
 
 **`events`** — `(run_id, seq)` PK, `type`, `payload` (JSONB),
-`created_at`. Append-only. Since 10.2 the vocabulary includes
+`created_at`. Append-only; **since 16.1 the type vocabulary and every payload
+struct are owned by `internal/event` and normalized into the ADR-018 envelope**
+(the `schema_version`/`step_id` are projected on read, not stored). Since 10.2
+the vocabulary includes
 `cost_unknown_model` (payload `{model, fallback}`): a cost-bearing attempt
 priced at the catalog fallback because its model had no entry, appended by
 `ApplyAttemptCost` in the same completion transaction. Since 10.3 it also

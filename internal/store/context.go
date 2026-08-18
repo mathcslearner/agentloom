@@ -22,143 +22,6 @@ import (
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
 
-// ContextSourceRecord is one source's disposition in a context_assembled
-// event: what it was, how it resolved, and its token contribution.
-type ContextSourceRecord struct {
-	// Index is the source's position in the declared spec (precedence order).
-	Index int `json:"index"`
-	// Kind is the source kind (step_output | blackboard | retrieval | literal).
-	Kind string `json:"kind"`
-	// Name is the source's label (authored or derived).
-	Name string `json:"name"`
-	// Ref is a human-readable identifier of what was pulled (the step id, the
-	// blackboard key/tag selector, the retriever query, or "literal").
-	Ref string `json:"ref,omitempty"`
-	// Status is the disposition: included | truncated | skipped.
-	Status string `json:"status"`
-	// Reason explains a skip (missing under on_missing:skip) or a truncation.
-	Reason string `json:"reason,omitempty"`
-	// Tokens is the source's counted contribution to the assembled context
-	// (after any truncation); 0 for a skipped source.
-	Tokens int `json:"tokens"`
-	// Pinned reports whether the source is exempt from compaction (12.4).
-	Pinned bool `json:"pinned,omitempty"`
-}
-
-// ContextAssembledEvent is the context_assembled event payload (ticket 12.3,
-// ADR-014): the assembled sources' final dispositions (after any 12.4
-// compaction), the counter that measured them, and the token totals. The
-// Sources and *Tokens fields describe what is actually sent — a compacted
-// assembly reports the shrunk numbers, and the raw (pre-compaction) figures
-// ride alongside for the audit.
-type ContextAssembledEvent struct {
-	StepID    string `json:"step_id"`
-	AttemptNo int32  `json:"attempt"`
-	// CounterID is the tokens.Counter fingerprint used for every count here
-	// (e.g. "mock/estimate@1", "fallback/chars4@1").
-	CounterID string `json:"counter_id"`
-	// Sources is the per-source disposition (included | truncated | skipped |
-	// dropped | summarized) in declaration (precedence) order — the final state
-	// after any compaction. A summarize strategy appends a synthetic
-	// "summary"-kind source for the summary it produced.
-	Sources []ContextSourceRecord `json:"sources"`
-	// ContextTokens is the (post-compaction) assembled context's counted size.
-	ContextTokens int `json:"context_tokens"`
-	// PreflightTokens is the counted size of the whole assembled request
-	// (system, messages, tools, response format) — the number the window
-	// guardrail (12.6) compares against the model context window.
-	PreflightTokens int `json:"preflight_tokens"`
-	// BudgetTokens is the context budget in force, or 0 when the step declared
-	// none and no window defaulted one (12.3 behavior — no compaction).
-	BudgetTokens int `json:"budget_tokens,omitempty"`
-	// BudgetSource records how BudgetTokens was chosen (ticket 12.6): "explicit"
-	// (author's budget_tokens), "window" (defaulted from the model context
-	// window), "explicit_capped" (author's budget tightened down to the window
-	// default), or "" (no budget). Together with ContextWindow it makes the
-	// window-guardrail decision auditable.
-	BudgetSource string `json:"budget_source,omitempty"`
-	// ContextWindow is the model's context window in tokens (ticket 12.6), 0 when
-	// the model is unguarded (no catalog window). The guardrail guarantees
-	// PreflightTokens + max_tokens ≤ ContextWindow for a guarded step.
-	ContextWindow int `json:"context_window,omitempty"`
-	// RawContextTokens / RawPreflightTokens are the pre-compaction totals; equal
-	// to the final totals when no compaction ran.
-	RawContextTokens   int `json:"raw_context_tokens,omitempty"`
-	RawPreflightTokens int `json:"raw_preflight_tokens,omitempty"`
-	// Revisions is the number of compaction strategies that ran (each also its
-	// own context_revision event); 0 when the assembly fit the budget.
-	Revisions int `json:"revisions,omitempty"`
-	// Summaries is the number of summarizations that produced a summary
-	// (ticket 12.5), each priced as compaction overhead; 0 when none ran.
-	Summaries int `json:"summaries,omitempty"`
-}
-
-// ContextRevisionActionRecord is one entry's drop/truncate/summarize action in
-// a compaction strategy (tickets 12.4/12.5).
-type ContextRevisionActionRecord struct {
-	SourceIndex  int    `json:"source_index"`
-	Name         string `json:"name"`
-	Action       string `json:"action"` // "dropped" | "truncated" | "summarized"
-	TokensBefore int    `json:"tokens_before"`
-	TokensAfter  int    `json:"tokens_after"`
-}
-
-// ContextRevisionSummaryRecord is one summarization's provenance in a summarize
-// strategy's context_revision (ticket 12.5): the blackboard key@version the
-// summary landed at, the model/resource billed as overhead, and the span it
-// folded.
-type ContextRevisionSummaryRecord struct {
-	Key           string   `json:"key"`
-	Version       int      `json:"version"`
-	ParentVersion int      `json:"parent_version,omitempty"`
-	Model         string   `json:"model"`
-	Resource      string   `json:"resource"`
-	SpanNames     []string `json:"span_names,omitempty"`
-	SpanTokens    int      `json:"span_tokens"`
-	SummaryTokens int      `json:"summary_tokens"`
-	CacheHit      bool     `json:"cache_hit,omitempty"`
-	InputTokens   int64    `json:"input_tokens"`
-	OutputTokens  int64    `json:"output_tokens"`
-}
-
-// ContextRevisionEvent is the context_revision event payload (ticket 12.4,
-// ADR-014): one deterministic compaction strategy's application to shrink an
-// over-budget assembled context — what ran, its parameters, the framed-request
-// tokens before/after, and the per-entry actions. Every strategy that runs
-// writes one, before the final context_assembled event, so the whole
-// compaction decision is reconstructable per step attempt.
-type ContextRevisionEvent struct {
-	StepID    string `json:"step_id"`
-	AttemptNo int32  `json:"attempt"`
-	// Index is the strategy's position in the pipeline.
-	Index int `json:"index"`
-	// Strategy is the strategy that ran (drop_lowest_priority | truncate_oldest
-	// | sliding_window).
-	Strategy string `json:"strategy"`
-	// N / MinTokens echo the strategy's parameters when set.
-	N         *int `json:"n,omitempty"`
-	MinTokens *int `json:"min_tokens,omitempty"`
-	// Budget is the token budget in force.
-	Budget int `json:"budget"`
-	// TokensBefore / TokensAfter are the framed-request totals around the
-	// strategy — the numbers compared to Budget.
-	TokensBefore int `json:"tokens_before"`
-	TokensAfter  int `json:"tokens_after"`
-	// Changed reports whether the strategy altered the assembly.
-	Changed bool `json:"changed"`
-	// Actions is the per-entry drop/truncate/summarize detail.
-	Actions []ContextRevisionActionRecord `json:"actions,omitempty"`
-	// Summaries is the summarization detail for a summarize strategy (12.5).
-	Summaries []ContextRevisionSummaryRecord `json:"summaries,omitempty"`
-	// Error, when set, is why a summarize strategy fell back to the next
-	// strategy (ticket 12.5) — the warning content: the summarizer was
-	// unavailable, errored, timed out, or could not shrink the span. It is the
-	// audit record of a summarizer failure that did not block the step.
-	Error string `json:"error,omitempty"`
-	// Kept is the names of the entries still present after this strategy.
-	Kept []string `json:"kept,omitempty"`
-}
-
 // RecordContextAssembledArgs are the inputs to RecordContextAssembled.
 type RecordContextAssembledArgs struct {
 	RunID  uuid.UUID
@@ -214,14 +77,14 @@ func RecordContextAssembled(ctx context.Context, q Querier, args RecordContextAs
 	// under one claim fence, in one transaction.
 	for i := range args.Revisions {
 		args.Revisions[i].StepID = args.StepID
-		args.Revisions[i].AttemptNo = step.AttemptCount
-		if err := appendEvent(ctx, gq, op, args.RunID, EventContextRevision, args.Revisions[i]); err != nil {
+		args.Revisions[i].Attempt = step.AttemptCount
+		if err := appendEvent(ctx, gq, op, args.RunID, args.Revisions[i]); err != nil {
 			return err
 		}
 	}
 	args.Event.StepID = args.StepID
-	args.Event.AttemptNo = step.AttemptCount
-	if err := appendEvent(ctx, gq, op, args.RunID, EventContextAssembled, args.Event); err != nil {
+	args.Event.Attempt = step.AttemptCount
+	if err := appendEvent(ctx, gq, op, args.RunID, args.Event); err != nil {
 		return err
 	}
 	// Summarize compaction overhead (ticket 12.5): ledger each summarizer call's
@@ -271,8 +134,8 @@ func RecordContextRevisions(ctx context.Context, q Querier, args RecordContextAs
 	}
 	for i := range args.Revisions {
 		args.Revisions[i].StepID = args.StepID
-		args.Revisions[i].AttemptNo = step.AttemptCount
-		if err := appendEvent(ctx, gq, op, args.RunID, EventContextRevision, args.Revisions[i]); err != nil {
+		args.Revisions[i].Attempt = step.AttemptCount
+		if err := appendEvent(ctx, gq, op, args.RunID, args.Revisions[i]); err != nil {
 			return err
 		}
 	}

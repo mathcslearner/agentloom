@@ -24,6 +24,21 @@ linters:
     paths:
       # sqlc-generated code (make generate) is not held to hand-written style.
       - internal/store/gen
+    rules:
+      # The event payloads (ADR-018) satisfy the event.Payload / event.StepScoped
+      # interfaces with trivial one-line marker methods; a doc comment per method
+      # would be pure boilerplate. The types themselves are documented.
+      - path: internal/event/payloads\.go
+        linters:
+          - revive
+        text: "exported method .*\\.(EventType|EventStepID) should have comment"
+      # events.go re-exports the event package's payload structs as aliases so
+      # engine/api keep referencing store.XxxEvent; the real docs live on the
+      # event package types, not on the one-line aliases.
+      - path: internal/store/events\.go
+        linters:
+          - revive
+        text: "(should have comment or be unexported|comment on exported type .* should be of the form)"
 
 formatters:
   enable:

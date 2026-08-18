@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/mathcslearner/agentloom/internal/dag"
+	"github.com/mathcslearner/agentloom/internal/event"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
@@ -86,24 +87,6 @@ type ExpandRunResult struct {
 	// Widened are existing pending anchors whose remaining_deps this expansion
 	// grew — the "before" splice targets (new → existing-pending).
 	Widened []string
-}
-
-// GraphExpandedEvent is the graph_expanded event payload (ticket 13.2,
-// ADR-015): the origin, the version transition, and the full delta, so the 13.6
-// introspection API can reconstruct any version's added steps/edges from the
-// event log. Money-free; the delta is the verbatim PlanOutput.
-type GraphExpandedEvent struct {
-	OriginStep  string `json:"origin_step"`
-	OriginKind  string `json:"origin_kind"`
-	FromVersion int32  `json:"from_version"`
-	ToVersion   int32  `json:"to_version"`
-	// Depth is the nesting depth of the steps this expansion injected.
-	Depth int32 `json:"depth"`
-	// Delta is the verbatim validated plan (new steps + edges).
-	Delta dag.PlanOutput `json:"delta"`
-	// Readied / Widened mirror ExpandRunResult for the audit feed.
-	Readied []string `json:"readied,omitempty"`
-	Widened []string `json:"widened,omitempty"`
 }
 
 // ExpandRun applies a validated PlanOutput to a running graph atomically inside
@@ -310,7 +293,7 @@ func ExpandRun(ctx context.Context, q Querier, args ExpandRunArgs) (ExpandRunRes
 
 	// graph_expanded, then a step_ready per zero-indegree injected step —
 	// mirroring instantiation's run_created + step_ready ordering.
-	if err := appendEvent(ctx, gq, op, args.RunID, EventGraphExpanded, GraphExpandedEvent{
+	if err := appendEvent(ctx, gq, op, args.RunID, event.GraphExpanded{
 		OriginStep:  originStep,
 		OriginKind:  originKind,
 		FromVersion: run.GraphVersion,
@@ -323,7 +306,7 @@ func ExpandRun(ctx context.Context, q Querier, args ExpandRunArgs) (ExpandRunRes
 		return ExpandRunResult{}, err
 	}
 	for _, id := range readied {
-		if err := appendEvent(ctx, gq, op, args.RunID, EventStepReady, stepIDPayload{StepID: id}); err != nil {
+		if err := appendEvent(ctx, gq, op, args.RunID, event.StepReady{StepID: id}); err != nil {
 			return ExpandRunResult{}, err
 		}
 	}

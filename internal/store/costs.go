@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/mathcslearner/agentloom/internal/event"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
 
@@ -96,9 +97,9 @@ type AttemptCostArgs struct {
 	CostNanoUSD  int64
 	SavedNanoUSD int64
 	// Warning, when non-nil, is the cost_unknown_model event payload appended
-	// in the same transaction (a fallback-priced attempt, ADR-012). The
-	// engine marshals cost.UnknownModelWarning; nil means no event.
-	Warning json.RawMessage
+	// in the same transaction (a fallback-priced attempt, ADR-012); nil means
+	// no event. The engine builds it via event.CostUnknownModelFrom.
+	Warning *event.CostUnknownModel
 	// Now is the injected current time (the row's created_at). Required.
 	Now time.Time
 }
@@ -130,37 +131,6 @@ const JudgeErrorEntry = "judge:e"
 // slot migration 0016 reserved for M12.
 func CompactionEntry(index int) string {
 	return fmt.Sprintf("compaction:%d", index)
-}
-
-// CostUpdatedEvent is the cost_updated event payload (ticket 10.5, ADR-012):
-// one cost-bearing attempt's charge plus the run's running spend/saved totals
-// after the charge is folded into the aggregate. The M18 live meter reads
-// RunSpentNanoUSD/RunSavedNanoUSD directly and BudgetNanoUSD for the progress
-// bar, so it needs no state of its own. Money fields are integer nano-USD.
-// The step/attempt/entry context is stamped inside ApplyAttemptCost (like the
-// budget_exceeded event) so callers name only the charge.
-type CostUpdatedEvent struct {
-	StepID  string `json:"step_id"`
-	Attempt int32  `json:"attempt"`
-	// Entry is the charge kind (EntryAttempt now; judge/compaction in M11/M12).
-	Entry string `json:"entry"`
-	// Resource is the ADR-010/ADR-012 resource billed ("mock:sim-1",
-	// "tool:paid_search").
-	Resource string `json:"resource"`
-	// CacheHit marks a $0 cache-served charge (CostNanoUSD 0, SavedNanoUSD set).
-	CacheHit bool `json:"cache_hit,omitempty"`
-	// Overhead flags a judge/summarization charge (ADR-012 rule 4).
-	Overhead bool `json:"overhead,omitempty"`
-	// CostNanoUSD / SavedNanoUSD are this attempt's charge and cache savings.
-	CostNanoUSD  int64 `json:"cost_nano_usd,omitempty"`
-	SavedNanoUSD int64 `json:"saved_nano_usd,omitempty"`
-	// RunSpentNanoUSD / RunSavedNanoUSD are the run's totals after this charge
-	// — non-decreasing in seq order across a run's cost_updated events.
-	RunSpentNanoUSD int64 `json:"run_spent_nano_usd"`
-	RunSavedNanoUSD int64 `json:"run_saved_nano_usd"`
-	// BudgetNanoUSD is the run's budget (nil = unbudgeted), for the M18 meter's
-	// progress bar.
-	BudgetNanoUSD *int64 `json:"budget_nano_usd,omitempty"`
 }
 
 // CostApplied is the outcome of ApplyAttemptCost: the run's totals after the
@@ -230,7 +200,7 @@ func ApplyAttemptCost(ctx context.Context, q Querier, args AttemptCostArgs) (Cos
 	}
 	// cost_updated (ticket 10.5): appended under the same run lock and monotonic
 	// seq as the bump above, so the totals across a run's events never regress.
-	updated := CostUpdatedEvent{
+	updated := event.CostUpdated{
 		StepID:          args.StepID,
 		Attempt:         args.Attempt,
 		Entry:           entry,
@@ -243,13 +213,13 @@ func ApplyAttemptCost(ctx context.Context, q Querier, args AttemptCostArgs) (Cos
 		RunSavedNanoUSD: applied.RunSavedNanoUSD,
 		BudgetNanoUSD:   applied.BudgetNanoUSD,
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventCostUpdated, updated); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, updated); err != nil {
 		return CostApplied{}, err
 	}
 	// The unknown-model warning follows the cost_updated event (higher seq), so
 	// a consumer sees the total move before the advisory that priced it.
-	if len(args.Warning) > 0 {
-		if err := appendEvent(ctx, gq, op, args.RunID, EventCostUnknownModel, args.Warning); err != nil {
+	if args.Warning != nil {
+		if err := appendEvent(ctx, gq, op, args.RunID, *args.Warning); err != nil {
 			return CostApplied{}, err
 		}
 	}

@@ -1,0 +1,2114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/Envelope",
+  "$defs": {
+    "ApprovalCancelled": {
+      "properties": {
+        "approval_id": {
+          "type": "string"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "approval_id",
+        "step_id",
+        "reason"
+      ]
+    },
+    "ApprovalDecided": {
+      "properties": {
+        "approval_id": {
+          "type": "string"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "edited": {
+          "type": "boolean"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "decided_by": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "approval_id",
+        "step_id",
+        "attempt",
+        "decision",
+        "decided_by",
+        "source"
+      ]
+    },
+    "ApprovalDecision": {
+      "type": "string",
+      "enum": [
+        "approve",
+        "reject"
+      ]
+    },
+    "ApprovalExpired": {
+      "properties": {
+        "approval_id": {
+          "type": "string"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "policy": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "timeout_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "approval_id",
+        "step_id",
+        "attempt",
+        "policy",
+        "action"
+      ]
+    },
+    "ApprovalNotificationFailed": {
+      "properties": {
+        "approval_id": {
+          "type": "string"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "target_host": {
+          "type": "string"
+        },
+        "attempts": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "approval_id",
+        "step_id",
+        "target_host",
+        "attempts",
+        "reason"
+      ]
+    },
+    "ApprovalNotified": {
+      "properties": {
+        "approval_id": {
+          "type": "string"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "target_host": {
+          "type": "string"
+        },
+        "attempts": {
+          "type": "integer"
+        },
+        "status_code": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "approval_id",
+        "step_id",
+        "target_host",
+        "attempts",
+        "status_code"
+      ]
+    },
+    "ApprovalRequested": {
+      "properties": {
+        "approval_id": {
+          "type": "string"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "allowed_decisions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "allow_edit": {
+          "type": "boolean"
+        },
+        "timeout_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "approval_id",
+        "step_id",
+        "attempt",
+        "title",
+        "allowed_decisions"
+      ]
+    },
+    "BackoffSpec": {
+      "properties": {
+        "initial": {
+          "type": "string"
+        },
+        "cap": {
+          "type": "string"
+        },
+        "multiplier": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "BlackboardPolicy": {
+      "properties": {
+        "write": {
+          "items": {
+            "$ref": "#/$defs/BlackboardWrite"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "BlackboardUpdated": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "token_count": {
+          "type": "integer"
+        },
+        "author_step_id": {
+          "type": "string"
+        },
+        "author_attempt": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "key",
+        "version",
+        "tags",
+        "token_count"
+      ]
+    },
+    "BlackboardWrite": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "pinned": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "key"
+      ]
+    },
+    "BudgetExceeded": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "spent_nano_usd": {
+          "type": "integer"
+        },
+        "estimate_nano_usd": {
+          "type": "integer"
+        },
+        "projected_nano_usd": {
+          "type": "integer"
+        },
+        "budget_nano_usd": {
+          "type": "integer"
+        },
+        "projected_tokens": {
+          "type": "integer"
+        },
+        "max_tokens": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "attempt",
+        "limit",
+        "action"
+      ]
+    },
+    "CacheMode": {
+      "type": "string",
+      "enum": [
+        "off",
+        "read_write",
+        "read_only"
+      ]
+    },
+    "CachePolicy": {
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/CacheMode"
+        },
+        "ttl": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/CacheScope"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "CacheScope": {
+      "type": "string",
+      "enum": [
+        "global",
+        "run"
+      ]
+    },
+    "CompactionStrategy": {
+      "properties": {
+        "strategy": {
+          "type": "string"
+        },
+        "n": {
+          "type": "integer"
+        },
+        "min_tokens": {
+          "type": "integer"
+        },
+        "model": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "max_tokens": {
+          "type": "integer"
+        },
+        "timeout": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "strategy"
+      ]
+    },
+    "ContextAssembled": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "counter_id": {
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/ContextSourceRecord"
+          },
+          "type": "array"
+        },
+        "context_tokens": {
+          "type": "integer"
+        },
+        "preflight_tokens": {
+          "type": "integer"
+        },
+        "budget_tokens": {
+          "type": "integer"
+        },
+        "budget_source": {
+          "type": "string"
+        },
+        "context_window": {
+          "type": "integer"
+        },
+        "raw_context_tokens": {
+          "type": "integer"
+        },
+        "raw_preflight_tokens": {
+          "type": "integer"
+        },
+        "revisions": {
+          "type": "integer"
+        },
+        "summaries": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "attempt",
+        "counter_id",
+        "sources",
+        "context_tokens",
+        "preflight_tokens"
+      ]
+    },
+    "ContextMissingPolicy": {
+      "type": "string",
+      "enum": [
+        "error",
+        "skip"
+      ]
+    },
+    "ContextRevision": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "index": {
+          "type": "integer"
+        },
+        "strategy": {
+          "type": "string"
+        },
+        "n": {
+          "type": "integer"
+        },
+        "min_tokens": {
+          "type": "integer"
+        },
+        "budget": {
+          "type": "integer"
+        },
+        "tokens_before": {
+          "type": "integer"
+        },
+        "tokens_after": {
+          "type": "integer"
+        },
+        "changed": {
+          "type": "boolean"
+        },
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/ContextRevisionActionRecord"
+          },
+          "type": "array"
+        },
+        "summaries": {
+          "items": {
+            "$ref": "#/$defs/ContextRevisionSummaryRecord"
+          },
+          "type": "array"
+        },
+        "error": {
+          "type": "string"
+        },
+        "kept": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "attempt",
+        "index",
+        "strategy",
+        "budget",
+        "tokens_before",
+        "tokens_after",
+        "changed"
+      ]
+    },
+    "ContextRevisionActionRecord": {
+      "properties": {
+        "source_index": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "tokens_before": {
+          "type": "integer"
+        },
+        "tokens_after": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "source_index",
+        "name",
+        "action",
+        "tokens_before",
+        "tokens_after"
+      ]
+    },
+    "ContextRevisionSummaryRecord": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "parent_version": {
+          "type": "integer"
+        },
+        "model": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "span_names": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "span_tokens": {
+          "type": "integer"
+        },
+        "summary_tokens": {
+          "type": "integer"
+        },
+        "cache_hit": {
+          "type": "boolean"
+        },
+        "input_tokens": {
+          "type": "integer"
+        },
+        "output_tokens": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "key",
+        "version",
+        "model",
+        "resource",
+        "span_tokens",
+        "summary_tokens",
+        "input_tokens",
+        "output_tokens"
+      ]
+    },
+    "ContextSource": {
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ContextSourceKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "step": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "retriever": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "top_k": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        },
+        "max_tokens": {
+          "type": "integer"
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "priority": {
+          "type": "integer"
+        },
+        "on_missing": {
+          "$ref": "#/$defs/ContextMissingPolicy"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "kind"
+      ]
+    },
+    "ContextSourceKind": {
+      "type": "string",
+      "enum": [
+        "step_output",
+        "blackboard",
+        "retrieval",
+        "literal",
+        "thread"
+      ]
+    },
+    "ContextSourceRecord": {
+      "properties": {
+        "index": {
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "tokens": {
+          "type": "integer"
+        },
+        "pinned": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "index",
+        "kind",
+        "name",
+        "status",
+        "tokens"
+      ]
+    },
+    "ContextSpec": {
+      "properties": {
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/ContextSource"
+          },
+          "type": "array"
+        },
+        "budget_tokens": {
+          "type": "integer"
+        },
+        "compaction": {
+          "items": {
+            "$ref": "#/$defs/CompactionStrategy"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "CostUnknownModel": {
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "fallback": {
+          "$ref": "#/$defs/Rate"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "model",
+        "fallback"
+      ]
+    },
+    "CostUpdated": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "entry": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "cache_hit": {
+          "type": "boolean"
+        },
+        "overhead": {
+          "type": "boolean"
+        },
+        "cost_nano_usd": {
+          "type": "integer"
+        },
+        "saved_nano_usd": {
+          "type": "integer"
+        },
+        "run_spent_nano_usd": {
+          "type": "integer"
+        },
+        "run_saved_nano_usd": {
+          "type": "integer"
+        },
+        "budget_nano_usd": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "attempt",
+        "entry",
+        "resource",
+        "run_spent_nano_usd",
+        "run_saved_nano_usd"
+      ]
+    },
+    "Edge": {
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "when": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/EdgeType"
+        },
+        "condition": {
+          "type": "string"
+        },
+        "max_iterations": {
+          "type": "integer"
+        },
+        "on_exhausted": {
+          "$ref": "#/$defs/ExhaustPolicy"
+        },
+        "no_progress": {
+          "$ref": "#/$defs/NoProgressPolicy"
+        },
+        "decision": {
+          "$ref": "#/$defs/ApprovalDecision"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "EdgeType": {
+      "type": "string",
+      "enum": [
+        "normal",
+        "loop"
+      ]
+    },
+    "Envelope": {
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "run_created"
+            },
+            "payload": {
+              "$ref": "#/$defs/RunCreated"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "step_ready"
+            },
+            "payload": {
+              "$ref": "#/$defs/StepReady"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "step_claimed"
+            },
+            "payload": {
+              "$ref": "#/$defs/StepClaimed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "step_succeeded"
+            },
+            "payload": {
+              "$ref": "#/$defs/StepSucceeded"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "step_failed"
+            },
+            "payload": {
+              "$ref": "#/$defs/StepFailed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "step_skipped"
+            },
+            "payload": {
+              "$ref": "#/$defs/StepSkipped"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "step_reclaimed"
+            },
+            "payload": {
+              "$ref": "#/$defs/StepReclaimed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "step_retry_scheduled"
+            },
+            "payload": {
+              "$ref": "#/$defs/StepRetryScheduled"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "step_throttled"
+            },
+            "payload": {
+              "$ref": "#/$defs/StepThrottled"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "step_semantic_retry_scheduled"
+            },
+            "payload": {
+              "$ref": "#/$defs/StepSemanticRetry"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "step_dead_lettered"
+            },
+            "payload": {
+              "$ref": "#/$defs/StepDeadLettered"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "step_cancelled"
+            },
+            "payload": {
+              "$ref": "#/$defs/StepCancelled"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "step_collected"
+            },
+            "payload": {
+              "$ref": "#/$defs/StepCollected"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "step_requeued"
+            },
+            "payload": {
+              "$ref": "#/$defs/StepRequeued"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "step_revived"
+            },
+            "payload": {
+              "$ref": "#/$defs/StepRevived"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "run_succeeded"
+            },
+            "payload": {
+              "$ref": "#/$defs/RunSucceeded"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "run_failed"
+            },
+            "payload": {
+              "$ref": "#/$defs/RunFailed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "run_resumed"
+            },
+            "payload": {
+              "$ref": "#/$defs/RunResumed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "run_parked"
+            },
+            "payload": {
+              "$ref": "#/$defs/RunParked"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "run_unparked"
+            },
+            "payload": {
+              "$ref": "#/$defs/RunUnparked"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "run_cancelling"
+            },
+            "payload": {
+              "$ref": "#/$defs/RunCancelling"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "run_cancelled"
+            },
+            "payload": {
+              "$ref": "#/$defs/RunCancelled"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "cost_updated"
+            },
+            "payload": {
+              "$ref": "#/$defs/CostUpdated"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "cost_unknown_model"
+            },
+            "payload": {
+              "$ref": "#/$defs/CostUnknownModel"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "budget_exceeded"
+            },
+            "payload": {
+              "$ref": "#/$defs/BudgetExceeded"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "run_budget_updated"
+            },
+            "payload": {
+              "$ref": "#/$defs/RunBudgetUpdated"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "model_downgraded"
+            },
+            "payload": {
+              "$ref": "#/$defs/ModelDowngraded"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "blackboard_updated"
+            },
+            "payload": {
+              "$ref": "#/$defs/BlackboardUpdated"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "context_assembled"
+            },
+            "payload": {
+              "$ref": "#/$defs/ContextAssembled"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "context_revision"
+            },
+            "payload": {
+              "$ref": "#/$defs/ContextRevision"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "graph_expanded"
+            },
+            "payload": {
+              "$ref": "#/$defs/GraphExpanded"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "loop_exhausted"
+            },
+            "payload": {
+              "$ref": "#/$defs/LoopExhausted"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "loop_no_progress"
+            },
+            "payload": {
+              "$ref": "#/$defs/LoopNoProgress"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "guard_tripped"
+            },
+            "payload": {
+              "$ref": "#/$defs/GuardTripped"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "approval_requested"
+            },
+            "payload": {
+              "$ref": "#/$defs/ApprovalRequested"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "approval_cancelled"
+            },
+            "payload": {
+              "$ref": "#/$defs/ApprovalCancelled"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "approval_decided"
+            },
+            "payload": {
+              "$ref": "#/$defs/ApprovalDecided"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "approval_expired"
+            },
+            "payload": {
+              "$ref": "#/$defs/ApprovalExpired"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "approval_notified"
+            },
+            "payload": {
+              "$ref": "#/$defs/ApprovalNotified"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "approval_notification_failed"
+            },
+            "payload": {
+              "$ref": "#/$defs/ApprovalNotificationFailed"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer"
+        },
+        "run_id": {
+          "$ref": "#/$defs/UUID"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "run_created",
+            "step_ready",
+            "step_claimed",
+            "step_succeeded",
+            "step_failed",
+            "step_skipped",
+            "step_reclaimed",
+            "step_retry_scheduled",
+            "step_throttled",
+            "step_semantic_retry_scheduled",
+            "step_dead_lettered",
+            "step_cancelled",
+            "step_collected",
+            "step_requeued",
+            "step_revived",
+            "run_succeeded",
+            "run_failed",
+            "run_resumed",
+            "run_parked",
+            "run_unparked",
+            "run_cancelling",
+            "run_cancelled",
+            "cost_updated",
+            "cost_unknown_model",
+            "budget_exceeded",
+            "run_budget_updated",
+            "model_downgraded",
+            "blackboard_updated",
+            "context_assembled",
+            "context_revision",
+            "graph_expanded",
+            "loop_exhausted",
+            "loop_no_progress",
+            "guard_tripped",
+            "approval_requested",
+            "approval_cancelled",
+            "approval_decided",
+            "approval_expired",
+            "approval_notified",
+            "approval_notification_failed"
+          ]
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "payload": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "schema_version",
+        "run_id",
+        "seq",
+        "type",
+        "ts",
+        "payload"
+      ]
+    },
+    "ErrorClass": {
+      "type": "string",
+      "enum": [
+        "transient",
+        "permanent",
+        "timeout",
+        "cancelled",
+        "validation_failed"
+      ]
+    },
+    "ExhaustPolicy": {
+      "type": "string",
+      "enum": [
+        "proceed",
+        "fail"
+      ]
+    },
+    "FeedbackPolicy": {
+      "properties": {
+        "template": {
+          "type": "string"
+        },
+        "max_output_chars": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "GraphExpanded": {
+      "properties": {
+        "origin_step": {
+          "type": "string"
+        },
+        "origin_kind": {
+          "type": "string"
+        },
+        "from_version": {
+          "type": "integer"
+        },
+        "to_version": {
+          "type": "integer"
+        },
+        "depth": {
+          "type": "integer"
+        },
+        "delta": {
+          "$ref": "#/$defs/PlanOutput"
+        },
+        "readied": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "widened": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "origin_step",
+        "origin_kind",
+        "from_version",
+        "to_version",
+        "depth",
+        "delta"
+      ]
+    },
+    "GuardTripped": {
+      "properties": {
+        "guard": {
+          "type": "string"
+        },
+        "step_id": {
+          "type": "string"
+        },
+        "current": {
+          "type": "integer"
+        },
+        "cap": {
+          "type": "integer"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "guard",
+        "current",
+        "cap",
+        "unit",
+        "action"
+      ]
+    },
+    "JitterMode": {
+      "type": "string",
+      "enum": [
+        "full",
+        "none"
+      ]
+    },
+    "LoopExhausted": {
+      "properties": {
+        "loop_source_step": {
+          "type": "string"
+        },
+        "loop_source_instance": {
+          "type": "string"
+        },
+        "body_entry": {
+          "type": "string"
+        },
+        "iteration": {
+          "type": "integer"
+        },
+        "max_iterations": {
+          "type": "integer"
+        },
+        "condition": {
+          "type": "string"
+        },
+        "policy": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "loop_source_step",
+        "loop_source_instance",
+        "body_entry",
+        "iteration",
+        "max_iterations",
+        "condition",
+        "policy",
+        "action"
+      ]
+    },
+    "LoopNoProgress": {
+      "properties": {
+        "loop_source_step": {
+          "type": "string"
+        },
+        "loop_source_instance": {
+          "type": "string"
+        },
+        "compared_step": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "iteration": {
+          "type": "integer"
+        },
+        "prev_instance": {
+          "type": "string"
+        },
+        "cur_instance": {
+          "type": "string"
+        },
+        "hash": {
+          "type": "string"
+        },
+        "policy": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "loop_source_step",
+        "loop_source_instance",
+        "compared_step",
+        "iteration",
+        "prev_instance",
+        "cur_instance",
+        "hash",
+        "policy",
+        "action"
+      ]
+    },
+    "ModelDowngraded": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "from_model": {
+          "type": "string"
+        },
+        "to_model": {
+          "type": "string"
+        },
+        "from_resource": {
+          "type": "string"
+        },
+        "to_resource": {
+          "type": "string"
+        },
+        "trigger": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "string"
+        },
+        "threshold_fraction": {
+          "type": "number"
+        },
+        "spent_nano_usd": {
+          "type": "integer"
+        },
+        "budget_nano_usd": {
+          "type": "integer"
+        },
+        "from_estimate_nano_usd": {
+          "type": "integer"
+        },
+        "to_estimate_nano_usd": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "attempt",
+        "from_model",
+        "to_model",
+        "from_resource",
+        "to_resource",
+        "trigger"
+      ]
+    },
+    "NoProgressPolicy": {
+      "properties": {
+        "step": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "policy": {
+          "$ref": "#/$defs/ExhaustPolicy"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "PlanOutput": {
+      "properties": {
+        "schema_version": {
+          "type": "integer"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/Step"
+          },
+          "type": "array"
+        },
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/Edge"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "schema_version",
+        "steps"
+      ]
+    },
+    "Rate": {
+      "properties": {
+        "input_per_mtok": {
+          "type": "number"
+        },
+        "output_per_mtok": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "input_per_mtok",
+        "output_per_mtok"
+      ]
+    },
+    "RetryPolicy": {
+      "properties": {
+        "max_attempts": {
+          "type": "integer"
+        },
+        "backoff": {
+          "$ref": "#/$defs/BackoffSpec"
+        },
+        "jitter": {
+          "$ref": "#/$defs/JitterMode"
+        },
+        "retry_on": {
+          "items": {
+            "$ref": "#/$defs/ErrorClass"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "RunBudgetUpdated": {
+      "properties": {
+        "previous_nano_usd": {
+          "type": "integer"
+        },
+        "budget_nano_usd": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "previous_nano_usd",
+        "budget_nano_usd"
+      ]
+    },
+    "RunCancelled": {
+      "properties": {},
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "RunCancelling": {
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "reason"
+      ]
+    },
+    "RunCreated": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "steps_total": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "steps_total"
+      ]
+    },
+    "RunFailed": {
+      "properties": {},
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "RunParked": {
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "reason"
+      ]
+    },
+    "RunResumed": {
+      "properties": {},
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "RunSucceeded": {
+      "properties": {},
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "RunUnparked": {
+      "properties": {},
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "Step": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/StepType"
+        },
+        "config": true,
+        "retry": {
+          "$ref": "#/$defs/RetryPolicy"
+        },
+        "timeout": {
+          "type": "string"
+        },
+        "cache": {
+          "$ref": "#/$defs/CachePolicy"
+        },
+        "budget": {
+          "$ref": "#/$defs/StepBudget"
+        },
+        "validation": {
+          "$ref": "#/$defs/ValidationPolicy"
+        },
+        "blackboard": {
+          "$ref": "#/$defs/BlackboardPolicy"
+        },
+        "context": {
+          "$ref": "#/$defs/ContextSpec"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "type"
+      ]
+    },
+    "StepBudget": {
+      "properties": {
+        "max_usd": {
+          "type": "number"
+        },
+        "max_tokens": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "StepCancelled": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "reason"
+      ]
+    },
+    "StepClaimed": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "claim_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "claim_id",
+        "attempt"
+      ]
+    },
+    "StepCollected": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "class": {
+          "type": "string"
+        },
+        "attempts": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "attempts"
+      ]
+    },
+    "StepDeadLettered": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "class": {
+          "type": "string"
+        },
+        "attempts": {
+          "type": "integer"
+        },
+        "seq": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "source",
+        "attempts",
+        "seq"
+      ]
+    },
+    "StepFailed": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "attempt"
+      ]
+    },
+    "StepReady": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id"
+      ]
+    },
+    "StepReclaimed": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "claim_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "claim_id",
+        "attempt"
+      ]
+    },
+    "StepRequeued": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id"
+      ]
+    },
+    "StepRetryScheduled": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "class": {
+          "type": "string"
+        },
+        "next_attempt_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "attempt",
+        "class",
+        "next_attempt_at"
+      ]
+    },
+    "StepRevived": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "reason"
+      ]
+    },
+    "StepSemanticRetry": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "semantic_attempt": {
+          "type": "integer"
+        },
+        "max_attempts": {
+          "type": "integer"
+        },
+        "issue_count": {
+          "type": "integer"
+        },
+        "next_attempt_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "attempt",
+        "semantic_attempt",
+        "max_attempts",
+        "issue_count",
+        "next_attempt_at"
+      ]
+    },
+    "StepSkipped": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id"
+      ]
+    },
+    "StepSucceeded": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "attempt"
+      ]
+    },
+    "StepThrottled": {
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "bucket": {
+          "type": "string"
+        },
+        "retry_after": {
+          "type": "string"
+        },
+        "next_attempt_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step_id",
+        "attempt",
+        "resource",
+        "bucket",
+        "retry_after",
+        "next_attempt_at"
+      ]
+    },
+    "StepType": {
+      "type": "string",
+      "enum": [
+        "llm",
+        "tool",
+        "retrieve",
+        "map",
+        "gather",
+        "planner",
+        "agent",
+        "human_approval",
+        "join",
+        "branch",
+        "noop",
+        "echo",
+        "sleep",
+        "fail_n_times",
+        "counter",
+        "effectful_echo",
+        "blackboard_write"
+      ]
+    },
+    "UUID": {
+      "items": {
+        "type": "integer"
+      },
+      "type": "array",
+      "maxItems": 16,
+      "minItems": 16
+    },
+    "ValidationPolicy": {
+      "properties": {
+        "validators": {
+          "items": {
+            "$ref": "#/$defs/ValidatorSpec"
+          },
+          "type": "array"
+        },
+        "max_attempts": {
+          "type": "integer"
+        },
+        "feedback": {
+          "$ref": "#/$defs/FeedbackPolicy"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "ValidatorSpec": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "config": true,
+        "target": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name"
+      ]
+    }
+  },
+  "title": "agentloom event feed",
+  "description": "Per-run event feed envelope, schema_version 1 (ADR-018). Ordering is by seq; delivery is at-least-once (dedupe by run_id+seq). One payload variant per event type."
+}

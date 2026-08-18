@@ -99,24 +99,6 @@ func (e *BlackboardVersionConflict) Unwrap() error { return ErrConflict }
 // (ADR-005 fencing). The pgboard translates it to blackboard.ErrFenced.
 var ErrBlackboardFenced = errors.New("blackboard write rejected by claim fence")
 
-// BlackboardUpdatedEvent is the blackboard_updated event payload (ticket
-// 12.2, ADR-014): a blackboard key gained a new version. The M16 event feed
-// and M18 surface it as run-scoped shared-memory activity; the value itself
-// is not in the payload (it can be large and is durable on the entry row).
-type BlackboardUpdatedEvent struct {
-	Key           string   `json:"key"`
-	Version       int32    `json:"version"`
-	Tags          []string `json:"tags"`
-	TokenCount    int32    `json:"token_count"`
-	AuthorStepID  string   `json:"author_step_id,omitempty"`
-	AuthorAttempt int32    `json:"author_attempt,omitempty"`
-}
-
-// EventBlackboardUpdated is the events.type for a blackboard write (ticket
-// 12.2, ADR-014). Appended by PutBlackboardEntry in the same transaction as
-// the insert, under the run lock and monotonic seq.
-const EventBlackboardUpdated = "blackboard_updated"
-
 // BlackboardPutArgs are the inputs to PutBlackboardEntry: one blackboard
 // write, already validated (key/tag grammar, value size) and token-counted
 // by the pgboard handle. Money-free; the store just allocates the version,
@@ -233,7 +215,7 @@ func PutBlackboardEntry(ctx context.Context, q Querier, args BlackboardPutArgs) 
 		AuthorStepID:  args.AuthorStepID,
 		AuthorAttempt: args.AuthorAttempt,
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventBlackboardUpdated, evt); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, evt); err != nil {
 		return gen.BlackboardEntry{}, err
 	}
 	return entry, nil

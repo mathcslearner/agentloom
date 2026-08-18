@@ -1091,13 +1091,15 @@ Optional notification plugin: on new pending approval, POST a signed (HMAC) payl
 
 **Exit criteria:** a WS client receives snapshot + ordered events for a run across reconnects with zero gaps/dupes (by seq) while two workers execute it; 100 concurrent clients sustained in test.
 
-#### 16.1 — ADR-018 & event schema normalization
+#### 16.1 — ADR-018 & event schema normalization ✅
 **Depends on:** 2.3, 15.3
 **ADR-018:** typed event envelope (per-run monotonic `seq`, `type`, `ts`, versioned payload) covering run/step status changes, attempts, `cost_updated`, `graph_expanded`, approval lifecycle, guard/park events; delivery = at-least-once with client dedupe by seq; step logs stay out of the main feed (separate channel). Migrate/normalize existing `events` writers to the envelope.
 **Done when:**
-- [ ] Event catalog documented with payload schemas (generated types basis)
-- [ ] All engine writers emit normalized envelopes (grep/CI check: no ad-hoc event writes)
-- [ ] Seq monotonic per run under concurrent writers (integration assertion)
+- [x] Event catalog documented with payload schemas (generated types basis)
+- [x] All engine writers emit normalized envelopes (grep/CI check: no ad-hoc event writes)
+- [x] Seq monotonic per run under concurrent writers (integration assertion)
+
+*(As built: ADR-018 + the new leaf package `internal/event` — `Type` vocabulary + one `Payload` struct per event type (`EventType()`; step-scoped ones add `EventStepID()`), the `Envelope` (per-run `seq`, `type`, `ts`, lifted `step_id`, versioned payload; `SchemaVersion` stamped at projection, no DB column), the ordered `Catalog` + `Lookup`/`Decode`/`DecodeEnvelope`, and `GenerateSchema()` → the committed `docs/schema/events.v1.json` (emitted via `internal/dag/gen -events-out`, CI-drift-checked with the definition/PlanOutput schemas). The store re-exports the engine/api-referenced payloads as aliases (`store.CostUpdatedEvent = event.CostUpdated`) and derives its `Event*` string constants from the vocabulary; its **two typed `appendEvent` helpers are the only sanctioned event writers** — both derive the type from an `event.Payload`, and `TestNoAdHocEventWrites` (go/ast) fails any other physical `AppendEvent`/`Events().Append` call site. `store.EventEnvelope(row)` is the read adapter (decode + lift step id). The attempt field is normalized to `attempt` across the five step-lifecycle payloads that used `attempt_no` (safe on an append-only feed). Step logs stay on their M7.4 REST channel. **No migration, no new config var, no new metric.** Tests: `internal/event` catalog-completeness/self-consistency/decode-round-trip/envelope-projection + schema drift & content; store `TestNoAdHocEventWrites` + `TestEventConstantsMatchVocabulary` + integration `TestEventSeqMonotonicUnderConcurrentWriters` (8×25 concurrent appends → seqs exactly 1..200) + `TestEventBackfillFromLastSeq`; engine integration `TestEventFeedNormalized` (a real run's every stored row decodes typed, seq gap-free, step-scoped events carry a step id). Green under `-race`; golangci-lint clean (a scoped revive exclusion for the trivial interface-marker methods + the re-export aliases). ADR-004/architecture cross-amended. **Next: 16.2** (live publish path — Redis pub/sub).)*
 
 #### 16.2 — Live publish path (Redis pub/sub)
 **Depends on:** 16.1

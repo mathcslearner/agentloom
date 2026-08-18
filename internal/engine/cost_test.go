@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -80,7 +79,7 @@ func TestPriceAttempt(t *testing.T) {
 			t.Errorf("RateSource = %q, want wildcard", got.RateSource)
 		}
 		if got.Warning != nil {
-			t.Errorf("Warning = %s, want none (known model)", got.Warning)
+			t.Errorf("Warning = %+v, want none (known model)", got.Warning)
 		}
 	})
 
@@ -123,10 +122,7 @@ func TestPriceAttempt(t *testing.T) {
 		if got.Warning == nil {
 			t.Fatal("Warning = nil, want a cost_unknown_model payload")
 		}
-		var w cost.UnknownModelWarning
-		if err := json.Unmarshal(got.Warning, &w); err != nil {
-			t.Fatalf("unmarshaling warning: %v", err)
-		}
+		w := *got.Warning
 		if w.Model != "acme:unpriced" {
 			t.Errorf("warning model = %q, want acme:unpriced", w.Model)
 		}
@@ -144,7 +140,7 @@ func TestPriceAttempt(t *testing.T) {
 			t.Fatal("got nil, want a row")
 		}
 		if got.Warning != nil {
-			t.Errorf("Warning = %s, want none (a hit spent nothing; the miss already warned)", got.Warning)
+			t.Errorf("Warning = %+v, want none (a hit spent nothing; the miss already warned)", got.Warning)
 		}
 		if got.CostNanoUSD != 0 {
 			t.Errorf("CostNanoUSD = %d, want 0", got.CostNanoUSD)

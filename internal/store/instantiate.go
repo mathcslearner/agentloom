@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mathcslearner/agentloom/internal/dag"
+	"github.com/mathcslearner/agentloom/internal/event"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
@@ -101,18 +102,6 @@ type CreateRunResult struct {
 	// Reused is true when an existing run was returned for
 	// IdempotencyToken and nothing was written.
 	Reused bool
-}
-
-// Event payloads (v1 minimal shapes; ADR-018 owns the formal envelope).
-type runCreatedPayload struct {
-	Name       string `json:"name"`
-	StepsTotal int    `json:"steps_total"`
-}
-
-// stepIDPayload serves the events whose payload is just the step:
-// step_ready and step_skipped.
-type stepIDPayload struct {
-	StepID string `json:"step_id"`
 }
 
 // CreateRun instantiates one run of def atomically (ticket 2.5): in a
@@ -366,12 +355,12 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		return gen.Run{}, err
 	}
 
-	if err := p.appendEvent(ctx, q, run.ID, EventRunCreated,
-		runCreatedPayload{Name: p.def.Name, StepsTotal: len(p.def.Steps)}); err != nil {
+	if err := p.appendEvent(ctx, q, run.ID,
+		event.RunCreated{Name: p.def.Name, StepsTotal: len(p.def.Steps)}); err != nil {
 		return gen.Run{}, err
 	}
 	for _, id := range p.entry {
-		if err := p.appendEvent(ctx, q, run.ID, EventStepReady, stepIDPayload{StepID: id}); err != nil {
+		if err := p.appendEvent(ctx, q, run.ID, event.StepReady{StepID: id}); err != nil {
 			return gen.Run{}, err
 		}
 	}
@@ -390,13 +379,16 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 	return run, nil
 }
 
-// appendEvent allocates the next per-run seq and appends one event, both on
-// the transaction q runs on (ADR-004 event sequencing).
-func (p *instantiationPlan) appendEvent(ctx context.Context, q Querier, runID uuid.UUID, typ string, payload any) error {
+// appendEvent allocates the next per-run seq and appends one normalized event
+// (ticket 16.1, ADR-018), both on the transaction q runs on (ADR-004 event
+// sequencing). The type is derived from the payload — the instantiation-side
+// counterpart of the transitions' typed appendEvent.
+func (p *instantiationPlan) appendEvent(ctx context.Context, q Querier, runID uuid.UUID, payload event.Payload) error {
 	seq, err := q.Runs().AllocateEventSeq(ctx, runID)
 	if err != nil {
 		return err
 	}
+	typ := string(payload.EventType())
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshaling %s payload: %w", typ, err)

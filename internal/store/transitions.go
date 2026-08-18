@@ -32,87 +32,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/mathcslearner/agentloom/internal/event"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
 
-// Transition event payloads (v1 minimal shapes; ADR-018 owns the formal
-// envelope). step_ready/step_skipped use stepIDPayload (instantiate.go).
-// stepClaimedPayload is shared by step_claimed (ClaimID = the fresh fence)
-// and step_reclaimed (ClaimID = the displaced holder's cleared fence).
-type stepClaimedPayload struct {
-	StepID    string `json:"step_id"`
-	ClaimID   string `json:"claim_id"`
-	AttemptNo int32  `json:"attempt_no"`
-}
-
-type stepFinishedPayload struct {
-	StepID    string `json:"step_id"`
-	AttemptNo int32  `json:"attempt_no"`
-}
-
-// stepRetryPayload is the step_retry_scheduled event body (ticket 5.2):
-// which attempt failed, how it was classed, and when the next is due.
-type stepRetryPayload struct {
-	StepID        string    `json:"step_id"`
-	AttemptNo     int32     `json:"attempt_no"`
-	Class         string    `json:"class"`
-	NextAttemptAt time.Time `json:"next_attempt_at"`
-}
-
-// stepThrottlePayload is the step_throttled event body (ticket 9.2): which
-// attempt was deferred, the resource whose limit denied it, which bucket
-// (requests/tokens/both) lacked capacity, the limiter's own retry_after,
-// and when the re-dispatch is due.
-type stepThrottlePayload struct {
-	StepID        string    `json:"step_id"`
-	AttemptNo     int32     `json:"attempt_no"`
-	Resource      string    `json:"resource"`
-	Bucket        string    `json:"bucket"`
-	RetryAfter    string    `json:"retry_after"`
-	NextAttemptAt time.Time `json:"next_attempt_at"`
-}
-
-// stepSemanticRetryPayload is the step_semantic_retry_scheduled event body
-// (ticket 11.4): which attempt failed validation, how deep the semantic loop
-// has gone (semantic_attempt of max_attempts), the failing verdict's issue
-// count, and when the re-attempt is due.
-type stepSemanticRetryPayload struct {
-	StepID          string    `json:"step_id"`
-	AttemptNo       int32     `json:"attempt_no"`
-	SemanticAttempt int       `json:"semantic_attempt"`
-	MaxAttempts     int       `json:"max_attempts"`
-	IssueCount      int       `json:"issue_count"`
-	NextAttemptAt   time.Time `json:"next_attempt_at"`
-}
-
-// stepDeadLetteredPayload is the step_dead_lettered event body (ticket
-// 5.4): why the step died (source), the judged class (empty for poison),
-// the attempt count at death, and the dead_letters seq the full record
-// lives under.
-type stepDeadLetteredPayload struct {
-	StepID   string `json:"step_id"`
-	Source   string `json:"source"`
-	Class    string `json:"class,omitempty"`
-	Attempts int32  `json:"attempts"`
-	Seq      int32  `json:"seq"`
-}
-
-// stepCancelledPayload serves step_cancelled and step_revived (ticket
-// 5.4): the step and why it was written off / revived.
-type stepCancelledPayload struct {
-	StepID string `json:"step_id"`
-	Reason string `json:"reason"`
-}
-
-// stepCollectedPayload is the step_collected event body (ticket 13.4b): a map
-// instance failed terminally under collect_errors and was tolerated — the
-// judged class and the attempt count at the tolerated failure.
-type stepCollectedPayload struct {
-	StepID   string `json:"step_id"`
-	Class    string `json:"class,omitempty"`
-	Attempts int32  `json:"attempts"`
-}
+// Transition event payloads are the event package's normalized structs
+// (ADR-018); the store constructs them at each transition and hands them to
+// appendEvent, which derives the type. See internal/event/payloads.go.
 
 // ClaimStepArgs are the inputs to ClaimStep.
 type ClaimStepArgs struct {
@@ -255,8 +182,8 @@ func ClaimStepWithOrigin(ctx context.Context, q Querier, args ClaimStepArgs) (ge
 	if err != nil {
 		return gen.RunStep{}, origin, wrapErr(op+": insert attempt", err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepClaimed, stepClaimedPayload{
-		StepID: args.StepID, ClaimID: claimID.String(), AttemptNo: step.AttemptCount,
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepClaimed{
+		StepID: args.StepID, ClaimID: claimID.String(), Attempt: step.AttemptCount,
 	}); err != nil {
 		return gen.RunStep{}, origin, err
 	}
@@ -309,8 +236,8 @@ func TakeoverStep(ctx context.Context, q Querier, args TakeoverStepArgs) (gen.Ru
 	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeLost, nil, nil, nil, nil, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepReclaimed, stepClaimedPayload{
-		StepID: args.StepID, ClaimID: args.ClaimID.String(), AttemptNo: step.AttemptCount,
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepReclaimed{
+		StepID: args.StepID, ClaimID: args.ClaimID.String(), Attempt: step.AttemptCount,
 	}); err != nil {
 		return gen.RunStep{}, err
 	}
@@ -378,8 +305,8 @@ func SucceedStep(ctx context.Context, q Querier, args SucceedStepArgs) (gen.RunS
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DSucceeded: 1}); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepSucceeded, stepFinishedPayload{
-		StepID: args.StepID, AttemptNo: step.AttemptCount,
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepSucceeded{
+		StepID: args.StepID, Attempt: step.AttemptCount,
 	}); err != nil {
 		return gen.RunStep{}, err
 	}
@@ -476,7 +403,7 @@ func DeadLetterStep(ctx context.Context, q Querier, args DeadLetterStepArgs) (ge
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op+": insert dead letter", err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepDeadLettered, stepDeadLetteredPayload{
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepDeadLettered{
 		StepID: args.StepID, Source: args.Source, Class: args.Outcome,
 		Attempts: step.AttemptCount, Seq: dl.Seq,
 	}); err != nil {
@@ -553,7 +480,7 @@ func CollectFailStep(ctx context.Context, q Querier, args CollectFailStepArgs) (
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DCollected: 1}); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepCollected, stepCollectedPayload{
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepCollected{
 		StepID: args.StepID, Class: args.Outcome, Attempts: step.AttemptCount,
 	}); err != nil {
 		return gen.RunStep{}, err
@@ -637,7 +564,7 @@ func PoisonDeadLetterStep(ctx context.Context, q Querier, args PoisonDeadLetterS
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op+": insert dead letter", err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepDeadLettered, stepDeadLetteredPayload{
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepDeadLettered{
 		StepID: args.StepID, Source: DeadLetterSourcePoison,
 		Attempts: step.AttemptCount, Seq: dl.Seq,
 	}); err != nil {
@@ -709,7 +636,7 @@ func CancelStep(ctx context.Context, q Querier, args CancelStepArgs) (gen.RunSte
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DCancelled: 1}); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepCancelled, stepCancelledPayload{
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepCancelled{
 		StepID: args.StepID, Reason: args.Reason,
 	}); err != nil {
 		return gen.RunStep{}, err
@@ -775,7 +702,7 @@ func CancelRunningStep(ctx context.Context, q Querier, args CancelRunningStepArg
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DCancelled: 1}); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepCancelled, stepCancelledPayload{
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepCancelled{
 		StepID: args.StepID, Reason: args.Reason,
 	}); err != nil {
 		return gen.RunStep{}, err
@@ -826,7 +753,7 @@ func RequeueStep(ctx context.Context, q Querier, args RequeueStepArgs) (gen.RunS
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DFailed: -1}); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepRequeued, stepIDPayload{StepID: args.StepID}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepRequeued{StepID: args.StepID}); err != nil {
 		return gen.RunStep{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "step requeued from DLQ",
@@ -875,7 +802,7 @@ func ReviveStep(ctx context.Context, q Querier, args ReviveStepArgs) (gen.RunSte
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DCancelled: -1}); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepRevived, stepCancelledPayload{
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepRevived{
 		StepID: args.StepID, Reason: args.Reason,
 	}); err != nil {
 		return gen.RunStep{}, err
@@ -953,8 +880,8 @@ func RetryStep(ctx context.Context, q Querier, args RetryStepArgs) (gen.RunStep,
 	if err := finishAttempt(ctx, gq, op, step, args.Outcome, args.Error, args.Usage, nil, nil, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepRetryScheduled, stepRetryPayload{
-		StepID: args.StepID, AttemptNo: step.AttemptCount,
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepRetryScheduled{
+		StepID: args.StepID, Attempt: step.AttemptCount,
 		Class: args.Outcome, NextAttemptAt: args.NextAttemptAt,
 	}); err != nil {
 		return gen.RunStep{}, err
@@ -1032,8 +959,8 @@ func ThrottleStep(ctx context.Context, q Querier, args ThrottleStepArgs) (gen.Ru
 	if err := finishAttempt(ctx, gq, op, step, AttemptOutcomeThrottled, errPayload, nil, nil, nil, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepThrottled, stepThrottlePayload{
-		StepID: args.StepID, AttemptNo: step.AttemptCount, Resource: args.Resource,
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepThrottled{
+		StepID: args.StepID, Attempt: step.AttemptCount, Resource: args.Resource,
 		Bucket: args.Bucket, RetryAfter: args.RetryAfter, NextAttemptAt: args.NextAttemptAt,
 	}); err != nil {
 		return gen.RunStep{}, err
@@ -1118,8 +1045,8 @@ func SemanticRetryStep(ctx context.Context, q Querier, args SemanticRetryStepArg
 		args.Error, args.Usage, args.Verdict, args.Repair, args.Now); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepSemanticRetryScheduled, stepSemanticRetryPayload{
-		StepID: args.StepID, AttemptNo: step.AttemptCount, SemanticAttempt: args.SemanticAttempt,
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepSemanticRetry{
+		StepID: args.StepID, Attempt: step.AttemptCount, SemanticAttempt: args.SemanticAttempt,
 		MaxAttempts: args.MaxAttempts, IssueCount: args.IssueCount, NextAttemptAt: args.NextAttemptAt,
 	}); err != nil {
 		return gen.RunStep{}, err
@@ -1280,7 +1207,7 @@ func ReadyStep(ctx context.Context, q Querier, args ReadyStepArgs) (gen.RunStep,
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op, err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepReady, stepIDPayload{StepID: args.StepID}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepReady{StepID: args.StepID}); err != nil {
 		return gen.RunStep{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "step ready",
@@ -1324,7 +1251,7 @@ func SkipStep(ctx context.Context, q Querier, args SkipStepArgs) (gen.RunStep, e
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DSkipped: 1}); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepSkipped, stepIDPayload{StepID: args.StepID}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepSkipped{StepID: args.StepID}); err != nil {
 		return gen.RunStep{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "step skipped",
@@ -1361,7 +1288,7 @@ func SucceedRun(ctx context.Context, q Querier, args SucceedRunArgs) (gen.Run, e
 	if err != nil {
 		return gen.Run{}, wrapErr(op, err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventRunSucceeded, struct{}{}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, event.RunSucceeded{}); err != nil {
 		return gen.Run{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "run succeeded", log.RunID(args.RunID.String()))
@@ -1394,7 +1321,7 @@ func FailRun(ctx context.Context, q Querier, args FailRunArgs) (gen.Run, error) 
 	if err != nil {
 		return gen.Run{}, wrapErr(op, err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventRunFailed, struct{}{}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, event.RunFailed{}); err != nil {
 		return gen.Run{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "run failed", log.RunID(args.RunID.String()))
@@ -1424,7 +1351,7 @@ func FailRunRollup(ctx context.Context, q Querier, args FailRunArgs) (gen.Run, e
 	if err != nil {
 		return gen.Run{}, wrapErr(op, err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventRunFailed, struct{}{}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, event.RunFailed{}); err != nil {
 		return gen.Run{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "run failed (rollup)", log.RunID(args.RunID.String()))
@@ -1458,17 +1385,11 @@ func ResumeRun(ctx context.Context, q Querier, args ResumeRunArgs) (gen.Run, err
 	if err != nil {
 		return gen.Run{}, wrapErr(op, err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventRunResumed, struct{}{}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, event.RunResumed{}); err != nil {
 		return gen.Run{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "run resumed", log.RunID(args.RunID.String()))
 	return run, nil
-}
-
-// runReasonPayload is the event body of the reasoned run transitions
-// (ticket 5.6): run_parked and run_cancelling.
-type runReasonPayload struct {
-	Reason string `json:"reason"`
 }
 
 // ParkRunArgs are the inputs to ParkRun.
@@ -1508,7 +1429,7 @@ func ParkRun(ctx context.Context, q Querier, args ParkRunArgs) (gen.Run, error) 
 	if err != nil {
 		return gen.Run{}, wrapErr(op, err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventRunParked, runReasonPayload{Reason: args.Reason}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, event.RunParked{Reason: args.Reason}); err != nil {
 		return gen.Run{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "run parked", log.RunID(args.RunID.String()))
@@ -1543,7 +1464,7 @@ func UnparkRun(ctx context.Context, q Querier, args UnparkRunArgs) (gen.Run, err
 	if err != nil {
 		return gen.Run{}, wrapErr(op, err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventRunUnparked, struct{}{}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, event.RunUnparked{}); err != nil {
 		return gen.Run{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "run unparked", log.RunID(args.RunID.String()))
@@ -1590,7 +1511,7 @@ func CancelRun(ctx context.Context, q Querier, args CancelRunArgs) (gen.Run, err
 	if err != nil {
 		return gen.Run{}, wrapErr(op, err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventRunCancelling, runReasonPayload{Reason: args.Reason}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, event.RunCancelling{Reason: args.Reason}); err != nil {
 		return gen.Run{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "run cancelling", log.RunID(args.RunID.String()))
@@ -1619,7 +1540,7 @@ func CancelRunRollup(ctx context.Context, q Querier, args FailRunArgs) (gen.Run,
 	if err != nil {
 		return gen.Run{}, wrapErr(op, err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventRunCancelled, struct{}{}); err != nil {
+	if err := appendEvent(ctx, gq, op, args.RunID, event.RunCancelled{}); err != nil {
 		return gen.Run{}, err
 	}
 	log.From(ctx).DebugContext(ctx, "run cancelled (rollup)", log.RunID(args.RunID.String()))
@@ -1678,11 +1599,16 @@ func lockRun(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUID) (
 	return row, nil
 }
 
-// appendEvent allocates the transition's event seq and writes the event
-// row. Called only after the guarded CAS succeeded, so next_seq advances
-// iff an event lands under it — gap-free even when callers swallow
-// conflicts from other transitions in the same transaction.
-func appendEvent(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUID, typ string, payload any) error {
+// appendEvent allocates the transition's event seq and writes one normalized
+// event (ticket 16.1, ADR-018). The event type is derived from the payload
+// (event.Payload.EventType), so a writer can never emit a mismatched (type,
+// shape) pair — this is the single sanctioned event-write path in the store
+// (alongside the instantiation helper), enforced by TestNoAdHocEventWrites.
+// Called only after the guarded CAS succeeded, so next_seq advances iff an
+// event lands under it — gap-free even when callers swallow conflicts from
+// other transitions in the same transaction.
+func appendEvent(ctx context.Context, gq *gen.Queries, op string, runID uuid.UUID, payload event.Payload) error {
+	typ := string(payload.EventType())
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("store: %s: marshaling %s payload: %w", op, typ, err)

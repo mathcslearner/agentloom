@@ -27,6 +27,7 @@ import (
 
 	"github.com/mathcslearner/agentloom/internal/contextmgr"
 	"github.com/mathcslearner/agentloom/internal/cost"
+	"github.com/mathcslearner/agentloom/internal/event"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store"
@@ -114,9 +115,8 @@ func (e *Engine) priceAttempt(ctx context.Context, step gen.RunStep, out exec.Ou
 	// entry — but only when real money was spent. A cache hit spent nothing,
 	// and the original miss already warned, so a hit stays silent.
 	if priced.Fallback && !cacheHit {
-		if w, werr := json.Marshal(cost.NewUnknownModelWarning(resource, priced.Rate)); werr == nil {
-			args.Warning = w
-		}
+		w := event.CostUnknownModelFrom(cost.NewUnknownModelWarning(resource, priced.Rate))
+		args.Warning = &w
 	}
 	return args
 }
@@ -172,9 +172,8 @@ func (e *Engine) priceOverhead(ctx context.Context, step gen.RunStep, entry stri
 		CostNanoUSD: amount, Now: now,
 	}
 	if priced.Fallback {
-		if w, werr := json.Marshal(cost.NewUnknownModelWarning(u.Resource, priced.Rate)); werr == nil {
-			args.Warning = w
-		}
+		w := event.CostUnknownModelFrom(cost.NewUnknownModelWarning(u.Resource, priced.Rate))
+		args.Warning = &w
 	}
 	return args
 }
@@ -219,9 +218,8 @@ func (e *Engine) priceSummaryOverheads(ctx context.Context, step gen.RunStep, su
 		} else {
 			args.CostNanoUSD = amount
 			if priced.Fallback {
-				if w, werr := json.Marshal(cost.NewUnknownModelWarning(s.Resource, priced.Rate)); werr == nil {
-					args.Warning = w
-				}
+				w := event.CostUnknownModelFrom(cost.NewUnknownModelWarning(s.Resource, priced.Rate))
+				args.Warning = &w
 			}
 		}
 		rows = append(rows, args)

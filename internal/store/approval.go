@@ -12,32 +12,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/mathcslearner/agentloom/internal/dag"
+	"github.com/mathcslearner/agentloom/internal/event"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
-
-// ApprovalRequestedEvent is the approval_requested event payload (ticket
-// 15.2, ADR-017): a human_approval step parked and a pending approval was
-// written. The M16 event feed and the M18 approval inbox read it to surface
-// a new pending decision without reading the approvals table directly.
-type ApprovalRequestedEvent struct {
-	ApprovalID       string   `json:"approval_id"`
-	StepID           string   `json:"step_id"`
-	AttemptNo        int32    `json:"attempt"`
-	Title            string   `json:"title"`
-	AllowedDecisions []string `json:"allowed_decisions"`
-	AllowEdit        bool     `json:"allow_edit,omitempty"`
-	// TimeoutAt is when 15.4's expiry fires; nil = wait indefinitely.
-	TimeoutAt *time.Time `json:"timeout_at,omitempty"`
-}
-
-// ApprovalCancelledEvent is the approval_cancelled event payload (ticket
-// 15.2): a pending approval was cancelled because its run was cancelled.
-type ApprovalCancelledEvent struct {
-	ApprovalID string `json:"approval_id"`
-	StepID     string `json:"step_id"`
-	Reason     string `json:"reason"`
-}
 
 // AwaitHumanStepArgs are the inputs to AwaitHumanStep.
 type AwaitHumanStepArgs struct {
@@ -124,10 +102,10 @@ func AwaitHumanStep(ctx context.Context, q Querier, args AwaitHumanStepArgs) (ge
 	}); err != nil {
 		return gen.RunStep{}, wrapErr(op+": insert approval", err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventApprovalRequested, ApprovalRequestedEvent{
+	if err := appendEvent(ctx, gq, op, args.RunID, event.ApprovalRequested{
 		ApprovalID:       args.Approval.ID.String(),
 		StepID:           args.StepID,
-		AttemptNo:        step.AttemptCount,
+		Attempt:          step.AttemptCount,
 		Title:            args.Approval.Title,
 		AllowedDecisions: args.Approval.AllowedDecisions,
 		AllowEdit:        args.Approval.AllowEdit,
@@ -191,7 +169,7 @@ func CancelAwaitingHumanStep(ctx context.Context, q Querier, args CancelAwaiting
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DCancelled: 1}); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepCancelled, stepCancelledPayload{
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepCancelled{
 		StepID: args.StepID, Reason: args.Reason,
 	}); err != nil {
 		return gen.RunStep{}, err
@@ -211,7 +189,7 @@ func CancelAwaitingHumanStep(ctx context.Context, q Querier, args CancelAwaiting
 	if aerr != nil {
 		return gen.RunStep{}, wrapErr(op+": cancel approval", aerr)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventApprovalCancelled, ApprovalCancelledEvent{
+	if err := appendEvent(ctx, gq, op, args.RunID, event.ApprovalCancelled{
 		ApprovalID: approval.ID.String(), StepID: args.StepID, Reason: args.Reason,
 	}); err != nil {
 		return gen.RunStep{}, err
@@ -219,47 +197,6 @@ func CancelAwaitingHumanStep(ctx context.Context, q Querier, args CancelAwaiting
 	log.From(ctx).InfoContext(ctx, "parked approval cancelled with run",
 		log.RunID(args.RunID.String()), log.StepID(args.StepID))
 	return step, nil
-}
-
-// ApprovalDecidedEvent is the approval_decided event payload (ticket 15.3,
-// ADR-017): a pending approval was decided through the single arbiter CAS.
-// The M16 event feed and the M18 inbox read it to reflect a decision without
-// re-reading the approvals table.
-type ApprovalDecidedEvent struct {
-	ApprovalID string `json:"approval_id"`
-	StepID     string `json:"step_id"`
-	AttemptNo  int32  `json:"attempt"`
-	// Decision is the recorded decision (approve / reject).
-	Decision string `json:"decision"`
-	// Edited reports whether an edited payload replaced the original.
-	Edited bool `json:"edited,omitempty"`
-	// Comment is the optional approver note.
-	Comment string `json:"comment,omitempty"`
-	// DecidedBy is the actor: a key_id for a human decision, or the reserved
-	// ApprovalActorTimeout for a timeout decision (15.4).
-	DecidedBy string `json:"decided_by"`
-	// Source is `human` or `timeout` (ApprovalSource*).
-	Source string `json:"source"`
-}
-
-// ApprovalExpiredEvent is the approval_expired event payload (ticket 15.4,
-// ADR-017): a pending approval's timeout passed and its on_timeout policy was
-// applied. Distinct from ApprovalDecidedEvent so the audit trail separates an
-// operator's decision from an automatic expiry.
-type ApprovalExpiredEvent struct {
-	ApprovalID string `json:"approval_id"`
-	StepID     string `json:"step_id"`
-	AttemptNo  int32  `json:"attempt"`
-	// Policy is the configured on_timeout policy (reject / approve / park).
-	Policy string `json:"policy"`
-	// Decision is the recorded decision for a reject/approve policy; empty for
-	// park (which records no decision).
-	Decision string `json:"decision,omitempty"`
-	// Action is what the expiry did: rejected / approved / run_parked /
-	// run_already_parked.
-	Action string `json:"action"`
-	// TimeoutAt is the deadline that fired.
-	TimeoutAt *time.Time `json:"timeout_at,omitempty"`
 }
 
 // Approval-timeout actions (ticket 15.4): the ApprovalExpiredEvent.Action and
@@ -378,8 +315,8 @@ func DecideApproval(ctx context.Context, q Querier, args DecideApprovalArgs) (ge
 		if args.Decision == string(dag.ApprovalReject) {
 			action = ApprovalActionRejected
 		}
-		if err := appendEvent(ctx, gq, op, args.RunID, EventApprovalExpired, ApprovalExpiredEvent{
-			ApprovalID: args.ID.String(), StepID: args.StepID, AttemptNo: args.AttemptNo,
+		if err := appendEvent(ctx, gq, op, args.RunID, event.ApprovalExpired{
+			ApprovalID: args.ID.String(), StepID: args.StepID, Attempt: args.AttemptNo,
 			Policy: args.Decision, Decision: args.Decision, Action: action,
 			TimeoutAt: args.TimeoutAt,
 		}); err != nil {
@@ -387,8 +324,8 @@ func DecideApproval(ctx context.Context, q Querier, args DecideApprovalArgs) (ge
 		}
 		return approval, nil
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventApprovalDecided, ApprovalDecidedEvent{
-		ApprovalID: args.ID.String(), StepID: args.StepID, AttemptNo: args.AttemptNo,
+	if err := appendEvent(ctx, gq, op, args.RunID, event.ApprovalDecided{
+		ApprovalID: args.ID.String(), StepID: args.StepID, Attempt: args.AttemptNo,
 		Decision: args.Decision, Edited: len(args.EditedPayload) > 0,
 		Comment: args.Comment, DecidedBy: args.DecidedBy, Source: args.Source,
 	}); err != nil {
@@ -497,8 +434,8 @@ func ExpireApprovalPark(ctx context.Context, q Querier, args ExpireApprovalParkA
 		res.Action = ApprovalActionRunParked
 	}
 
-	if err := appendEvent(ctx, gq, op, args.RunID, EventApprovalExpired, ApprovalExpiredEvent{
-		ApprovalID: args.ID.String(), StepID: args.StepID, AttemptNo: args.AttemptNo,
+	if err := appendEvent(ctx, gq, op, args.RunID, event.ApprovalExpired{
+		ApprovalID: args.ID.String(), StepID: args.StepID, Attempt: args.AttemptNo,
 		Policy: string(dag.ApprovalTimeoutPark), Action: res.Action, TimeoutAt: args.TimeoutAt,
 	}); err != nil {
 		return ExpireApprovalParkResult{}, err
@@ -553,8 +490,8 @@ func SucceedAwaitingHumanStep(ctx context.Context, q Querier, args SucceedAwaiti
 	if err := bumpCounters(ctx, gq, op, args.RunID, gen.BumpRunStepCountersParams{DSucceeded: 1}); err != nil {
 		return gen.RunStep{}, err
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepSucceeded, stepFinishedPayload{
-		StepID: args.StepID, AttemptNo: step.AttemptCount,
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepSucceeded{
+		StepID: args.StepID, Attempt: step.AttemptCount,
 	}); err != nil {
 		return gen.RunStep{}, err
 	}
@@ -618,7 +555,7 @@ func DeadLetterAwaitingHumanStep(ctx context.Context, q Querier, args DeadLetter
 	if err != nil {
 		return gen.RunStep{}, wrapErr(op+": insert dead letter", err)
 	}
-	if err := appendEvent(ctx, gq, op, args.RunID, EventStepDeadLettered, stepDeadLetteredPayload{
+	if err := appendEvent(ctx, gq, op, args.RunID, event.StepDeadLettered{
 		StepID: args.StepID, Source: DeadLetterSourcePermanent, Class: class,
 		Attempts: step.AttemptCount, Seq: dl.Seq,
 	}); err != nil {
@@ -629,36 +566,6 @@ func DeadLetterAwaitingHumanStep(ctx context.Context, q Querier, args DeadLetter
 	return step, nil
 }
 
-// ApprovalNotifiedEvent is the approval_notified event payload (ticket 15.5,
-// ADR-017): a pending-approval notification was delivered to the configured
-// webhook. Best-effort telemetry — the audit surface for who was notified,
-// never a correctness record.
-type ApprovalNotifiedEvent struct {
-	ApprovalID string `json:"approval_id"`
-	StepID     string `json:"step_id"`
-	// TargetHost is the webhook host only — never the full URL, which may
-	// carry a token in its path or query (secret hygiene).
-	TargetHost string `json:"target_host"`
-	// Attempts is how many delivery attempts it took to succeed.
-	Attempts int `json:"attempts"`
-	// StatusCode is the final HTTP status the webhook returned.
-	StatusCode int `json:"status_code"`
-}
-
-// ApprovalNotificationFailedEvent is the approval_notification_failed event
-// payload (ticket 15.5, ADR-017): a notification could not be delivered. A
-// warning, not a failure — the run stays parked and decidable.
-type ApprovalNotificationFailedEvent struct {
-	ApprovalID string `json:"approval_id"`
-	StepID     string `json:"step_id"`
-	TargetHost string `json:"target_host"`
-	// Attempts is how many delivery attempts were made before giving up.
-	Attempts int `json:"attempts"`
-	// Reason is a short classification (permanent / retries_exhausted /
-	// cancelled). It never includes the URL, headers, or response body.
-	Reason string `json:"reason"`
-}
-
 // RecordApprovalNotification appends an approval_notified or
 // approval_notification_failed event (ticket 15.5). It is not a state
 // transition — a notification never changes the approval, step, or run — so it
@@ -666,7 +573,7 @@ type ApprovalNotificationFailedEvent struct {
 // advancing in the caller's transaction. Must be called inside a WithTx
 // callback. runID is the approval's run; typ is EventApprovalNotified or
 // EventApprovalNotificationFailed; payload is the matching event struct.
-func RecordApprovalNotification(ctx context.Context, q Querier, runID uuid.UUID, typ string, payload any, now time.Time) error {
+func RecordApprovalNotification(ctx context.Context, q Querier, runID uuid.UUID, payload event.Payload, now time.Time) error {
 	const op = "record approval notification"
 	gq, err := transitionQueries(ctx, q, op, now)
 	if err != nil {
@@ -675,7 +582,7 @@ func RecordApprovalNotification(ctx context.Context, q Querier, runID uuid.UUID,
 	if _, err := lockRun(ctx, gq, op, runID); err != nil {
 		return err
 	}
-	return appendEvent(ctx, gq, op, runID, typ, payload)
+	return appendEvent(ctx, gq, op, runID, payload)
 }
 
 // ListApprovalsArgs parameterize ApprovalRepo.List (ticket 15.3).

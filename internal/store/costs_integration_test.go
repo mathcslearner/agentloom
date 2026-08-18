@@ -8,6 +8,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/mathcslearner/agentloom/internal/cost"
+	"github.com/mathcslearner/agentloom/internal/event"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/storetest"
 )
@@ -24,7 +26,10 @@ func TestApplyAttemptCostAggregatesAndEvents(t *testing.T) {
 	run := instantiate(t, s, decodeDef(t, twoEntrySteps))
 
 	rate := json.RawMessage(`{"input_per_mtok":1,"output_per_mtok":2}`)
-	warning := json.RawMessage(`{"model":"acme:unpriced","fallback":{"input_per_mtok":30,"output_per_mtok":60}}`)
+	warning := &event.CostUnknownModel{
+		Model:    "acme:unpriced",
+		Fallback: cost.Rate{InputPerMTok: 30, OutputPerMTok: 60},
+	}
 
 	// Two priced rows across two steps, one carrying a fallback warning, plus
 	// a cache-hit row that spends 0 and saves.
