@@ -319,6 +319,31 @@ const (
 	ExhaustFail    ExhaustPolicy = "fail"
 )
 
+// NoProgressPolicy is a loop edge's optional no-progress guard (ticket 14.4,
+// ADR-016). When present, the engine hashes the selected body step's output at
+// each iteration and forces the loop to terminate once two consecutive
+// iterations produce an identical hash — a runaway loop making no forward
+// progress. It is disabled by default (nil on the loop edge): a loop is
+// bounded by its max_iterations and the run guards regardless, so no-progress
+// detection is an opt-in early-exit, not a safety net.
+type NoProgressPolicy struct {
+	// Step is the loop-body step whose output is compared across iterations;
+	// empty ("" — the default) means the loop source itself. Must be a
+	// loop-body member (validated in checkGraphSemantics).
+	Step string `json:"step,omitempty"`
+
+	// Path is an RFC 6901 JSON pointer into that step's output selecting the
+	// value to hash; empty ("" — the default) hashes the whole output.
+	Path string `json:"path,omitempty"`
+
+	// Policy is the termination action when no progress is detected: proceed
+	// (default, empty spelling) routes the loop source's normal (non-loop)
+	// outgoing edges exactly like a condition-false exit; fail dead-letters the
+	// loop source so the run fails via its on_failure disposition. Reuses the
+	// ExhaustPolicy enum — the same proceed/fail choice as on_exhausted.
+	Policy ExhaustPolicy `json:"policy,omitempty"`
+}
+
 // Edge connects two steps. Loop edges (Type == EdgeLoop) are the only
 // sanctioned cycles and carry Condition and MaxIterations; readiness and
 // skip propagation ignore them (ADR-003 "Loop edges").
@@ -347,6 +372,12 @@ type Edge struct {
 	// loop edge to ExhaustProceed; Encode omits ExhaustProceed, so the
 	// canonical spelling of a proceed loop has no "on_exhausted" key.
 	OnExhausted ExhaustPolicy `json:"on_exhausted,omitempty"`
+
+	// NoProgress is the optional no-progress guard; loop edges only (ticket
+	// 14.4). Nil means the guard is disabled (the default). An empty Policy
+	// spelling means proceed, read at runtime — the field is omitempty so an
+	// absent policy stays absent and the encoding round-trips.
+	NoProgress *NoProgressPolicy `json:"no_progress,omitempty"`
 }
 
 // IsLoop reports whether the edge is a marked loop edge.

@@ -97,7 +97,7 @@ LIMIT @row_limit;
 -- now. Served by the partial runs_deadline_scan_idx. The heal is the
 -- run-cancel sweep with reason deadline_exceeded.
 -- name: ListDeadlineExceededRuns :many
-SELECT r.id, r.deadline_at
+SELECT r.id, r.deadline_at, r.started_at
 FROM runs r
 WHERE r.deadline_at IS NOT NULL
   AND r.deadline_at < @now::timestamptz

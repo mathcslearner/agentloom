@@ -463,7 +463,12 @@
       "type": "loop",
       "condition": "output.verdict == 'revise'",
       "max_iterations": 3,
-      "on_exhausted": "fail"
+      "on_exhausted": "fail",
+      "no_progress": {
+        "step": "draft",
+        "path": "/text",
+        "policy": "proceed"
+      }
     },
     {
       "from": "critique",

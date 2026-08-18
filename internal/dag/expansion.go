@@ -275,6 +275,23 @@ type ExpansionInput struct {
 	ExpansionsSoFar int
 }
 
+// CapBreach is a structured record of one run-guard cap a rejected expansion
+// crossed (ticket 14.4): the limit name, the value the expansion would have
+// reached (Current), and the configured ceiling (Cap). The engine renders it
+// into a guard_tripped event's "which limit, current value, configured cap"
+// contract, instead of parsing the free-text issue message. Populated only for
+// the CodeExpansionCapExceeded issues; empty when the rejection is plan-
+// attributable (a bad plan shape, not a cap).
+type CapBreach struct {
+	// Limit is the guard name: max_added_steps | max_total_steps |
+	// max_expansions | max_depth.
+	Limit string
+	// Current is the value the expansion would have reached.
+	Current int
+	// Cap is the configured ceiling for that guard.
+	Cap int
+}
+
 // ExpansionVerdict is the outcome of validating an expansion (ADR-015). It
 // separates the two rejection classes so the engine routes correctly:
 // plan-attributable failures become validation_failed (semantic-retry the
@@ -282,6 +299,9 @@ type ExpansionInput struct {
 // fix them).
 type ExpansionVerdict struct {
 	Issues []*ValidationIssue
+	// Breaches is the structured form of the run-guard cap issues (ticket
+	// 14.4), one per CodeExpansionCapExceeded issue, in the same order.
+	Breaches []CapBreach
 }
 
 // OK reports whether the expansion is admissible (no error-severity issues).
@@ -348,22 +368,29 @@ func ValidateExpansion(in ExpansionInput) ExpansionVerdict {
 	}
 
 	// Run-guard caps (permanent on exhaustion): checked on counts alone, so
-	// they hold even if the plan's shape is otherwise bad.
+	// they hold even if the plan's shape is otherwise bad. Each crossing is also
+	// recorded structurally (ticket 14.4) so the engine reports the exact limit,
+	// current value, and cap in the guard event without parsing the message.
+	var breaches []CapBreach
 	if n := len(plan.Steps); in.PerExpansionCap > 0 && n > in.PerExpansionCap {
 		v.add(CodeExpansionCapExceeded, "plan.steps",
 			"plan adds %d steps, exceeding the per-expansion cap of %d", n, in.PerExpansionCap)
+		breaches = append(breaches, CapBreach{Limit: "max_added_steps", Current: n, Cap: in.PerExpansionCap})
 	}
 	if total := in.CurrentStepCount + len(plan.Steps); total > in.Caps.MaxTotalSteps {
 		v.add(CodeExpansionCapExceeded, "plan.steps",
 			"expansion would bring the run to %d steps, exceeding max_total_steps %d", total, in.Caps.MaxTotalSteps)
+		breaches = append(breaches, CapBreach{Limit: "max_total_steps", Current: total, Cap: in.Caps.MaxTotalSteps})
 	}
 	if in.ExpansionsSoFar+1 > in.Caps.MaxExpansions {
 		v.add(CodeExpansionCapExceeded, "plan",
 			"this is expansion %d, exceeding max_expansions %d", in.ExpansionsSoFar+1, in.Caps.MaxExpansions)
+		breaches = append(breaches, CapBreach{Limit: "max_expansions", Current: in.ExpansionsSoFar + 1, Cap: in.Caps.MaxExpansions})
 	}
 	if in.Origin.Depth+1 > in.Caps.MaxDepth {
 		v.add(CodeExpansionCapExceeded, "plan",
 			"injected steps would be at depth %d, exceeding max_depth %d", in.Origin.Depth+1, in.Caps.MaxDepth)
+		breaches = append(breaches, CapBreach{Limit: "max_depth", Current: in.Origin.Depth + 1, Cap: in.Caps.MaxDepth})
 	}
 
 	// Engine-generated expansions (map fan-out, loop unrolling) mint ids in the
@@ -451,7 +478,7 @@ func ValidateExpansion(in ExpansionInput) ExpansionVerdict {
 		}
 	}
 
-	return ExpansionVerdict{Issues: v.issues}
+	return ExpansionVerdict{Issues: v.issues, Breaches: breaches}
 }
 
 // checkExpansionEdgeFields applies the loop/normal edge-field rules to a plan
@@ -483,6 +510,21 @@ func (v *validator) checkExpansionEdgeFields(path string, e Edge) {
 		default:
 			v.add(CodeConfigFieldInvalid, path+".on_exhausted", "must be %q or %q, got %q", ExhaustProceed, ExhaustFail, string(e.OnExhausted))
 		}
+		// The no-progress guard's policy/path (ticket 14.4), mirroring checkEdges;
+		// body-membership of Step on an injected loop degrades safely (the guard
+		// simply never fires) so it is not re-checked against the merged graph.
+		if np := e.NoProgress; np != nil {
+			switch np.Policy {
+			case "", ExhaustProceed, ExhaustFail:
+			default:
+				v.add(CodeConfigFieldInvalid, path+".no_progress.policy", "must be %q or %q, got %q", ExhaustProceed, ExhaustFail, string(np.Policy))
+			}
+			if np.Path != "" {
+				if err := checkJSONPointer(np.Path); err != nil {
+					v.add(CodeConfigFieldInvalid, path+".no_progress.path", "invalid JSON pointer: %v", err)
+				}
+			}
+		}
 		return
 	}
 	if e.Condition != "" {
@@ -493,6 +535,9 @@ func (v *validator) checkExpansionEdgeFields(path string, e Edge) {
 	}
 	if e.OnExhausted != "" {
 		v.add(CodeLoopFieldForbidden, path+".on_exhausted", "only valid on loop edges")
+	}
+	if e.NoProgress != nil {
+		v.add(CodeLoopFieldForbidden, path+".no_progress", "only valid on loop edges")
 	}
 	switch {
 	case len(e.When) > MaxExprLen:

@@ -323,6 +323,9 @@
         },
         "on_exhausted": {
           "$ref": "#/$defs/ExhaustPolicy"
+        },
+        "no_progress": {
+          "$ref": "#/$defs/NoProgressPolicy"
         }
       },
       "additionalProperties": false,
@@ -507,6 +510,21 @@
         },
         "at_budget_fraction": {
           "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "NoProgressPolicy": {
+      "properties": {
+        "step": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "policy": {
+          "$ref": "#/$defs/ExhaustPolicy"
         }
       },
       "additionalProperties": false,

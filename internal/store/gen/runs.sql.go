@@ -421,7 +421,8 @@ func (q *Queries) ListRunsPage(ctx context.Context, arg ListRunsPageParams) ([]R
 
 const lockRun = `-- name: LockRun :one
 SELECT id, status, trace_parent, trace_state,
-       budget_nano_usd, spent_nano_usd, on_budget_exceeded
+       budget_nano_usd, spent_nano_usd, on_budget_exceeded,
+       started_at, deadline_at
 FROM runs WHERE id = $1 FOR UPDATE
 `
 
@@ -433,6 +434,8 @@ type LockRunRow struct {
 	BudgetNanoUsd    *int64
 	SpentNanoUsd     int64
 	OnBudgetExceeded string
+	StartedAt        *time.Time
+	DeadlineAt       *time.Time
 }
 
 // LockRun acquires the run-row lock without writing anything. It is every
@@ -444,7 +447,9 @@ type LockRunRow struct {
 // trace_parent/trace_state ride along (ticket 7.3) so the claim path can
 // surface the run's root trace context without a second read; the budget
 // columns and spend ride along (ticket 10.3) so the claim path can project
-// spend for the budget check without a second read.
+// spend for the budget check without a second read; started_at and deadline_at
+// ride along (ticket 14.4) so the claim path can enforce the wall-clock guard
+// without a second read.
 func (q *Queries) LockRun(ctx context.Context, id uuid.UUID) (LockRunRow, error) {
 	row := q.db.QueryRow(ctx, lockRun, id)
 	var i LockRunRow
@@ -456,6 +461,8 @@ func (q *Queries) LockRun(ctx context.Context, id uuid.UUID) (LockRunRow, error)
 		&i.BudgetNanoUsd,
 		&i.SpentNanoUsd,
 		&i.OnBudgetExceeded,
+		&i.StartedAt,
+		&i.DeadlineAt,
 	)
 	return i, err
 }

@@ -13,7 +13,7 @@ import (
 )
 
 const listDeadlineExceededRuns = `-- name: ListDeadlineExceededRuns :many
-SELECT r.id, r.deadline_at
+SELECT r.id, r.deadline_at, r.started_at
 FROM runs r
 WHERE r.deadline_at IS NOT NULL
   AND r.deadline_at < $1::timestamptz
@@ -30,6 +30,7 @@ type ListDeadlineExceededRunsParams struct {
 type ListDeadlineExceededRunsRow struct {
 	ID         uuid.UUID
 	DeadlineAt *time.Time
+	StartedAt  *time.Time
 }
 
 // Runs past their materialized wall-clock deadline (ticket 5.6): still
@@ -45,7 +46,7 @@ func (q *Queries) ListDeadlineExceededRuns(ctx context.Context, arg ListDeadline
 	var items []ListDeadlineExceededRunsRow
 	for rows.Next() {
 		var i ListDeadlineExceededRunsRow
-		if err := rows.Scan(&i.ID, &i.DeadlineAt); err != nil {
+		if err := rows.Scan(&i.ID, &i.DeadlineAt, &i.StartedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

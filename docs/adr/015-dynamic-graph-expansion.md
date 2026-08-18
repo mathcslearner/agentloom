@@ -230,6 +230,13 @@ the engine routes each correctly (`CapExceeded()` is the signal):
   resume, exactly as budget parking works today; 13.1 fixes the permanent-fail
   default.)
 
+  **14.4 amendment:** the verdict now also carries structured `Breaches
+  []CapBreach{Limit, Current, Cap}` alongside the `expansion_cap_exceeded`
+  issues, so the engine renders a `guard_tripped` event with the exact limit /
+  current value / configured cap (the "which limit, current, cap" ADR-016 §14.4
+  contract) instead of parsing the issue message. The permanent-fail default is
+  unchanged; the `park` policy remains deferred.
+
 Because a planner declares an `output_format: json_schema` over the published
 PlanOutput schema (13.3), the M11 pipeline already handles the JSON layer: a
 plan that is not even valid JSON is `invalid_json`, repaired by 11.3's

@@ -314,9 +314,10 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 	// source's normal exit edges). A malformed loop condition is a deterministic
 	// step failure, force-classified permanent (like a `when` failure, ADR-003).
 	var loopEvent *store.LoopExhaustedEvent
+	var loopNoProgressEvent *store.LoopNoProgressEvent
 	var loopDepthOverride *int
 	if plan == nil && originKind == "" {
-		dec, lerr := e.loopDecision(step, run, out, params)
+		dec, lerr := e.loopDecision(ctx, step, run, out, params)
 		if lerr != nil {
 			logger.WarnContext(ctx, "loop condition evaluation failed; recording step failure",
 				slog.Any("error", lerr))
@@ -348,6 +349,23 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 			// on_exhausted: proceed — record the event in the completion tx and
 			// let the ordinary fan-out route the loop source's normal exit edges.
 			loopEvent = &dec.event
+		case loopNoProgress:
+			if dec.fail {
+				// no_progress policy fail — the loop is spinning without progress.
+				// Record the event, then dead-letter the loop source permanently
+				// (ticket 14.4), the same disposition as on_exhausted: fail.
+				if eerr := e.recordLoopNoProgress(ctx, step.RunID, dec.noProgress); eerr != nil {
+					logger.WarnContext(ctx, "recording loop_no_progress event failed; failing anyway",
+						slog.Any("error", eerr))
+				}
+				return e.completeFailure(ctx, step, out,
+					fmt.Errorf("loop_no_progress: %q produced identical output at iteration %d", dec.noProgress.ComparedStep, dec.noProgress.Iteration),
+					dag.ClassPermanent, store.TraceFromRun(run))
+			}
+			// no_progress policy proceed — record the event in the completion tx
+			// and route the loop source's normal exit edges (like a condition
+			// -false exit), forcing the loop to terminate early.
+			loopNoProgressEvent = &dec.noProgress
 		case loopExit, loopNone:
 			// Nothing to do — the ordinary fan-out handles the exit edges.
 		}
@@ -556,6 +574,14 @@ func (e *Engine) completeSuccess(ctx context.Context, step gen.RunStep, out exec
 					return err
 				}
 			}
+			// Loop no-progress under the proceed policy (ticket 14.4): record the
+			// event atomically before the fan-out routes the loop source's normal
+			// exit edges, mirroring the loop_exhausted proceed path.
+			if loopNoProgressEvent != nil {
+				if err := store.RecordLoopNoProgress(ctx, q, step.RunID, *loopNoProgressEvent, now); err != nil {
+					return err
+				}
+			}
 			// The out-edge read + edge plan move UNDER the run lock, after any
 			// expansion (ADR-015): a planner's own ExpandRun (an origin→new
 			// "after" edge) and a concurrent parallel-to splice onto this
@@ -724,6 +750,9 @@ func (e *Engine) routeExpansionRejection(ctx context.Context, step gen.RunStep, 
 	if rej.CapExceeded() {
 		logger.WarnContext(ctx, "planner expansion exceeded a run cap; failing permanently",
 			slog.Any("error", rej))
+		// The explanatory guard event(s) (ticket 14.4): which cap, current
+		// value, configured ceiling — recorded before the dead-letter.
+		e.recordExpansionCapGuards(ctx, step.RunID, step.StepID, rej.Breaches())
 		return e.completeFailure(ctx, step, out,
 			fmt.Errorf("expansion_cap_exceeded: %w", rej), dag.ClassPermanent, runTrace)
 	}

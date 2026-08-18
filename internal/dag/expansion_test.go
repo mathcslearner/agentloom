@@ -280,6 +280,59 @@ func TestValidateExpansion_Rejections(t *testing.T) {
 	}
 }
 
+// TestValidateExpansion_Breaches asserts a rejected expansion reports the
+// structured cap breaches (ticket 14.4): the limit name, the value reached, and
+// the configured cap — the values the engine renders into a guard_tripped event.
+func TestValidateExpansion_Breaches(t *testing.T) {
+	t.Parallel()
+
+	in := baseInput(dag.PlanOutput{SchemaVersion: 1})
+	in.PerExpansionCap = 1
+	in.Caps.MaxTotalSteps = 2
+	in.CurrentStepCount = 1
+	in.Plan.Steps = []dag.Step{llmStep("x"), llmStep("y")}
+	in.Plan.Edges = []dag.Edge{{From: "plan", To: "x"}, {From: "plan", To: "y"}}
+
+	v := dag.ValidateExpansion(in)
+	if !v.CapExceeded() {
+		t.Fatalf("want CapExceeded, got issues: %v", v.Issues)
+	}
+	got := map[string]dag.CapBreach{}
+	for _, b := range v.Breaches {
+		got[b.Limit] = b
+	}
+	if b := got["max_added_steps"]; b.Current != 2 || b.Cap != 1 {
+		t.Errorf("max_added_steps breach = %+v, want current 2 cap 1", b)
+	}
+	if b := got["max_total_steps"]; b.Current != 3 || b.Cap != 2 {
+		t.Errorf("max_total_steps breach = %+v, want current 3 cap 2", b)
+	}
+	if _, ok := got["max_expansions"]; ok {
+		t.Errorf("unexpected max_expansions breach: %v", v.Breaches)
+	}
+}
+
+// TestValidateExpansion_NoBreachesWhenPlanAttributable asserts a plan-shape
+// rejection (not a cap) carries no structured breaches (ticket 14.4).
+func TestValidateExpansion_NoBreachesWhenPlanAttributable(t *testing.T) {
+	t.Parallel()
+
+	in := baseInput(dag.PlanOutput{SchemaVersion: 1})
+	in.Plan.Steps = []dag.Step{llmStep("x"), llmStep("x")} // duplicate id
+	in.Plan.Edges = []dag.Edge{{From: "plan", To: "x"}}
+
+	v := dag.ValidateExpansion(in)
+	if v.OK() {
+		t.Fatal("want rejection")
+	}
+	if v.CapExceeded() {
+		t.Errorf("CapExceeded() = true, want false for a plan-attributable rejection")
+	}
+	if len(v.Breaches) != 0 {
+		t.Errorf("want no breaches, got %v", v.Breaches)
+	}
+}
+
 func hasCode(issues []*dag.ValidationIssue, code dag.ValidationCode) bool {
 	for _, i := range issues {
 		if i.Code == code {

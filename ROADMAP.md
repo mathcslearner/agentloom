@@ -1007,13 +1007,13 @@ Execute M1's marked loop edges: when the loop-source step (critic) completes and
 - [x] Cap reached → exit path taken with `loop_exhausted` event (policy: proceed vs fail — both tested)
 - [x] Kill mid-iteration → resume completes the same iteration (no duplicate iteration)
 
-#### 14.4 — Run guards & termination policies
+#### 14.4 — Run guards & termination policies ✅
 **Depends on:** 14.3, 5.6
 Run-level guards evaluated at expansion and claim time: `max_total_steps`, `max_expansions` (13.1), `max_wall_clock` (5.6), budget (10.3) — plus loop-specific no-progress detection (optional: identical output hash across consecutive iterations → force exit with event). Every halt is a typed park/fail with an explanatory event.
 **Done when:**
-- [ ] Runaway-loop fixture halted by each guard class in isolation (test per guard)
-- [ ] No-progress detector fires on scripted identical outputs; disabled by default (opt-in)
-- [ ] Guard events explain which limit, current value, and configured cap
+- [x] Runaway-loop fixture halted by each guard class in isolation (test per guard) *(`guard_integration_test.go`: a runaway writer⇄critic loop halted by `max_total_steps` and `max_expansions` in isolation → the loop source dead-letters `expansion_cap_exceeded`, run fails, `guard_tripped` fired; `max_wall_clock` → the deadline crosses mid-loop (manually driven on a fake clock), the next claim's `guardDeadline` cancels the run reason `deadline_exceeded`; the budget guard keeps its 10.3 `budget_exceeded` path. Wall-clock is now enforced at claim time (new `engine/guard.go` stage), not only by the reconciler sweep.)*
+- [x] No-progress detector fires on scripted identical outputs; disabled by default (opt-in) *(loop-edge `no_progress {step?, path?, policy?}`, nil by default. `TestLoopNoProgressProceedExits`/`FailDeadLetters`: identical consecutive drafts → `loop_no_progress` event at iteration 1 → proceed routes the exit (run succeeds) or fail dead-letters the loop source; `TestLoopNoProgressDisabledByDefault`: the same identical-output loop with no guard runs to `loop_exhausted`, never firing a no-progress event. Purely additive — an unresolvable pointer/unreadable prior instance skips the check, never a new failure.)*
+- [x] Guard events explain which limit, current value, and configured cap *(`guard_tripped` (expansion caps + wall clock) carries `{guard, current, cap, unit, action}`, rendered from `dag.ExpansionVerdict.Breaches []CapBreach{Limit, Current, Cap}` for the caps and elapsed-vs-deadline seconds for the wall clock; `loop_no_progress` carries the compared step/pointer/hash + policy/action; the budget and iteration guards keep their richer `budget_exceeded` / `loop_exhausted` events. No migration, no new config var, no new metric.)*
 
 #### 14.5 — Flagship example: research → write → critique
 **Depends on:** 14.3, 8.8, 11.4

@@ -2,14 +2,20 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
 
+	"github.com/mathcslearner/agentloom/internal/blackboard"
 	"github.com/mathcslearner/agentloom/internal/dag"
 	"github.com/mathcslearner/agentloom/internal/exec"
+	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
@@ -41,6 +47,12 @@ const (
 	// loop_exhausted event is recorded; the on_exhausted policy then either
 	// proceeds (ordinary fan-out) or fails the run.
 	loopExhaust
+	// loopNoProgress: condition true and iteration < max, but the loop's opt-in
+	// no-progress guard detected two consecutive iterations producing an
+	// identical output hash (ticket 14.4). A loop_no_progress event is recorded;
+	// the guard's policy then proceeds (ordinary fan-out) or fails the run —
+	// exactly like loopExhaust, one termination class earlier.
+	loopNoProgress
 )
 
 // loopOutcome is a loop source's completion decision.
@@ -50,7 +62,9 @@ type loopOutcome struct {
 	plan *dag.PlanOutput
 	// event is the loop_exhausted payload, set only for loopExhaust.
 	event store.LoopExhaustedEvent
-	// fail is true for loopExhaust under on_exhausted: fail.
+	// noProgress is the loop_no_progress payload, set only for loopNoProgress.
+	noProgress store.LoopNoProgressEvent
+	// fail is true for loopExhaust/loopNoProgress under a fail policy.
 	fail bool
 }
 
@@ -60,7 +74,7 @@ type loopOutcome struct {
 // output, and compares the completing instance's iteration to max_iterations.
 // A non-loop-source step returns loopNone. A malformed condition (a CEL error,
 // as in planEdges) is a deterministic step failure the caller routes permanent.
-func (e *Engine) loopDecision(step gen.RunStep, run gen.Run, out exec.Output, params map[string]any) (loopOutcome, error) {
+func (e *Engine) loopDecision(ctx context.Context, step gen.RunStep, run gen.Run, out exec.Output, params map[string]any) (loopOutcome, error) {
 	def, err := dag.Decode(run.Definition)
 	if err != nil {
 		return loopOutcome{}, fmt.Errorf("decoding run definition snapshot: %w", err)
@@ -115,11 +129,145 @@ func (e *Engine) loopDecision(step gen.RunStep, run gen.Run, out exec.Output, pa
 		}, nil
 	}
 
+	// No-progress detection (ticket 14.4): before minting the next iteration,
+	// the loop's opt-in guard hashes the compared step's output at iteration k
+	// and k-1; two identical hashes mean the loop is spinning without making
+	// forward progress, so it terminates early. Only from the second iteration
+	// on (k >= 1: there is a prior iteration to compare against). The guard is
+	// purely additive — a missing pointer or an unreadable prior instance skips
+	// the check (the loop simply continues), never a new failure.
+	if loopEdge.NoProgress != nil && iteration >= 1 {
+		if np := e.checkNoProgress(ctx, step, loopEdge, out, iteration); np != nil {
+			fail := loopEdge.NoProgress.Policy == dag.ExhaustFail
+			return loopOutcome{kind: loopNoProgress, fail: fail, noProgress: *np}, nil
+		}
+	}
+
 	plan, err := dag.GenerateLoopExpansion(def, loopEdge, step.StepID, iteration+1)
 	if err != nil {
 		return loopOutcome{}, fmt.Errorf("generating loop iteration %d for %q: %w", iteration+1, authored, err)
 	}
 	return loopOutcome{kind: loopContinue, plan: &plan}, nil
+}
+
+// checkNoProgress evaluates a loop's no-progress guard for the completing
+// iteration (ticket 14.4). It hashes the compared step's output at iteration k
+// (the current completion, when the compared step is the loop source itself, or
+// a stored instance) and k-1 (a stored instance); when the two hashes match it
+// returns the loop_no_progress event, else nil. It is deliberately additive: any
+// obstacle to comparing — an unresolvable pointer, an unreadable/absent prior
+// instance, a store error — skips the check (returns nil) with a log line rather
+// than failing the run, since no-progress is an opt-in early exit, never a new
+// failure mode. The loop is bounded by max_iterations regardless.
+func (e *Engine) checkNoProgress(ctx context.Context, step gen.RunStep, loopEdge dag.Edge, out exec.Output, iteration int) *store.LoopNoProgressEvent {
+	logger := log.From(ctx)
+	guardStep := loopEdge.NoProgress.Step
+	if guardStep == "" {
+		guardStep = loopEdge.From
+	}
+	path := loopEdge.NoProgress.Path
+
+	curInstance := loopInstanceID(guardStep, iteration)
+	prevInstance := loopInstanceID(guardStep, iteration-1)
+
+	// The current side is the completing output directly when the compared step
+	// is the loop source (the completing instance); otherwise it is a stored
+	// body-member instance of this iteration (which completed upstream of the
+	// loop source and so is already durable).
+	var curData []byte
+	need := []string{prevInstance}
+	if guardStep == loopEdge.From {
+		curInstance = step.StepID
+		curData = out.Data
+	} else {
+		need = append(need, curInstance)
+	}
+	rows, err := e.store.Steps().ListByIDs(ctx, step.RunID, need)
+	if err != nil {
+		logger.WarnContext(ctx, "no-progress guard: reading compared instances failed; skipping the check",
+			slog.String("compared_step", guardStep), slog.Any("error", err))
+		return nil
+	}
+	outputs := make(map[string][]byte, len(rows))
+	for _, r := range rows {
+		outputs[r.StepID] = r.Output
+	}
+	if curData == nil {
+		d, ok := outputs[curInstance]
+		if !ok {
+			return nil // the current instance is not yet durable — skip
+		}
+		curData = d
+	}
+	prevData, ok := outputs[prevInstance]
+	if !ok {
+		return nil // no prior iteration to compare against — skip
+	}
+
+	curHash, cerr := outputHash(curData, path)
+	prevHash, perr := outputHash(prevData, path)
+	if cerr != nil || perr != nil {
+		logger.WarnContext(ctx, "no-progress guard: output pointer did not resolve; skipping the check",
+			slog.String("compared_step", guardStep), slog.String("path", path))
+		return nil
+	}
+	if curHash != prevHash {
+		return nil // progress: the outputs differ
+	}
+
+	policy := loopEdge.NoProgress.Policy
+	if policy == "" {
+		policy = dag.ExhaustProceed
+	}
+	action := "proceed"
+	if policy == dag.ExhaustFail {
+		action = "fail"
+	}
+	return &store.LoopNoProgressEvent{
+		LoopSourceStep:     authoredStepID(step.StepID),
+		LoopSourceInstance: step.StepID,
+		ComparedStep:       guardStep,
+		Path:               path,
+		Iteration:          iteration,
+		PrevInstance:       prevInstance,
+		CurInstance:        curInstance,
+		Hash:               curHash,
+		Policy:             string(policy),
+		Action:             action,
+	}
+}
+
+// loopInstanceID maps an authored step id and a loop iteration to the instance
+// id that iteration carries: iteration 0 is the authored id itself (the initial
+// run body), and iteration k >= 1 is "<id>#k" (the unroller's minted instance).
+func loopInstanceID(authored string, iter int) string {
+	if iter <= 0 {
+		return authored
+	}
+	return authored + "#" + strconv.Itoa(iter)
+}
+
+// outputHash resolves the RFC 6901 pointer into a step output (empty pointer =
+// whole output) and returns the hex SHA-256 of its canonical JSON, so two
+// logically-equal outputs hash identically regardless of object key order or
+// whitespace (ticket 14.4). It reuses the blackboard pointer resolver, then
+// canonicalizes value-wise by decoding to a Go value and re-encoding (Go sorts
+// map keys), which the raw byte compaction does not do.
+func outputHash(data []byte, pointer string) (string, error) {
+	resolved, err := blackboard.ResolvePointer(data, pointer)
+	if err != nil {
+		return "", err
+	}
+	var v any
+	if err := json.Unmarshal(resolved, &v); err != nil {
+		return "", err
+	}
+	canon, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canon)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // authoredStepID strips the `#k` instance suffix(es) from a step id, yielding
@@ -170,5 +318,17 @@ func (e *Engine) recordLoopExhausted(ctx context.Context, runID uuid.UUID, event
 	now := e.now()
 	return e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
 		return store.RecordLoopExhausted(ctx, q, runID, event, now)
+	})
+}
+
+// recordLoopNoProgress appends the loop_no_progress event in its own short
+// transaction (ticket 14.4). Used only by the no_progress: fail path, where the
+// loop source is then dead-lettered through completeFailure (a separate
+// transaction); the proceed path records the event inside the completion
+// transaction instead — the same split as recordLoopExhausted.
+func (e *Engine) recordLoopNoProgress(ctx context.Context, runID uuid.UUID, event store.LoopNoProgressEvent) error {
+	now := e.now()
+	return e.store.WithTx(ctx, func(ctx context.Context, q store.Querier) error {
+		return store.RecordLoopNoProgress(ctx, q, runID, event, now)
 	})
 }

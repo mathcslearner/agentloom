@@ -142,6 +142,9 @@ func (e *Engine) routeMapRejection(ctx context.Context, step gen.RunStep, out ex
 	}
 	if rej.CapExceeded() {
 		reason = "expansion_cap_exceeded"
+		// The explanatory guard event(s) (ticket 14.4): which cap, current
+		// value, configured ceiling — recorded before the dead-letter.
+		e.recordExpansionCapGuards(ctx, step.RunID, step.StepID, rej.Breaches())
 	}
 	log.From(ctx).ErrorContext(ctx, "engine-generated expansion rejected; failing permanently",
 		slog.String("reason", reason), slog.Any("error", rej))

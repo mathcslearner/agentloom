@@ -165,6 +165,13 @@ type ClaimOrigin struct {
 	BudgetNanoUSD    *int64
 	SpentNanoUSD     int64
 	OnBudgetExceeded string
+	// DeadlineAt is the run's materialized wall-clock deadline (ticket 14.4),
+	// read from the same locked run row — nil means no deadline. StartedAt is
+	// when the run began. The wall-clock guard trips the claim when now is at or
+	// past DeadlineAt, cancelling the run before this step executes; StartedAt
+	// gives the guard event its elapsed-vs-cap seconds.
+	DeadlineAt *time.Time
+	StartedAt  *time.Time
 }
 
 // ClaimStep transitions a step ready → running — or retrying → running
@@ -220,6 +227,8 @@ func ClaimStepWithOrigin(ctx context.Context, q Querier, args ClaimStepArgs) (ge
 	origin.BudgetNanoUSD = run.BudgetNanoUsd
 	origin.SpentNanoUSD = run.SpentNanoUsd
 	origin.OnBudgetExceeded = run.OnBudgetExceeded
+	origin.DeadlineAt = run.DeadlineAt
+	origin.StartedAt = run.StartedAt
 	claimID := uuid.New()
 	step, err := gq.ClaimRunStep(ctx, gen.ClaimRunStepParams{
 		RunID: args.RunID, StepID: args.StepID, ClaimID: &claimID, Now: args.Now,

@@ -37,6 +37,11 @@ func (e *ExpansionRejectedError) Error() string {
 // signal to fail the planner permanently rather than semantic-retry it.
 func (e *ExpansionRejectedError) CapExceeded() bool { return e.Verdict.CapExceeded() }
 
+// Breaches returns the structured run-guard cap crossings (ticket 14.4): the
+// limit, current value, and configured cap the engine renders into a
+// guard_tripped event. Empty when the rejection is plan-attributable.
+func (e *ExpansionRejectedError) Breaches() []dag.CapBreach { return e.Verdict.Breaches }
+
 func (e *ExpansionRejectedError) Unwrap() error { return e.Verdict.Err() }
 
 // ExpandRunArgs are the inputs to ExpandRun.

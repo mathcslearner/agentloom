@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "name": "normal-edge-loop-fields",
+  "name": "loop-no-progress-bad",
   "steps": [
     {
       "id": "a",
@@ -9,16 +9,31 @@
     {
       "id": "b",
       "type": "noop"
+    },
+    {
+      "id": "c",
+      "type": "noop"
     }
   ],
   "edges": [
     {
       "from": "a",
-      "to": "b",
+      "to": "b"
+    },
+    {
+      "from": "a",
+      "to": "c"
+    },
+    {
+      "from": "b",
+      "to": "a",
+      "type": "loop",
       "condition": "output.verdict == 'revise'",
       "max_iterations": 3,
       "no_progress": {
-        "policy": "proceed"
+        "step": "c",
+        "path": "bad",
+        "policy": "maybe"
       }
     }
   ]

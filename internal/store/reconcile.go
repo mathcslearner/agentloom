@@ -209,6 +209,9 @@ type DeadlineExceededRun struct {
 	RunID uuid.UUID
 	// DeadlineAt is the materialized deadline — how overdue the run is.
 	DeadlineAt time.Time
+	// StartedAt is when the run began (ticket 14.4): the guard event's
+	// elapsed-vs-cap seconds derive from it. Zero if the run never started.
+	StartedAt time.Time
 }
 
 // ListDeadlineExceededRuns returns up to limit unfinished runs whose
@@ -230,6 +233,9 @@ func ListDeadlineExceededRuns(ctx context.Context, q Querier, now time.Time, lim
 		runs[i] = DeadlineExceededRun{RunID: r.ID}
 		if r.DeadlineAt != nil {
 			runs[i].DeadlineAt = *r.DeadlineAt
+		}
+		if r.StartedAt != nil {
+			runs[i].StartedAt = *r.StartedAt
 		}
 	}
 	return runs, nil

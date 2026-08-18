@@ -348,4 +348,22 @@ const (
 	// exhausting completion; execution routes to the loop source's normal
 	// (non-loop) outgoing edges (proceed) or the run fails (fail).
 	EventLoopExhausted = "loop_exhausted"
+
+	// EventGuardTripped: a run-level guard halted the run (ticket 14.4, ADR-016).
+	// The payload (GuardTrippedEvent) names the guard (max_added_steps /
+	// max_total_steps / max_expansions / max_depth / max_wall_clock), the current
+	// value and configured cap, the unit, and the action taken (fail / cancel).
+	// The iteration-cap and budget guards keep their own richer events
+	// (loop_exhausted, budget_exceeded); this covers the expansion caps and the
+	// wall-clock deadline, which otherwise carried only a reason string.
+	EventGuardTripped = "guard_tripped"
+
+	// EventLoopNoProgress: a loop's optional no-progress guard fired — two
+	// consecutive iterations produced an identical output hash (ticket 14.4,
+	// ADR-016). The payload (LoopNoProgressEvent) carries the loop source, the
+	// compared step and pointer, the matching hash, and the policy (proceed /
+	// fail) with the action taken, mirroring loop_exhausted's shape. Appended in
+	// the loop source's completion transaction; proceed routes the loop source's
+	// normal exit edges, fail dead-letters it.
+	EventLoopNoProgress = "loop_no_progress"
 )

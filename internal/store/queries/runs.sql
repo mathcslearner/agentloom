@@ -63,7 +63,10 @@ UPDATE runs SET next_seq = next_seq + 1 WHERE id = $1 RETURNING next_seq;
 -- trace_parent/trace_state ride along (ticket 7.3) so the claim path can
 -- surface the run's root trace context without a second read; the budget
 -- columns and spend ride along (ticket 10.3) so the claim path can project
--- spend for the budget check without a second read.
+-- spend for the budget check without a second read; started_at and deadline_at
+-- ride along (ticket 14.4) so the claim path can enforce the wall-clock guard
+-- without a second read.
 SELECT id, status, trace_parent, trace_state,
-       budget_nano_usd, spent_nano_usd, on_budget_exceeded
+       budget_nano_usd, spent_nano_usd, on_budget_exceeded,
+       started_at, deadline_at
 FROM runs WHERE id = $1 FOR UPDATE;

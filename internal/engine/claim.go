@@ -181,6 +181,15 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		slog.String("claim_id", claimIDString(step)))
 	e.annotateAttemptSpan(ctx, step, origin)
 
+	// Wall-clock run guard (ticket 14.4, ADR-016): before any work, halt a run
+	// past its materialized deadline — cancel the run and settle this step as
+	// cancelled. The cheapest possible halt (a time compare on the claim's
+	// origin), so a runaway loop stops at the next claim rather than waiting for
+	// the reconciler's periodic deadline sweep. A run with no deadline is a no-op.
+	if handled, gerr := e.guardDeadline(ctx, step, origin); handled {
+		return gerr
+	}
+
 	executor, err := e.registry.Get(step.StepType)
 	if err != nil {
 		// Step types are validated against the catalog at submit time, so

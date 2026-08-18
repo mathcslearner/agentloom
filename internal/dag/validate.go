@@ -1362,6 +1362,21 @@ func (v *validator) checkEdges(def *Definition, stepIndex map[string]int) {
 			default:
 				v.add(CodeConfigFieldInvalid, path+".on_exhausted", "must be %q or %q, got %q", ExhaustProceed, ExhaustFail, string(e.OnExhausted))
 			}
+			// The no-progress guard (ticket 14.4): its policy enum and Path
+			// pointer syntax are checked here; that Step names a loop-body
+			// member is a graph check (checkGraphSemantics), like loop ancestry.
+			if np := e.NoProgress; np != nil {
+				switch np.Policy {
+				case "", ExhaustProceed, ExhaustFail:
+				default:
+					v.add(CodeConfigFieldInvalid, path+".no_progress.policy", "must be %q or %q, got %q", ExhaustProceed, ExhaustFail, string(np.Policy))
+				}
+				if np.Path != "" {
+					if err := checkJSONPointer(np.Path); err != nil {
+						v.add(CodeConfigFieldInvalid, path+".no_progress.path", "invalid JSON pointer: %v", err)
+					}
+				}
+			}
 		} else {
 			if e.Condition != "" {
 				v.add(CodeLoopFieldForbidden, path+".condition", "only valid on loop edges")
@@ -1371,6 +1386,9 @@ func (v *validator) checkEdges(def *Definition, stepIndex map[string]int) {
 			}
 			if e.OnExhausted != "" {
 				v.add(CodeLoopFieldForbidden, path+".on_exhausted", "only valid on loop edges")
+			}
+			if e.NoProgress != nil {
+				v.add(CodeLoopFieldForbidden, path+".no_progress", "only valid on loop edges")
 			}
 			switch {
 			case len(e.When) > MaxExprLen:
@@ -1615,6 +1633,18 @@ func (v *validator) checkGraphSemantics(def *Definition, g *Graph) {
 		if !g.reaches(g.index[e.To], g.index[e.From]) {
 			v.add(CodeLoopEdgeNotAncestor, fmt.Sprintf("edges[%d]", ei),
 				"loop edge target %q is not an ancestor of source %q (no loop body to iterate)", e.To, e.From)
+			continue
+		}
+		// The no-progress guard's Step must name a loop-body member (ticket
+		// 14.4): the body is the same normal-edge span the unroller clones, so a
+		// non-member step would never have an iteration instance to compare. An
+		// empty Step means the loop source, which is always a body member.
+		if np := e.NoProgress; np != nil && np.Step != "" {
+			body, err := loopBody(g, e.From, e.To)
+			if err == nil && !body[np.Step] {
+				v.add(CodeConfigFieldInvalid, fmt.Sprintf("edges[%d].no_progress.step", ei),
+					"step %q is not a member of the loop body of %q → %q", np.Step, e.To, e.From)
+			}
 		}
 	}
 }

@@ -400,6 +400,13 @@ func TestDeadlineExceededCancelsRun(t *testing.T) {
 	if got := eventReason(t, s, runID, store.EventRunCancelling); got != store.RunCancelReasonDeadlineExceeded {
 		t.Errorf("run_cancelling reason = %q, want deadline_exceeded", got)
 	}
+	// The explanatory guard event (ticket 14.4): the reconciler records the same
+	// guard_tripped(max_wall_clock) the claim-time guard does — cap 3600s (the
+	// 1h deadline), elapsed >= that.
+	g := requireGuard(t, s, runID, "max_wall_clock")
+	if g.Unit != "seconds" || g.Action != "cancel" || g.Cap != 3600 || g.Current < 3600 {
+		t.Errorf("reconciler guard = %+v, want unit seconds action cancel cap 3600 current >= 3600", g)
+	}
 	requireStepStatuses(t, s, runID, map[string]string{"only": store.StepStatusCancelled})
 
 	again, err := rec.ReconcileOnce(ctx)

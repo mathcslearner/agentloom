@@ -309,6 +309,87 @@ both policies), `TestLoopExpansionAtomicOnFailpoint` (abort after `ExpandRun`
 rolls back — no injected iteration). `critic_loop.json` updated to the runnable
 writer⇄critic shape; kitchen sinks carry `on_exhausted`.
 
+### Run guards & termination policies (as built, 14.4)
+
+14.4 makes every run-level halt a **typed disposition with an explanatory event**
+carrying "which limit, current value, configured cap". Three guard families
+already enforced themselves and keep their richer events; 14.4 fills the two gaps
+and adds the opt-in no-progress detector. **No migration, no new config var, no
+new metric** — the caps and deadline are materialized run data (13.2 / 5.6), and
+the new events ride the `events` table like `loop_exhausted`.
+
+**The guard → event map.** Each guard class has one canonical event, so nothing is
+duplicated:
+
+| Guard | Enforced at | Halt disposition | Event |
+|---|---|---|---|
+| `max_total_steps` / `max_expansions` / `max_depth` / per-expansion cap | expansion (`ValidateExpansion` inside `ExpandRun`, 13.1/13.2) | permanent step dead-letter → run fails | **`guard_tripped`** |
+| `max_wall_clock` (5.6) | **claim time (new)** + reconciler (safety net) | run **cancel** (reason `deadline_exceeded`) | **`guard_tripped`** |
+| run/step budget (10.3) | claim time (budget check) | park \| fail | `budget_exceeded` |
+| loop `max_iterations` (14.3) | loop source completion | proceed \| fail | `loop_exhausted` |
+| loop no-progress (opt-in, new) | loop source completion | proceed \| fail | **`loop_no_progress`** |
+
+Halt vocabulary: `fail` (dead-letter, run fails via `on_failure`), `park`
+(resumable), `cancel` (the wall-clock disposition — 5.6's choice, kept: a deadline
+is absolute, so there is nothing to resume), `proceed`/`exit` (route the loop
+source's normal exit edges). Expansion caps `fail` rather than `park` because a
+cap is not runtime-adjustable — parking would be a dead end.
+
+**Structured cap breaches.** `dag.ExpansionVerdict` gained `Breaches
+[]CapBreach{Limit, Current, Cap}`, populated alongside the four
+`expansion_cap_exceeded` issues, so the engine renders the exact numbers into
+`guard_tripped` instead of parsing the free-text issue message. `store`'s
+`*ExpansionRejectedError.Breaches()` surfaces them; both rejection routes
+(`routeExpansionRejection` for a planner, `routeMapRejection` for a map/loop)
+append one `guard_tripped` per breach in a short transaction before the
+dead-letter (the completion transaction already rolled back).
+
+**Claim-time wall-clock guard.** `guardDeadline` (`engine/guard.go`) is the first
+pre-execution stage in `execute()`: a single time compare on the claim's origin
+(`ClaimOrigin.DeadlineAt`, read from the same locked run row `LockRun` already
+returns — no extra read). A run at or past its `deadline_at` is cancelled
+(`cancelRunTx`, reason `deadline_exceeded`) with a `guard_tripped(max_wall_clock)`
+event in one transaction, then the claimed step is settled `cancelled` through the
+5.6 cancelling-run path. This halts a runaway loop **at the next claim** rather
+than waiting for the reconciler's periodic sweep; the reconciler stays the safety
+net (a deadline-exceeded run whose workers are all idle or dead) and records the
+same event. Both compute `current` (elapsed = now − started_at) and `cap`
+(deadline − started_at) in whole seconds.
+
+**No-progress detection (opt-in).** A loop edge may carry a `no_progress` block
+(`{step?, path?, policy?}`) — disabled by default (nil). When present, the loop
+source's completion hashes the compared step's output (SHA-256 over canonical
+JSON, at an optional RFC-6901 pointer; `step` defaults to the loop source, and
+must be a loop-body member) at iteration `k` and `k−1`; two identical hashes mean
+the loop is spinning, so it terminates early with a `loop_no_progress` event and
+the policy's disposition (`proceed` routes the exit edges like a condition-false
+exit; `fail` dead-letters the loop source). It is **purely additive**: evaluated
+only when the loop would otherwise continue (`k ≥ 1`, condition true, under the
+iteration cap), and any obstacle to comparing — an unresolvable pointer, an
+unreadable prior instance — skips the check (the loop continues) rather than
+introducing a new failure. Precedence: exit → exhaust → no-progress → continue.
+
+**Decisions.** One `guard_tripped` event for the expansion caps and the wall
+clock, reusing the richer `budget_exceeded` / `loop_exhausted` for those families
+(no duplication); claim-time deadline enforcement so a runaway loop halts without
+the reconciler, with the reconciler kept as the safety net; wall-clock halts stay
+`cancel` (5.6), not park; structured breaches over message-parsing; no-progress
+purely additive and opt-in (it can only force an *earlier* exit, never a new
+failure mode); no new metric (the events are the observability surface, as in
+14.3). **Tests:** `dag` — `no_progress` decode/validate matrix (forbidden on a
+normal edge, policy enum, pointer syntax, body-membership), `ExpansionVerdict`
+`Breaches` populated per cap; `engine` unit — `outputHash` (pointer /
+canonicalization), `deadlineGuardEvent`, `capBreachUnit`, `loopInstanceID`;
+engine integration `guard_integration_test.go` — the runaway writer⇄critic loop
+halted by each guard in isolation (`TestGuardMaxTotalStepsHaltsRunawayLoop`,
+`TestGuardMaxExpansionsHaltsRunawayLoop` → dead-letter + `guard_tripped` with the
+right current/cap; `TestGuardWallClockHaltsLoopAtClaim` → manually driven on a
+fake clock, deadline crossed mid-loop → run cancelled + `guard_tripped`), the
+no-progress detector under both policies + disabled-by-default
+(`TestLoopNoProgress{ProceedExits,FailDeadLetters,DisabledByDefault}`), and the
+reconciler deadline test extended to assert the same guard event. Kitchen sinks
+carry a `no_progress` guard.
+
 ### What is deferred (M14.4+)
 
 - The autonomous tool-execution / ReAct loop, and offering tools to the model.
@@ -317,7 +398,9 @@ writer⇄critic shape; kitchen sinks carry `on_exhausted`.
   step into the thread; per-message (turn-level) compaction windowing.
 - Loops nested inside a map body (nested expansion), and a body member other than
   the loop source having an edge leaving the body (rejected defensively).
-- Run-level guards and no-progress detection (14.4).
+- Body-membership re-check of a `no_progress.step` on a *planner-injected* loop
+  (degrades safely — the guard simply never fires — so it is not re-validated
+  against the merged graph); a guard-trip metric (events are the surface).
 - The flagship research → write → critique example (14.5).
 
 ## Consequences

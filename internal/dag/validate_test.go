@@ -142,6 +142,12 @@ var structuralCases = map[string][]issueRef{
 	"normal_edge_loop_fields.json": {
 		{dag.CodeLoopFieldForbidden, "edges[0].condition"},
 		{dag.CodeLoopFieldForbidden, "edges[0].max_iterations"},
+		{dag.CodeLoopFieldForbidden, "edges[0].no_progress"},
+	},
+	"loop_no_progress_bad.json": {
+		{dag.CodeConfigFieldInvalid, "edges[2].no_progress.policy"},
+		{dag.CodeConfigFieldInvalid, "edges[2].no_progress.path"},
+		{dag.CodeConfigFieldInvalid, "edges[2].no_progress.step"},
 	},
 	"retry_missing_cap.json": {{dag.CodeRetryFieldRequired, "steps[0].retry.backoff.cap"}},
 	"retry_bad_bounds.json": {

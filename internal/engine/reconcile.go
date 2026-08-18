@@ -287,6 +287,14 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (ReconcileResult, error)
 				}
 				return err
 			}
+			// The explanatory guard event (ticket 14.4): the wall-clock limit,
+			// elapsed seconds, and configured cap — the same event the claim-time
+			// guard records, so a deadline halt reads identically whether a live
+			// claim or the reconciler tripped it.
+			if err := store.RecordGuardTripped(ctx, q, run.RunID,
+				deadlineGuardEvent(run.StartedAt, run.DeadlineAt, now), now); err != nil {
+				return err
+			}
 			res.DeadlineCancelled = append(res.DeadlineCancelled, run.RunID)
 		}
 		// Cancelling-run heal (ticket 5.6): a stale running step of a
