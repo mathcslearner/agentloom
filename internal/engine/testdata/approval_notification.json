@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "event": "approval.requested",
+  "approval": {
+    "id": "22222222-2222-2222-2222-222222222222",
+    "run_id": "11111111-1111-1111-1111-111111111111",
+    "step_id": "approve_publish",
+    "attempt": 1,
+    "title": "Publish this article?",
+    "description": "Review the draft before it goes live.",
+    "payload": {
+      "text": "An article about turtles."
+    },
+    "allowed_decisions": [
+      "approve",
+      "reject"
+    ],
+    "allow_edit": true,
+    "edit_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "timeout_at": "2026-08-20T12:00:00Z",
+    "created_at": "2026-08-18T12:00:00Z"
+  },
+  "run": {
+    "id": "11111111-1111-1111-1111-111111111111",
+    "definition_name": "research-critic-writer"
+  },
+  "links": {
+    "approval": "/v1/approvals/22222222-2222-2222-2222-222222222222",
+    "decide": "/v1/approvals/22222222-2222-2222-2222-222222222222:decide",
+    "run": "/v1/runs/11111111-1111-1111-1111-111111111111"
+  }
+}

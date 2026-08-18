@@ -1,6 +1,19 @@
 package engine
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/mathcslearner/agentloom/internal/store"
+	"github.com/mathcslearner/agentloom/internal/store/gen"
+)
+
+// NotifyApproval exposes the notification path for the 15.5 integration test:
+// re-invoking it for an already-delivered approval must short-circuit on the
+// side-effect journal (no second POST).
+func (e *Engine) NotifyApproval(ctx context.Context, step gen.RunStep, approval store.ApprovalRow, defName string) {
+	e.notifyApproval(ctx, step, approval, defName)
+}
 
 // Failpoint stages, re-exported for the single-transaction completion
 // tests.

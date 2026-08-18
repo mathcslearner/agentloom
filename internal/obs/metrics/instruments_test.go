@@ -92,6 +92,7 @@ func exercise(w *metrics.WorkerMetrics, a *metrics.APIMetrics) {
 	w.SetApprovalPending(3)
 	w.ApprovalDecided("reject", "timeout")
 	w.ApprovalTimeout("rejected")
+	w.ApprovalNotified("delivered")
 	a.Request("/v1/runs", "POST", 200, 20*time.Millisecond)
 	a.RequestStarted()
 	a.RequestFinished()

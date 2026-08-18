@@ -39,6 +39,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/exec/steplog"
 	"github.com/mathcslearner/agentloom/internal/limits"
 	"github.com/mathcslearner/agentloom/internal/llm"
+	"github.com/mathcslearner/agentloom/internal/notify"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/obs/metrics"
 	"github.com/mathcslearner/agentloom/internal/obs/trace"
@@ -317,6 +318,28 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	// repeated compaction of the same span is a cache hit, not a second billed
 	// call.
 	engineOpts = append(engineOpts, engine.WithSummarizer(contextmgr.NewLLMSummarizer(providers)))
+	// Approval notifications (ticket 15.5, ADR-017): when a webhook is
+	// configured, a parked human_approval step POSTs a signed payload to it —
+	// best-effort (a failure never blocks the run) and effectively-once via the
+	// side-effect journal. Off by default; a malformed URL/secret is a boot
+	// failure, never a silent no-op. Only the host is logged (a URL may carry a
+	// token).
+	if cfg.Notify.Enabled() {
+		webhook, werr := notify.NewWebhook(notify.WebhookConfig{
+			URL:         cfg.Notify.WebhookURL,
+			Secret:      cfg.Notify.WebhookSecret,
+			Timeout:     cfg.Notify.WebhookTimeout,
+			MaxAttempts: cfg.Notify.WebhookMaxAttempts,
+		})
+		if werr != nil {
+			return fmt.Errorf("configuring approval webhook: %w", werr)
+		}
+		engineOpts = append(engineOpts, engine.WithNotifier(webhook))
+		logger.InfoContext(ctx, "approval notification webhook enabled",
+			slog.String("host", webhook.Host()),
+			slog.Duration("timeout", cfg.Notify.WebhookTimeout),
+			slog.Int("max_attempts", cfg.Notify.WebhookMaxAttempts))
+	}
 	if resourceLimiter != nil {
 		engineOpts = append(engineOpts,
 			engine.WithResourceLimiter(resourceLimiter),

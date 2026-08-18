@@ -3,7 +3,13 @@
 package engine_test
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/mathcslearner/agentloom/internal/api"
 	"github.com/mathcslearner/agentloom/internal/blackboard"
 	"github.com/mathcslearner/agentloom/internal/blackboard/pgboard"
 	"github.com/mathcslearner/agentloom/internal/contextmgr"
@@ -28,6 +35,50 @@ import (
 	"github.com/mathcslearner/agentloom/internal/store/storetest"
 	"github.com/mathcslearner/agentloom/internal/validate"
 )
+
+// decideFlagshipViaAPI stands up the real HTTP decision API over the store and
+// POSTs a decision (ticket 15.5 DoD-2: "CI decides via API"). It authenticates
+// with a root (admin) key, which implies the approve scope. The httptest
+// server shares the run's store, so the decision resumes the same run the
+// fleet is executing.
+func decideFlagshipViaAPI(t *testing.T, s *store.Store, hq *queuetest.Harness, approvalID uuid.UUID, req api.DecideApprovalRequest) {
+	t.Helper()
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		t.Fatalf("entropy: %v", err)
+	}
+	rootKey := "sk_" + base64.RawURLEncoding.EncodeToString(raw)
+	// Wire the delayed-delivery expiry canceller, exactly as cmd/api does: an
+	// early human decision ZREMs the approval's pending timeout expiry so it
+	// never fires (and the delayed set drains to quiescence).
+	h, err := api.New(s, time.Now, nil, rootKey, api.RateLimitOptions{},
+		api.WithExpiryCanceller(hq.Delayed()))
+	if err != nil {
+		t.Fatalf("api.New: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal decide request: %v", err)
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/approvals/"+approvalID.String()+":decide", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+rootKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("POST decide: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		t.Fatalf("decide via API returned %d: %s", resp.StatusCode, msg)
+	}
+}
 
 // The M14 flagship e2e (ticket 14.5, ADR-016): the canonical
 // research-critic-writer.json runs to convergence through the PRODUCTION
@@ -75,6 +126,7 @@ func flagshipSpawn(t *testing.T, s *store.Store, h *queuetest.Harness, d *engine
 		exec.NewRetrieveExecutor(retrievers),
 		exec.NewAgentExecutor(providers),
 		exec.EchoExecutor{},
+		exec.HumanApprovalExecutor{},
 	)
 	if err != nil {
 		t.Fatalf("exec.NewRegistry: %v", err)
@@ -164,24 +216,51 @@ func TestFlagshipResearchCriticWriter(t *testing.T) {
 	flagshipSpawn(t, s, h, d, "flagship-a", providers)
 	flagshipSpawn(t, s, h, d, "flagship-b", providers)
 
+	// The pipeline runs to the human-approval gate (ticket 15.5): approve_publish
+	// parks the run in awaiting_human while the fleet keeps executing. CI then
+	// decides through the real HTTP decision API — approve, editing the payload —
+	// and the run resumes through publish to success.
+	waitStep(t, s, runID, "approve_publish", "awaiting_human", func(st gen.RunStep) bool {
+		return st.Status == store.StepStatusAwaitingHuman
+	})
+	approvals, err := s.Approvals().List(ctx, store.ListApprovalsArgs{Status: store.ApprovalStatusPending, Limit: 10})
+	if err != nil {
+		t.Fatalf("listing pending approvals: %v", err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("pending approvals = %d, want 1 (the flagship gate)", len(approvals))
+	}
+	const approvedText = "The final, human-approved article about turtles."
+	decideFlagshipViaAPI(t, s, h, approvals[0].ID, api.DecideApprovalRequest{
+		Decision:      string(dag.ApprovalApprove),
+		EditedPayload: json.RawMessage(`{"text": "` + approvedText + `"}`),
+		Comment:       "Looks good — publishing with a tightened headline.",
+	})
+
 	waitRun(t, s, runID, store.RunStatusSucceeded)
 	h.WaitQuiescent(ctx)
 	h.RequireHandledOncePerClaim()
 
 	// The full pipeline ran: research, three writer/critic iterations (loop
-	// unrolled twice), the editor finalize, and publish.
+	// unrolled twice), the editor finalize, the approval gate, and publish.
 	requireStepStatuses(t, s, runID, map[string]string{
-		"search":     store.StepStatusSucceeded,
-		"research":   store.StepStatusSucceeded,
-		"draft":      store.StepStatusSucceeded,
-		"draft#1":    store.StepStatusSucceeded,
-		"draft#2":    store.StepStatusSucceeded,
-		"critique":   store.StepStatusSucceeded,
-		"critique#1": store.StepStatusSucceeded,
-		"critique#2": store.StepStatusSucceeded,
-		"finalize":   store.StepStatusSucceeded,
-		"publish":    store.StepStatusSucceeded,
+		"search":          store.StepStatusSucceeded,
+		"research":        store.StepStatusSucceeded,
+		"draft":           store.StepStatusSucceeded,
+		"draft#1":         store.StepStatusSucceeded,
+		"draft#2":         store.StepStatusSucceeded,
+		"critique":        store.StepStatusSucceeded,
+		"critique#1":      store.StepStatusSucceeded,
+		"critique#2":      store.StepStatusSucceeded,
+		"finalize":        store.StepStatusSucceeded,
+		"approve_publish": store.StepStatusSucceeded,
+		"publish":         store.StepStatusSucceeded,
 	})
+
+	// The approved, edited payload flowed through the gate into publish.
+	if !hasEventType(t, s, runID, store.EventApprovalDecided) {
+		t.Error("no approval_decided event after the API decision")
+	}
 
 	// Two loop expansions moved the graph to version 3; the injected instances
 	// carry loop provenance at constant depth (loops do not nest — ticket 14.3).
@@ -309,8 +388,8 @@ func TestFlagshipResearchCriticWriter(t *testing.T) {
 		Status  string `json:"status"`
 	}
 	unmarshalStepOutput(t, s, runID, "publish", &pub)
-	if pub.Status != "published" || pub.Article == "" {
-		t.Errorf("publish output = %+v, want a non-empty published article", pub)
+	if pub.Status != "published" || pub.Article != approvedText {
+		t.Errorf("publish output = %+v, want the human-approved edited article %q", pub, approvedText)
 	}
 
 	// The writer's context preset was assembled for every writer turn (draft
@@ -391,8 +470,21 @@ func TestFlagshipLive(t *testing.T) {
 	d := startDispatcher(t, s, h.Queue())
 	flagshipSpawn(t, s, h, d, "flagship-live", providers)
 
-	// Real provider latency: allow more time than the mock path.
-	waitRunTimeout(t, s, runID, store.RunStatusSucceeded, 4*time.Minute)
+	// Real provider latency: allow more time than the mock path. The pipeline
+	// parks at the approval gate; approve it via the API to let it finish.
+	waitStepTimeout(t, s, runID, "approve_publish", func(st gen.RunStep) bool {
+		return st.Status == store.StepStatusAwaitingHuman
+	}, 4*time.Minute)
+	approvals, err := s.Approvals().List(ctx, store.ListApprovalsArgs{Status: store.ApprovalStatusPending, Limit: 10})
+	if err != nil {
+		t.Fatalf("listing pending approvals: %v", err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("pending approvals = %d, want 1", len(approvals))
+	}
+	decideFlagshipViaAPI(t, s, h, approvals[0].ID, api.DecideApprovalRequest{Decision: string(dag.ApprovalApprove)})
+
+	waitRunTimeout(t, s, runID, store.RunStatusSucceeded, 1*time.Minute)
 	h.WaitQuiescent(ctx)
 
 	var pub struct {
@@ -435,4 +527,22 @@ func waitRunTimeout(t *testing.T, s *store.Store, runID uuid.UUID, want string, 
 		time.Sleep(250 * time.Millisecond)
 	}
 	t.Fatalf("run never reached %q within %s", want, timeout)
+}
+
+// waitStepTimeout is waitStep with a caller-supplied deadline (the live test
+// tolerates real provider latency reaching the gate).
+func waitStepTimeout(t *testing.T, s *store.Store, runID uuid.UUID, stepID string, cond func(gen.RunStep) bool, timeout time.Duration) {
+	t.Helper()
+	ctx := t.Context()
+	deadline := time.Now().Add(timeout)
+	var step gen.RunStep
+	for time.Now().Before(deadline) {
+		var err error
+		step, err = s.Steps().Get(ctx, runID, stepID)
+		if err == nil && cond(step) {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("step %q never satisfied condition within %s (status %q)", stepID, timeout, step.Status)
 }

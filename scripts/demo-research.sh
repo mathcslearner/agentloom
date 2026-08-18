@@ -92,7 +92,31 @@ say "Act 1 — submit the flagship example (topic: \"$TOPIC\")"
 RUN_ID=$(ctl submit "$FIXTURE" --params "$(jq -nc --arg t "$TOPIC" '{topic:$t}')")
 note "submitted as run $RUN_ID"
 
-say "Watching it converge (researcher → writer ⇄ critic → editor → publish)"
+# ---------------------------------------------------------------- Act 2
+# The pipeline converges (research → writer ⇄ critic → editor) and then PARKS
+# at the human-approval gate (ticket 15.5) — no lease, no worker slot held. The
+# fleet stays free to run other work while a human deliberates. We poll the
+# decision inbox for the pending approval, then approve it via the API with an
+# edited payload.
+say "Act 2 — waiting for the run to park at the approval gate (approve_publish)"
+approvals_json() { curl -fsS -H "Authorization: Bearer $API_KEY" "$API_URL/v1/approvals?status=pending&run_id=$RUN_ID"; }
+APPROVAL_ID=""
+for _ in $(seq 1 120); do
+  APPROVAL_ID=$(approvals_json | jq -r '.approvals[0].id // empty')
+  [ -n "$APPROVAL_ID" ] && break
+  sleep 1
+done
+[ -n "$APPROVAL_ID" ] || fail "run $RUN_ID never parked at the approval gate"
+note "parked — pending approval $APPROVAL_ID (the fleet held no lease while waiting)"
+ctl approvals --run "$RUN_ID" || true
+
+say "Approving via the API, with an edited payload (approve-with-edit)"
+EDIT=$(jq -nc --arg t "$TOPIC" '{text:("An editor-approved, human-reviewed article about " + $t + ".")}')
+ctl approve "$APPROVAL_ID" --edit "$EDIT" --comment "Approved by the demo — tightened the headline." \
+  || fail "deciding approval $APPROVAL_ID failed"
+
+# ---------------------------------------------------------------- Act 3
+say "Act 3 — the decision resumes the run; watching it finish (publish)"
 ctl watch "$RUN_ID" || fail "run $RUN_ID did not succeed"
 
 # ---------------------------------------------------------------- Receipts
@@ -111,7 +135,7 @@ cost_json "$RUN_ID" | jq '{spent_usd: .summary.spent_usd, spent_nano_usd: .summa
 say "Event highlights (from the append-only log)"
 psql_q "SELECT lpad(seq::text,3,' ') || '  ' || type
         FROM events WHERE run_id = '$RUN_ID'
-          AND type IN ('graph_expanded','step_semantic_retry_scheduled','step_dead_lettered','loop_exhausted','loop_no_progress','guard_tripped','run_succeeded')
+          AND type IN ('graph_expanded','step_semantic_retry_scheduled','step_dead_lettered','loop_exhausted','loop_no_progress','guard_tripped','approval_requested','approval_decided','run_succeeded')
         ORDER BY seq;"
 
 # ---------------------------------------------------------------- Receipt
@@ -123,4 +147,5 @@ retries=$(psql_q "SELECT count(*) FROM events WHERE run_id='$RUN_ID' AND type='s
 note "✓ run succeeded at graph_version $gv (writer⇄critic loop unrolled twice)"
 note "✓ $retries semantic retry scheduled (the judge sent the first draft back with a critique)"
 note "✓ the judge's provider calls are metered as overhead on the writer step"
+note "✓ the run parked at the human-approval gate (no lease held) and resumed on the API decision (ticket 15.5)"
 note "Full narrative: docs/examples/research-critic-writer.md"

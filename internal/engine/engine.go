@@ -31,6 +31,7 @@ import (
 	"github.com/mathcslearner/agentloom/internal/cost"
 	"github.com/mathcslearner/agentloom/internal/exec"
 	"github.com/mathcslearner/agentloom/internal/exec/effects"
+	"github.com/mathcslearner/agentloom/internal/notify"
 	"github.com/mathcslearner/agentloom/internal/queue"
 	"github.com/mathcslearner/agentloom/internal/ratelimit/resource"
 	"github.com/mathcslearner/agentloom/internal/retrieval"
@@ -223,6 +224,12 @@ type Engine struct {
 	// strategy to fall back to the next deterministic strategy. When a response
 	// cache is wired, stepSummarizer wraps it in a caching decorator.
 	summarizer contextmgr.Summarizer
+	// notifier, when set, delivers an approval notification each time a
+	// human_approval step parks (ticket 15.5, ADR-017). The delivery rides the
+	// side-effect journal (effectively-once) and is best-effort: a failure is a
+	// warning event, never a handler error, so a broken webhook cannot block a
+	// parked run. Nil (the default) disables notifications entirely.
+	notifier notify.Notifier
 }
 
 // Option customizes an Engine.
@@ -397,6 +404,16 @@ func WithUnknownModelPolicy(p cost.UnknownModelPolicy) Option {
 // permanent at resolve time (its named validators cannot exist).
 func WithValidators(reg *validate.Registry) Option {
 	return func(e *Engine) { e.validators = reg }
+}
+
+// WithNotifier sets the approval-notification deliverer (ticket 15.5,
+// ADR-017) — cmd/worker wires a *notify.Webhook here when a webhook URL is
+// configured. Each time a human_approval step parks, the engine delivers a
+// signed notification through it, effectively-once via the side-effect
+// journal and best-effort (a failure never blocks the run). Nil (the default)
+// disables notifications.
+func WithNotifier(n notify.Notifier) Option {
+	return func(e *Engine) { e.notifier = n }
 }
 
 // New builds an Engine over the given store and executor registry.

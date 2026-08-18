@@ -132,9 +132,10 @@ type WorkerMetrics struct {
 	contextUtilization *prometheus.HistogramVec
 	contextRejections  *prometheus.CounterVec
 
-	approvalPending  prometheus.Gauge
-	approvalDecided  *prometheus.CounterVec
-	approvalTimeouts *prometheus.CounterVec
+	approvalPending       prometheus.Gauge
+	approvalDecided       *prometheus.CounterVec
+	approvalTimeouts      *prometheus.CounterVec
+	approvalNotifications *prometheus.CounterVec
 }
 
 // NewWorkerMetrics registers the worker instrument set on reg (ADR-008:
@@ -356,6 +357,10 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 			Namespace: Namespace, Subsystem: "approval", Name: "timeouts_total",
 			Help: "Approval timeout policy applications (ticket 15.4, ADR-017), by action (rejected/approved/run_parked/run_already_parked).",
 		}, []string{"action"}),
+		approvalNotifications: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "approval", Name: "notifications_total",
+			Help: "Approval-notification webhook deliveries (ticket 15.5, ADR-017), by result (delivered/failed). Best-effort — a failed delivery never affects run correctness.",
+		}, []string{"result"}),
 	}
 	reg.MustRegister(
 		m.queueReadyDepth, m.queueStreamLength, m.queuePELSize, m.queueDelayedDepth,
@@ -376,7 +381,7 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 		m.validateVerdicts, m.validatorResults, m.semanticDepth,
 		m.outputRepairs, m.judgeScore,
 		m.contextUtilization, m.contextRejections,
-		m.approvalPending, m.approvalDecided, m.approvalTimeouts,
+		m.approvalPending, m.approvalDecided, m.approvalTimeouts, m.approvalNotifications,
 	)
 	return m
 }
@@ -592,6 +597,12 @@ func (m *WorkerMetrics) ApprovalDecided(decision, source string) {
 // by action (rejected/approved/run_parked/run_already_parked).
 func (m *WorkerMetrics) ApprovalTimeout(action string) {
 	m.approvalTimeouts.WithLabelValues(action).Inc()
+}
+
+// ApprovalNotified records one approval-notification delivery outcome (ticket
+// 15.5) by result (delivered/failed).
+func (m *WorkerMetrics) ApprovalNotified(result string) {
+	m.approvalNotifications.WithLabelValues(result).Inc()
 }
 
 // The methods below satisfy steplog.Metrics (ticket 7.4).

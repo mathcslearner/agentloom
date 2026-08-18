@@ -1067,13 +1067,13 @@ On park, schedule an expiry envelope via the delayed queue; on firing, apply `on
 - [x] Race test: near-simultaneous decide + expiry → exactly one wins, event history coherent
 - [x] Timeout policy `park` leaves the run resumable via unpark (tested)
 
-#### 15.5 — Notification webhook & example update
+#### 15.5 — Notification webhook & example update ✅
 **Depends on:** 15.3, 8.7, 14.5
 Optional notification plugin: on new pending approval, POST a signed (HMAC) payload to a configured webhook URL — delivered effectively-once via the side-effect journal + retries. Update the flagship example: approval gate (with edit schema) before its side-effectful publish step; CI auto-approves via API.
 **Done when:**
-- [ ] httptest webhook receives exactly one valid HMAC-signed notification despite injected retries
-- [ ] Flagship example pauses at the gate; CI decides via API and completes
-- [ ] Webhook failures never affect run correctness (fire-and-journal, capped retries, warning event)
+- [x] httptest webhook receives exactly one valid HMAC-signed notification despite injected retries
+- [x] Flagship example pauses at the gate; CI decides via API and completes
+- [x] Webhook failures never affect run correctness (fire-and-journal, capped retries, warning event)
 
 ---
 

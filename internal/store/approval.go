@@ -629,6 +629,55 @@ func DeadLetterAwaitingHumanStep(ctx context.Context, q Querier, args DeadLetter
 	return step, nil
 }
 
+// ApprovalNotifiedEvent is the approval_notified event payload (ticket 15.5,
+// ADR-017): a pending-approval notification was delivered to the configured
+// webhook. Best-effort telemetry — the audit surface for who was notified,
+// never a correctness record.
+type ApprovalNotifiedEvent struct {
+	ApprovalID string `json:"approval_id"`
+	StepID     string `json:"step_id"`
+	// TargetHost is the webhook host only — never the full URL, which may
+	// carry a token in its path or query (secret hygiene).
+	TargetHost string `json:"target_host"`
+	// Attempts is how many delivery attempts it took to succeed.
+	Attempts int `json:"attempts"`
+	// StatusCode is the final HTTP status the webhook returned.
+	StatusCode int `json:"status_code"`
+}
+
+// ApprovalNotificationFailedEvent is the approval_notification_failed event
+// payload (ticket 15.5, ADR-017): a notification could not be delivered. A
+// warning, not a failure — the run stays parked and decidable.
+type ApprovalNotificationFailedEvent struct {
+	ApprovalID string `json:"approval_id"`
+	StepID     string `json:"step_id"`
+	TargetHost string `json:"target_host"`
+	// Attempts is how many delivery attempts were made before giving up.
+	Attempts int `json:"attempts"`
+	// Reason is a short classification (permanent / retries_exhausted /
+	// cancelled). It never includes the URL, headers, or response body.
+	Reason string `json:"reason"`
+}
+
+// RecordApprovalNotification appends an approval_notified or
+// approval_notification_failed event (ticket 15.5). It is not a state
+// transition — a notification never changes the approval, step, or run — so it
+// only takes the run lock and appends the event under the seq already
+// advancing in the caller's transaction. Must be called inside a WithTx
+// callback. runID is the approval's run; typ is EventApprovalNotified or
+// EventApprovalNotificationFailed; payload is the matching event struct.
+func RecordApprovalNotification(ctx context.Context, q Querier, runID uuid.UUID, typ string, payload any, now time.Time) error {
+	const op = "record approval notification"
+	gq, err := transitionQueries(ctx, q, op, now)
+	if err != nil {
+		return err
+	}
+	if _, err := lockRun(ctx, gq, op, runID); err != nil {
+		return err
+	}
+	return appendEvent(ctx, gq, op, runID, typ, payload)
+}
+
 // ListApprovalsArgs parameterize ApprovalRepo.List (ticket 15.3).
 type ListApprovalsArgs struct {
 	// Status, when non-empty, filters to one approval status.

@@ -152,6 +152,11 @@ type Metrics interface {
 	// engine_approval_timeouts_total. Recorded post-commit from the worker's
 	// timeout handler.
 	ApprovalTimeout(action string)
+	// ApprovalNotified records one approval-notification delivery attempt
+	// outcome (ticket 15.5, ADR-017) by result (delivered/failed) —
+	// engine_approval_notifications_total. Recorded post-delivery from the
+	// worker's park path; a webhook failure is a warning, never a run failure.
+	ApprovalNotified(result string)
 }
 
 // nopMetrics is the default Metrics: every test layer runs with recording
@@ -192,3 +197,4 @@ func (nopMetrics) ContextUtilization(string, float64)         {}
 func (nopMetrics) ContextWindowRejection(string)              {}
 func (nopMetrics) ApprovalDecided(string, string)             {}
 func (nopMetrics) ApprovalTimeout(string)                     {}
+func (nopMetrics) ApprovalNotified(string)                    {}

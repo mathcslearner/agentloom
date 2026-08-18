@@ -178,6 +178,14 @@ services:
       AGENTLOOM_TOOLS_HTTP_ALLOWLIST: ${AGENTLOOM_TOOLS_HTTP_ALLOWLIST:-}
       AGENTLOOM_TOOLS_HTTP_TIMEOUT: ${AGENTLOOM_TOOLS_HTTP_TIMEOUT:-30s}
       AGENTLOOM_TOOLS_HTTP_MAX_RESPONSE_BYTES: ${AGENTLOOM_TOOLS_HTTP_MAX_RESPONSE_BYTES:-1048576}
+      # Approval-notification webhook (ticket 15.5, ADR-017). Off unless a URL
+      # is set; the secret is required alongside it. Only the worker delivers
+      # notifications (best-effort, effectively-once via the side-effect
+      # journal).
+      AGENTLOOM_NOTIFY_WEBHOOK_URL: ${AGENTLOOM_NOTIFY_WEBHOOK_URL:-}
+      AGENTLOOM_NOTIFY_WEBHOOK_SECRET: ${AGENTLOOM_NOTIFY_WEBHOOK_SECRET:-}
+      AGENTLOOM_NOTIFY_WEBHOOK_TIMEOUT: ${AGENTLOOM_NOTIFY_WEBHOOK_TIMEOUT:-5s}
+      AGENTLOOM_NOTIFY_WEBHOOK_MAX_ATTEMPTS: ${AGENTLOOM_NOTIFY_WEBHOOK_MAX_ATTEMPTS:-3}
       # Telemetry (ticket 7.1, ADR-008) — see the api service's note. The
       # two replicas each bind :9090 inside their own container; Prometheus
       # finds both via DNS service discovery on the service name.

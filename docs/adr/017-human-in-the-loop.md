@@ -554,6 +554,62 @@ threshold would `PoisonDeadLetterStep` the `awaiting_human` step (leaving the
 approval `pending`) — a transport-only failure mode, the same class as a
 poisoned retry envelope, noted rather than special-cased.
 
+### Notification webhook & flagship gate (as built, 15.5)
+
+When a parked approval should page a human, an optional webhook POSTs a signed
+notification. **No migration, no new store table, no new outcome/class; one
+config block, two events, one worker metric.**
+
+- **A seam, not a sixth plugin kind.** `notify.Notifier` (`internal/notify`, a
+  stdlib-only leaf) + `engine.WithNotifier` — the `WithSummarizer`/`WithRetrievers`
+  precedent. Widening the closed `plugin.Kind` vocabulary (plugins API, OpenAPI
+  enum, docs) for one implementation isn't worth it; a `notifier` kind is
+  deferred until a second backend (Slack/email) exists. The built-in
+  `notify.Webhook` POSTs one signed payload per attempt with capped exponential
+  backoff (default 3 attempts, 5s per-call timeout, injectable clock/sleep).
+- **Where it fires.** `completeAwaitHuman` calls `notifyApproval` **post-commit,
+  before the ACK**, right after `scheduleApprovalExpiry` — the same "best-effort,
+  never a handler error" discipline. Nothing there returns an error to `Handle`,
+  so a broken webhook can never un-ACK an already-committed park. Skipped
+  entirely when no notifier is wired (the default), so it costs nothing on the
+  hot path.
+- **Effectively-once = journal + receiver dedupe key.** The delivery rides the
+  5.5 side-effect journal under the effect id `approval_notify:<approval_id>`, so
+  a re-invocation short-circuits on the `done` row (no second POST), and a
+  DLQ-requeue that mints a *fresh* approval notifies again (correct). The
+  residual intent→result crash window is absorbed by the receiver deduping on
+  `X-Agentloom-Delivery-Id` (= the approval id, stable across the delivery's
+  retries) — exactly the `http_request` `Idempotency-Key` pattern. **Retries are
+  synchronous in the leaf**, not routed through the delayed queue: a
+  repeatedly-failing `approval_notify` envelope would otherwise cross the poison
+  threshold and dead-letter the `awaiting_human` step, i.e. a notification could
+  hurt correctness — synchronous, capped, in-handler retries cannot.
+- **Signature.** `X-Agentloom-Signature: v1=<hex HMAC-SHA256(secret,
+  "<ts>.<body>")>` with `X-Agentloom-Timestamp`, `X-Agentloom-Delivery-Id`, and
+  `X-Agentloom-Event: approval.requested`. The body & timestamp are fixed on the
+  first attempt and reused across retries, so every attempt carries a valid
+  signature and one delivery id. `notify.Verify`/`VerifyWithin` are exported for
+  receivers. Secret hygiene is structural: the URL is recorded/logged as **host
+  only** (the path/query may carry a token), and the error type holds no headers
+  or body.
+- **Audit & metric.** Two best-effort events under the run lock (not state
+  transitions) — `approval_notified {approval_id, target_host, attempts,
+  status_code}` and `approval_notification_failed {approval_id, target_host,
+  attempts, reason}` — plus `engine_approval_notifications_total{result}` on the
+  worker `approval` subsystem. A failed delivery is a warning, never a failure:
+  `GET /v1/approvals` remains the source of truth, so no reconciler net (unlike
+  the 15.4 expiry, which *does* govern correctness).
+- **Accepted residual.** A crash strictly between the park commit and the
+  notification loses that one notification (no reconciler heal). Correctness
+  never depends on it.
+- **Flagship gate.** `examples/definitions/research-critic-writer.json` gained
+  an `approve_publish` `human_approval` step (with an `edit_schema`) between
+  `finalize` and `publish`; `publish` reads `${{
+  steps.approve_publish.output.payload.text }}`. `TestFlagshipResearchCriticWriter`
+  now waits for `awaiting_human` and **decides through the real HTTP decision
+  API** (approve-with-edit, authenticated by an admin key that implies
+  `approve`), proving the M15 exit criterion end-to-end offline.
+
 ### Interplay with the rest of the engine
 
 - **Expansions (ADR-015).** An approval inside a loop body is unrolled to a
@@ -572,9 +628,10 @@ poisoned retry envelope, noted rather than special-cased.
   15.4 adds `engine_approval_timeouts_total{action}` and places the decisions
   counter on the worker instrument set too (the timeout path), so the two
   deployables share the series on distinct registries.
-- **Notifications (15.5).** An optional plugin POSTs a signed payload to a
+- **Notifications (15.5).** An optional notifier POSTs a signed payload to a
   webhook on each new pending approval, delivered effectively-once through the
-  side-effect journal; webhook failure never affects run correctness.
+  side-effect journal; webhook failure never affects run correctness. Built as
+  built in §"Notification webhook & flagship gate (as built, 15.5)" above.
 
 ### What is deferred (M15+)
 

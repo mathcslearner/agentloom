@@ -25,7 +25,8 @@ flowchart LR
   draft --> critique[critique · critic agent<br/>strict-JSON verdict]
   critique -- verdict = revise<br/>loop, max 3 --> draft
   critique -- verdict = approve / cap --> finalize[finalize · editor agent]
-  finalize --> publish[publish · echo]
+  finalize --> gate[approve_publish · human_approval<br/>parks without a lease]
+  gate -- approve / edit --> publish[publish · echo]
 ```
 
 - **researcher** — reads the `pg_fulltext` results and states the key facts;
@@ -44,6 +45,13 @@ flowchart LR
   (a post-loop step can't template the terminal iteration's output, so it
   reads the latest draft from the blackboard — see *Reading the final draft*
   below).
+- **approve_publish** (`human_approval`, M15) — parks the run **without holding
+  a lease or worker slot** (ADR-017) so a human can review the editor's article
+  before it goes live. The approver approves (optionally supplying an edited
+  payload, constrained by the gate's `edit_schema`) or rejects (`on_reject:
+  fail`). The (edited) payload becomes the gate's output, which `publish` reads
+  — so the gate is transparent to the rest of the graph. When a webhook is
+  configured, parking also POSTs a signed notification (15.5).
 
 ## What happens
 
@@ -53,10 +61,13 @@ the critic rejects twice then approves, and the quality judge fails the first
 draft then passes. The stock echo mock never returns a `revise` verdict, so a
 scripted critic is what makes real loop iterations visible offline.
 
-Watched to completion, the run unrolls the loop twice:
+The run unrolls the loop twice, then **parks at the approval gate** — it does
+not finish on its own. The demo polls the decision inbox for the pending
+approval and approves it via the API (with an edited payload); the decision
+resumes the run through `publish` to success:
 
 ```
-run … succeeded — 10/10 succeeded, 0 failed, 0 skipped
+run … succeeded — 11/11 succeeded, 0 failed, 0 skipped
   ✓ search [retrieve] succeeded
     ✓ research [agent] succeeded
       ✓ draft [agent] succeeded (2 attempts)
@@ -66,7 +77,8 @@ run … succeeded — 10/10 succeeded, 0 failed, 0 skipped
               ✓ draft#2 [agent] succeeded
                 ✓ critique#2 [agent] succeeded
                   ✓ finalize [agent] succeeded
-                    ✓ publish [echo] succeeded
+                    ✓ approve_publish [human_approval] succeeded
+                      ✓ publish [echo] succeeded
 ```
 
 `draft` shows **2 attempts**: the judge scored the first draft below its
@@ -74,6 +86,27 @@ threshold, so a semantic retry re-prompted the writer with the judge's
 rationale as feedback, and the revised draft passed. `draft#1` and `draft#2`
 are the **loop iterations** — fresh instances the engine cloned by unrolling
 the marked loop edge through `ExpandRun` (14.3).
+
+### The approval gate (`ctl approvals` → `ctl approve <id> --edit @file`)
+
+After `finalize`, the run parks at `approve_publish` in `awaiting_human` — the
+PEL holds nothing for it, no worker slot is pinned, and the fleet keeps running
+other work while it waits (M15.2). The pending decision is visible in the
+inbox:
+
+```
+$ ctl approvals --run <run>
+ID    RUN   STEP             STATUS   EDIT  TIMEOUT_AT         TITLE
+…     …     approve_publish  pending  yes   2026-08-19T12:00Z  Publish the article on "…"?
+```
+
+The demo approves it with an edited payload (`ctl approve <id> --edit '{"text":
+"…"}'`). The decision goes through the single-CAS arbiter (15.3), settles the
+gate `awaiting_human → succeeded` with the edited payload as its output, and
+fans out to `publish` — which reads `${{ steps.approve_publish.output.payload.text
+}}`. If a notification webhook is configured, parking also delivered a signed
+HMAC notification (15.5), effectively-once via the side-effect journal; a
+webhook failure would have been a warning event, never a run failure.
 
 ### The handoff thread (`ctl blackboard <run> --name thread --history`)
 
@@ -237,7 +270,8 @@ for real ones. Two ways:
 
 ## This example is a seed fixture
 
-`research-critic-writer.json` is the seed for later milestones: **M15** adds a
-human-approval gate before the side-effectful `publish` step (approve /
-reject / edit), and **M18** animates its loop expansions and cost meter live
-in the dashboard.
+`research-critic-writer.json` gained its **M15** human-approval gate
+(`approve_publish`) before the side-effectful `publish` step in ticket 15.5 —
+approve / reject / edit, parked without a lease. **M18** animates its loop
+expansions and cost meter live in the dashboard, and builds the approval inbox
+UI on the same decision API this example drives.

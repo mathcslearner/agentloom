@@ -132,6 +132,13 @@ func (e *Engine) completeAwaitHuman(ctx context.Context, step gen.RunStep, out e
 	if approval.TimeoutAt != nil {
 		e.scheduleApprovalExpiry(ctx, step, *approval.TimeoutAt, runTrace)
 	}
+	// Deliver the pending-approval notification (ticket 15.5). Post-commit and
+	// best-effort: notifyApproval never returns an error, so a broken webhook
+	// cannot un-ACK this park. Skipped entirely when no notifier is wired (the
+	// default), so it costs nothing on the hot park path.
+	if e.notifier != nil {
+		e.notifyApproval(ctx, step, approval, e.approvalRunName(ctx, step.RunID))
+	}
 	logger.InfoContext(ctx, "step parked awaiting human approval; acking (no lease held)",
 		slog.String("approval_id", approval.ID.String()),
 		slog.Any("timeout_at", approval.TimeoutAt))

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "research-critic-writer",
-  "description": "The M14 flagship (ticket 14.5, ADR-016): a three-role agent pipeline that researches a topic, drafts an article, and refines it through a bounded writer⇄critic loop — composing nearly every AI-native feature the engine has. A `search` retrieve step (pg_fulltext) grounds a `researcher` agent, whose findings are pinned to the blackboard (`research_brief`) and auto-threaded (14.2). A `writer` agent drafts from that brief; its role carries a cost-bearing `llm_judge` validator (11.5) with a semantic-retry `feedback` loop (11.4), a `model_fallbacks` cheapening chain (10.4) triggered as the run approaches its `budget_usd` (10.3), and a `context` preset (12.3) — the critic-filtered thread plus the pinned brief — with a `summarize` + `drop_lowest_priority` compaction pipeline (12.4/12.5) that keeps the growing conversation under `budget_tokens`. A `critic` agent reviews in strict JSON; the marked loop edge (14.3) sends the run back to the writer while the verdict is `revise`, up to `max_iterations`, unrolling each revision as fresh `{id}#k` instances through `ExpandRun`. Run guards (14.4) — `max_wall_clock`, expansion caps, and an opt-in `no_progress` detector — bound a runaway loop. On convergence (or exhaustion — `on_exhausted: proceed`) an `editor` agent polishes the latest draft (read from the blackboard head, since a post-loop step cannot template the terminal iteration's output), and `publish` emits the final article — the side-effect surface a human-approval gate slots in front of (M15). It runs offline against the mock provider (echo + an env-scripted mock for real loop iterations); swapping the `mock/*` model ids for real providers makes it a live agent workflow unchanged.",
+  "description": "The M14 flagship (ticket 14.5, ADR-016): a three-role agent pipeline that researches a topic, drafts an article, and refines it through a bounded writer⇄critic loop — composing nearly every AI-native feature the engine has. A `search` retrieve step (pg_fulltext) grounds a `researcher` agent, whose findings are pinned to the blackboard (`research_brief`) and auto-threaded (14.2). A `writer` agent drafts from that brief; its role carries a cost-bearing `llm_judge` validator (11.5) with a semantic-retry `feedback` loop (11.4), a `model_fallbacks` cheapening chain (10.4) triggered as the run approaches its `budget_usd` (10.3), and a `context` preset (12.3) — the critic-filtered thread plus the pinned brief — with a `summarize` + `drop_lowest_priority` compaction pipeline (12.4/12.5) that keeps the growing conversation under `budget_tokens`. A `critic` agent reviews in strict JSON; the marked loop edge (14.3) sends the run back to the writer while the verdict is `revise`, up to `max_iterations`, unrolling each revision as fresh `{id}#k` instances through `ExpandRun`. Run guards (14.4) — `max_wall_clock`, expansion caps, and an opt-in `no_progress` detector — bound a runaway loop. On convergence (or exhaustion — `on_exhausted: proceed`) an `editor` agent polishes the latest draft (read from the blackboard head, since a post-loop step cannot template the terminal iteration's output). An `approve_publish` human-approval gate (M15) then parks the run without holding a lease (ADR-017): an operator reviews the editor's article and approves it (optionally supplying an edited payload, constrained by `edit_schema`) or rejects it (`on_reject: fail`). The approved (or edited) payload becomes the gate's output, which `publish` reads (`${{ steps.approve_publish.output.payload.text }}`) to emit the final article — so the gate is transparent to the rest of the graph. When a webhook is configured (ticket 15.5), parking also POSTs a signed notification. It runs offline against the mock provider (echo + an env-scripted mock for real loop iterations); swapping the `mock/*` model ids for real providers makes it a live agent workflow unchanged.",
   "on_failure": "fail_fast",
   "max_wall_clock": "30m",
   "budget_usd": 1.0,
@@ -184,12 +184,33 @@
       }
     },
     {
+      "id": "approve_publish",
+      "type": "human_approval",
+      "config": {
+        "title": "Publish the article on \"${{ run.params.topic }}\"?",
+        "description": "The writer⇄critic loop has converged and the editor has produced a publication-ready draft. Review it before it goes live; approve to publish (optionally editing the text), or reject to fail the run.",
+        "payload": "${{ steps.finalize.output }}",
+        "allowed_decisions": ["approve", "reject"],
+        "allow_edit": true,
+        "edit_schema": {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string" }
+          },
+          "required": ["text"]
+        },
+        "timeout": "24h",
+        "on_timeout": "reject",
+        "on_reject": "fail"
+      }
+    },
+    {
       "id": "publish",
       "type": "echo",
       "config": {
         "input": {
           "topic": "${{ run.params.topic }}",
-          "article": "${{ steps.finalize.output.text }}",
+          "article": "${{ steps.approve_publish.output.payload.text }}",
           "status": "published"
         }
       }
@@ -227,6 +248,10 @@
     },
     {
       "from": "finalize",
+      "to": "approve_publish"
+    },
+    {
+      "from": "approve_publish",
       "to": "publish"
     }
   ]

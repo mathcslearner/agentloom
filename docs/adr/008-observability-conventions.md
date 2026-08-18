@@ -184,6 +184,7 @@ from the allowlist above.
 | `engine_approval_pending` | gauge | – | human-in-the-loop (15.2): human_approval steps currently parked awaiting a decision, sampled fleet-wide from the store's pending-approval count (aggregate `max()` across workers) |
 | `engine_approval_decisions_total` | counter | `decision`, `source` | human-in-the-loop (15.3/15.4): approval decisions recorded, by decision (`approve`/`reject`) and source (`human`/`timeout`). Recorded on **both** instrument sets — `APIMetrics` for a human decide, `WorkerMetrics` for a timeout policy — so the two deployables share the series on distinct per-process registries (the `build_info` precedent); the conformance harness registers the two sets on separate registries |
 | `engine_approval_timeouts_total` | counter | `action` | human-in-the-loop (15.4): approval timeout policy applications, by action (`rejected`/`approved`/`run_parked`/`run_already_parked`). On `WorkerMetrics`, recorded post-commit from the timeout handler |
+| `engine_approval_notifications_total` | counter | `result` | human-in-the-loop (15.5): approval-notification webhook deliveries, by result (`delivered`/`failed`). On `WorkerMetrics`, recorded post-delivery from the park path. Best-effort — a failed delivery never affects run correctness |
 
 The `cost` counters label only by the pricing-catalog `resource` (or the
 tiny `limit`/`action`/`trigger` vocabularies) — never by run/step — so the

@@ -152,3 +152,37 @@ author who wants a tighter budget sets `context.budget_tokens` (it may only
 *tighten* the window default, never loosen it). Watch the **Context** row on the
 Engine dashboard: `engine_context_window_rejections_total` should sit at zero,
 and `engine_context_utilization_ratio` p95 should stay below 1.0.
+
+## Approval-notification webhooks (ticket 15.5)
+
+A parked `human_approval` step can page an external endpoint. Set on the worker
+fleet:
+
+```bash
+AGENTLOOM_NOTIFY_WEBHOOK_URL=https://hooks.example.com/agentloom/approvals
+AGENTLOOM_NOTIFY_WEBHOOK_SECRET=<shared secret>   # required alongside the URL
+# AGENTLOOM_NOTIFY_WEBHOOK_TIMEOUT=5s
+# AGENTLOOM_NOTIFY_WEBHOOK_MAX_ATTEMPTS=3
+```
+
+Each new pending approval POSTs a JSON body (`schema_version: 1`, the approval,
+its run, and `/v1/approvals/...` links) with these headers:
+
+- `X-Agentloom-Event: approval.requested`
+- `X-Agentloom-Timestamp: <unix seconds>`
+- `X-Agentloom-Signature: v1=<hex HMAC-SHA256(secret, "<timestamp>.<body>")>`
+- `X-Agentloom-Delivery-Id: <approval id>`
+
+**Verify** every request in constant time over the raw body, and **dedupe** on
+the delivery id (a delivery may arrive more than once in the rare crash window
+between the POST and the journal commit — the id is stable across a delivery's
+retries). A worker's Go receiver can call `notify.Verify` / `notify.VerifyWithin`
+directly.
+
+Delivery is **best-effort and effectively-once**: retries are capped
+(`MAX_ATTEMPTS`), a 4xx is permanent, and a failure records an
+`approval_notification_failed` event and increments
+`engine_approval_notifications_total{result="failed"}` — the run stays parked
+and fully decidable via `POST /v1/approvals/{id}:decide` regardless. A webhook
+outage never affects run correctness; `GET /v1/approvals?status=pending` is the
+source of truth for what is awaiting a decision.

@@ -435,4 +435,20 @@ const (
 	// approval_decided so the audit trail separates an operator's decision from
 	// an automatic expiry, and status=expired is a real inbox filter.
 	EventApprovalExpired = "approval_expired"
+
+	// EventApprovalNotified: an approval notification was delivered to the
+	// configured webhook (ticket 15.5, ADR-017). The payload
+	// (ApprovalNotifiedEvent) carries the approval id, the target host (never
+	// the full URL — it may embed a token), the number of delivery attempts,
+	// and the final HTTP status. Best-effort telemetry: a run's correctness
+	// never depends on it.
+	EventApprovalNotified = "approval_notified"
+
+	// EventApprovalNotificationFailed: an approval notification could not be
+	// delivered — permanent (a 4xx) or retries-exhausted (ticket 15.5,
+	// ADR-017). The payload (ApprovalNotificationFailedEvent) carries the
+	// approval id, the target host, the attempts made, and a short reason. The
+	// run stays parked and fully decidable; the failure is a warning, not a
+	// correctness event.
+	EventApprovalNotificationFailed = "approval_notification_failed"
 )
