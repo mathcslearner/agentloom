@@ -111,13 +111,17 @@ LIMIT @row_limit;
 -- the transition that terminalizes the last step, so observing either
 -- means corrupt state or an engine bug).
 -- name: ListStalledRuns :many
+-- awaiting_human is a live status (ticket 15.2): a running run whose only
+-- unfinished step is a parked human_approval gate is healthy, not stalled —
+-- the decision (15.3) or the timeout policy (15.4) will resume it. Omitting
+-- it here would flag every parked-for-approval run as impossible-state.
 SELECT r.id
 FROM runs r
 WHERE (r.status = 'running'
        AND NOT EXISTS (
            SELECT 1 FROM run_steps rs
            WHERE rs.run_id = r.id
-             AND rs.status IN ('pending', 'ready', 'running', 'retrying')))
+             AND rs.status IN ('pending', 'ready', 'running', 'retrying', 'awaiting_human')))
    OR (r.status = 'cancelling'
        AND NOT EXISTS (
            SELECT 1 FROM run_steps rs

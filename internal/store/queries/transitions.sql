@@ -221,6 +221,35 @@ WHERE run_id = @run_id AND step_id = @step_id
   AND status = 'running' AND claim_id = @claim_id
 RETURNING *;
 
+-- Human-approval park: running → awaiting_human, fenced by claim_id (ticket
+-- 15.2, ADR-017). The claim is cleared — no lease is held while a human
+-- deliberates — but the attempt row is left open (the attempt spans the
+-- wait, closed by the decision or a cancel). The step's out-edges and
+-- dependency counters are untouched; 15.3's decision resolves them.
+-- name: AwaitHumanRunStep :one
+UPDATE run_steps
+SET status     = 'awaiting_human',
+    claim_id   = NULL,
+    updated_at = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id
+  AND status = 'running' AND claim_id = @claim_id
+RETURNING *;
+
+-- Cancel a parked approval step: awaiting_human → cancelled (ticket 15.2's
+-- widening of the 5.6 run-cancel sweep). Unlike CancelRunStep's claimless
+-- statuses, an awaiting_human step has an open attempt the caller closes
+-- `cancelled`. No claim fence — the step holds no lease while parked, and
+-- the run-cancel sweep runs under the run lock.
+-- name: CancelAwaitingHumanRunStep :one
+UPDATE run_steps
+SET status      = 'cancelled',
+    next_attempt_at = NULL,
+    finished_at = @now::timestamptz,
+    updated_at  = @now::timestamptz
+WHERE run_id = @run_id AND step_id = @step_id
+  AND status = 'awaiting_human'
+RETURNING *;
+
 -- Edge resolution bookkeeping (not a status transition): the unresolved
 -- guard is what makes retried completion transactions idempotent — an
 -- already-resolved edge matches nothing, so counters can never

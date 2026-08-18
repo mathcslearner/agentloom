@@ -278,6 +278,75 @@ the ADR-004 CHECK-widening recipe; `park_reason` already reserves
 `approval_cancelled`) ride the existing `events` table — ADR-018 already lists
 "approval lifecycle" in the M16 event envelope.
 
+### Park without lease (as built, 15.2)
+
+15.2 built exactly the mechanics contract above: **one migration (0025), no new
+config var, one new metric** (the `approval` subsystem's pending gauge). No
+decision API, no timeout scheduling — those are 15.3/15.4; `timeout_at` is
+**persisted now** so 15.4's expiry scheduler has it, but nothing is scheduled.
+
+- **Executor** (`exec.HumanApprovalExecutor`, `human_approval`, `1.0.0`,
+  side_effectful): it does the deterministic pre-flight — decode the rendered
+  config, resolve the `[approve, reject]` default, **compile the `edit_schema`**
+  (an uncompilable schema fails permanent before the step parks, the 11.3
+  claim-pre-flight precedent), parse the `timeout` — and returns an
+  `exec.ApprovalRequest` (the planner "executor produces, engine applies"
+  pattern). It blocks on nothing: the wait is the engine's park, not the
+  executor's. Its flags (side_effectful, uncacheable, not cost-bearing) make the
+  cache / limiter / budget / window stages bypass it structurally. Registered in
+  `CoreBuiltins`; `human_approval` left `deferredStepTypes` (now empty — every
+  catalog step type has a builtin).
+- **Engine** (`completeAwaitHuman`, the `completeBudgetPark` shape): a
+  `human_approval` step does **not** complete on its executor's return — the
+  routing branch in `execute()` sends it to the park path instead of `runChain`
+  (an approval step has no validation chain — the envelope block is forbidden,
+  15.1). In one `step.completion` transaction it `LockRunStatus`es, and — on a
+  **cancelling** run — settles the step `cancelled` via `CancelRunningStep`
+  (ADR-006 row 8), else calls `store.AwaitHumanStep`; then returns `nil` (ACK).
+  A fenced conflict abandons without ACK; a transport error redelivers. The run
+  stays `running` — only the step parks.
+- **Store** (`AwaitHumanStep` / `CancelAwaitingHumanStep`, transition-style like
+  `BudgetParkStep`): `AwaitHumanStep` CASes `running → awaiting_human` fenced on
+  the claim (clearing it — no lease held), inserts the pending `approvals` row,
+  appends `approval_requested`; the **attempt row is left open** (spans the
+  wait). `CancelAwaitingHumanStep` is the 5.6 run-cancel sweep widened to
+  `awaiting_human`: `awaiting_human → cancelled`, close the open attempt
+  `cancelled`, bump `steps_cancelled`, `step_cancelled`, and CAS the pending
+  approval → cancelled with `approval_cancelled`. The `ApprovalRepo`
+  (`Get` / `ListByRun` / `CountPending`) serves the run view and the gauge.
+- **ACK discipline** (ADR-005): `classifyClaimFailure` maps a
+  `wrong_status(awaiting_human)` claim conflict to **ack-drop** — the crash-
+  before-ACK convergence (a redelivery of a committed park is a duplicate of a
+  parked step), regardless of delivery count; `classifyTakeoverFailure` adds
+  `awaiting_human` to the "completed between reclaim and takeover" ack-drop set.
+- **Reconciler**: `ListStalledRuns`' live-status set gains `awaiting_human`, so
+  a running run whose only unfinished step is a parked gate is healthy, never
+  flagged stalled. The stale-running / ready / retrying scans skip it by status.
+- **Run view / ctl**: `GET /v1/runs/{id}` gains an `approvals[]` array
+  (`ApprovalView`); `awaiting_human` joins the `StepState` enum; `ctl watch`
+  glyph `?`, and the status is non-terminal so `watch` keeps polling.
+- **Metrics**: `engine_approval_pending` gauge (ADR-008 `approval` subsystem),
+  sampled fleet-wide by the worker's metrics loop from
+  `Approvals().CountPending`. The `approval_decisions_total{decision,source}`
+  counter lands with the decision API (15.3).
+
+**Fail-fast note for 15.3.** Under `on_reject: fail` (or an upstream
+dead-letter under `fail_fast`), a run may go `failed` while an approval sits
+`pending` and its step `awaiting_human` — the same way a `fail_fast` run strands
+`ready` steps. 15.3's decide endpoint must therefore gate on the run being
+`running` (or `parked`), returning a conflict when it is not, rather than
+assuming a pending approval implies a live run. A DLQ requeue re-runs the gate
+(fresh pending approval), so this is recoverable.
+
+**Decisions.** Executor-produces / engine-applies (keeps the park transaction in
+the engine beside the other park paths, and the executor pure); `claim_id`
+cleared at park (claimless like `retrying` — the approvals row, not a lease, is
+the durable waiting state); the cancel-sweep widening and the `ListStalledRuns`
+widening ship in 15.2 (needed for convergence and health the moment the status
+exists, even though the sections above frame cancel under 15.4); `timeout_at`
+persisted but expiry unscheduled until 15.4; the pending gauge in 15.2, the
+decisions counter in 15.3.
+
 ### Authz & audit (arrives in 15.3)
 
 - `GET /v1/approvals` (list pending / filter) requires the **`read`** scope.

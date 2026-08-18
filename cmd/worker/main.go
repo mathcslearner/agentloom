@@ -546,6 +546,11 @@ func sampleLoop(ctx context.Context, q *queue.Queue, delayed *queue.Delayed, st 
 			}
 			m.SetOutbox(ob.Backlog, oldest)
 		}
+		if pending, err := st.Approvals().CountPending(ctx); err != nil {
+			logSampleErr(ctx, logger, "pending approvals", err)
+		} else {
+			m.SetApprovalPending(pending)
+		}
 	}
 }
 

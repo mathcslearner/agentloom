@@ -171,8 +171,13 @@ The builtin flag table (the conformance baseline):
 | `planner` | 1.0.0 | – | ✓ | ✓ |
 | `tool` | 1.0.0 | ✓ | – | – |
 | `retrieve` | 1.0.0 | – | ✓ | – |
+| `human_approval` | 1.0.0 | ✓ | – | – |
 
-(`planner` (ticket 13.3) is an llm-family executor — the `LLMExecutor`
+(`human_approval` (ticket 15.2) is side_effectful — a pending approval is an
+outward-facing request for a human decision, and a decision is never served
+from cache — and not cost-bearing (its config carries no spend); its executor
+does deterministic pre-flight then hands the engine an approval request to park
+on. `planner` (ticket 13.3) is an llm-family executor — the `LLMExecutor`
 re-targeted by embedding, keyed under its own name so a planner and an
 `llm` step never share a response-cache entry — so it carries the llm flags
 (cacheable + cost_bearing); its output is a `PlanOutput` the engine applies

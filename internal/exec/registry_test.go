@@ -119,13 +119,12 @@ func TestCoreBuiltinsExcludesTestOnlyExecutors(t *testing.T) {
 
 // deferredStepTypes are the dag catalog types deliberately without an
 // executor yet. A definition using one passes submit-time validation and
-// then fails permanently at claim time (registry miss → dead-letter), which
-// includes the canonical kitchen_sink.json example — a known M4 gap, not
-// an accident. Shrink this set as the executors land; never let it grow
-// silently (the sync test below fails on any unlisted mismatch).
-var deferredStepTypes = map[dag.StepType]string{
-	dag.StepHumanApproval: "M15 (human-in-the-loop approvals)",
-}
+// then fails permanently at claim time (registry miss → dead-letter). The
+// set is empty as of ticket 15.2 — the human_approval executor landed, and
+// every catalog step type now has a builtin. Kept (never inlined away) so a
+// future step type has an explicit home; the sync test below fails on any
+// unlisted mismatch.
+var deferredStepTypes = map[dag.StepType]string{}
 
 // TestBuiltinsSyncWithCatalog pins the exec registry to the dag step-type
 // catalog exactly (post-M4 audit): every catalog type either has a

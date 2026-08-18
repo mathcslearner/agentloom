@@ -302,7 +302,7 @@ WHERE (r.status = 'running'
        AND NOT EXISTS (
            SELECT 1 FROM run_steps rs
            WHERE rs.run_id = r.id
-             AND rs.status IN ('pending', 'ready', 'running', 'retrying')))
+             AND rs.status IN ('pending', 'ready', 'running', 'retrying', 'awaiting_human')))
    OR (r.status = 'cancelling'
        AND NOT EXISTS (
            SELECT 1 FROM run_steps rs
@@ -316,6 +316,10 @@ LIMIT $1
 // cancelling run with no running step (the cancel rollup is atomic with
 // the transition that terminalizes the last step, so observing either
 // means corrupt state or an engine bug).
+// awaiting_human is a live status (ticket 15.2): a running run whose only
+// unfinished step is a parked human_approval gate is healthy, not stalled —
+// the decision (15.3) or the timeout policy (15.4) will resume it. Omitting
+// it here would flag every parked-for-approval run as impossible-state.
 func (q *Queries) ListStalledRuns(ctx context.Context, rowLimit int32) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, listStalledRuns, rowLimit)
 	if err != nil {

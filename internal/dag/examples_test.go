@@ -40,6 +40,7 @@ var exampleFiles = []string{
 	"agent_pipeline.json",
 	"agent_handoff.json",
 	"research-critic-writer.json",
+	"approval_gate.json",
 }
 
 // readExample loads one example definition document.

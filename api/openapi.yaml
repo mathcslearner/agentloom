@@ -1385,7 +1385,9 @@ components:
         `cancelled` steps were written off and may be revived by a
         requeue; `collected` is a map instance whose terminal failure was
         tolerated under `on_item_failure: collect_errors` (ADR-015) — the run
-        did not fail on it and the generated gather collected an error marker.
+        did not fail on it and the generated gather collected an error marker;
+        `awaiting_human` is a `human_approval` step parked without a lease
+        awaiting a decision (ADR-017) — non-terminal, the run stays running.
       enum:
         - pending
         - ready
@@ -1397,6 +1399,7 @@ components:
         - dead_lettered
         - cancelled
         - collected
+        - awaiting_human
     AttemptOutcome:
       type: string
       description: >
@@ -1940,7 +1943,7 @@ components:
           format: date-time
     RunResponse:
       type: object
-      description: The full run view — run row, steps with attempts, edges, DLQ records.
+      description: The full run view — run row, steps with attempts, edges, DLQ records, approval records.
       required: [run, steps, edges]
       properties:
         run:
@@ -1958,6 +1961,69 @@ components:
           description: The run's DLQ records — how a client discovers requeueable steps. Absent for healthy runs.
           items:
             $ref: "#/components/schemas/DeadLetterView"
+        approvals:
+          type: array
+          description: The run's human-approval records (ADR-017) — pending gates awaiting a decision, plus any decided/cancelled. Absent for runs without an approval gate.
+          items:
+            $ref: "#/components/schemas/ApprovalView"
+    ApprovalView:
+      type: object
+      description: >
+        One human-approval record (ADR-017, ticket 15.2): the rendered content
+        shown to an approver and, once decided (15.3), the immutable decision.
+        In 15.2 only `pending` and `cancelled` statuses appear.
+      required: [id, step_id, attempt, status, title, allowed_decisions, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        step_id:
+          type: string
+        attempt:
+          type: integer
+        status:
+          type: string
+          enum: [pending, approved, rejected, expired, cancelled]
+        title:
+          type: string
+          description: Rendered headline shown to the approver.
+        description:
+          type: string
+        payload:
+          description: The proposed action shown for review. Any JSON value.
+        allowed_decisions:
+          type: array
+          items:
+            type: string
+            enum: [approve, reject]
+        allow_edit:
+          type: boolean
+        edit_schema:
+          description: JSON Schema constraining an edited payload; absent if any JSON edit is accepted.
+        timeout_at:
+          type: string
+          format: date-time
+          description: When the timeout policy fires (ADR-017); absent = wait indefinitely.
+        decision:
+          type: string
+          description: The recorded decision; present once decided (15.3).
+          enum: [approve, reject]
+        edited_payload:
+          description: The approver's edited payload, if any. Any JSON value.
+        comment:
+          type: string
+        decided_by:
+          type: string
+          description: The deciding key id, or `system:timeout` for a timeout decision.
+        decided_at:
+          type: string
+          format: date-time
+        decision_source:
+          type: string
+          enum: [human, timeout]
+        created_at:
+          type: string
+          format: date-time
     RunGraphResponse:
       type: object
       description: >

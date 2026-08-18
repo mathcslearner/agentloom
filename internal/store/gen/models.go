@@ -22,6 +22,29 @@ type ApiKey struct {
 	RevokedAt *time.Time
 }
 
+type Approval struct {
+	ID               uuid.UUID
+	RunID            uuid.UUID
+	StepID           string
+	Attempt          int32
+	Status           string
+	Title            string
+	Description      string
+	Payload          json.RawMessage
+	AllowedDecisions []string
+	AllowEdit        bool
+	EditSchema       json.RawMessage
+	TimeoutAt        *time.Time
+	Decision         *string
+	EditedPayload    json.RawMessage
+	Comment          *string
+	DecidedBy        *string
+	DecidedAt        *time.Time
+	DecisionSource   *string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 type BlackboardEntry struct {
 	RunID         uuid.UUID
 	Key           string

@@ -80,7 +80,7 @@ func Builtins(providers *llm.Registry, toolReg *tools.Registry, retrievers *retr
 // executor (see Builtins).
 func CoreBuiltins(providers *llm.Registry, toolReg *tools.Registry, retrievers *retrieval.Registry) *Registry {
 	r, err := NewRegistry(NoopExecutor{}, EchoExecutor{}, NewSleep(), FailNTimesExecutor{},
-		JoinExecutor{}, BranchExecutor{}, MapExecutor{}, GatherExecutor{},
+		JoinExecutor{}, BranchExecutor{}, MapExecutor{}, GatherExecutor{}, HumanApprovalExecutor{},
 		NewLLMExecutor(providers), NewPlannerExecutor(providers), NewAgentExecutor(providers),
 		NewToolExecutor(toolReg), NewRetrieveExecutor(retrievers))
 	if err != nil {

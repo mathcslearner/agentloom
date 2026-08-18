@@ -183,12 +183,13 @@ commits**, or when consuming the message is provably unnecessary:
 
 | Case | Action |
 |---|---|
-| Completion/failure transition committed (M4.3; also park, M15) | ACK |
+| Completion/failure transition committed (M4.3; also budget park, M10; also human-approval park, 15.2) | ACK |
 | Retry-routing transition committed (`running → retrying`, 5.2) | ACK — the durable row (`next_attempt_at`) now carries the retry; the post-commit delayed schedule is best-effort, its loss healed by the reconciler's overdue-retrying scan |
 | Claim CAS reports the step is already terminal (`succeeded`/`failed`/`skipped`; since 5.4 also `dead_lettered`/`cancelled`) — duplicate of finished work | ACK and drop |
 | Poison diversion: the dead-lettering transaction committed (5.4) — the `dead_letters` row is the durable consumption; also an undecodable-envelope or already-terminal poison entry (provably unconsumable / already consumed) | ACK |
 | Claim CAS reports the step is already `running` on a message from the **fresh-delivery** path — a concurrent duplicate; the live holder's own entry covers the crash case | ACK and drop |
 | Claim CAS reports the step is `retrying` with its backoff still pending (5.2 — a due step would have matched the claim) | ACK and drop — `next_attempt_at` is durable and the delayed entry or the reconciler carries the future dispatch |
+| Claim CAS reports the step is `awaiting_human` (15.2) — parked without a lease | ACK and drop — the pending approval is durable, and the decision path (15.3) resumes the step through a fresh dispatch. This is the crash-before-ACK convergence: a redelivery of a committed park (W4) is a duplicate of a parked step |
 | Claim CAS reports the run is not `running` (5.2's run-status guard; since 5.6 that covers `parked`, `cancelling`, and `cancelled` runs as well as terminal ones) | ACK and drop — executing a step of a settled (or paused) run is provably unnecessary; for a parked run the unpark op re-outboxes stranded ready steps, and the reconciler covers overdue retrying ones |
 | Step is `running` on a message from the **reclaim** path — the holder's lease expired | lease-expiry takeover (below), no ACK until the subsequent completion commits |
 | Run or step row does not exist (dangling reference — e.g. run deleted under a retention policy) | ACK and drop |

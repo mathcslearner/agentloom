@@ -75,6 +75,25 @@ const (
 	// gather collects, its out-edge to the gather is fired, and it bumps
 	// steps_collected (not steps_failed), so the run may still succeed.
 	StepStatusCollected = "collected"
+	// StepStatusAwaitingHuman: a human_approval step parked the run's branch
+	// (ticket 15.2, ADR-017) — it holds no claim (the executor cleared it) and
+	// no lease or worker slot, but its attempt row stays open (the attempt
+	// spans the human wait). Not terminal: a decision (15.3) resumes it —
+	// running → succeeded/dead_lettered — a run cancel sweeps it to cancelled,
+	// and the reconciler treats it as healthy-parked.
+	StepStatusAwaitingHuman = "awaiting_human"
+)
+
+// Approval statuses (ticket 15.2, ADR-017): the lifecycle of one
+// human_approval request. Mirrors the approvals_status_check constraint. In
+// 15.2 only pending and cancelled are written; approved/rejected/expired
+// arrive with the decision API (15.3) and timeout wiring (15.4).
+const (
+	ApprovalStatusPending   = "pending"
+	ApprovalStatusApproved  = "approved"
+	ApprovalStatusRejected  = "rejected"
+	ApprovalStatusExpired   = "expired"
+	ApprovalStatusCancelled = "cancelled"
 )
 
 // Edge types.
@@ -366,4 +385,17 @@ const (
 	// the loop source's completion transaction; proceed routes the loop source's
 	// normal exit edges, fail dead-letters it.
 	EventLoopNoProgress = "loop_no_progress"
+
+	// EventApprovalRequested: a human_approval step parked without a lease and
+	// wrote a pending approvals row (ticket 15.2, ADR-017). The payload
+	// (ApprovalRequestedEvent) carries the approval id, the rendered title, the
+	// allowed decisions, whether edits are permitted, and the timeout deadline
+	// (nil = wait indefinitely). The decision events (approval_decided,
+	// approval_expired) arrive with the decision API (15.3/15.4).
+	EventApprovalRequested = "approval_requested"
+
+	// EventApprovalCancelled: a pending approval was cancelled because the run
+	// was cancelled while its step was parked (ticket 15.2, ADR-017). The
+	// payload (ApprovalCancelledEvent) carries the approval id and the reason.
+	EventApprovalCancelled = "approval_cancelled"
 )

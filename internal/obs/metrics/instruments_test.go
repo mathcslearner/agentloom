@@ -28,7 +28,7 @@ var (
 // allowedSubsystems is ADR-008's subsystem vocabulary; extending it is an
 // ADR amendment first.
 var allowedSubsystems = []string{
-	"build", "queue", "outbox", "dispatch", "reconcile", "step", "steplog", "run", "api", "worker", "ratelimit", "cache", "cost", "validate", "context",
+	"build", "queue", "outbox", "dispatch", "reconcile", "step", "steplog", "run", "api", "worker", "ratelimit", "cache", "cost", "validate", "context", "approval",
 }
 
 // allowedLabels is ADR-008's label allowlist. run_id, step_id, attempt,

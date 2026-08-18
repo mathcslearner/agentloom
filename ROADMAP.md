@@ -1043,13 +1043,13 @@ Run-level guards evaluated at expansion and claim time: `max_total_steps`, `max_
 - [x] Race semantics (decision vs timeout) specified with a state diagram
 - [x] Authz model: `approve` scope required; self-approval stance documented
 
-#### 15.2 — Park without lease
+#### 15.2 — Park without lease ✅
 **Depends on:** 15.1, 4.3
 Executor path: render payload → write `approvals` row (pending) + step → `awaiting_human` in one tx → **ACK the queue message** (no PEL residency, heartbeat stops, worker slot freed). Reconciler treats `awaiting_human` as healthy-parked. Crash between commit and ACK is benign (redelivery sees `awaiting_human` → ACK-and-drop).
 **Done when:**
-- [ ] While parked: PEL contains nothing for the step; fleet continues other runs (throughput asserted)
-- [ ] Crash-before-ACK scenario converges via ACK-and-drop (integration)
-- [ ] Pending approval visible in run status + events
+- [x] While parked: PEL contains nothing for the step; fleet continues other runs (throughput asserted)
+- [x] Crash-before-ACK scenario converges via ACK-and-drop (integration)
+- [x] Pending approval visible in run status + events
 
 #### 15.3 — Decision API
 **Depends on:** 15.2, 6.5

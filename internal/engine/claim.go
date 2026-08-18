@@ -445,6 +445,15 @@ func (e *Engine) execute(ctx context.Context, step gen.RunStep, origin store.Cla
 		// and everything unclassified defaults to transient.
 		return e.completeFailure(ctx, step, out, execErr, classifyFailure(execErr), origin.RunTrace)
 	}
+	// Human-in-the-loop park (ticket 15.2, ADR-017): a human_approval step
+	// does not complete on its executor's return — it parks without a lease
+	// (approvals row + running → awaiting_human, then ACK). The executor
+	// produced the rendered approval content (exec.ApprovalRequest); the park
+	// path settles it, and the decision (15.3) later becomes the step's
+	// output. A cancelling run is handled inside that path (settle cancelled).
+	if step.StepType == string(dag.StepHumanApproval) {
+		return e.completeAwaitHuman(ctx, step, out, origin.RunTrace)
+	}
 	// Output validation (ticket 11.1, ADR-013): run the resolved chain over
 	// the executor's output. It sits here — after a successful execute and
 	// before cacheWrite — because an output that fails its chain must never
@@ -713,6 +722,17 @@ func classifyClaimFailure(err error, deliveryCount int64) claimDecision {
 				action: claimAckDrop, level: slog.LevelInfo,
 				reason: "step retrying with backoff pending — future dispatch is covered",
 			}
+		case store.StepStatusAwaitingHuman:
+			// A human_approval step parked without a lease (ticket 15.2): a
+			// duplicate delivery, or the original entry redelivered after a
+			// crash between park-commit and ACK. Dropping is safe and is
+			// exactly how the crash-before-ACK path converges — the pending
+			// approval is durable, and the decision path (15.3) resumes the
+			// step through a fresh dispatch, not this entry.
+			return claimDecision{
+				action: claimAckDrop, level: slog.LevelInfo,
+				reason: "step awaiting human decision — parked without a lease, decision resumes it",
+			}
 		case store.StepStatusRunning:
 			if deliveryCount <= 1 {
 				// Fresh-delivery path: a concurrent duplicate. The live
@@ -801,10 +821,11 @@ func classifyTakeoverFailure(err error) claimDecision {
 			(te.From == store.StepStatusSucceeded || te.From == store.StepStatusFailed ||
 				te.From == store.StepStatusSkipped || te.From == store.StepStatusRetrying ||
 				te.From == store.StepStatusDeadLettered || te.From == store.StepStatusCancelled ||
-				te.From == store.StepStatusCollected):
+				te.From == store.StepStatusCollected || te.From == store.StepStatusAwaitingHuman):
 			// ADR-005's takeover race rule: the holder's completion — a
 			// terminal one, or since 5.2 a retry routing (5.4: or a
-			// dead-lettering) — committed between the reclaim and the
+			// dead-lettering; 15.2: or a human-approval park to
+			// awaiting_human) — committed between the reclaim and the
 			// takeover CAS. Either way that commit consumed the work this
 			// entry carried.
 			return claimDecision{

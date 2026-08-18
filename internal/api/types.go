@@ -115,6 +115,10 @@ type RunResponse struct {
 	// DeadLetters lists the run's DLQ records (ticket 6.5) — how a client
 	// discovers which steps are requeueable. Empty for healthy runs.
 	DeadLetters []DeadLetterView `json:"dead_letters,omitempty"`
+	// Approvals lists the run's human-approval records (ticket 15.2, ADR-017):
+	// a step parked awaiting a decision (status pending), plus any already
+	// decided/cancelled. Empty for runs without an approval gate.
+	Approvals []ApprovalView `json:"approvals,omitempty"`
 }
 
 // RunView is the run row's client-facing projection.
@@ -277,6 +281,32 @@ type DeadLetterView struct {
 	Error           json.RawMessage `json:"error,omitempty"`
 	AttemptsAtDeath int             `json:"attempts_at_death"`
 	CreatedAt       time.Time       `json:"created_at"`
+}
+
+// ApprovalView is one human-approval record's client-facing projection
+// (ticket 15.2, ADR-017): the rendered content shown to an approver plus, once
+// decided (15.3), the immutable decision. In 15.2 only pending and cancelled
+// statuses appear; the decision fields fill in with the decision API.
+type ApprovalView struct {
+	ID               string          `json:"id"`
+	StepID           string          `json:"step_id"`
+	Attempt          int             `json:"attempt"`
+	Status           string          `json:"status"`
+	Title            string          `json:"title"`
+	Description      string          `json:"description,omitempty"`
+	Payload          json.RawMessage `json:"payload,omitempty"`
+	AllowedDecisions []string        `json:"allowed_decisions"`
+	AllowEdit        bool            `json:"allow_edit,omitempty"`
+	EditSchema       json.RawMessage `json:"edit_schema,omitempty"`
+	TimeoutAt        *time.Time      `json:"timeout_at,omitempty"`
+	// Decision fields, present once the approval is decided (15.3/15.4).
+	Decision       string          `json:"decision,omitempty"`
+	EditedPayload  json.RawMessage `json:"edited_payload,omitempty"`
+	Comment        string          `json:"comment,omitempty"`
+	DecidedBy      string          `json:"decided_by,omitempty"`
+	DecidedAt      *time.Time      `json:"decided_at,omitempty"`
+	DecisionSource string          `json:"decision_source,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
 }
 
 // RunGraphResponse answers GET /v1/runs/{id}/graph (ticket 13.6, ADR-015):

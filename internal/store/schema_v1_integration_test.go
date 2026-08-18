@@ -108,7 +108,7 @@ func TestSchemaV1StatusChecks(t *testing.T) {
 	wantPgError(t, err, pgCheckViolation, "run status outside v1 vocabulary")
 
 	_, err = pool.Exec(ctx,
-		`INSERT INTO run_steps (run_id, step_id, step_type, retry_policy, status) VALUES ($1, 'a', 'noop', '{}'::jsonb, 'awaiting_human')`,
+		`INSERT INTO run_steps (run_id, step_id, step_type, retry_policy, status) VALUES ($1, 'a', 'noop', '{}'::jsonb, 'daydreaming')`,
 		runID)
 	wantPgError(t, err, pgCheckViolation, "step status outside v1 vocabulary")
 

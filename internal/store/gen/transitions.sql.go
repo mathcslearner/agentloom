@@ -76,6 +76,70 @@ func (q *Queries) ApplyEdgeResolution(ctx context.Context, arg ApplyEdgeResoluti
 	return i, err
 }
 
+const awaitHumanRunStep = `-- name: AwaitHumanRunStep :one
+UPDATE run_steps
+SET status     = 'awaiting_human',
+    claim_id   = NULL,
+    updated_at = $1::timestamptz
+WHERE run_id = $2 AND step_id = $3
+  AND status = 'running' AND claim_id = $4
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind
+`
+
+type AwaitHumanRunStepParams struct {
+	Now     time.Time
+	RunID   uuid.UUID
+	StepID  string
+	ClaimID *uuid.UUID
+}
+
+// Human-approval park: running → awaiting_human, fenced by claim_id (ticket
+// 15.2, ADR-017). The claim is cleared — no lease is held while a human
+// deliberates — but the attempt row is left open (the attempt spans the
+// wait, closed by the decision or a cancel). The step's out-edges and
+// dependency counters are untouched; 15.3's decision resolves them.
+func (q *Queries) AwaitHumanRunStep(ctx context.Context, arg AwaitHumanRunStepParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, awaitHumanRunStep,
+		arg.Now,
+		arg.RunID,
+		arg.StepID,
+		arg.ClaimID,
+	)
+	var i RunStep
+	err := row.Scan(
+		&i.RunID,
+		&i.StepID,
+		&i.StepType,
+		&i.Config,
+		&i.Status,
+		&i.RemainingDeps,
+		&i.FiredDeps,
+		&i.ClaimID,
+		&i.AttemptCount,
+		&i.Output,
+		&i.Error,
+		&i.GraphVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
+		&i.Timeout,
+		&i.TraceSpan,
+		&i.CachePolicy,
+		&i.BudgetPolicy,
+		&i.ValidationPolicy,
+		&i.Feedback,
+		&i.BlackboardPolicy,
+		&i.ContextPolicy,
+		&i.Depth,
+		&i.OriginStep,
+		&i.OriginKind,
+	)
+	return i, err
+}
+
 const budgetParkRunStep = `-- name: BudgetParkRunStep :one
 UPDATE run_steps
 SET status     = 'ready',
@@ -176,6 +240,65 @@ func (q *Queries) BumpRunStepCounters(ctx context.Context, arg BumpRunStepCounte
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const cancelAwaitingHumanRunStep = `-- name: CancelAwaitingHumanRunStep :one
+UPDATE run_steps
+SET status      = 'cancelled',
+    next_attempt_at = NULL,
+    finished_at = $1::timestamptz,
+    updated_at  = $1::timestamptz
+WHERE run_id = $2 AND step_id = $3
+  AND status = 'awaiting_human'
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind
+`
+
+type CancelAwaitingHumanRunStepParams struct {
+	Now    time.Time
+	RunID  uuid.UUID
+	StepID string
+}
+
+// Cancel a parked approval step: awaiting_human → cancelled (ticket 15.2's
+// widening of the 5.6 run-cancel sweep). Unlike CancelRunStep's claimless
+// statuses, an awaiting_human step has an open attempt the caller closes
+// `cancelled`. No claim fence — the step holds no lease while parked, and
+// the run-cancel sweep runs under the run lock.
+func (q *Queries) CancelAwaitingHumanRunStep(ctx context.Context, arg CancelAwaitingHumanRunStepParams) (RunStep, error) {
+	row := q.db.QueryRow(ctx, cancelAwaitingHumanRunStep, arg.Now, arg.RunID, arg.StepID)
+	var i RunStep
+	err := row.Scan(
+		&i.RunID,
+		&i.StepID,
+		&i.StepType,
+		&i.Config,
+		&i.Status,
+		&i.RemainingDeps,
+		&i.FiredDeps,
+		&i.ClaimID,
+		&i.AttemptCount,
+		&i.Output,
+		&i.Error,
+		&i.GraphVersion,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.RetryPolicy,
+		&i.NextAttemptAt,
+		&i.Timeout,
+		&i.TraceSpan,
+		&i.CachePolicy,
+		&i.BudgetPolicy,
+		&i.ValidationPolicy,
+		&i.Feedback,
+		&i.BlackboardPolicy,
+		&i.ContextPolicy,
+		&i.Depth,
+		&i.OriginStep,
+		&i.OriginKind,
+	)
+	return i, err
 }
 
 const cancelRun = `-- name: CancelRun :one

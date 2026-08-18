@@ -131,6 +131,8 @@ type WorkerMetrics struct {
 
 	contextUtilization *prometheus.HistogramVec
 	contextRejections  *prometheus.CounterVec
+
+	approvalPending prometheus.Gauge
 }
 
 // NewWorkerMetrics registers the worker instrument set on reg (ADR-008:
@@ -340,6 +342,10 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 			Namespace: Namespace, Subsystem: "context", Name: "window_rejections_total",
 			Help: "Claims the provider-window guardrail failed before any provider call (ticket 12.6): assembled context + max_tokens exceeded the model context window and compaction was absent or insufficient, by resolved resource.",
 		}, []string{"resource"}),
+		approvalPending: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: Namespace, Subsystem: "approval", Name: "pending",
+			Help: "Human-approval steps currently parked awaiting a decision (ticket 15.2, ADR-017), fleet-wide as this worker's periodic sample observed it.",
+		}),
 	}
 	reg.MustRegister(
 		m.queueReadyDepth, m.queueStreamLength, m.queuePELSize, m.queueDelayedDepth,
@@ -360,6 +366,7 @@ func NewWorkerMetrics(reg *prometheus.Registry) *WorkerMetrics {
 		m.validateVerdicts, m.validatorResults, m.semanticDepth,
 		m.outputRepairs, m.judgeScore,
 		m.contextUtilization, m.contextRejections,
+		m.approvalPending,
 	)
 	return m
 }
@@ -560,6 +567,10 @@ func (m *WorkerMetrics) SetOutbox(backlog int64, oldestAge time.Duration) {
 
 // SetActiveWorkers records one active-consumer sample.
 func (m *WorkerMetrics) SetActiveWorkers(n int) { m.workerActive.Set(float64(n)) }
+
+// SetApprovalPending updates the parked-approval gauge (ticket 15.2) from
+// the worker's periodic sample of the store's pending-approval count.
+func (m *WorkerMetrics) SetApprovalPending(n int64) { m.approvalPending.Set(float64(n)) }
 
 // The methods below satisfy steplog.Metrics (ticket 7.4).
 

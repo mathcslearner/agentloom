@@ -225,7 +225,12 @@ func (h *Handler) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, "listing run dead letters", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, buildRunResponse(run, steps, edges, attempts, deadLetters))
+	approvals, err := h.st.Approvals().ListByRun(ctx, id)
+	if err != nil {
+		internalError(w, r, "listing run approvals", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, buildRunResponse(run, steps, edges, attempts, deadLetters, approvals))
 }
 
 // handleListRuns is GET /v1/runs (ticket 6.5): one keyset page, newest
@@ -504,7 +509,7 @@ func buildRunView(run gen.Run) RunView {
 }
 
 // buildRunResponse assembles the wire projection from the store rows.
-func buildRunResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge, attempts []gen.StepAttempt, deadLetters []gen.DeadLetter) RunResponse {
+func buildRunResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge, attempts []gen.StepAttempt, deadLetters []gen.DeadLetter, approvals []gen.Approval) RunResponse {
 	byStep := make(map[string][]AttemptView, len(steps))
 	for _, a := range attempts {
 		v := AttemptView{
@@ -542,6 +547,37 @@ func buildRunResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge, att
 			v.Class = *d.Class
 		}
 		resp.DeadLetters = append(resp.DeadLetters, v)
+	}
+	for _, a := range approvals {
+		v := ApprovalView{
+			ID:               a.ID.String(),
+			StepID:           a.StepID,
+			Attempt:          int(a.Attempt),
+			Status:           a.Status,
+			Title:            a.Title,
+			Description:      a.Description,
+			Payload:          a.Payload,
+			AllowedDecisions: a.AllowedDecisions,
+			AllowEdit:        a.AllowEdit,
+			EditSchema:       a.EditSchema,
+			TimeoutAt:        a.TimeoutAt,
+			EditedPayload:    a.EditedPayload,
+			DecidedAt:        a.DecidedAt,
+			CreatedAt:        a.CreatedAt,
+		}
+		if a.Decision != nil {
+			v.Decision = *a.Decision
+		}
+		if a.Comment != nil {
+			v.Comment = *a.Comment
+		}
+		if a.DecidedBy != nil {
+			v.DecidedBy = *a.DecidedBy
+		}
+		if a.DecisionSource != nil {
+			v.DecisionSource = *a.DecisionSource
+		}
+		resp.Approvals = append(resp.Approvals, v)
 	}
 	for _, s := range steps {
 		transport, validation := failureCounts(byStep[s.StepID])

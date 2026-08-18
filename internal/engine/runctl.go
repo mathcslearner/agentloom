@@ -106,14 +106,26 @@ func cancelRunTx(ctx context.Context, q store.Querier, runID uuid.UUID, reason s
 	for _, st := range steps {
 		switch st.Status {
 		case store.StepStatusPending, store.StepStatusReady, store.StepStatusRetrying:
+			if _, err := store.CancelStep(ctx, q, store.CancelStepArgs{
+				RunID: runID, StepID: st.StepID,
+				Reason: store.CancelReasonRunCancelled, Now: now,
+			}); err != nil {
+				return CancelResult{}, err
+			}
+		case store.StepStatusAwaitingHuman:
+			// A parked human_approval step (ticket 15.2, ADR-017): it holds no
+			// claim, but its attempt is open and it owns a pending approval, so
+			// CancelAwaitingHumanStep closes the attempt cancelled and marks the
+			// approval cancelled — the run-cancel sweep, widened. A stale expiry
+			// (15.4) that later fires finds the approval non-pending and no-ops.
+			if _, err := store.CancelAwaitingHumanStep(ctx, q, store.CancelAwaitingHumanStepArgs{
+				RunID: runID, StepID: st.StepID,
+				Reason: store.CancelReasonRunCancelled, Now: now,
+			}); err != nil {
+				return CancelResult{}, err
+			}
 		default:
 			continue
-		}
-		if _, err := store.CancelStep(ctx, q, store.CancelStepArgs{
-			RunID: runID, StepID: st.StepID,
-			Reason: store.CancelReasonRunCancelled, Now: now,
-		}); err != nil {
-			return CancelResult{}, err
 		}
 		res.Cancelled = append(res.Cancelled, st.StepID)
 	}

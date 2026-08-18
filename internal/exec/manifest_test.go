@@ -50,6 +50,7 @@ var builtinCapabilities = map[string]plugin.Capabilities{
 	"agent":            {Cacheable: true, CostBearing: true},
 	"tool":             {SideEffectful: true},
 	"retrieve":         {Cacheable: true},
+	"human_approval":   {SideEffectful: true},
 }
 
 // stubTypes are the dev-stub executors, whose manifests carry the

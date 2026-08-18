@@ -112,6 +112,22 @@ func TestClassifyClaimFailure(t *testing.T) {
 			wantInReason:  "backoff pending",
 		},
 		{
+			name:          "awaiting_human is dropped — parked without a lease (15.2)",
+			err:           transitionErr(store.ConflictWrongStatus, store.StepStatusAwaitingHuman, nil),
+			deliveryCount: 1,
+			wantAction:    claimAckDrop,
+			wantLevel:     slog.LevelInfo,
+			wantInReason:  "awaiting human decision",
+		},
+		{
+			name:          "awaiting_human on reclaimed delivery is dropped too (crash-before-ACK, 15.2)",
+			err:           transitionErr(store.ConflictWrongStatus, store.StepStatusAwaitingHuman, nil),
+			deliveryCount: 3,
+			wantAction:    claimAckDrop,
+			wantLevel:     slog.LevelInfo,
+			wantInReason:  "awaiting human decision",
+		},
+		{
 			name:          "run not running drops the delivery (5.2)",
 			err:           transitionErr(store.ConflictRunNotRunning, store.RunStatusFailed, &holder),
 			deliveryCount: 1,
@@ -250,6 +266,13 @@ func TestClassifyTakeoverFailure(t *testing.T) {
 		{
 			name:         "cancelled between reclaim and takeover — drop (5.4)",
 			err:          takeoverErr(store.ConflictWrongStatus, store.StepStatusCancelled),
+			wantAction:   claimAckDrop,
+			wantLevel:    slog.LevelInfo,
+			wantInReason: "duplicate of finished work",
+		},
+		{
+			name:         "parked awaiting_human between reclaim and takeover — drop (15.2)",
+			err:          takeoverErr(store.ConflictWrongStatus, store.StepStatusAwaitingHuman),
 			wantAction:   claimAckDrop,
 			wantLevel:    slog.LevelInfo,
 			wantInReason: "duplicate of finished work",

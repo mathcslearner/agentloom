@@ -181,6 +181,7 @@ from the allowlist above.
 | `engine_validate_judge_score_ratio` | histogram | `validator` | validate stage (11.6): llm-judge quality-score distribution, one per cost-bearing validator score |
 | `engine_context_utilization_ratio` | histogram | `resource` | window guardrail (12.6): `(preflight + max_tokens) / context_window` per guarded llm claim, by resolved resource; recorded pre-call, stays below 1.0 by construction |
 | `engine_context_window_rejections_total` | counter | `resource` | window guardrail (12.6): claims failed before any provider call because assembled + max_tokens exceeded the model window and compaction was absent/insufficient, by resolved resource |
+| `engine_approval_pending` | gauge | – | human-in-the-loop (15.2): human_approval steps currently parked awaiting a decision, sampled fleet-wide from the store's pending-approval count (aggregate `max()` across workers) |
 
 The `cost` counters label only by the pricing-catalog `resource` (or the
 tiny `limit`/`action`/`trigger` vocabularies) — never by run/step — so the

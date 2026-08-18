@@ -110,6 +110,14 @@ each example's "header comment" is its top-level `description` field.
   [docs/examples/research-critic-writer.md](../../docs/examples/research-critic-writer.md)
   and `make demo-research`); swap the `mock/*` model ids for real providers to
   run it live.
+- **[approval_gate.json](approval_gate.json)** — human-in-the-loop (ticket
+  15.2, ADR-017): an offline `llm` draft feeds a `human_approval` gate that
+  parks the run's branch without holding a lease or worker slot, and a
+  `publish` step consumes the approved payload. The gate carries an
+  `edit_schema`, a `timeout` + `on_timeout` policy (the expiry fires in 15.4),
+  and default `on_reject: fail` routing. Running it stops at `approve_publish`
+  in `awaiting_human` while the fleet keeps executing other runs; the decision
+  API (15.3) resumes it.
 - **[kitchen_sink.json](kitchen_sink.json)** — one coherent
   research-and-publish pipeline exercising every construct: every registered
   step type (including a `map` over a `templates` sub-template and a `gather`),
