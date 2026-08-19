@@ -1,0 +1,38 @@
+File: agentloom-worker
+Build ID: 37750623d13c58808d05904303a53f40d2b3b484
+Type: cpu
+Time: 2026-08-19 17:26:23 EDT
+Duration: 20s, Total samples = 630ms ( 3.15%)
+Showing nodes accounting for 590ms, 93.65% of 630ms total
+Showing top 30 nodes out of 280
+      flat  flat%   sum%        cum   cum%
+     130ms 20.63% 20.63%      130ms 20.63%  internal/runtime/syscall/linux.Syscall6
+      70ms 11.11% 31.75%       70ms 11.11%  encoding/json.stateInString
+      40ms  6.35% 38.10%       40ms  6.35%  runtime.memclrNoHeapPointers
+      30ms  4.76% 42.86%       30ms  4.76%  internal/runtime/atomic.(*UnsafePointer).Load (inline)
+      20ms  3.17% 46.03%       20ms  3.17%  encoding/hex.Encode
+      20ms  3.17% 49.21%       50ms  7.94%  encoding/json.(*decodeState).skip
+      20ms  3.17% 52.38%       80ms 12.70%  encoding/json.checkValid
+      20ms  3.17% 55.56%       20ms  3.17%  runtime.memmove
+      20ms  3.17% 58.73%       20ms  3.17%  runtime.tryDeferToSpanScan
+      20ms  3.17% 61.90%       20ms  3.17%  unicode/utf8.DecodeRune (inline)
+      10ms  1.59% 63.49%       10ms  1.59%  bufio.(*Writer).WriteByte
+      10ms  1.59% 65.08%       10ms  1.59%  encoding/json.(*decodeState).scanWhile
+      10ms  1.59% 66.67%       10ms  1.59%  encoding/json.stateBeginString
+      10ms  1.59% 68.25%       30ms  4.76%  encoding/json.unquoteBytes
+      10ms  1.59% 69.84%       10ms  1.59%  fmt.newPrinter
+      10ms  1.59% 71.43%       10ms  1.59%  github.com/jackc/pgx/v5/pgtype.(*Map).planScan
+      10ms  1.59% 73.02%       10ms  1.59%  github.com/jackc/pgx/v5/pgtype.TryWrapBuiltinTypeEncodePlan
+      10ms  1.59% 74.60%       40ms  6.35%  github.com/mathcslearner/agentloom/internal/store.FailRunRollup
+      10ms  1.59% 76.19%       10ms  1.59%  github.com/mathcslearner/agentloom/internal/store/gen.(*Queries).WithTx
+      10ms  1.59% 77.78%       10ms  1.59%  go.opentelemetry.io/otel/trace.SpanFromContext
+      10ms  1.59% 79.37%       10ms  1.59%  internal/runtime/atomic.(*UnsafePointer).StoreNoWB (inline)
+      10ms  1.59% 80.95%       10ms  1.59%  internal/runtime/maps.(*Iter).Next
+      10ms  1.59% 82.54%       10ms  1.59%  reflect.(*rtype).Key
+      10ms  1.59% 84.13%       10ms  1.59%  runtime.(*spanInlineMarkBits).init
+      10ms  1.59% 85.71%       10ms  1.59%  runtime.greyobject
+      10ms  1.59% 87.30%       10ms  1.59%  runtime.mapaccess1_fast32
+      10ms  1.59% 88.89%       10ms  1.59%  runtime.nanotime
+      10ms  1.59% 90.48%       60ms  9.52%  runtime.newobject
+      10ms  1.59% 92.06%       30ms  4.76%  runtime.scanObject
+      10ms  1.59% 93.65%       10ms  1.59%  runtime.stealWork

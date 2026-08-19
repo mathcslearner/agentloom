@@ -8,6 +8,10 @@
       "respond": [
         {"structured": {"verdict": "revise", "notes": ["tighten the argument", "add an example"]}}
       ]
+    },
+    {
+      "substring": "\"schema_version\"",
+      "respond": [{}]
     }
   ],
   "default": {"text": "load workload step complete"}

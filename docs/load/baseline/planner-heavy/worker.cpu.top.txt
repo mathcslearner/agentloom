@@ -1,0 +1,38 @@
+File: agentloom-worker
+Build ID: 37750623d13c58808d05904303a53f40d2b3b484
+Type: cpu
+Time: 2026-08-19 17:43:47 EDT
+Duration: 20s, Total samples = 470ms ( 2.35%)
+Showing nodes accounting for 470ms, 100% of 470ms total
+Showing top 30 nodes out of 242
+      flat  flat%   sum%        cum   cum%
+     140ms 29.79% 29.79%      140ms 29.79%  internal/runtime/syscall/linux.Syscall6
+      30ms  6.38% 36.17%       30ms  6.38%  runtime.memclrNoHeapPointers
+      20ms  4.26% 40.43%       20ms  4.26%  encoding/json.stateInString
+      20ms  4.26% 44.68%       40ms  8.51%  github.com/jackc/pgx/v5/pgtype.(*Map).planScan
+      20ms  4.26% 48.94%       20ms  4.26%  runtime.scanObject
+      20ms  4.26% 53.19%       20ms  4.26%  runtime.scanObjectsSmall
+      10ms  2.13% 55.32%       30ms  6.38%  encoding/json.(*decodeState).skip
+      10ms  2.13% 57.45%       10ms  2.13%  encoding/json.checkValid
+      10ms  2.13% 59.57%       10ms  2.13%  encoding/json.structEncoder.encode
+      10ms  2.13% 61.70%       20ms  4.26%  fmt.(*pp).printArg
+      10ms  2.13% 63.83%       10ms  2.13%  github.com/jackc/pgx/v5/pgconn.(*MultiResultReader).NextResult
+      10ms  2.13% 65.96%       10ms  2.13%  github.com/jackc/pgx/v5/pgtype.(*Map).TypeForOID (inline)
+      10ms  2.13% 68.09%       10ms  2.13%  github.com/redis/go-redis/v9.(*baseClient)._process.func1.3
+      10ms  2.13% 70.21%       10ms  2.13%  github.com/redis/go-redis/v9/internal/pool.(*ConnPool).checkMinIdleConns
+      10ms  2.13% 72.34%       10ms  2.13%  internal/runtime/atomic.(*UnsafePointer).Load (inline)
+      10ms  2.13% 74.47%       10ms  2.13%  internal/runtime/atomic.(*UnsafePointer).StoreNoWB
+      10ms  2.13% 76.60%       10ms  2.13%  internal/sync.(*HashTrieMap[go.shape.interface {},go.shape.interface {}]).Load
+      10ms  2.13% 78.72%       10ms  2.13%  runtime.exitsyscall
+      10ms  2.13% 80.85%       10ms  2.13%  runtime.mallocgcSmallScanHeader
+      10ms  2.13% 82.98%       10ms  2.13%  runtime.memequal
+      10ms  2.13% 85.11%       10ms  2.13%  runtime.memequal64
+      10ms  2.13% 87.23%       10ms  2.13%  runtime.nanotime
+      10ms  2.13% 89.36%       10ms  2.13%  runtime.scanObjectSmall
+      10ms  2.13% 91.49%       10ms  2.13%  runtime.stealWork
+      10ms  2.13% 93.62%       10ms  2.13%  runtime.tracebackPCs
+      10ms  2.13% 95.74%       10ms  2.13%  sync.(*Pool).Put
+      10ms  2.13% 97.87%       10ms  2.13%  time.Time.Add
+      10ms  2.13%   100%       10ms  2.13%  unicode/utf8.DecodeRuneInString (inline)
+         0     0%   100%       20ms  4.26%  bufio.(*Writer).Flush
+         0     0%   100%       10ms  2.13%  compress/flate.(*compressor).init

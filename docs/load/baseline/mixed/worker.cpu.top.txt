@@ -1,0 +1,38 @@
+File: agentloom-worker
+Build ID: 37750623d13c58808d05904303a53f40d2b3b484
+Type: cpu
+Time: 2026-08-19 17:48:35 EDT
+Duration: 20s, Total samples = 530ms ( 2.65%)
+Showing nodes accounting for 470ms, 88.68% of 530ms total
+Showing top 30 nodes out of 298
+      flat  flat%   sum%        cum   cum%
+     130ms 24.53% 24.53%      130ms 24.53%  internal/runtime/syscall/linux.Syscall6
+      30ms  5.66% 30.19%       30ms  5.66%  encoding/json.stateInString
+      20ms  3.77% 33.96%       20ms  3.77%  internal/runtime/atomic.(*UnsafePointer).Load (inline)
+      20ms  3.77% 37.74%       30ms  5.66%  runtime.scanObject
+      20ms  3.77% 41.51%       20ms  3.77%  runtime.tryDeferToSpanScan
+      10ms  1.89% 43.40%       10ms  1.89%  compress/flate.(*compressor).findMatch
+      10ms  1.89% 45.28%       10ms  1.89%  context.parentCancelCtx
+      10ms  1.89% 47.17%       10ms  1.89%  encoding/json.stateBeginString
+      10ms  1.89% 49.06%       10ms  1.89%  encoding/json.stateInStringEsc
+      10ms  1.89% 50.94%       20ms  3.77%  fmt.(*pp).doPrintf
+      10ms  1.89% 52.83%       10ms  1.89%  gcWriteBarrier
+      10ms  1.89% 54.72%       10ms  1.89%  github.com/google/cel-go/parser/gen.(*CELParser).relation
+      10ms  1.89% 56.60%       30ms  5.66%  github.com/jackc/pgx/v5/pgconn.(*ResultReader).receiveMessage
+      10ms  1.89% 58.49%       10ms  1.89%  github.com/jackc/pgx/v5/pgconn.combineFieldDescriptionsAndResultFormats
+      10ms  1.89% 60.38%       10ms  1.89%  github.com/jackc/pgx/v5/pgtype.(*Map).TypeForOID (inline)
+      10ms  1.89% 62.26%       10ms  1.89%  github.com/jackc/pgx/v5/pgtype.TryWrapPtrArrayScanPlan
+      10ms  1.89% 64.15%       10ms  1.89%  github.com/jackc/pgx/v5/pgtype.UUIDCodec.DecodeDatabaseSQLValue
+      10ms  1.89% 66.04%       10ms  1.89%  github.com/jackc/puddle/v2.(*Pool[go.shape.*uint8]).acquire
+      10ms  1.89% 67.92%       30ms  5.66%  github.com/mathcslearner/agentloom/internal/event/pubsub.(*Publisher).publishOne
+      10ms  1.89% 69.81%      370ms 69.81%  github.com/mathcslearner/agentloom/internal/queue.(*Consumer).Run
+      10ms  1.89% 71.70%       10ms  1.89%  internal/sync.(*HashTrieMap[go.shape.interface {},go.shape.interface {}]).Load
+      10ms  1.89% 73.58%       10ms  1.89%  runtime.(*_panic).nextDefer
+      10ms  1.89% 75.47%       10ms  1.89%  runtime.(*bucket).mp
+      10ms  1.89% 77.36%       10ms  1.89%  runtime.(*timer).stop
+      10ms  1.89% 79.25%       10ms  1.89%  runtime.concatstrings
+      10ms  1.89% 81.13%       10ms  1.89%  runtime.exitsyscall
+      10ms  1.89% 83.02%       10ms  1.89%  runtime.futex
+      10ms  1.89% 84.91%       10ms  1.89%  runtime.interequal
+      10ms  1.89% 86.79%       10ms  1.89%  runtime.mPark
+      10ms  1.89% 88.68%       10ms  1.89%  runtime.memclrNoHeapPointers

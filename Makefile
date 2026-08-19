@@ -163,6 +163,14 @@ RATE ?= 20
 load-dry-run: ## 100-run linear-10 dry run against $AGENTLOOM_API_URL (report → results/); override SCENARIO/RUNS/RATE
 	go run ./cmd/loadgen --scenario $(SCENARIO) --runs $(RUNS) --rate $(RATE)
 
+# The baseline campaign driver (ticket 19.3): runs one scenario against the
+# load stack AND captures the full evidence bundle (pprof, pg_stat_statements,
+# Redis INFO/LATENCY, docker stats, Prometheus range series) into results/.
+ARGS ?= --ramp 1:10:1:60s --run-timeout 15m --drain-timeout 10m
+.PHONY: load-campaign
+load-campaign: ## Run a scenario campaign + capture the 19.3 evidence bundle (override SCENARIO/ARGS)
+	bash scripts/load-campaign.sh $(SCENARIO) $(ARGS)
+
 # ── web workspace (M16.5 onward): the typed TS engine client + (M17) the app ──
 # pnpm is managed via Corepack; the version is pinned by web/package.json's
 # `packageManager` field. `-r run` recurses into each package's own scripts

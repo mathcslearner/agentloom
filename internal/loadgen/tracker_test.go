@@ -94,3 +94,31 @@ func TestTrackerFinalizeOpenAndLost(t *testing.T) {
 		t.Errorf("class after markLost = %q, want %q", c, classRunLost)
 	}
 }
+
+// TestTrackerStalePollDoesNotClobberTerminal guards the high-concurrency race
+// (seen in the 19.3 linear-10 campaign) where a poll/reconcile read issued
+// before a run finished returns "running" and lands *after* the fresh terminal
+// firehose event. The terminal status must win, or classOf misreads the run as
+// run_failed.
+func TestTrackerStalePollDoesNotClobberTerminal(t *testing.T) {
+	tr := newTracker(1.0, 0)
+	base := time.Now()
+	tr.registerFire(0, "", base, true)
+	rid := uuid.NewString()
+	tr.recordSubmit(0, submitResult{RunID: rid, Status: 201, RTT: 5 * time.Millisecond}, base.Add(time.Millisecond))
+
+	// Fresh terminal event marks it succeeded.
+	if !tr.applyEvent(feedEvent{RunID: rid, Type: event.TypeRunSucceeded, Ts: base.Add(500 * time.Millisecond)}) {
+		t.Fatal("run should have gone terminal on the succeeded event")
+	}
+	// A stale reconcile body (status still "running") lands afterwards.
+	tr.applyRunBody(api.RunResponse{Run: api.RunView{ID: rid, Status: "running", StepsTotal: 10}})
+
+	tax := tr.taxonomy(0)
+	if got := tax[classRunSucceeded].Count; got != 1 {
+		t.Errorf("run_succeeded = %d, want 1 (stale poll clobbered terminal status)", got)
+	}
+	if tax[classRunFailed] != nil && tax[classRunFailed].Count != 0 {
+		t.Errorf("run_failed = %d, want 0", tax[classRunFailed].Count)
+	}
+}

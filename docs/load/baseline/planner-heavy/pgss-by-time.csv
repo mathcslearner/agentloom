@@ -1,0 +1,119 @@
+calls,total_exec_time,mean_exec_time,rows,query
+81718,6655.885346999953,0.08144944011111205,81718,"-- name: LockRun :one
+SELECT id, status, trace_parent, trace_state,
+       budget_nano_usd, spent_nano_usd, on_budget_exceeded,
+       started_at, deadline_at
+FROM runs WHERE id = $1 FOR UPDATE"
+38165,3428.676242000013,0.08983823508450092,38165,"-- name: AllocateEventSeq :one
+UPDATE runs SET next_seq = next_seq + 1 WHERE id = $1 RETURNING next_seq"
+42700,3066.4882770000095,0.07181471374707346,42700,"-- name: GetRun :one
+SELECT id, definition_id, definition, status, params, idempotency_token, graph_version, next_seq, steps_total, steps_succeeded, steps_failed, steps_skipped, created_at, started_at, finished_at, on_failure, steps_cancelled, park_reason, cancel_reason, deadline_at, idempotency_fingerprint, trace_parent, trace_state, spent_nano_usd, saved_nano_usd, budget_nano_usd, on_budget_exceeded, expansion_caps, steps_collected FROM runs WHERE id = $1"
+6331,1871.5024090000022,0.295609289053863,97967,"-- name: ListRunSteps :many
+SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind FROM run_steps WHERE run_id = $1 ORDER BY step_id"
+8082,1660.8837369999976,0.20550405060628643,8082,"copy ""step_logs"" ( ""run_id"", ""step_id"", ""attempt"", ""seq"", ""level"", ""message"", ""fields"", ""trace_id"", ""logged_at"" ) from stdin binary"
+38165,1628.579632000002,0.04267207210795218,38165,"-- name: AppendEvent :one
+
+INSERT INTO events (run_id, seq, type, payload)
+VALUES ($1, $2, $3, $4)
+RETURNING run_id, seq, type, payload, created_at"
+9429,1224.3268169999978,0.1298469420935421,9429,"-- name: SucceedRunStep :one
+UPDATE run_steps
+SET status      = 'succeeded',
+    output      = $1,
+    feedback    = NULL,
+    finished_at = $2::timestamptz,
+    updated_at  = $2::timestamptz
+WHERE run_id = $3 AND step_id = $4
+  AND status = 'running' AND claim_id = $5
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind"
+16164,1193.7820419999957,0.07385437032912649,16164,"-- name: ApplyEdgeResolution :one
+UPDATE run_steps
+SET remaining_deps = remaining_deps - 1,
+    fired_deps     = fired_deps + $1::int,
+    updated_at     = $2::timestamptz
+WHERE run_id = $3 AND step_id = $4 AND remaining_deps > 0
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind"
+96086,838.9501649999987,0.008731242480694235,96086,"SELECT 1 FROM ONLY ""public"".""runs"" x WHERE ""id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+16164,808.4040640000009,0.05001262459787177,16164,"-- name: ResolveRunEdge :one
+UPDATE run_edges
+SET resolution = $1
+WHERE run_id = $2 AND ordinal = $3
+  AND edge_type = 'normal' AND resolution = 'unresolved'
+RETURNING run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind, decision"
+9429,806.2420320000007,0.08550663188036912,9429,"-- name: ClaimRunStep :one
+
+UPDATE run_steps
+SET status          = 'running',
+    claim_id        = $1,
+    attempt_count   = attempt_count + 1,
+    next_attempt_at = NULL,
+    trace_span      = $2::text,
+    started_at      = COALESCE(started_at, $3::timestamptz),
+    updated_at      = $3::timestamptz
+WHERE run_id = $4 AND step_id = $5
+  AND (status = 'ready'
+       OR (status = 'retrying' AND next_attempt_at <= $3::timestamptz))
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind"
+8082,805.3206069999957,0.09964372766641927,8082,"-- name: AddRunCost :one
+UPDATE runs
+SET spent_nano_usd = spent_nano_usd + $1::bigint,
+    saved_nano_usd = saved_nano_usd + $2::bigint
+WHERE id = $3
+RETURNING spent_nano_usd, saved_nano_usd, budget_nano_usd"
+71,780.1003819999999,10.987329323943662,0,"-- name: ListStalledRuns :many
+SELECT r.id
+FROM runs r
+WHERE (r.status = $2
+       AND NOT EXISTS (
+           SELECT $3 FROM run_steps rs
+           WHERE rs.run_id = r.id
+             AND rs.status IN ($4, $5, $6, $7, $8)))
+   OR (r.status = $9
+       AND NOT EXISTS (
+           SELECT $10 FROM run_steps rs
+           WHERE rs.run_id = r.id AND rs.status = $11))
+ORDER BY r.created_at
+LIMIT $1"
+8980,737.7788339999988,0.0821579993318487,8980,"-- name: ReadyRunStep :one
+UPDATE run_steps
+SET status     = 'ready',
+    updated_at = $1::timestamptz
+WHERE run_id = $2 AND step_id = $3 AND status = 'pending'
+  AND fired_deps >= 1 AND (remaining_deps = 0 OR $4::boolean)
+RETURNING run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind"
+9429,728.9894789999988,0.0773135517021953,9429,"-- name: BumpRunStepCounters :execrows
+UPDATE runs
+SET steps_succeeded = steps_succeeded + $1::int,
+    steps_failed    = steps_failed + $2::int,
+    steps_skipped   = steps_skipped + $3::int,
+    steps_cancelled = steps_cancelled + $4::int,
+    steps_collected = steps_collected + $5::int
+WHERE id = $6"
+9429,630.0515719999983,0.0668206142751088,9429,"-- name: CreateStepAttempt :one
+
+INSERT INTO step_attempts (run_id, step_id, attempt_no, claim_id, started_at, feedback, worker_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair, feedback, worker_id"
+1347,581.7061580000002,0.43185312397921316,9429,"copy ""run_steps"" ( ""run_id"", ""step_id"", ""step_type"", ""config"", ""retry_policy"", ""timeout"", ""cache_policy"", ""budget_policy"", ""validation_policy"", ""blackboard_policy"", ""context_policy"", ""status"", ""remaining_deps"", ""fired_deps"", ""graph_version"", ""updated_at"", ""depth"", ""origin_step"", ""origin_kind"" ) from stdin binary"
+1347,532.578469,0.39538119450631004,16164,"copy ""run_edges"" ( ""run_id"", ""ordinal"", ""from_step"", ""to_step"", ""edge_type"", ""when_expr"", ""condition"", ""max_iterations"", ""graph_version"", ""origin_step"", ""origin_kind"", ""decision"" ) from stdin binary"
+8082,527.3746850000009,0.06525299245236348,8082,"-- name: InsertCostLedgerEntry :exec
+
+INSERT INTO cost_ledger (run_id, step_id, attempt, entry, resource, usage,
+                         rate, rate_source, cache_hit, overhead,
+                         cost_nano_usd, saved_nano_usd, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"
+9429,399.8535489999998,0.04240678216141676,9429,"-- name: FinishStepAttempt :execrows
+UPDATE step_attempts
+SET outcome = $1, error = $2, usage = $3, verdict = $4, repair = $5, finished_at = $6::timestamptz
+WHERE run_id = $7 AND step_id = $8 AND attempt_no = $9"
+9429,370.8673439999994,0.03933262742602613,16164,"-- name: ListRunEdgesFromStep :many
+SELECT run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind, decision FROM run_edges WHERE run_id = $1 AND from_step = $2 ORDER BY ordinal"
+6331,370.2655090000006,0.05848452203443376,157948,"-- name: ListRunEdges :many
+SELECT run_id, ordinal, from_step, to_step, edge_type, when_expr, condition, max_iterations, resolution, graph_version, origin_step, origin_kind, decision FROM run_edges WHERE run_id = $1 ORDER BY ordinal"
+10327,363.9664369999997,0.035244159678512785,10327,"-- name: GetRunStep :one
+SELECT run_id, step_id, step_type, config, status, remaining_deps, fired_deps, claim_id, attempt_count, output, error, graph_version, created_at, updated_at, started_at, finished_at, retry_policy, next_attempt_at, timeout, trace_span, cache_policy, budget_policy, validation_policy, feedback, blackboard_policy, context_policy, depth, origin_step, origin_kind FROM run_steps WHERE run_id = $1 AND step_id = $2"
+38614,363.606255999995,0.009416435904076264,38614,"SELECT 1 FROM ONLY ""public"".""workflow_definitions"" x WHERE ""id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+5433,354.7027200000003,0.06528671452236338,61749,"-- name: ListRunStepAttempts :many
+SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair, feedback, worker_id FROM step_attempts
+WHERE run_id = $1
+ORDER BY step_id, attempt_no"

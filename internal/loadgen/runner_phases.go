@@ -249,6 +249,7 @@ func assembleReport(cfg Config, sc *loadtest.Scenario, comps []*component, tr *t
 			LostRuns: lost, NonDeliberateDLQ: dlqTotal, DLQOpenStart: dlqStart, DLQOpenEnd: dlqEnd,
 		},
 	}
+	rep.RampSteps = rampStepStats(sc.Arrival, start, sc.Warmup.D(), rows)
 	rep.SLO = evaluateSLO(sc, rep, pacerLag)
 	return rep
 }

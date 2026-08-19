@@ -1,0 +1,38 @@
+File: agentloom-worker
+Build ID: 37750623d13c58808d05904303a53f40d2b3b484
+Type: cpu
+Time: 2026-08-19 16:58:16 EDT
+Duration: 25s, Total samples = 580ms ( 2.32%)
+Showing nodes accounting for 490ms, 84.48% of 580ms total
+Showing top 30 nodes out of 345
+      flat  flat%   sum%        cum   cum%
+     150ms 25.86% 25.86%      150ms 25.86%  internal/runtime/syscall/linux.Syscall6
+      20ms  3.45% 29.31%       20ms  3.45%  hash/crc32.ieeeUpdate
+      20ms  3.45% 32.76%       20ms  3.45%  runtime.(*timers).run
+      20ms  3.45% 36.21%       20ms  3.45%  runtime.memclrNoHeapPointers
+      20ms  3.45% 39.66%       20ms  3.45%  runtime.nextFreeFast
+      20ms  3.45% 43.10%       20ms  3.45%  runtime.step
+      10ms  1.72% 44.83%       10ms  1.72%  compress/flate.(*compressor).reset
+      10ms  1.72% 46.55%       10ms  1.72%  compress/flate.matchLen
+      10ms  1.72% 48.28%       10ms  1.72%  encoding/json.(*RawMessage).UnmarshalJSON
+      10ms  1.72% 50.00%       10ms  1.72%  encoding/json.(*decodeState).scanWhile
+      10ms  1.72% 51.72%       10ms  1.72%  encoding/json.stateEndValue
+      10ms  1.72% 53.45%       10ms  1.72%  encoding/json.stateInString
+      10ms  1.72% 55.17%       10ms  1.72%  fmt.(*pp).handleMethods
+      10ms  1.72% 56.90%       10ms  1.72%  github.com/google/uuid.UUID.String
+      10ms  1.72% 58.62%       10ms  1.72%  github.com/jackc/pgx/v5/pgproto3.(*BindComplete).Decode
+      10ms  1.72% 60.34%       10ms  1.72%  github.com/jackc/pgx/v5/pgtype.TryWrapStructScanPlan
+      10ms  1.72% 62.07%       10ms  1.72%  github.com/jackc/pgx/v5/pgtype.scanPlanBinaryUUIDToUUIDScanner.Scan
+      10ms  1.72% 63.79%       10ms  1.72%  github.com/mathcslearner/agentloom/internal/engine.(*Engine).watchRunCancel.func3
+      10ms  1.72% 65.52%       10ms  1.72%  github.com/prometheus/client_golang/prometheus.(*CounterVec).GetMetricWithLabelValues
+      10ms  1.72% 67.24%       10ms  1.72%  github.com/prometheus/client_golang/prometheus.(*HistogramVec).GetMetricWithLabelValues
+      10ms  1.72% 68.97%       20ms  3.45%  internal/poll.runtime_pollWait
+      10ms  1.72% 70.69%       20ms  3.45%  internal/runtime/maps.NewMap
+      10ms  1.72% 72.41%       10ms  1.72%  runtime.(*spanInlineMarkBits).init
+      10ms  1.72% 74.14%       10ms  1.72%  runtime.(*timers).siftDown
+      10ms  1.72% 75.86%       10ms  1.72%  runtime.casgstatus
+      10ms  1.72% 77.59%       10ms  1.72%  runtime.futex
+      10ms  1.72% 79.31%       60ms 10.34%  runtime.mallocgcSmallScanNoHeader
+      10ms  1.72% 81.03%       10ms  1.72%  runtime.mallocgcTiny
+      10ms  1.72% 82.76%       10ms  1.72%  runtime.mapaccess2_fast32
+      10ms  1.72% 84.48%       10ms  1.72%  runtime.mapaccess2_faststr

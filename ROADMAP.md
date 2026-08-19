@@ -1309,13 +1309,13 @@ DLQ page (dead-lettered steps with error/attempt context, requeue action), run c
 - [x] Open-loop rate verified accurate ±5% under load (no coordinated omission)
 - [x] Failure taxonomy in the report (rejected submits vs failed runs vs timeouts)
 
-#### 19.3 — Baseline campaign & bottleneck identification
+#### 19.3 — Baseline campaign & bottleneck identification ✅
 **Depends on:** 19.2
 Ramp each scenario to the knee; capture Grafana snapshots, pprof profiles (worker + API), `pg_stat_statements`, Redis INFO/latency. Write `docs/load/findings-baseline.md`: observed limits per scenario, evidence-ranked bottleneck list, and the selected top target for remediation.
 **Done when:**
-- [ ] Knee point identified per scenario with saturation evidence (which resource, which metric)
-- [ ] Top bottleneck named with profile/query evidence, not speculation
-- [ ] Baseline numbers recorded (they anchor the before/after comparison)
+- [x] Knee point identified per scenario with saturation evidence (which resource, which metric)
+- [x] Top bottleneck named with profile/query evidence, not speculation
+- [x] Baseline numbers recorded (they anchor the before/after comparison)
 
 #### 19.4 — Remediation #1 (findings-driven)
 **Depends on:** 19.3

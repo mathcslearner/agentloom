@@ -1,0 +1,5 @@
+K=4 linear-10 probe (drain stopped early; live Prometheus numbers at saturation):
+  step completions/s: ~23
+  worker CPU total:   0.15 cores (4 workers, ~0.037 each = 3.7% of 0.5 limit)
+  ready depth:        485 (deeply backed up while CPU idle → H1)
+  ramp table + pprof (worker.cpu @ t=120s saturation) captured in bundle.

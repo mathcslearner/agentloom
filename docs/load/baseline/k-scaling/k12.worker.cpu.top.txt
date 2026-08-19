@@ -1,0 +1,38 @@
+File: agentloom-worker
+Build ID: 37750623d13c58808d05904303a53f40d2b3b484
+Type: cpu
+Time: 2026-08-19 17:18:53 EDT
+Duration: 20s, Total samples = 340ms ( 1.70%)
+Showing nodes accounting for 340ms, 100% of 340ms total
+Showing top 30 nodes out of 213
+      flat  flat%   sum%        cum   cum%
+     150ms 44.12% 44.12%      150ms 44.12%  internal/runtime/syscall/linux.Syscall6
+      20ms  5.88% 50.00%       20ms  5.88%  runtime.tryDeferToSpanScan
+      10ms  2.94% 52.94%       10ms  2.94%  fmt.(*ss).getRune
+      10ms  2.94% 55.88%       10ms  2.94%  github.com/redis/go-redis/v9/internal/pool.getCachedTimeNs
+      10ms  2.94% 58.82%       10ms  2.94%  internal/abi.Name.IsExported (inline)
+      10ms  2.94% 61.76%       10ms  2.94%  internal/bytealg.IndexByteString
+      10ms  2.94% 64.71%       10ms  2.94%  internal/poll.(*pollDesc).prepare
+      10ms  2.94% 67.65%       10ms  2.94%  internal/strconv.AppendUint
+      10ms  2.94% 70.59%       10ms  2.94%  log/slog.(*commonHandler).newHandleState
+      10ms  2.94% 73.53%       10ms  2.94%  runtime.(*mspan).init
+      10ms  2.94% 76.47%       10ms  2.94%  runtime.(*mspan).typePointersOfUnchecked
+      10ms  2.94% 79.41%       10ms  2.94%  runtime.(*spanSet).pop
+      10ms  2.94% 82.35%       10ms  2.94%  runtime.(*sweepLocked).sweep
+      10ms  2.94% 85.29%       10ms  2.94%  runtime.greyobject
+      10ms  2.94% 88.24%       10ms  2.94%  runtime.memclrNoHeapPointers
+      10ms  2.94% 91.18%       10ms  2.94%  runtime.nanotime
+      10ms  2.94% 94.12%       40ms 11.76%  runtime.netpoll
+      10ms  2.94% 97.06%       10ms  2.94%  runtime.unlock2
+      10ms  2.94%   100%       10ms  2.94%  time.Since
+         0     0%   100%       10ms  2.94%  bufio.(*Writer).Flush
+         0     0%   100%       10ms  2.94%  context.WithValue
+         0     0%   100%       20ms  5.88%  encoding/json.(*encodeState).marshal
+         0     0%   100%       20ms  5.88%  encoding/json.(*encodeState).reflectValue
+         0     0%   100%       20ms  5.88%  encoding/json.Marshal
+         0     0%   100%       10ms  2.94%  encoding/json.intEncoder
+         0     0%   100%       20ms  5.88%  encoding/json.structEncoder.encode
+         0     0%   100%       10ms  2.94%  fmt.(*ss).accept (inline)
+         0     0%   100%       10ms  2.94%  fmt.(*ss).consume
+         0     0%   100%       10ms  2.94%  fmt.(*ss).doScanf
+         0     0%   100%       10ms  2.94%  fmt.(*ss).floatToken

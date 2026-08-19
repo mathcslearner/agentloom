@@ -30,6 +30,30 @@ go run ./cmd/loadgen --scenario mixed --out results/mixed
 `make load-dry-run` is the one-liner for the dry run (override `SCENARIO`,
 `RUNS`, `RATE`). `go run ./cmd/loadgen --list-scenarios` prints the corpus.
 
+## Evidence-capturing campaign (19.3)
+
+`scripts/load-campaign.sh` (also `make load-campaign SCENARIO=… ARGS=…`) wraps
+one loadgen run and captures the full evidence bundle the baseline campaign
+needs — the loadgen report **plus** pprof (worker + API, CPU + heap, fired
+mid-steady-window), `pg_stat_statements` (reset at start, top-25 by time and by
+calls at the end), `pg_stat_activity` wait-event samples, Redis `INFO`/`LATENCY`,
+`docker stats`, and Prometheus range series over the exact `[campaign_start,
+arrivals_end]` window — into `results/<scenario>-<utc>/`. It must run against the
+pinned `make load-up` stack (pprof and `pg_stat_statements` are enabled only
+there).
+
+```bash
+make load-up                                    # pinned stack, pprof + pgss on
+scripts/load-campaign.sh linear-10 --ramp 1:10:1:60s --run-timeout 15m
+scripts/load-campaign.sh fanout-50 --ramp 0.2:2.4:0.2:60s --run-timeout 20m
+```
+
+Bundle layout: `summary.{json,md}` + CSVs (the loadgen report), `pprof/*.pprof`
++ `pprof/*.top.txt` (rendered top functions), `pgss-by-{time,calls}.csv`,
+`pg-activity.txt`, `redis.*.txt`, `docker-stats.csv`, `prom/*.json`, `env.txt`
+(git SHA, host, resolved compose config). The findings doc
+([`findings-baseline.md`](findings-baseline.md)) is written from these bundles.
+
 ## How it works
 
 - **Open-loop, no coordinated omission.** Submissions fire on a schedule that
@@ -67,6 +91,18 @@ Written to `--out` (default `results/<scenario>-<utc>/`):
 | `runs.csv` | one row per submission: intended/submitted offsets, run id, http status, taxonomy class, status, submit/e2e latency, step counts, DLQ, in-steady flag |
 | `timeseries.csv` | per-progress-tick series: submitted/accepted/active/terminal + queue depth/PEL/delayed/outbox |
 | `hist-*.csv` | the HDR percentile distribution for each latency histogram |
+
+### Ramp-step breakdown (knee finder)
+
+A **ramp** campaign's `summary.json` carries a `ramp_steps[]` array (and a "Ramp
+steps" table in `summary.md`): the tracked runs binned by the arrival staircase
+step their intended fire fell in, each row reporting the offered `rate_per_sec`,
+`intended`/`accepted`/`terminal` counts, `backlog` (accepted−terminal — the
+client-side saturation signal), succeeded/failed, and e2e p50/p99. The knee is
+the first step where `backlog` starts growing monotonically and `e2e_p99`
+diverges, cross-checked against the Prometheus `engine_step_scheduling_latency_seconds`
+series (the authoritative source per [`plan.md`](plan.md) §7). Constant-rate
+campaigns omit it.
 
 ### Failure taxonomy
 

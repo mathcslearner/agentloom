@@ -50,6 +50,25 @@ func renderMarkdown(r Report) string {
 	}
 	p("\n")
 
+	if len(r.RampSteps) > 0 {
+		p("## Ramp steps (knee finder)\n\n")
+		p("The offered rate climbs per step; the knee is where **backlog** (accepted−terminal)\n")
+		p("starts growing and **e2e p99** diverges. Cross-check against the Prometheus\n")
+		p("scheduling-latency series (the authoritative source).\n\n")
+		p("| step | rate/s | intended | accepted | terminal | backlog | ok | fail | e2e p50 | e2e p99 |\n")
+		p("|---|---|---|---|---|---|---|---|---|---|\n")
+		for _, rs := range r.RampSteps {
+			label := fmt.Sprintf("%d", rs.Step)
+			if rs.Warmup {
+				label += " (warmup)"
+			}
+			p("| %s | %.1f | %d | %d | %d | %d | %d | %d | %.0f ms | %.0f ms |\n",
+				label, rs.RatePerSec, rs.Intended, rs.Accepted, rs.Terminal, rs.Backlog,
+				rs.Succeeded, rs.Failed, rs.E2EP50Ms, rs.E2EP99Ms)
+		}
+		p("\n")
+	}
+
 	p("## Integrity\n\n")
 	p("- lost runs: **%d**\n", r.Integrity.LostRuns)
 	p("- non-deliberate dead letters: **%d** (DLQ open %d → %d)\n", r.Integrity.NonDeliberateDLQ, r.Integrity.DLQOpenStart, r.Integrity.DLQOpenEnd)

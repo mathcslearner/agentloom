@@ -1,0 +1,38 @@
+File: agentloom-worker
+Build ID: 37750623d13c58808d05904303a53f40d2b3b484
+Type: cpu
+Time: 2026-08-19 17:37:32 EDT
+Duration: 20s, Total samples = 630ms ( 3.15%)
+Showing nodes accounting for 520ms, 82.54% of 630ms total
+Showing top 30 nodes out of 321
+      flat  flat%   sum%        cum   cum%
+     220ms 34.92% 34.92%      220ms 34.92%  internal/runtime/syscall/linux.Syscall6
+      20ms  3.17% 38.10%       20ms  3.17%  runtime.memclrNoHeapPointers
+      10ms  1.59% 39.68%       10ms  1.59%  bytes.(*Buffer).WriteString
+      10ms  1.59% 41.27%       20ms  3.17%  encoding/json.(*decodeState).literalStore
+      10ms  1.59% 42.86%       10ms  1.59%  encoding/json.isSpace (inline)
+      10ms  1.59% 44.44%       20ms  3.17%  encoding/json.stateEndValue
+      10ms  1.59% 46.03%       10ms  1.59%  encoding/json.stateInString
+      10ms  1.59% 47.62%       10ms  1.59%  fmt.(*ss).SkipSpace
+      10ms  1.59% 49.21%       10ms  1.59%  fmt.newPrinter
+      10ms  1.59% 50.79%       10ms  1.59%  github.com/antlr4-go/antlr/v4.(*BaseParserRuleContext).addTerminalNodeChild (inline)
+      10ms  1.59% 52.38%       10ms  1.59%  github.com/google/cel-go/parser/gen.(*CELParser).Literal
+      10ms  1.59% 53.97%       20ms  3.17%  github.com/jackc/pgx/v5/pgconn.(*MultiResultReader).NextResult
+      10ms  1.59% 55.56%      140ms 22.22%  github.com/jackc/pgx/v5/pgproto3.(*Frontend).Flush
+      10ms  1.59% 57.14%       30ms  4.76%  github.com/jackc/pgx/v5/pgtype.(*encodePlanDriverValuer).Encode
+      10ms  1.59% 58.73%       10ms  1.59%  github.com/jackc/pgx/v5/pgtype.TextCodec.PlanScan
+      10ms  1.59% 60.32%       40ms  6.35%  github.com/mathcslearner/agentloom/internal/event/pubsub.(*Publisher).publish
+      10ms  1.59% 61.90%      400ms 63.49%  github.com/mathcslearner/agentloom/internal/queue.(*Consumer).Run
+      10ms  1.59% 63.49%       10ms  1.59%  internal/strconv.ParseInt
+      10ms  1.59% 65.08%       10ms  1.59%  internal/sync.(*Mutex).Lock (inline)
+      10ms  1.59% 66.67%       50ms  7.94%  net.(*netFD).Read
+      10ms  1.59% 68.25%       10ms  1.59%  net.wrapSyscallError (inline)
+      10ms  1.59% 69.84%       10ms  1.59%  reflect.(*rtype).Field
+      10ms  1.59% 71.43%       10ms  1.59%  reflect.(*rtype).Implements
+      10ms  1.59% 73.02%       10ms  1.59%  reflect.Value.Elem
+      10ms  1.59% 74.60%       20ms  3.17%  runtime.(*mheap).alloc
+      10ms  1.59% 76.19%       10ms  1.59%  runtime.(*mheap).initSpan
+      10ms  1.59% 77.78%       10ms  1.59%  runtime.(*moduledata).textOff (inline)
+      10ms  1.59% 79.37%       10ms  1.59%  runtime.(*mspan).writeHeapBitsSmall
+      10ms  1.59% 80.95%       10ms  1.59%  runtime.(*waitq).dequeue
+      10ms  1.59% 82.54%       20ms  3.17%  runtime.growslice

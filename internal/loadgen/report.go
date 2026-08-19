@@ -33,6 +33,7 @@ type Report struct {
 	Quiescence       quiesceView            `json:"quiescence"`
 	SLO              *sloView               `json:"slo,omitempty"`
 	Integrity        integrityView          `json:"integrity"`
+	RampSteps        []RampStepStat         `json:"ramp_steps,omitempty"`
 }
 
 type hostView struct {

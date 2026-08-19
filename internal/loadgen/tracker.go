@@ -222,7 +222,13 @@ func (t *tracker) applyRunBody(body api.RunResponse) {
 		t.markTerminalLocked(rs, body.Run.Status, srv)
 		return
 	}
-	rs.status = body.Run.Status
+	// A stale poll/reconcile read (issued before the run finished) can land
+	// after a fresh terminal firehose event; never let it clobber the
+	// authoritative terminal status back to a non-terminal one, or classOf
+	// would misread the terminal run as run_failed.
+	if !rs.terminal {
+		rs.status = body.Run.Status
+	}
 }
 
 // markTerminalLocked records a terminal transition once (first writer wins),

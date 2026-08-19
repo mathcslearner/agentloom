@@ -25,6 +25,14 @@ mock.json      the fleet mock script: lognormal latency + token distributions +
 - **The mock script** is mounted into every worker by `docker-compose.load.yml`
   (`AGENTLOOM_LLM_MOCK_SCRIPT_FILE`). It is parsed by `llm.ParseMockScript` +
   `llm.NewMock`; a malformed script fails worker boot.
+- **`mock.json` rules.** `load-test critic` returns `{"verdict":"revise"}`
+  (the always-revise rule `agent-loop` needs). A second rule matches the
+  planner prompt (substring `"schema_version"`) with an **empty outcome**
+  `[{}]`, which makes the mock echo the prompt verbatim as native structured
+  output — so a `planner` step's prompt (itself a valid `PlanOutput`) expands
+  offline. Without this rule the `default` text response suppresses the
+  structured plan-echo and `planner-heavy` cannot expand (found in the 19.3
+  baseline campaign).
 
 Boot the pinned environment with `make load-up` (see the plan for pins and the
 one-command details), then drive it with the load generator:
