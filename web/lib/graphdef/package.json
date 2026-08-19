@@ -1,0 +1,38 @@
+{
+  "name": "@agentloom/graphdef",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The serialization boundary (M17.2, ADR-019): the canvas state model and the pure definition ⇄ Flow mapping. Types generated from docs/schema/workflow-definition.v1.json. Zero React/UI imports.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "generate": "tsx scripts/gen-definition-types.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/node": "^22.10.0",
+    "@typescript-eslint/parser": "^8.18.0",
+    "eslint": "^9.18.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

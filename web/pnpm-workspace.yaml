@@ -2,7 +2,9 @@
 #
 # lib/*   — pure TS libraries (no React/UI imports):
 #             engine-client (M16.5) — the typed event-feed WS client,
-#             api-client   (M17.1) — the typed REST client.
+#             api-client   (M17.1) — the typed REST client,
+#             graphdef     (M17.2) — the serialization boundary (ADR-019):
+#                                     definition ⇄ canvas Flow mapping.
 # app     — the Next.js visual builder + live dashboard (M17.1 onward).
 packages:
   - "lib/*"

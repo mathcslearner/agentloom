@@ -34,3 +34,4 @@ are reserved and appear here once the ADR is written.
 | [016](016-multi-agent-orchestration.md) | Multi-agent orchestration — agent roles, handoff, loop unrolling | Accepted | 2026-08-16 |
 | [017](017-human-in-the-loop.md) | Human-in-the-loop — approval steps, decisions, edits, timeouts | Accepted | 2026-08-17 |
 | [018](018-event-feed-and-streaming.md) | Event feed — envelope, taxonomy, delivery & WebSocket streaming | Accepted | 2026-08-18 |
+| [019](019-frontend-architecture-and-serialization-boundary.md) | Frontend architecture & the serialization boundary | Accepted | 2026-08-18 |

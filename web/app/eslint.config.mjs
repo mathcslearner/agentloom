@@ -10,17 +10,20 @@ const config = [
     ignores: [".next/**", "node_modules/**", "playwright-report/**", "test-results/**", "next-env.d.ts"],
   },
   {
-    // The serialization boundary (M17.2) and any pure lib code under src/lib
-    // must not import React/Next. Enforced here so the boundary is a lint rule,
-    // not a convention. (Seeded now; lib/graphdef lands in 17.2.)
-    files: ["src/lib/graphdef/**/*.ts"],
+    // The serialization boundary landed in its own workspace package,
+    // @agentloom/graphdef (web/lib/graphdef, ADR-019), whose own
+    // eslint.config.mjs enforces the no-React/UI boundary. This block keeps the
+    // same guard for any future *pure* helper code the app grows under src/lib
+    // (server-only config and the api factories are exempt — they are app glue,
+    // not pure logic — so the pattern is scoped to a `pure/` subdirectory).
+    files: ["src/lib/pure/**/*.ts"],
     rules: {
       "no-restricted-imports": [
         "error",
         {
           paths: [
-            { name: "react", message: "graphdef is a pure module: no React imports." },
-            { name: "react-dom", message: "graphdef is a pure module: no React imports." },
+            { name: "react", message: "pure app-lib code: no React imports." },
+            { name: "react-dom", message: "pure app-lib code: no React imports." },
           ],
           patterns: ["next/*", "@/components/*"],
         },

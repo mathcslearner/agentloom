@@ -13,11 +13,16 @@ via Corepack (`packageManager` pins the exact version).
   `api/openapi.yaml` (`openapi-typescript`, CI-diffed); the runtime is a thin
   `openapi-fetch` wrapper with optional bearer-key injection and the `problem()`
   error-envelope helper.
+- **`lib/graphdef`** — the serialization boundary (M17.2, ADR-019). The pure
+  definition ⇄ canvas `Flow` mapping (`toFlow`/`toDefinition`), with definition
+  types generated from `docs/schema/workflow-definition.v1.json` (CI-diffed).
+  Lossless round-trip over the backend fixture corpus; unknown-field passthrough;
+  zero React/UI imports (lint-enforced). See `lib/graphdef/README.md`.
 - **`app`** — the Next.js visual builder + live dashboard (M17.1 onward). App
   Router, TS strict, Tailwind + shadcn/ui. Talks to the backend through a
   same-origin proxy that holds the API key server-side. See `app/README.md`.
 
-Both `lib/*` packages are pure TypeScript with no React/UI imports.
+All three `lib/*` packages are pure TypeScript with no React/UI imports.
 
 ## Setup
 
@@ -45,8 +50,9 @@ After changing any Go wire shape, regenerate both sides:
 
 ```bash
 make generate        # (repo root) Go structs -> docs/schema/*.json + openapi.yaml stays hand-maintained
-cd web && pnpm generate   # docs/schema/events.v1.json -> engine-client TS,
-                          # api/openapi.yaml            -> api-client TS
+cd web && pnpm generate   # docs/schema/events.v1.json            -> engine-client TS,
+                          # api/openapi.yaml                     -> api-client TS,
+                          # docs/schema/workflow-definition.v1.json -> graphdef TS
 ```
 
 CI fails if the committed generated TS is stale against the schemas or spec.

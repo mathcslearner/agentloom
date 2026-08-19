@@ -97,13 +97,14 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: generated TS types are current against the schemas + spec
         # engine-client/events.ts is generated from docs/schema/events.v1.json;
-        # api-client/openapi.ts is generated from api/openapi.yaml. Both source
-        # files are Go-CI-diffed (schema in the lint job, route/op coverage in the
-        # api unit tests). Regenerate and fail on drift, so a Go wire-shape change
-        # not reflected in the TS types fails CI on one side or the other.
+        # api-client/openapi.ts from api/openapi.yaml; graphdef/definition.ts from
+        # docs/schema/workflow-definition.v1.json. All three source files are
+        # Go-CI-diffed (schemas in the lint job, route/op coverage in the api unit
+        # tests). Regenerate and fail on drift, so a Go wire-shape change not
+        # reflected in the TS types fails CI on one side or the other.
         run: |
           pnpm generate
-          git diff --exit-code -- lib/engine-client/src/generated lib/api-client/src/generated
+          git diff --exit-code -- lib/engine-client/src/generated lib/api-client/src/generated lib/graphdef/src/generated
       - name: lint
         run: pnpm lint
       - name: typecheck
