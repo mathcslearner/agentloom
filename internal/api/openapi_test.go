@@ -150,20 +150,29 @@ func TestOpenAPIOperationContracts(t *testing.T) {
 			t.Errorf("%s: no responses documented", key)
 			continue
 		}
-		var has2xx bool
-		for status, resp := range op.Responses {
-			if !strings.HasPrefix(status, "2") {
-				continue
+		// The run WebSocket (ticket 16.3) upgrades the connection: its success
+		// is 101 Switching Protocols, which carries no body. Everything else
+		// documents a schema'd 2xx.
+		if key == "GET /v1/runs/{}/ws" {
+			if _, ok := op.Responses["101"]; !ok {
+				t.Errorf("%s: WebSocket upgrade must document 101", key)
 			}
-			has2xx = true
-			// A success response must carry a schema'd body — 204 is the
-			// one deliberate no-body success.
-			if status != "204" && resp.Ref == "" && len(resp.Content) == 0 {
-				t.Errorf("%s: success response %s has no content schema", key, status)
+		} else {
+			var has2xx bool
+			for status, resp := range op.Responses {
+				if !strings.HasPrefix(status, "2") {
+					continue
+				}
+				has2xx = true
+				// A success response must carry a schema'd body — 204 is the
+				// one deliberate no-body success.
+				if status != "204" && resp.Ref == "" && len(resp.Content) == 0 {
+					t.Errorf("%s: success response %s has no content schema", key, status)
+				}
 			}
-		}
-		if !has2xx {
-			t.Errorf("%s: no 2xx response documented", key)
+			if !has2xx {
+				t.Errorf("%s: no 2xx response documented", key)
+			}
 		}
 		if !strings.HasPrefix(key[strings.Index(key, " ")+1:], "/v1") {
 			continue

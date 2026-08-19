@@ -127,6 +127,11 @@ type Handler struct {
 	// A ZREM is not a dispatch, so ADR-002 (the API never dispatches) holds.
 	// Nil leaves a stale expiry to fire and no-op.
 	expiryCanceller engine.ExpiryCanceller
+	// ws, when set (WithWebSocket), enables the run WebSocket endpoint and its
+	// ticket route (ticket 16.3, ADR-018). Nil leaves those routes answering
+	// 503 stream_unavailable. It carries the ticket signing secret, TTL, the
+	// live subscriber (nil ⇒ poll-only), and the connection tuning.
+	ws *WSOptions
 }
 
 // CacheOps is the API's seam onto the response-cache store (ticket 9.6,
@@ -284,6 +289,13 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 		// Run-graph introspection (ticket 13.6, ADR-015): versioned graph with
 		// provenance + per-version expansion deltas.
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/runs/{runID}/graph", h.handleRunGraph)
+		// Run event streaming (ticket 16.3, ADR-018): mint a short-lived signed
+		// ticket (read scope), then open the WebSocket with it (or a read
+		// bearer). The WS route authenticates with requireReadOrTicket — a
+		// browser cannot set an Authorization header — so it is absent from the
+		// requireScope-based auth matrix and instead covered by TestWSTicket*.
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Post("/runs/{runID}/ws-ticket", h.handleMintWSTicket)
+		r.With(h.requireReadOrTicket, h.rateLimit(classRead)).Get("/runs/{runID}/ws", h.handleRunWS)
 		// Definition registry (ticket 6.5).
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/definitions", h.handleCreateDefinition)
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/definitions", h.handleListDefinitions)
@@ -354,7 +366,14 @@ func (h *Handler) requestLog(next http.Handler) http.Handler {
 		next.ServeHTTP(rec, r.WithContext(ctx))
 		duration := h.now().Sub(start)
 		route := metricRoute(ctx)
-		h.metrics.Request(route, metricMethod(r.Method), rec.status, duration)
+		// A 101 upgrade (the run WebSocket, ticket 16.3) opens a long-lived
+		// connection: its "duration" is the whole session, which would swamp
+		// the read-route latency histogram. Record the request count is skipped
+		// entirely for it — the WS lifetime is a streaming concern, and 16.4
+		// adds its own connection gauge.
+		if rec.status != http.StatusSwitchingProtocols {
+			h.metrics.Request(route, metricMethod(r.Method), rec.status, duration)
+		}
 		if route != "unmatched" {
 			if span := oteltrace.SpanFromContext(ctx); span.SpanContext().IsValid() {
 				span.SetName(r.Method + " " + route)
@@ -460,6 +479,13 @@ func (r *statusRecorder) WriteHeader(status int) {
 	r.status = status
 	r.ResponseWriter.WriteHeader(status)
 }
+
+// Unwrap exposes the wrapped ResponseWriter so http.ResponseController and
+// coder/websocket's hijacker helper can reach the underlying http.Hijacker
+// (ticket 16.3): the WebSocket upgrade must hijack the connection, and this
+// recorder sits between it and the net/http writer. Without Unwrap the upgrade
+// would fail with "does not implement http.Hijacker".
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 // writeJSON writes v as the response body with the given status.
 func writeJSON(w http.ResponseWriter, status int, v any) {

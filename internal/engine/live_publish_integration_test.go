@@ -50,26 +50,9 @@ func setupWithSink(t *testing.T, defJSON string, pub store.EventSink) (*store.St
 	return s, h, res.Run.ID
 }
 
-// storeBackfiller adapts the store's event repo to pubsub.Backfiller (the leaf
-// pubsub package cannot import store, so the adapter lives here — the same shape
-// the 16.3 WS server will use).
-type storeBackfiller struct{ s *store.Store }
-
-func (b storeBackfiller) EventsAfter(ctx context.Context, runID uuid.UUID, afterSeq int64, limit int32) ([]event.Envelope, error) {
-	rows, err := b.s.Events().List(ctx, runID, afterSeq, limit)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]event.Envelope, 0, len(rows))
-	for _, row := range rows {
-		env, err := store.EventEnvelope(row)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, env)
-	}
-	return out, nil
-}
+// Since ticket 16.3 the store's event repo satisfies pubsub.Backfiller directly
+// (store.EventRepo.EventsAfter), so these tests feed s.Events() to the Tailer
+// with no local adapter — the same wiring the WS server uses.
 
 // tsSink wraps an inner sink and stamps the commit time of each event by seq, so
 // a test can measure commit-to-received latency end to end.
@@ -155,7 +138,7 @@ func TestLivePublishReachesSubscriber(t *testing.T) {
 		delivered []int64                 // via the Tailer (complete, in order)
 		liveRecv  = map[int64]time.Time{} // receive time of a live message, by seq
 	)
-	backfill := storeBackfiller{s: s}
+	backfill := s.Events()
 	tailer := pubsub.NewTailer(runID, 0, backfill, func(env event.Envelope) {
 		mu.Lock()
 		delivered = append(delivered, env.Seq)
@@ -255,7 +238,7 @@ func TestPubSubLossRecoversViaBackfill(t *testing.T) {
 		mu        sync.Mutex
 		delivered []int64
 	)
-	backfill := &countingBackfiller{inner: storeBackfiller{s: s}}
+	backfill := &countingBackfiller{inner: s.Events()}
 	tailer := pubsub.NewTailer(runID, 0, backfill, func(env event.Envelope) {
 		mu.Lock()
 		delivered = append(delivered, env.Seq)

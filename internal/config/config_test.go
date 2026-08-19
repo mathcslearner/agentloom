@@ -79,6 +79,7 @@ func TestLoadDefaults(t *testing.T) {
 		WriteTimeout:    config.DefaultAPIWriteTimeout,
 		IdleTimeout:     config.DefaultAPIIdleTimeout,
 		ShutdownTimeout: config.DefaultAPIShutdownTimeout,
+		WSTicketTTL:     config.DefaultAPIWSTicketTTL,
 		RateLimit:       defaultRateLimit(),
 	}
 	if cfg.API != wantAPI {
@@ -122,6 +123,8 @@ func TestLoadAPIOverrides(t *testing.T) {
 		config.EnvAPIIdleTimeout:     "1m",
 		config.EnvAPIShutdownTimeout: "3s",
 		config.EnvAPIRootKey:         rootKey,
+		config.EnvAPIWSTicketSecret:  "shhh",
+		config.EnvAPIWSTicketTTL:     "2m",
 	}))
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
@@ -133,6 +136,8 @@ func TestLoadAPIOverrides(t *testing.T) {
 		IdleTimeout:     time.Minute,
 		ShutdownTimeout: 3 * time.Second,
 		RootKey:         rootKey,
+		WSTicketSecret:  "shhh",
+		WSTicketTTL:     2 * time.Minute,
 		RateLimit:       defaultRateLimit(),
 	}
 	if cfg.API != want {

@@ -3,6 +3,8 @@ package api
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/mathcslearner/agentloom/internal/event"
 )
 
 // The wire contract (v1). cmd/ctl imports these types; api/openapi.yaml
@@ -70,6 +72,11 @@ const (
 	// on a non-approve decision, or an edited payload violating the edit
 	// schema (422, ticket 15.3). The issues carry the schema violations.
 	ErrCodeApprovalDecisionInvalid = "approval_decision_invalid"
+	// ErrCodeStreamUnavailable: the run WebSocket endpoint is not wired on
+	// this API instance (no WebSocket support configured) — 503, ticket 16.3.
+	// The durable feed stays available via GET /v1/runs/{id} and the events
+	// backfill; only the live stream is off.
+	ErrCodeStreamUnavailable = "stream_unavailable"
 )
 
 // ErrorBody is the envelope every non-2xx response carries.
@@ -762,4 +769,58 @@ type CachePluginStat struct {
 	Misses  int64   `json:"misses"`
 	Stores  int64   `json:"stores"`
 	HitRate float64 `json:"hit_rate"`
+}
+
+// WSTicketResponse answers POST /v1/runs/{id}/ws-ticket (ticket 16.3,
+// ADR-018): a short-lived signed ticket the browser passes to the run
+// WebSocket as a query parameter, avoiding a long-lived bearer key in the
+// URL. The ticket is opaque; the client sends it back verbatim and reads
+// ExpiresAt to know when to re-mint. It is scoped to this one run and the
+// read scope.
+type WSTicketResponse struct {
+	Ticket    string    `json:"ticket"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// WS frame types (ticket 16.3, ADR-018). The run WebSocket sends a stream of
+// JSON text frames, each discriminated by Type: one "snapshot" frame, then
+// "event" frames (backfill then live), a "caught_up" frame marking the
+// transition to the live tail, and an "error" frame immediately before a
+// non-normal close. Clients dedupe and order by (run_id, seq); the resume
+// cursor is the highest event Seq seen.
+const (
+	WSFrameSnapshot = "snapshot"
+	WSFrameEvent    = "event"
+	WSFrameCaughtUp = "caught_up"
+	WSFrameError    = "error"
+)
+
+// WSSnapshotFrame carries the run's current state — the same body as
+// GET /v1/runs/{id} — so a fresh client renders immediately, then applies the
+// event frames that follow.
+type WSSnapshotFrame struct {
+	Type string      `json:"type"` // WSFrameSnapshot
+	Run  RunResponse `json:"run"`
+}
+
+// WSEventFrame carries one normalized event envelope (internal/event).
+type WSEventFrame struct {
+	Type  string         `json:"type"` // WSFrameEvent
+	Event event.Envelope `json:"event"`
+}
+
+// WSCaughtUpFrame marks the end of the backfill and the start of the live
+// tail; LastSeq is the highest seq delivered so far (the client's resume
+// cursor at this point).
+type WSCaughtUpFrame struct {
+	Type    string `json:"type"` // WSFrameCaughtUp
+	LastSeq int64  `json:"last_seq"`
+}
+
+// WSErrorFrame is sent immediately before a non-normal close so the client
+// has a machine-readable reason in addition to the close code.
+type WSErrorFrame struct {
+	Type    string `json:"type"` // WSFrameError
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }

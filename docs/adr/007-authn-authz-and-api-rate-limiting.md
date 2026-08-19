@@ -113,6 +113,8 @@ those tickets implement against a decided model):
 | `POST /v1/cache/bust`, `GET /v1/cache/stats` | `admin` | 9.6 |
 | `GET /v1/approvals` (list / filter pending) | `read` | 15.3 |
 | `POST /v1/approvals/{id}:decide` | `approve` | 15.3 (rate class `submit`) |
+| `POST /v1/runs/{id}/ws-ticket` | `read` | 16.3 |
+| `GET /v1/runs/{id}/ws` | `read` (bearer) or a signed ticket | 16.3 (ticket or bearer; see ADR-018) |
 
 ### Lifecycle
 

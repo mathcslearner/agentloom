@@ -658,6 +658,46 @@ decision, edit — is immutable in the run view's `approvals[]` and the
 `approval_decided` event. `ctl approvals`, `ctl approve <id> [--edit @file]
 [--comment ...]`, and `ctl reject <id> [--comment ...]` mirror the endpoints.
 
+## Live event stream (WebSocket)
+
+`GET /v1/runs/{id}/ws` streams a run's normalized event feed (ADR-018): a
+`snapshot` frame (the `GET /v1/runs/{id}` body), then `event` frames backfilled
+from your `last_seq`, a `caught_up` frame, then live `event` frames as the run
+progresses. Everything is anchored on the durable per-run `seq`, so a dropped
+connection resumes with **zero gaps or dupes** by reconnecting with
+`last_seq` = the highest seq you have seen.
+
+A browser cannot set an `Authorization` header on a WebSocket, so authenticate
+with a **short-lived signed ticket** minted with your `read` key:
+
+```bash
+TICKET=$(curl -s -X POST "$API/v1/runs/$RUN/ws-ticket" \
+  -H "Authorization: Bearer $KEY" | jq -r .ticket)
+```
+
+Then connect (here with `websocat`), optionally resuming from a seq:
+
+```bash
+websocat "${API/http/ws}/v1/runs/$RUN/ws?ticket=$TICKET&last_seq=0"
+```
+
+Each line is a JSON frame:
+
+```json
+{"type":"snapshot","run":{ ...GET /v1/runs/{id} body... }}
+{"type":"event","event":{"schema_version":1,"run_id":"…","seq":1,"type":"run_created","ts":"…","payload":{…}}}
+{"type":"caught_up","last_seq":1}
+{"type":"event","event":{"seq":2,"type":"step_ready", …}}
+```
+
+Non-browser clients (scripts, Node) may skip the ticket and send a `read`
+bearer key on the upgrade request instead. A client that stops draining is
+closed with application code **4001** ("slow consumer") — reconnect with your
+`last_seq` and you miss nothing. The ticket is scoped to one run and the `read`
+scope and expires quickly (60s by default); re-mint when it expires. If the
+server has streaming disabled the ticket route answers `503 stream_unavailable`
+and the durable feed is still available via `GET /v1/runs/{id}`.
+
 ## Errors and rate limits
 
 Every non-2xx response carries one envelope:

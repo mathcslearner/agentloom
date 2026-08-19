@@ -35,6 +35,7 @@ var routeScopes = map[string]Scope{
 	"GET /v1/runs/{runID}/steps/{stepID}/logs":     ScopeRead,
 	"GET /v1/runs/{runID}/blackboard":              ScopeRead,
 	"GET /v1/runs/{runID}/graph":                   ScopeRead,
+	"POST /v1/runs/{runID}/ws-ticket":              ScopeRead,
 	"POST /v1/definitions":                         ScopeSubmit,
 	"GET /v1/definitions":                          ScopeRead,
 	"GET /v1/definitions/{defID}":                  ScopeRead,
@@ -75,6 +76,14 @@ func TestV1RouteScopeCoverage(t *testing.T) {
 			return nil
 		}
 		key := method + " " + route
+		// The run WebSocket (ticket 16.3) authenticates via requireReadOrTicket
+		// (a signed ticket OR a read bearer), not requireScope, so it is
+		// deliberately absent from the route→scope table; TestWSTicket* and the
+		// WS integration suite cover its auth. Every other /v1 route uses
+		// requireScope and must appear here.
+		if key == "GET /v1/runs/{runID}/ws" {
+			return nil
+		}
 		seen[key] = true
 		if _, ok := routeScopes[key]; !ok {
 			t.Errorf("route %q is not in the route→scope table — decide its ADR-007 scope, mount requireScope, and extend the auth matrix", key)

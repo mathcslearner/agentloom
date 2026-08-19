@@ -20,6 +20,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	"github.com/mathcslearner/agentloom/internal/store"
 )
@@ -230,6 +233,80 @@ func (h *Handler) requireScope(want Scope) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// requireReadOrTicket authenticates the run WebSocket handshake (ticket 16.3,
+// ADR-018) by EITHER a read-scoped bearer key OR a valid signed WS ticket for
+// the route's run. A browser cannot set an Authorization header on a WebSocket,
+// so the ticket (a query parameter minted at POST .../ws-ticket) is the browser
+// path; a bearer key is the documented alternative for non-browser clients
+// (ctl, Node). Both stamp the authenticated identity into the request context
+// and logger exactly as requireScope does, so the request log line and 6.4's
+// per-key rate-limit bucket work unchanged. A failure is the same uniform 401
+// as any credential failure. WS not enabled ⇒ the handler answers 503.
+func (h *Handler) requireReadOrTicket(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		var id identity
+
+		// Bearer path first (explicit credential wins).
+		if r.Header.Get("Authorization") != "" {
+			got, err := h.authenticate(r)
+			switch {
+			case errors.Is(err, errUnauthorized):
+				h.wsUnauthorized(w, r)
+				return
+			case err != nil:
+				internalError(w, r, "authenticating request", err)
+				return
+			}
+			if !hasScope(got.scopes, ScopeRead) {
+				log.From(ctx).InfoContext(ctx, "api: ws request forbidden",
+					log.KeyID(got.keyID), slog.String("missing_scope", string(ScopeRead)))
+				writeError(w, http.StatusForbidden, ErrorDetail{
+					Code: ErrCodeForbidden, Message: fmt.Sprintf("key lacks the %q scope", ScopeRead),
+				})
+				return
+			}
+			id = got
+		} else if h.wsEnabled() {
+			// Ticket path: verify the signed ticket against the route's run.
+			runID, err := uuid.Parse(chi.URLParam(r, "runID"))
+			if err != nil {
+				h.wsUnauthorized(w, r)
+				return
+			}
+			claims, err := verifyWSTicket(h.ws.TicketSecret, r.URL.Query().Get("ticket"), runID, h.now())
+			if err != nil {
+				h.wsUnauthorized(w, r)
+				return
+			}
+			// A ticket grants exactly read on its one run; its subject is the
+			// minting key's id (for the connection's log/rate-limit bucket).
+			id = identity{keyID: claims.KeyID, scopes: []string{string(ScopeRead)}}
+		} else {
+			h.wsUnauthorized(w, r)
+			return
+		}
+
+		if stamp, ok := authStampFrom(ctx); ok {
+			stamp.keyID = id.keyID
+		}
+		logger := log.From(ctx).With(log.KeyID(id.keyID))
+		ctx = identityInto(log.Into(ctx, logger), id)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// wsUnauthorized answers a WS handshake credential failure with the uniform
+// 401 (ADR-007) — indistinguishable from any other credential failure.
+func (h *Handler) wsUnauthorized(w http.ResponseWriter, r *http.Request) {
+	log.From(r.Context()).InfoContext(r.Context(), "api: ws request unauthorized",
+		slog.String("path", r.URL.Path))
+	w.Header().Set("WWW-Authenticate", "Bearer")
+	writeError(w, http.StatusUnauthorized, ErrorDetail{
+		Code: ErrCodeUnauthorized, Message: errUnauthorized.Error(),
+	})
 }
 
 // cryptoRand is the production entropy source; tests inject their own

@@ -16,6 +16,8 @@ const (
 	EnvAPIShutdownTimeout = "AGENTLOOM_API_SHUTDOWN_TIMEOUT"
 	EnvAPIRootKey         = "AGENTLOOM_API_ROOT_KEY"
 	EnvAPITestExecutors   = "AGENTLOOM_API_TEST_EXECUTORS"
+	EnvAPIWSTicketSecret  = "AGENTLOOM_API_WS_TICKET_SECRET" //nolint:gosec // env var name, not a secret value
+	EnvAPIWSTicketTTL     = "AGENTLOOM_API_WS_TICKET_TTL"
 )
 
 // Environment variables read by APIRateLimitConfig (ticket 6.4, ADR-007).
@@ -41,6 +43,17 @@ const (
 	DefaultAPIWriteTimeout    = 30 * time.Second
 	DefaultAPIIdleTimeout     = 2 * time.Minute
 	DefaultAPIShutdownTimeout = 15 * time.Second
+)
+
+// WebSocket ticket defaults (ticket 16.3, ADR-018). A run-WS ticket is a
+// short-lived HMAC-signed token minted at POST /v1/runs/{id}/ws-ticket; the
+// browser passes it to GET /v1/runs/{id}/ws as a query parameter, keeping
+// long-lived bearer keys out of URLs. The TTL is intentionally short — a
+// ticket only needs to survive the round-trip from minting to connecting.
+const (
+	DefaultAPIWSTicketTTL = 60 * time.Second
+	MinAPIWSTicketTTL     = 5 * time.Second
+	MaxAPIWSTicketTTL     = time.Hour
 )
 
 // Rate-limit defaults (ticket 6.4, ADR-007): per-key class buckets with
@@ -93,6 +106,16 @@ type APIConfig struct {
 	// deployment sets both knobs alike and the plugin listing matches
 	// what the worker fleet executes. Default false, like the worker's.
 	TestExecutors bool
+	// WSTicketSecret signs run-WebSocket tickets (ticket 16.3, ADR-018). A
+	// secret: never logged. Empty means cmd/api generates a random
+	// per-process secret at boot — tickets then survive only within one
+	// replica's lifetime, which is fine for a single-instance dev setup but
+	// not a multi-replica deployment (a ticket minted on one replica would
+	// fail on another). Set a shared secret to make tickets fleet-portable.
+	WSTicketSecret string
+	// WSTicketTTL bounds a ticket's validity (ticket 16.3). Clamped to
+	// [MinAPIWSTicketTTL, MaxAPIWSTicketTTL]; defaults to DefaultAPIWSTicketTTL.
+	WSTicketTTL time.Duration
 }
 
 // APIRateLimitClass is one token bucket's parameters: Capacity is the burst
@@ -133,6 +156,7 @@ func defaultAPIConfig() APIConfig {
 		WriteTimeout:    DefaultAPIWriteTimeout,
 		IdleTimeout:     DefaultAPIIdleTimeout,
 		ShutdownTimeout: DefaultAPIShutdownTimeout,
+		WSTicketTTL:     DefaultAPIWSTicketTTL,
 		RateLimit: APIRateLimitConfig{
 			Enabled:   true,
 			KeyPrefix: DefaultAPIRateLimitKeyPrefix,
@@ -162,6 +186,17 @@ func (c *APIConfig) applyEnv(fn LookupFunc) []error {
 		c.RootKey = raw
 	}
 	errs = applyBool(errs, fn, EnvAPITestExecutors, &c.TestExecutors)
+	if raw, ok := lookup(fn, EnvAPIWSTicketSecret); ok {
+		// Passed through opaquely — it is a secret, never echoed in an error.
+		c.WSTicketSecret = raw
+	}
+	errs = applyPositiveDuration(errs, fn, EnvAPIWSTicketTTL, &c.WSTicketTTL)
+	if c.WSTicketTTL < MinAPIWSTicketTTL {
+		c.WSTicketTTL = MinAPIWSTicketTTL
+	}
+	if c.WSTicketTTL > MaxAPIWSTicketTTL {
+		c.WSTicketTTL = MaxAPIWSTicketTTL
+	}
 	errs = applyBool(errs, fn, EnvAPIRateLimitEnabled, &c.RateLimit.Enabled)
 	applyString(fn, EnvAPIRateLimitKeyPrefix, &c.RateLimit.KeyPrefix)
 	errs = applyPositiveInt64(errs, fn, EnvAPIRateLimitSubmitCapacity, &c.RateLimit.Submit.Capacity)

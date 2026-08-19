@@ -15,3 +15,9 @@ rules:
   # every field would be noise. Full request/response examples live on the
   # operations that matter (submit, key mint) and in docs/api.md.
   oas3-missing-example: false
+  # The run WebSocket (ticket 16.3) upgrades the connection: its documented
+  # response is 101 Switching Protocols, not a 2xx/3xx — the standard shape
+  # for a WebSocket handshake. Every non-WS operation still documents a 2xx,
+  # enforced at the Go level by TestOpenAPIOperationContracts, so disabling
+  # this vacuum rule loses no real coverage.
+  operation-success-response: false

@@ -251,15 +251,76 @@ backfill heals it). A full buffer drops a batch (metered; healed by backfill).
 Cross-process publish interleaving of one run's events can arrive out of order at
 a firehose subscriber (a gap → backfill → dupe-drop, no event lost).
 
-### Run WebSocket endpoint (arrives in 16.3)
+### Run WebSocket endpoint (as built, 16.3)
 
-`GET /v1/runs/{id}/ws`, authenticated by a **short-lived signed ticket** minted
-at `POST /v1/runs/{id}/ws-ticket` (avoids long-lived bearer keys in browser URLs;
-the ticket is scoped to one run + `read` scope; a bearer-subprotocol is the
-documented alternative). Protocol: server sends a **run snapshot** → **backfills**
-events from the client's `last_seq` → **live-tails**; ping/pong heartbeat; a
-slow-client policy (bounded per-connection buffer, close on overflow with a
-resumable close code so the client reconnects with its `last_seq`).
+`GET /v1/runs/{id}/ws` streams a run's live event feed. It composes the 16.2
+leaf (`pubsub.Subscriber` + `pubsub.Tailer`) with the store's `EventsAfter`
+backfill — **no migration, no new metric**; one config block
+(`AGENTLOOM_API_WS_TICKET_{SECRET,TTL}`), one dependency
+(`github.com/coder/websocket`).
+
+- **Auth is a short-lived signed ticket** minted at `POST /v1/runs/{id}/ws-ticket`
+  (`read` scope, `read` rate class). The ticket is opaque:
+  `base64url(payload).base64url(HMAC-SHA256(secret, payloadB64))`, payload =
+  `{v:1, run_id, key_id, exp, nonce}`. The WS handshake verifies it with a
+  constant-time MAC compare, an unexpired `exp`, and `run_id` == the route's run,
+  and every failure is the uniform 401 (ADR-007). It exists so a browser never
+  puts a long-lived bearer key in a WebSocket URL (URLs land in logs, proxies,
+  history). It is **not single-use** — a reconnect inside the TTL reuses it — so
+  revocation lag is bounded by the TTL (60s default, clamped `[5s, 1h]`). The
+  documented alternative for non-browser clients (ctl, Node) is a normal
+  `Authorization: Bearer` `read` key on the upgrade request; `requireReadOrTicket`
+  accepts either and is why the `/ws` route is absent from the requireScope-based
+  auth matrix. The signing secret is `AGENTLOOM_API_WS_TICKET_SECRET`; empty ⇒
+  cmd/api generates a random per-process secret (a boot warning notes tickets are
+  then not valid across replicas/restarts — a multi-replica deploy sets a shared
+  secret).
+
+- **Protocol** (JSON text frames, discriminated by `type`): one `snapshot` frame
+  (the `GET /v1/runs/{id}` body) → `event` frames backfilled from the client's
+  `?last_seq` → a `caught_up` frame → live `event` frames. The client dedupes and
+  orders by `(run_id, seq)` and resumes after a disconnect by reconnecting with
+  `last_seq` = the highest seq it saw. Every mechanism reduces to "read rows after
+  `last_seq`", so recovery is deterministic (DoD-1: connect → kill mid-stream →
+  reconnect → the union of both connections' events is exactly seqs 1..N).
+
+- **Subscribe-before-backfill.** The driver subscribes to the run's pub/sub
+  channel (blocks until SUBSCRIBE is confirmed) *before* the backfill, so no live
+  event is missed in the window between reading to head and the tail beginning.
+  A subscribe failure (Redis down, or no subscriber wired) degrades to **DB
+  polling** at `PollInterval` — the feed still completes, just at poll latency.
+  While live, a slow `ResyncInterval` `Catchup` heals the 16.2 residual (a final
+  event whose publish was lost with no later event to trigger a gap).
+
+- **Slow-client policy.** Frames go through a bounded per-connection buffer drained
+  by one writer goroutine. A client that keeps the buffer full for
+  `SlowClientTimeout` is closed with the application close code **4001** ("slow
+  consumer") and resumes with its `last_seq`. The non-obvious mechanic:
+  `coder/websocket` closes the connection when a `Write`'s context is cancelled,
+  so the slow signal is the **buffer enqueue timeout, not a context cancel** — on
+  a slow client the driver stops feeding and lets the writer drain naturally (a
+  resuming client unblocks it), then sends the 4001 frame. `connCtx` is cancelled
+  only for a genuine teardown (peer gone, server shutdown, write error), where a
+  clean close is moot. A periodic ping detects a dead peer.
+
+- **Seams.** `api.WithWebSocket(WSOptions{...})` carries the ticket secret/TTL,
+  the `WSSubscriber` (nil ⇒ poll-only), and the connection tuning. `WSSubscriber`
+  / `WSEventStream` are narrow api interfaces `*pubsub.Subscriber` /
+  `*pubsub.Subscription` satisfy through a thin cmd/api adapter, so the api
+  package never imports go-redis (the `CacheOps` discipline). Without the option
+  the `/ws` and `/ws-ticket` routes are still mounted (route coverage stays
+  static) but answer **503 `stream_unavailable`**. The `statusRecorder` grew
+  `Unwrap()` so the hijack reaches the underlying `http.Hijacker`; the request log
+  skips the latency histogram for the 101 upgrade so a long-lived connection does
+  not skew the read-route p95.
+
+- **Accepted residuals.** The ticket is bearer-equivalent within its TTL (no
+  server-side revocation before expiry — the short TTL is the mitigation). A
+  truly-stalled peer that never resumes reading cannot receive the 4001 frame
+  (its TCP is wedged); the write timeout / ping then tears the connection down
+  abnormally, which is correct for a dead peer. Origin is authorized against the
+  request host by default (same-origin dashboards need nothing more);
+  cross-origin support is a later `OriginPatterns` knob.
 
 ### Multi-run firehose (arrives in 16.4)
 

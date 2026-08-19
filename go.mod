@@ -3,6 +3,7 @@ module github.com/mathcslearner/agentloom
 go 1.26
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/cel-go v0.31.0

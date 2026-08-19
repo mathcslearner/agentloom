@@ -21,6 +21,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +34,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
@@ -271,6 +274,28 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 		apiOpts = append(apiOpts, api.WithExpiryCanceller(delayed))
 	}
 
+	// Run event WebSocket (ticket 16.3, ADR-018): the ticket signing secret and
+	// TTL come from config; an empty secret means the operator set none, so we
+	// generate a random per-process one (tickets are then valid only within this
+	// replica's lifetime — fine for a single instance, and the boot log says so).
+	// The live subscriber rides the shared Redis client via the 16.2 pubsub
+	// leaf; when Redis is unwired (rate limiting, cache, and pub/sub all off) the
+	// WS endpoint falls back to DB polling. A latency hint is neither a dispatch
+	// nor a correctness read, so ADR-002 holds.
+	wsSecret := cfg.API.WSTicketSecret
+	if wsSecret == "" {
+		wsSecret, err = randomWSTicketSecret()
+		if err != nil {
+			return fmt.Errorf("generating ws ticket secret: %w", err)
+		}
+		logger.WarnContext(ctx, "api: no AGENTLOOM_API_WS_TICKET_SECRET set — using a random per-process secret; ws tickets are not valid across replicas or restarts")
+	}
+	wsOpts := api.WSOptions{TicketSecret: wsSecret, TicketTTL: cfg.API.WSTicketTTL}
+	if cfg.Events.PubSubEnabled && rdb != nil {
+		wsOpts.Subscriber = wsSubscriber{sub: pubsub.NewSubscriber(rdb, cfg.Events.ChannelPrefix, logger)}
+	}
+	apiOpts = append(apiOpts, api.WithWebSocket(wsOpts))
+
 	apiHandler, err := api.New(st, time.Now, logger, cfg.API.RootKey, rl, apiOpts...)
 	if err != nil {
 		return err
@@ -333,4 +358,26 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 		return fmt.Errorf("serving: %w", err)
 	}
 	return nil
+}
+
+// wsSubscriber adapts *pubsub.Subscriber (the 16.2 leaf) to api.WSSubscriber so
+// the api package never imports go-redis (the CacheOps discipline): the leaf's
+// SubscribeRun returns *pubsub.Subscription, which satisfies api.WSEventStream,
+// and this thin wrapper widens the return type to the interface.
+type wsSubscriber struct{ sub *pubsub.Subscriber }
+
+func (w wsSubscriber) SubscribeRun(ctx context.Context, runID uuid.UUID) (api.WSEventStream, error) {
+	return w.sub.SubscribeRun(ctx, runID)
+}
+
+// randomWSTicketSecret generates a per-process WS ticket signing secret when
+// the operator configures none (ticket 16.3). Tickets are then valid only
+// within one replica's lifetime; a multi-replica deployment sets a shared
+// AGENTLOOM_API_WS_TICKET_SECRET.
+func randomWSTicketSecret() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }

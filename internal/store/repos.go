@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mathcslearner/agentloom/internal/dag"
+	"github.com/mathcslearner/agentloom/internal/event"
 	"github.com/mathcslearner/agentloom/internal/store/gen"
 )
 
@@ -435,6 +436,12 @@ type EventRepo interface {
 	// List returns up to limit events with seq > afterSeq, in seq order —
 	// the M16 backfill shape.
 	List(ctx context.Context, runID uuid.UUID, afterSeq int64, limit int32) ([]gen.Event, error)
+	// EventsAfter is List projected into typed event.Envelopes — the
+	// pubsub.Backfiller shape (ticket 16.3, ADR-018): the WS server's
+	// snapshot/backfill/tail assembly reads a run's committed events after a
+	// seq cursor through it, so st.Events() plugs straight into pubsub.Tailer
+	// with no adapter. Fewer than limit rows means the caller reached the head.
+	EventsAfter(ctx context.Context, runID uuid.UUID, afterSeq int64, limit int32) ([]event.Envelope, error)
 	// ListByType returns a run's events of one type in seq order — the
 	// run-graph introspection API (ticket 13.6) reads only 'graph_expanded'
 	// events to reconstruct the per-version expansion deltas.
@@ -459,6 +466,22 @@ func (r eventRepo) List(ctx context.Context, runID uuid.UUID, afterSeq int64, li
 func (r eventRepo) ListByType(ctx context.Context, runID uuid.UUID, eventType string) ([]gen.Event, error) {
 	evs, err := r.q.ListEventsByType(ctx, gen.ListEventsByTypeParams{RunID: runID, Type: eventType})
 	return evs, wrapErr("list events by type", err)
+}
+
+func (r eventRepo) EventsAfter(ctx context.Context, runID uuid.UUID, afterSeq int64, limit int32) ([]event.Envelope, error) {
+	rows, err := r.List(ctx, runID, afterSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]event.Envelope, 0, len(rows))
+	for _, row := range rows {
+		env, err := EventEnvelope(row)
+		if err != nil {
+			return nil, wrapErr("project event envelope", err)
+		}
+		out = append(out, env)
+	}
+	return out, nil
 }
 
 // TraceContext is a W3C trace context pair (traceparent/tracestate)

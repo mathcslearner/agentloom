@@ -102,6 +102,11 @@ services:
       # Set it in .env (see .env.example for a generator one-liner);
       # unset, the root auth path simply doesn't exist.
       AGENTLOOM_API_ROOT_KEY: ${AGENTLOOM_API_ROOT_KEY:-}
+      # Run event WebSocket ticket signing (ticket 16.3, ADR-018). Empty =
+      # a random per-process secret at boot (fine for this single-instance
+      # dev api). Set a shared value for a multi-replica deployment so a
+      # ticket minted on one replica is accepted on another.
+      AGENTLOOM_API_WS_TICKET_SECRET: ${AGENTLOOM_API_WS_TICKET_SECRET:-}
       # Telemetry (ticket 7.1, ADR-008). The admin port serving /metrics
       # is in-network only — Prometheus (obs profile) scrapes it; it is
       # never published to the host. OTel export defaults off because the

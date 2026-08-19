@@ -679,6 +679,116 @@ paths:
         "500":
           $ref: "#/components/responses/Internal"
 
+  /v1/runs/{run_id}/ws-ticket:
+    post:
+      operationId: mintRunWSTicket
+      tags: [Runs]
+      summary: Mint a short-lived ticket for the run event WebSocket
+      description: |
+        Scope `read`, rate-limit class `read`. Mints a short-lived, signed,
+        opaque ticket scoped to this one run and the `read` scope (ticket 16.3,
+        ADR-018). A browser cannot set an `Authorization` header on a WebSocket,
+        so it passes this ticket to `GET /v1/runs/{run_id}/ws` as a `ticket`
+        query parameter instead of a long-lived bearer key (which would leak
+        into logs, proxies, and history). The ticket expires quickly
+        (`expires_at`); the client re-mints when it expires. A missing run is
+        `404 run_not_found`; `503 stream_unavailable` when event streaming is not
+        enabled on this server.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: A signed ticket for the run WebSocket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WSTicketResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/StreamUnavailable"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/runs/{run_id}/ws:
+    get:
+      operationId: streamRunEvents
+      tags: [Runs]
+      summary: Stream a run's live event feed over WebSocket
+      description: |
+        Rate-limit class `read`. Upgrades to a WebSocket and streams the run's
+        normalized event feed (ticket 16.3, ADR-018). Authentication is EITHER a
+        `ticket` query parameter (minted at `POST .../ws-ticket`, the browser
+        path) OR a `read`-scoped bearer key (for non-browser clients); a failure
+        is the uniform `401`. An optional `last_seq` query parameter resumes the
+        stream after that seq.
+
+        Protocol (JSON text frames, discriminated by `type`): the server sends
+        one `snapshot` frame (the `GET /v1/runs/{run_id}` body), then `event`
+        frames backfilled from `last_seq`, then a `caught_up` frame, then live
+        `event` frames as the run progresses. Clients dedupe and order by
+        `(run_id, seq)` and resume after a disconnect by reconnecting with
+        `last_seq` set to the highest seq seen — recovery is deterministic
+        because every mechanism reduces to a DB read after `last_seq`. A client
+        that falls too far behind is closed with application close code `4001`
+        (slow consumer) and resumes with its `last_seq`. `503 stream_unavailable`
+        when event streaming is not enabled on this server.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - name: ticket
+          in: query
+          required: false
+          schema:
+            type: string
+          description: A ticket from POST .../ws-ticket (the browser auth path).
+        - name: last_seq
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+          description: Resume cursor — the highest event seq the client has seen.
+      responses:
+        "101":
+          description: |
+            The connection is upgraded to a WebSocket. Frames follow the
+            snapshot → backfill → live-tail protocol described above. The
+            content schema below documents the frame shapes (a text frame is one
+            of these); it is not a conventional HTTP body.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/WSSnapshotFrame"
+                  - $ref: "#/components/schemas/WSEventFrame"
+                  - $ref: "#/components/schemas/WSCaughtUpFrame"
+                  - $ref: "#/components/schemas/WSErrorFrame"
+                discriminator:
+                  propertyName: type
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/StreamUnavailable"
+        "500":
+          $ref: "#/components/responses/Internal"
+
   /v1/definitions:
     post:
       operationId: createDefinition
@@ -1414,6 +1524,18 @@ components:
             $ref: "#/components/schemas/Error"
           example:
             error: { code: cache_unavailable, message: response cache is not enabled on this API }
+    StreamUnavailable:
+      description: >
+        Event streaming is not enabled on this API instance (code
+        `stream_unavailable`, ticket 16.3). The durable feed stays available via
+        `GET /v1/runs/{id}` and the events backfill; only the live WebSocket is
+        off. Configure a WS ticket secret to enable it.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: { code: stream_unavailable, message: event streaming is not enabled on this server }
     DecisionInvalid:
       description: >
         The decision is not permitted by the gate (code
@@ -1491,6 +1613,7 @@ components:
         - approval_not_found
         - approval_not_pending
         - approval_decision_invalid
+        - stream_unavailable
     Issue:
       type: object
       description: One path-qualified definition problem.
@@ -2974,3 +3097,69 @@ components:
           type: number
           format: double
           description: hits / (hits + misses); 0 when there were no lookups.
+    WSTicketResponse:
+      type: object
+      description: >
+        A short-lived signed ticket for the run event WebSocket (ticket 16.3).
+        Opaque — passed back verbatim as the `ticket` query parameter.
+      required: [ticket, expires_at]
+      properties:
+        ticket:
+          type: string
+          description: The opaque signed ticket.
+        expires_at:
+          type: string
+          format: date-time
+          description: When the ticket stops being accepted.
+    WSSnapshotFrame:
+      type: object
+      description: >
+        The first WebSocket frame (ticket 16.3): the run's current state, the
+        same body as GET /v1/runs/{id}. Event frames follow.
+      required: [type, run]
+      properties:
+        type:
+          type: string
+          enum: [snapshot]
+        run:
+          $ref: "#/components/schemas/RunResponse"
+    WSEventFrame:
+      type: object
+      description: >
+        One normalized event envelope (ticket 16.1/16.3), backfilled then live.
+        Clients dedupe and order by (run_id, seq). The `event` schema is the
+        generated event feed envelope (docs/schema/events.v1.json).
+      required: [type, event]
+      properties:
+        type:
+          type: string
+          enum: [event]
+        event:
+          $ref: "../docs/schema/events.v1.json"
+    WSCaughtUpFrame:
+      type: object
+      description: >
+        Marks the end of the backfill and the start of the live tail (ticket
+        16.3). `last_seq` is the client's resume cursor at this point.
+      required: [type, last_seq]
+      properties:
+        type:
+          type: string
+          enum: [caught_up]
+        last_seq:
+          type: integer
+          format: int64
+    WSErrorFrame:
+      type: object
+      description: >
+        Sent immediately before a non-normal WebSocket close (ticket 16.3) so
+        the client has a machine-readable reason alongside the close code.
+      required: [type, code, message]
+      properties:
+        type:
+          type: string
+          enum: [error]
+        code:
+          type: string
+        message:
+          type: string

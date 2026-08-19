@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -194,7 +195,7 @@ func (h *Handler) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	run, err := h.st.Runs().Get(ctx, id)
+	resp, err := h.loadRunResponse(ctx, id)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, ErrorDetail{
@@ -205,32 +206,42 @@ func (h *Handler) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		internalError(w, r, "reading run", err)
 		return
 	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// loadRunResponse reads a run's full client-facing projection — the same body
+// GET /v1/runs/{id} returns. Three-plus pool reads, deliberately not one
+// transaction: a run mid-flight may show a step newer than its rollup counters;
+// the next poll (or the next event on a WS stream) heals it. Returns
+// store.ErrNotFound when the run does not exist, so callers map it to their own
+// 404 shape (the REST handler, and the 16.3 WS snapshot). Any other error is a
+// server fault the caller reports as 500 / a stream error.
+func (h *Handler) loadRunResponse(ctx context.Context, id uuid.UUID) (RunResponse, error) {
+	run, err := h.st.Runs().Get(ctx, id)
+	if err != nil {
+		return RunResponse{}, err
+	}
 	steps, err := h.st.Steps().ListByRun(ctx, id)
 	if err != nil {
-		internalError(w, r, "listing run steps", err)
-		return
+		return RunResponse{}, err
 	}
 	edges, err := h.st.Steps().ListEdgesByRun(ctx, id)
 	if err != nil {
-		internalError(w, r, "listing run edges", err)
-		return
+		return RunResponse{}, err
 	}
 	attempts, err := h.st.Attempts().ListByRun(ctx, id)
 	if err != nil {
-		internalError(w, r, "listing run attempts", err)
-		return
+		return RunResponse{}, err
 	}
 	deadLetters, err := h.st.DeadLetters().ListByRun(ctx, id)
 	if err != nil {
-		internalError(w, r, "listing run dead letters", err)
-		return
+		return RunResponse{}, err
 	}
 	approvals, err := h.st.Approvals().ListByRun(ctx, id)
 	if err != nil {
-		internalError(w, r, "listing run approvals", err)
-		return
+		return RunResponse{}, err
 	}
-	writeJSON(w, http.StatusOK, buildRunResponse(run, steps, edges, attempts, deadLetters, approvals))
+	return buildRunResponse(run, steps, edges, attempts, deadLetters, approvals), nil
 }
 
 // handleListRuns is GET /v1/runs (ticket 6.5): one keyset page, newest
