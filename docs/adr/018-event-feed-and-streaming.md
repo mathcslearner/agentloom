@@ -517,6 +517,40 @@ protocol, or any persisted state.
   pane, a basic inspector, the event timeline strip), and the snapshot →
   backfill → live-tail wiring through the 16.5 client.
 
+### Live DAG view — graph endpoint additions and a decode fix (as built, 18.2)
+
+The live DAG canvas (ROADMAP 18.2) renders a run's graph over WebSocket, so it
+needs both the run's topology-with-provenance and reliable live delivery of
+`graph_expanded`. Two additive facilities plus one bug fix landed here; none
+changes the event contract or the WS protocol.
+
+- **`graph_expanded` now re-decodes.** The live run WS Tailer and the firehose
+  re-project a published/stored envelope through `event.Decode`. The
+  `graph_expanded` payload's `delta` is a `dag.PlanOutput` whose `Step.Config` is
+  the `dag.StepConfig` *interface*, which a plain `json.Unmarshal` cannot
+  populate — so every live delivery of an expansion event failed with
+  `cannot unmarshal object into … dag.StepConfig`, the Tailer dropped it, and a
+  subscribed run WS stalled at the seq just before the expansion and resync-
+  looped. This was latent since 16.2 (no e2e had ever live-tailed an expanding
+  run). Fix: a custom `GraphExpanded.UnmarshalJSON` routes the delta through the
+  canonical `dag.DecodePlanOutput` (which knows the per-type config shapes); a
+  delta with no steps decodes plainly (no interface field to populate — the
+  zero-value catalog sample). `TestDecodeGraphExpandedWithConfig` pins it; the
+  integration proof is `dashboard-graph.spec.ts`'s planner-expansion test (a
+  planner injects steps live and the browser sees them appear). No schema change.
+
+- **`GET /v1/runs/{id}/graph` gained three fields (ticket 18.2).** `event_seq`
+  (= `run.NextSeq`, the same as-of / resume cursor `RunView` carries) so the
+  dashboard folds a live `graph_expanded` over the graph read only when its seq
+  exceeds the read's; per-node `position` lifted from the run's definition
+  snapshot `ui.nodes.<id>.position` (only for authored nodes; `ui` is
+  engine-opaque, so a malformed or absent block simply yields no positions —
+  this makes the graph endpoint self-sufficient for layout on inline runs too);
+  and per-edge `decision` (the 15.3 approval routing marker) so the dashboard
+  renders such an edge from the matching source port. All three are pure
+  projections of already-persisted data (`buildRunGraphResponse` reads them off
+  the run/edge rows) — no migration, no new read.
+
 ## Consequences
 
 - **The feed is a versioned, generator-backed contract.** `events.v1.json` is

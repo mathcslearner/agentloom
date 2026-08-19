@@ -601,6 +601,60 @@ source change beyond the regenerated `api-client` types.
   log follow + semantic-retry diff (18.3), the cost meter/budget UX (18.4), the
   approval inbox (18.5), and DLQ/ops views (18.6).
 
+### Live DAG view with dynamic expansion (as built, 18.2)
+
+The steps-pane placeholder becomes the live React Flow canvas: builder node
+components with run-status skins, animated active edges, elkjs incremental
+layout honoring `ui` hints, `graph_expanded` animating injected nodes in, and
+loop/map instances grouped into collapsible containers. Entirely under `web/app`
+(plus the ADR-018 graph endpoint additions + decode fix); `graphdef` untouched;
+new dep `elkjs` (lazy-loaded so the builder route doesn't pay for it).
+
+- **Topology is separate from status, assembled by union.** A new pure
+  `graph-topology.ts` holds `GraphTopology` (`nodes`/`edges` maps + provenance +
+  positions), built from three additive sources and merged by union —
+  `topologyFromSnapshot` (immediate, provenance-less), `topologyFromGraph`
+  (`GET /v1/runs/{id}/graph` — the rich source: provenance, depth, `ui`
+  positions, edge `when`/`decision`), and `applyGraphEvent` (live
+  `graph_expanded` deltas). Because expansion is additive-only (ADR-015), the
+  union is always well-defined and order-independent — a graph read landing
+  before or after the snapshot yields the same topology (richer fields win). Live
+  status stays the seq-guarded step map in `run-state.ts` (extended with a
+  reclaim count + a last-event cue for the crash marker and enter animation).
+
+- **Skins are exhaustive over `DisplayStepStatus`** (`skins.ts`): a status → tone
+  + badge + run-oriented summary + pulse, so a new backend status is a typecheck
+  error until skinned; `edgeVisual` derives a fired/skipped/unresolved resolution
+  and an "active hand-off" flag (animated marching dashes) from the endpoints'
+  live status. A reclaimed step surfaces a `↻ reclaimed ×n` marker — the visible
+  crash-recovery signal.
+
+- **Layout is sticky and incremental** (`layout.ts`), which is how "no reshuffle
+  on expansion" is met *by construction*: a node that already has a position (a
+  `ui` hint or a prior pass) never moves; only the newly-injected block is laid
+  out — anchored to the right of its injecting step and pushed down clear of
+  anything placed. The per-block node placement is delegated to an injected
+  `Layouter` (elkjs in the app via `elk-layouter.ts`; a deterministic fake in
+  tests), so the module stays pure and unit-testable without elkjs.
+
+- **Projection stays React-Flow-free** (`projection.ts`, like graphdef's `Flow`):
+  it turns topology + status + layout into plain `DagNode`/`DagEdge` shapes the
+  component adapts to RF `Node`/`Edge` (the same RF-v12 `Record<string,unknown>`
+  data workaround as 17.3). Loop/map grouping (`groups.ts`, keyed on provenance +
+  the `#k` instance suffix) renders a background container node bounding its
+  members; collapsing hides members + internal edges and re-targets boundary
+  edges onto the container.
+
+- **Decisions:** topology = union of three additive sources (safe because
+  expansion never deletes); sticky incremental layout over ELK interactive mode
+  (guarantees, not heuristics); `ui` hints served by the graph endpoint (works
+  for inline runs, one round-trip); the node body summary is run-oriented via a
+  new `NodeSkin.summary`/`footer` slot (keeps 13.6's "no config in nodes"); RF-
+  in-jsdom is avoided (the canvas is covered by Playwright, the reducers by
+  vitest — the 17.3 precedent). **Accepted residuals:** the tabbed inspector +
+  log follow + semantic-retry diff (18.3), the cost meter/budget UX (18.4), the
+  approval inbox (18.5), and DLQ/ops views (18.6).
+
 ## Consequences
 
 - **The serialization boundary is a single, testable leaf.** The whole

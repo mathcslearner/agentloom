@@ -33,6 +33,14 @@ export interface StepState {
   type: string;
   status: DisplayStepStatus;
   attempt: number;
+  /** How many times this step's lease was reclaimed by another worker (18.2):
+   * the count of `step_reclaimed` events — the visible signal of the
+   * crash-recovery demo (a killed worker's step is taken over). */
+  reclaims: number;
+  /** The type of the event that last moved this step, and its seq — the cue the
+   * live DAG keys its status skin + enter/transition animation on (18.2). */
+  lastEventType?: EventType;
+  lastEventSeq?: number;
   /** The last-known full step projection (from a snapshot); absent for a step
    * injected mid-run by a `graph_expanded` event before the next snapshot. */
   view?: StepView;
@@ -56,6 +64,12 @@ export function fromSnapshot(snapshot: { run: RunView; steps: StepView[] }): Run
       type: s.type,
       status: s.status as DisplayStepStatus,
       attempt: s.attempt_count,
+      // A snapshot does not carry the reclaim count; it is accumulated live
+      // from step_reclaimed events (the transport failure count is a separate,
+      // outcome-based measure). A reconnect re-seeds from a fresh snapshot, so
+      // this resets to 0 and is re-accumulated from the re-backfilled tail —
+      // the seq guard keeps that idempotent.
+      reclaims: 0,
       view: s,
     });
   }
@@ -162,6 +176,9 @@ export function applyEvent(state: RunState, env: EventEnvelope): RunState {
         type: s.type,
         status: readied.has(s.id) ? "ready" : "pending",
         attempt: 0,
+        reclaims: 0,
+        lastEventType: env.type,
+        lastEventSeq: env.seq,
         origin: { step: env.payload.origin_step, kind: env.payload.origin_kind },
       });
     }
@@ -173,12 +190,16 @@ export function applyEvent(state: RunState, env: EventEnvelope): RunState {
   if (stepId && nextStatus) {
     const prev = steps.get(stepId);
     const attempt = attemptFromEvent(env) ?? prev?.attempt ?? 0;
+    const reclaims = (prev?.reclaims ?? 0) + (env.type === "step_reclaimed" ? 1 : 0);
     steps.set(stepId, {
       id: stepId,
       type: prev?.type ?? "",
       ...(prev ?? {}),
       status: nextStatus,
       attempt,
+      reclaims,
+      lastEventType: env.type,
+      lastEventSeq: env.seq,
     });
   }
 

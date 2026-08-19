@@ -6,16 +6,15 @@ import { useRunController } from "@/lib/dashboard/useRunController";
 import { runStatusVariant } from "@/lib/status";
 import { Badge } from "@/components/ui/badge";
 import { ConnectionPill } from "@/components/dashboard/ConnectionPill";
-import { StepsPane } from "@/components/dashboard/StepsPane";
+import { RunGraph } from "@/components/dashboard/graph/RunGraph";
 import { InspectorPane } from "@/components/dashboard/InspectorPane";
 import { Timeline } from "@/components/dashboard/Timeline";
+import { emptyTopology } from "@/lib/pure/dashboard/graph-topology";
 
 /**
- * The live run-detail view (ticket 18.1): a header (status, counters, cost,
- * connection), a graph/steps pane, an inspector pane, and an event timeline
- * strip. 18.2 replaces the steps pane with the React Flow canvas + status
- * skins; 18.3 fills out the inspector. The step map + selection they need are
- * already wired here.
+ * The live run-detail view: a header (status, counters, cost, connection), the
+ * live DAG canvas (18.2), an inspector pane, and an event timeline strip. 18.3
+ * fills out the inspector; the step map + selection are wired here.
  */
 export function RunDetail({ runId }: { runId: string }) {
   const s = useRunController(runId);
@@ -23,6 +22,7 @@ export function RunDetail({ runId }: { runId: string }) {
 
   const run = s.run?.run;
   const steps = s.run?.steps;
+  const topology = s.topology ?? emptyTopology();
   const selectedStep = selected && steps ? steps.get(selected) : undefined;
 
   return (
@@ -66,10 +66,14 @@ export function RunDetail({ runId }: { runId: string }) {
         <p className="px-6 py-2 text-sm text-red-600 dark:text-red-400">{s.error}</p>
       ) : null}
 
-      {/* Body: graph/steps pane + inspector */}
+      {/* Body: live DAG canvas + inspector */}
       <div className="flex min-h-0 flex-1">
-        <div className="min-h-0 flex-1 overflow-auto border-r p-4">
-          <StepsPane steps={steps} selected={selected} onSelect={setSelected} />
+        <div className="min-h-0 flex-1 border-r">
+          {steps && steps.size > 0 ? (
+            <RunGraph topology={topology} steps={steps} selected={selected} onSelect={setSelected} />
+          ) : (
+            <p className="p-4 text-sm text-muted-foreground">Waiting for steps…</p>
+          )}
         </div>
         <div className="min-h-0 w-96 shrink-0 overflow-auto p-4">
           <InspectorPane step={selectedStep} />

@@ -1,6 +1,8 @@
 package event
 
 import (
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/mathcslearner/agentloom/internal/cost"
@@ -478,6 +480,65 @@ func (GraphExpanded) EventType() Type { return TypeGraphExpanded }
 
 // EventStepID is the origin step whose completion drove the expansion.
 func (p GraphExpanded) EventStepID() string { return p.OriginStep }
+
+// UnmarshalJSON decodes a graph_expanded payload. The delta reuses the
+// definition's dag.Step, whose Config is the dag.StepConfig *interface*, which
+// a plain json.Unmarshal cannot populate — so any consumer that re-decodes a
+// stored/published envelope (the run WS live Tailer, the multi-run firehose)
+// would otherwise fail with "cannot unmarshal object into … dag.StepConfig".
+// We route the delta through the canonical plan decoder, which knows the
+// per-type config shapes. A delta with no steps (e.g. the zero-value catalog
+// sample) decodes plainly — there is no interface field to populate.
+func (p *GraphExpanded) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		OriginStep  string          `json:"origin_step"`
+		OriginKind  string          `json:"origin_kind"`
+		FromVersion int32           `json:"from_version"`
+		ToVersion   int32           `json:"to_version"`
+		Depth       int32           `json:"depth"`
+		Delta       json.RawMessage `json:"delta"`
+		Readied     []string        `json:"readied"`
+		Widened     []string        `json:"widened"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	p.OriginStep = raw.OriginStep
+	p.OriginKind = raw.OriginKind
+	p.FromVersion = raw.FromVersion
+	p.ToVersion = raw.ToVersion
+	p.Depth = raw.Depth
+	p.Readied = raw.Readied
+	p.Widened = raw.Widened
+
+	if len(raw.Delta) == 0 {
+		p.Delta = dag.PlanOutput{}
+		return nil
+	}
+	// Peek at the step count: with no steps, plain decode is safe (no interface
+	// field is populated) and avoids the plan decoder's shape validation, which
+	// the zero-value sample would fail.
+	var peek struct {
+		Steps []json.RawMessage `json:"steps"`
+	}
+	if err := json.Unmarshal(raw.Delta, &peek); err != nil {
+		return err
+	}
+	if len(peek.Steps) == 0 {
+		var d dag.PlanOutput
+		if err := json.Unmarshal(raw.Delta, &d); err != nil {
+			return err
+		}
+		p.Delta = d
+		return nil
+	}
+	plan, err := dag.DecodePlanOutput(raw.Delta)
+	if err != nil {
+		return fmt.Errorf("decoding graph_expanded delta: %w", err)
+	}
+	p.Delta = *plan
+	return nil
+}
 
 // LoopExhausted (loop_exhausted) records a marked loop edge reaching its
 // max_iterations bound while its condition still signaled "iterate again"

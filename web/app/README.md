@@ -155,23 +155,39 @@ export through the DOM, the nav guard) and `e2e/save-submit.spec.ts` (compose �
 the full import → edit → save v1/v2 → version-conflict → save anyway → submit
 loop, and open-in-builder).
 
-## Live execution dashboard (M18.1)
+## Live execution dashboard (M18.1–18.2)
 
 The dashboard watches runs execute live over the event feed
-(`@agentloom/engine-client`, ADR-018). 18.1 ships the run list and the
-run-detail scaffold; later M18 tickets fill in the DAG canvas, step inspector,
-cost meter, approval inbox, and ops views.
+(`@agentloom/engine-client`, ADR-018). 18.1 shipped the run list and the
+run-detail scaffold; 18.2 replaced the steps pane with the live DAG canvas.
+Later M18 tickets fill in the step inspector, cost meter, approval inbox, and
+ops views.
 
 - **`/runs`** — a runs table with live status chips over the multi-run firehose,
   status/definition/time filters (synced to the URL), keyset pagination, a
   connection pill, and per-row links into the detail page. A run submitted while
   the page is open appears live (via `run_created`).
 - **`/runs/{id}`** — the run-detail view: a header (status, counters, cost,
-  connection), a status-badged **steps pane** (the graph pane 18.2 replaces with
-  the React Flow canvas + run-status skins), a basic **step inspector**, and the
-  collapsible **event timeline strip** (category filtering, click-to-select a
-  step). State loads snapshot → backfill → live-tail through the 16.5 client and
-  resumes across reconnects with no gaps.
+  connection), the live **DAG canvas** (18.2 — builder node components with
+  run-status skins, animated active edges, sticky elkjs layout honoring `ui`
+  hints, planner/map/loop injections animating in with a provenance badge, and
+  loop/map instances grouped into collapsible containers), a basic **step
+  inspector**, and the collapsible **event timeline strip** (category filtering,
+  click-to-select a step). State loads snapshot → backfill → live-tail through
+  the 16.5 client and resumes across reconnects with no gaps.
+
+### The live DAG (18.2)
+
+The DAG is built from three additive sources unioned together (expansion is
+additive-only, so the merge is order-independent): the WS snapshot topology, the
+`GET /v1/runs/{id}/graph` read (provenance, depth, `ui` positions, edge
+`when`/`decision`), and live `graph_expanded` deltas. Status comes from the
+seq-guarded step map, layout is **sticky** (placed nodes never move — only new
+injected blocks are laid out and anchored next to their origin), and the pure
+reducers (`src/lib/pure/dashboard/{graph-topology,skins,layout,groups,projection}.ts`)
+are unit-tested without a canvas. The **crash-recovery e2e** (`dashboard-crash.spec.ts`)
+is destructive (it SIGKILLs a compose worker) so it is gated behind
+`AGENTLOOM_E2E_CRASH=1`; a plain `pnpm e2e` never touches the fleet.
 
 ### WebSocket connectivity
 

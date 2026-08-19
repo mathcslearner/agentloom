@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { RunController, type RunStreamHandlersLike } from "@/lib/dashboard/run-controller";
+import { RunController, type GraphFetcher, type RunStreamHandlersLike } from "@/lib/dashboard/run-controller";
+import type { RunGraphResponse } from "@agentloom/api-client";
 import { makeEnv, makeRun, makeStep } from "./helpers";
 
 /** A fake stream the test drives directly through the controller's handlers. */
@@ -37,9 +38,9 @@ class FakeStream {
   }
 }
 
-function build() {
+function build(graphFetcher?: GraphFetcher) {
   let fake!: FakeStream;
-  const ctrl = new RunController((h) => (fake = new FakeStream(h)));
+  const ctrl = new RunController((h) => (fake = new FakeStream(h)), graphFetcher);
   ctrl.start();
   return { ctrl, fake: () => fake };
 }
@@ -105,5 +106,64 @@ describe("RunController", () => {
     expect(f.started).toBe(true);
     ctrl.stop();
     expect(f.closed).toBe(true);
+  });
+
+  it("merges the graph read into the topology (union with the snapshot)", async () => {
+    const graph: RunGraphResponse = {
+      run_id: "run-1",
+      graph_version: 2,
+      steps_total: 3,
+      event_seq: 5,
+      nodes: [
+        { id: "a", type: "planner", status: "succeeded", depth: 0, graph_version: 1, origin: { kind: "definition" }, added_at: "", position: { x: 5, y: 6 } },
+        { id: "b", type: "join", status: "pending", depth: 0, graph_version: 1, origin: { kind: "definition" }, added_at: "" },
+        { id: "w#1", type: "llm", status: "succeeded", depth: 1, graph_version: 2, origin: { kind: "planner", step: "a" }, added_at: "" },
+      ],
+      edges: [],
+      expansions: [],
+    };
+    let resolve!: (g: RunGraphResponse) => void;
+    const { ctrl, fake } = build(() => new Promise<RunGraphResponse>((r) => (resolve = r)));
+    fake().snapshot(makeRun({ event_seq: 0 }));
+    fake().caughtUp(0);
+    // Snapshot topology has a and b only.
+    expect(ctrl.getSnapshot().topology.nodes.has("w#1")).toBe(false);
+    // Graph read lands late → union brings the injected node + provenance + hint.
+    resolve(graph);
+    await Promise.resolve();
+    expect(ctrl.getSnapshot().topology.nodes.has("w#1")).toBe(true);
+    expect(ctrl.getSnapshot().topology.nodes.get("a")?.position).toEqual({ x: 5, y: 6 });
+    expect(ctrl.getSnapshot().graphError).toBeUndefined();
+  });
+
+  it("degrades to the snapshot topology when the graph read fails", async () => {
+    const { ctrl, fake } = build(() => Promise.reject(new Error("boom")));
+    fake().snapshot(makeRun({ event_seq: 0 }));
+    fake().caughtUp(0);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ctrl.getSnapshot().graphError).toBe("boom");
+    // The snapshot topology is still there (a, b) — the canvas is not blank.
+    expect(ctrl.getSnapshot().topology.nodes.size).toBe(2);
+  });
+
+  it("folds graph_expanded into the topology (backfill + live)", () => {
+    const { ctrl, fake } = build();
+    const f = fake();
+    f.snapshot(makeRun({ event_seq: 0 }));
+    f.event(
+      makeEnv("graph_expanded", 1, {
+        origin_step: "a",
+        origin_kind: "planner",
+        from_version: 1,
+        to_version: 2,
+        depth: 1,
+        delta: { schema_version: 1, steps: [{ id: "w#1", type: "llm", config: {} }], edges: [{ from: "a", to: "w#1" }] },
+        readied: ["w#1"],
+      }),
+    );
+    f.caughtUp(1);
+    expect(ctrl.getSnapshot().topology.nodes.has("w#1")).toBe(true);
+    expect(ctrl.getSnapshot().topology.nodes.get("w#1")?.origin.kind).toBe("planner");
   });
 });

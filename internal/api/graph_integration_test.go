@@ -199,6 +199,16 @@ func TestRunGraphIntrospection(t *testing.T) {
 		}
 	}
 
+	// The as-of / resume cursor is the run's next_seq (ticket 18.2): a
+	// completed run has appended many events, so it is well past zero and
+	// matches the run view's event_seq.
+	if graph.EventSeq <= 0 {
+		t.Errorf("graph event_seq = %d, want > 0", graph.EventSeq)
+	}
+	if graph.EventSeq != run.Run.EventSeq {
+		t.Errorf("graph event_seq %d != run view event_seq %d", graph.EventSeq, run.Run.EventSeq)
+	}
+
 	// Unknown run → 404.
 	if status := getJSON(t, srv, rootKey, "/v1/runs/"+uuidStr()+"/graph", nil); status != http.StatusNotFound {
 		t.Errorf("GET graph for unknown run = %d, want 404", status)

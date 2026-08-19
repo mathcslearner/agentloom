@@ -139,7 +139,17 @@ export const STEP_CATALOG: Record<StepType, StepTypeMeta> = {
 
 /** Metadata for a step type. */
 export function stepMeta(type: StepType): StepTypeMeta {
-  return STEP_CATALOG[type];
+  // Defensive: the dashboard (M18) renders whatever step type the wire carries,
+  // so an unknown type (a future backend step type) degrades to a neutral card
+  // rather than crashing.
+  return (
+    STEP_CATALOG[type] ?? {
+      type,
+      label: String(type),
+      group: "core",
+      summary: () => String(type),
+    }
+  );
 }
 
 /** The nine authoring step types, in catalog order. */

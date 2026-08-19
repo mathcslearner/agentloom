@@ -70,3 +70,23 @@
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 }
+
+/* Live-DAG animations (ticket 18.2). Respect prefers-reduced-motion. */
+@keyframes dag-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.35); }
+  50% { box-shadow: 0 0 0 4px rgba(59, 130, 246, 0); }
+}
+@keyframes dag-enter {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes dag-dash {
+  to { stroke-dashoffset: -12; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-\[dag-pulse_1\.6s_ease-in-out_infinite\],
+  .animate-\[dag-enter_400ms_ease-out\],
+  .animate-\[dag-dash_0\.6s_linear_infinite\] {
+    animation: none !important;
+  }
+}

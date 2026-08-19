@@ -2489,7 +2489,7 @@ components:
         per-version delta feed reconstructed from the run's `graph_expanded`
         events. A client reconstructs any version N by keeping the nodes and
         edges whose `graph_version` is at most N.
-      required: [run_id, graph_version, steps_total, nodes, edges, expansions]
+      required: [run_id, graph_version, steps_total, nodes, edges, expansions, event_seq]
       properties:
         run_id:
           type: string
@@ -2512,6 +2512,16 @@ components:
           description: The ordered per-version expansion deltas; empty for a run that never expanded.
           items:
             $ref: "#/components/schemas/GraphExpansionView"
+        event_seq:
+          type: integer
+          format: int64
+          description: >
+            The run's highest event sequence number as of this read
+            (`runs.next_seq` = `max(events.seq)`; ticket 18.2) — the dashboard's
+            as-of / resume cursor. A live `graph_expanded` event is folded over
+            this graph only when its `seq` exceeds this value, so a graph read
+            and the event feed reconcile without double-applying an expansion
+            this response already reflects.
     GraphOriginView:
       type: object
       description: >
@@ -2549,6 +2559,21 @@ components:
           type: string
           format: date-time
           description: Run creation time for authored nodes; the expansion event time for injected ones.
+        position:
+          $ref: "#/components/schemas/GraphPositionView"
+    GraphPositionView:
+      type: object
+      description: >
+        An authored node's canvas position hint (ticket 18.2), lifted from the
+        run's definition snapshot `ui.nodes.<id>.position`. Present only for an
+        authored node whose definition carried a `ui` hint; injected nodes have
+        none and are laid out incrementally by the dashboard.
+      required: [x, y]
+      properties:
+        x:
+          type: number
+        y:
+          type: number
     GraphEdgeView:
       type: object
       description: One graph edge with its resolution and provenance.
@@ -2564,6 +2589,13 @@ components:
         when:
           type: string
           description: The edge's CEL guard, when conditioned; absent otherwise.
+        decision:
+          type: string
+          enum: [approve, reject]
+          description: >
+            The human-approval routing marker (ticket 15.3) on an edge leaving
+            an approval gate; absent otherwise. The dashboard renders such an
+            edge from the matching source port (ticket 18.2).
         resolution:
           type: string
           enum: [unresolved, fired, skipped]

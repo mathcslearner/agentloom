@@ -1217,6 +1217,11 @@ export interface components {
             edges: components["schemas"]["GraphEdgeView"][];
             /** @description The ordered per-version expansion deltas; empty for a run that never expanded. */
             expansions: components["schemas"]["GraphExpansionView"][];
+            /**
+             * Format: int64
+             * @description The run's highest event sequence number as of this read (`runs.next_seq` = `max(events.seq)`; ticket 18.2) — the dashboard's as-of / resume cursor. A live `graph_expanded` event is folded over this graph only when its `seq` exceeds this value, so a graph read and the event feed reconcile without double-applying an expansion this response already reflects.
+             */
+            event_seq: number;
         };
         /** @description A node's or edge's provenance. `kind` is `definition` for an authored row, or the expansion kind (`planner` / `map` / `loop`) with `step` naming the step whose completion injected the row. */
         GraphOriginView: {
@@ -1240,6 +1245,12 @@ export interface components {
              * @description Run creation time for authored nodes; the expansion event time for injected ones.
              */
             added_at: string;
+            position?: components["schemas"]["GraphPositionView"];
+        };
+        /** @description An authored node's canvas position hint (ticket 18.2), lifted from the run's definition snapshot `ui.nodes.<id>.position`. Present only for an authored node whose definition carried a `ui` hint; injected nodes have none and are laid out incrementally by the dashboard. */
+        GraphPositionView: {
+            x: number;
+            y: number;
         };
         /** @description One graph edge with its resolution and provenance. */
         GraphEdgeView: {
@@ -1249,6 +1260,11 @@ export interface components {
             type: "normal" | "loop";
             /** @description The edge's CEL guard, when conditioned; absent otherwise. */
             when?: string;
+            /**
+             * @description The human-approval routing marker (ticket 15.3) on an edge leaving an approval gate; absent otherwise. The dashboard renders such an edge from the matching source port (ticket 18.2).
+             * @enum {string}
+             */
+            decision?: "approve" | "reject";
             /** @enum {string} */
             resolution: "unresolved" | "fired" | "skipped";
             graph_version: number;

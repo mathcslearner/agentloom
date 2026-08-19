@@ -12,7 +12,11 @@
       "origin": {
         "kind": "definition"
       },
-      "added_at": "2026-08-16T12:00:00Z"
+      "added_at": "2026-08-16T12:00:00Z",
+      "position": {
+        "x": 10,
+        "y": 20
+      }
     },
     {
       "id": "join",
@@ -23,7 +27,11 @@
       "origin": {
         "kind": "definition"
       },
-      "added_at": "2026-08-16T12:00:00Z"
+      "added_at": "2026-08-16T12:00:00Z",
+      "position": {
+        "x": 300,
+        "y": 20
+      }
     },
     {
       "id": "work#1",
@@ -102,5 +110,6 @@
         "join"
       ]
     }
-  ]
+  ],
+  "event_seq": 7
 }

@@ -46,6 +46,15 @@ func graphFixtureRun() (gen.Run, []gen.RunStep, []gen.RunEdge, []gen.Event) {
 		GraphVersion: 2,
 		StepsTotal:   3,
 		CreatedAt:    t0,
+		// The run carries its definition snapshot; only the authored nodes'
+		// `ui.nodes.<id>.position` hints are lifted (ticket 18.2). "join" has a
+		// hint, an unknown "ghost" entry is ignored, and the injected "work#1"
+		// carries none even though a stray entry names it.
+		Definition: json.RawMessage(`{"schema_version":1,"name":"planner-fixture","steps":[],"edges":[],` +
+			`"ui":{"nodes":{"plan":{"position":{"x":10,"y":20}},"join":{"position":{"x":300,"y":20}},` +
+			`"work#1":{"position":{"x":999,"y":999}},"ghost":{"position":{"x":1,"y":1}}}}}`),
+		// The as-of / resume cursor: max(events.seq) for this run.
+		NextSeq: 7,
 	}
 	steps := []gen.RunStep{
 		{RunID: runID, StepID: "plan", StepType: "planner", Status: "succeeded", Depth: 0, GraphVersion: 1},
@@ -181,6 +190,54 @@ func TestRunGraphVersionConsistency(t *testing.T) {
 		if n.GraphVersion == 2 && !n.AddedAt.Equal(events[0].CreatedAt) {
 			t.Errorf("injected node %q added_at = %s, want event time %s", n.ID, n.AddedAt, events[0].CreatedAt)
 		}
+	}
+
+	// event_seq mirrors runs.next_seq (ticket 18.2).
+	if resp.EventSeq != run.NextSeq {
+		t.Errorf("event_seq = %d, want run.next_seq %d", resp.EventSeq, run.NextSeq)
+	}
+
+	// Positions are lifted from the definition `ui` for authored nodes only:
+	// "join" and "plan" carry hints; the injected "work#1" carries none even
+	// though a stray `ui` entry names it.
+	for _, n := range resp.Nodes {
+		switch n.ID {
+		case "plan":
+			if n.Position == nil || n.Position.X != 10 || n.Position.Y != 20 {
+				t.Errorf("node %q position = %+v, want {10,20}", n.ID, n.Position)
+			}
+		case "join":
+			if n.Position == nil || n.Position.X != 300 || n.Position.Y != 20 {
+				t.Errorf("node %q position = %+v, want {300,20}", n.ID, n.Position)
+			}
+		case "work#1":
+			if n.Position != nil {
+				t.Errorf("injected node %q carries a position hint %+v, want none", n.ID, n.Position)
+			}
+		}
+	}
+}
+
+// TestRunGraphEdgeDecision covers the human-approval routing marker projection
+// (ticket 18.2): a run_edges.decision value is passed through onto the edge view.
+func TestRunGraphEdgeDecision(t *testing.T) {
+	t.Parallel()
+	runID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	t0 := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	run := gen.Run{ID: runID, Status: "running", GraphVersion: 1, StepsTotal: 2, CreatedAt: t0}
+	steps := []gen.RunStep{
+		{RunID: runID, StepID: "gate", StepType: "human_approval", Status: "awaiting_human", GraphVersion: 1},
+		{RunID: runID, StepID: "publish", StepType: "echo", Status: "pending", GraphVersion: 1},
+	}
+	edges := []gen.RunEdge{
+		{RunID: runID, Ordinal: 0, FromStep: "gate", ToStep: "publish", EdgeType: "normal", Resolution: "unresolved", GraphVersion: 1, Decision: sptr("reject")},
+	}
+	resp, err := buildRunGraphResponse(run, steps, edges, nil)
+	if err != nil {
+		t.Fatalf("buildRunGraphResponse: %v", err)
+	}
+	if len(resp.Edges) != 1 || resp.Edges[0].Decision != "reject" {
+		t.Errorf("edge decision = %q, want reject", resp.Edges[0].Decision)
 	}
 }
 

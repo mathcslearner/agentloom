@@ -33,8 +33,17 @@ export type ListRunsResponse = Schema<"ListRunsResponse">;
 export type RunStatus = Schema<"RunStatus">;
 export type DefinitionView = Schema<"DefinitionView">;
 export type ListDefinitionsResponse = Schema<"ListDefinitionsResponse">;
+export type EdgeView = Schema<"EdgeView">;
 export type PluginInfoView = Schema<"PluginInfo">;
 export type ListPluginsResponse = Schema<"ListPluginsResponse">;
+// The run-graph introspection view (ticket 13.6/18.2, ADR-015) — the dashboard's
+// live-DAG topology + provenance + expansion deltas.
+export type RunGraphResponse = Schema<"RunGraphResponse">;
+export type GraphNodeView = Schema<"GraphNodeView">;
+export type GraphEdgeView = Schema<"GraphEdgeView">;
+export type GraphExpansionView = Schema<"GraphExpansionView">;
+export type GraphOriginView = Schema<"GraphOriginView">;
+export type GraphPositionView = Schema<"GraphPositionView">;
 export type ErrorEnvelope = Schema<"Error">;
 export type ErrorDetail = Schema<"ErrorDetail">;
 export type ErrorCode = Schema<"ErrorCode">;

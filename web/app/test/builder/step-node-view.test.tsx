@@ -32,4 +32,22 @@ describe("StepNodeView snapshots", () => {
     expect(container.querySelector('[data-testid="chip"]')).not.toBeNull();
     expect(container.firstChild).toMatchSnapshot();
   });
+
+  it("renders the dashboard summary + footer slots (M18.2)", () => {
+    const { container, getByText } = render(
+      <StepNodeView
+        step={{ id: "w_1", type: "llm", config: { model: "mock/sim-1" } } as never}
+        skin={{
+          badge: <span>running</span>,
+          summary: <span data-testid="run-summary">attempt 2</span>,
+          footer: <span data-testid="provenance">⑂ planner</span>,
+        }}
+      />,
+    );
+    // The run summary overrides the config summary; the footer renders.
+    expect(container.querySelector('[data-testid="run-summary"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="provenance"]')).not.toBeNull();
+    // The config summary ("mock/sim-1") is not shown when a skin summary is set.
+    expect(() => getByText("mock/sim-1")).toThrow();
+  });
 });

@@ -111,6 +111,12 @@ func (h *Handler) handleRunGraph(w http.ResponseWriter, r *http.Request) {
 // graph_version is stamped by the same expansion that emitted the event) and a
 // consistency test asserts it.
 func buildRunGraphResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge, events []gen.Event) (RunGraphResponse, error) {
+	// Lift the authored node positions out of the run's definition snapshot's
+	// `ui` block. `ui` is engine-opaque (never validated, round-tripped
+	// byte-for-byte — ADR-019), so a malformed or absent block simply yields no
+	// positions; only authored nodes can carry one.
+	positions := liftNodePositions(run.Definition)
+
 	// Decode the expansion deltas first so their times index the version map.
 	expansions := make([]GraphExpansionView, 0, len(events))
 	versionTime := map[int32]time.Time{1: run.CreatedAt}
@@ -150,6 +156,11 @@ func buildRunGraphResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge
 
 	nodes := make([]GraphNodeView, 0, len(steps))
 	for _, s := range steps {
+		var pos *GraphPositionView
+		// Only an authored node (no injecting origin) can carry a hint.
+		if s.OriginKind == nil {
+			pos = positions[s.StepID]
+		}
 		nodes = append(nodes, GraphNodeView{
 			ID:           s.StepID,
 			Type:         s.StepType,
@@ -158,6 +169,7 @@ func buildRunGraphResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge
 			GraphVersion: int(s.GraphVersion),
 			Origin:       originView(s.OriginKind, s.OriginStep),
 			AddedAt:      versionTime[s.GraphVersion],
+			Position:     pos,
 		})
 	}
 
@@ -168,6 +180,7 @@ func buildRunGraphResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge
 			To:           e.ToStep,
 			Type:         edgeTypeString(e.EdgeType),
 			When:         textOrEmpty(e.WhenExpr),
+			Decision:     textOrEmpty(e.Decision),
 			Resolution:   e.Resolution,
 			GraphVersion: int(e.GraphVersion),
 			Origin:       originView(e.OriginKind, e.OriginStep),
@@ -181,7 +194,35 @@ func buildRunGraphResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge
 		Nodes:        nodes,
 		Edges:        edgeViews,
 		Expansions:   expansions,
+		EventSeq:     run.NextSeq,
 	}, nil
+}
+
+// liftNodePositions shallow-decodes a run's definition snapshot and returns the
+// authored `ui.nodes.<id>.position` hints, keyed by step id. It never errors:
+// `ui` is engine-opaque JSON the builder owns (ADR-019), so a snapshot with no
+// `ui`, a non-object `ui`, or a malformed entry simply contributes no position.
+func liftNodePositions(def json.RawMessage) map[string]*GraphPositionView {
+	out := map[string]*GraphPositionView{}
+	if len(def) == 0 {
+		return out
+	}
+	var envelope struct {
+		UI struct {
+			Nodes map[string]struct {
+				Position *GraphPositionView `json:"position"`
+			} `json:"nodes"`
+		} `json:"ui"`
+	}
+	if err := json.Unmarshal(def, &envelope); err != nil {
+		return out
+	}
+	for id, n := range envelope.UI.Nodes {
+		if n.Position != nil {
+			out[id] = n.Position
+		}
+	}
+	return out
 }
 
 // originView maps the stored origin columns into the wire provenance. Both

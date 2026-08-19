@@ -16,8 +16,16 @@
  * `RunStream` recovery logic against a fake socket + clock.
  */
 import type { EventEnvelope, RunStreamState } from "@agentloom/engine-client";
-import type { RunResponse } from "@agentloom/api-client";
+import type { RunResponse, RunGraphResponse } from "@agentloom/api-client";
 import { applyEvent, fromSnapshot, type RunState } from "@/lib/pure/dashboard/run-state";
+import {
+  applyGraphEvent,
+  emptyTopology,
+  mergeTopology,
+  topologyFromGraph,
+  topologyFromSnapshot,
+  type GraphTopology,
+} from "@/lib/pure/dashboard/graph-topology";
 
 export type ConnectionState = "idle" | RunStreamState;
 
@@ -28,9 +36,18 @@ export interface RunDashboardState {
   /** Highest seq reflected (the resume cursor). */
   lastSeq: number;
   run: RunState | null;
+  /** The live DAG topology (18.2): union of snapshot ∪ graph read ∪ expansions. */
+  topology: GraphTopology;
   events: EventEnvelope[];
   error?: string;
+  /** Set when the run-graph read failed; the canvas degrades to the snapshot
+   * topology rather than going blank. */
+  graphError?: string;
 }
+
+/** Fetches the run-graph introspection view (GET /v1/runs/{id}/graph). Injected
+ * so tests drive the controller without a network. */
+export type GraphFetcher = () => Promise<RunGraphResponse>;
 
 export interface StreamLike {
   start(): unknown;
@@ -56,6 +73,7 @@ export class RunController {
     reconnects: 0,
     lastSeq: 0,
     run: null,
+    topology: emptyTopology(),
     events: [],
   };
   private listeners = new Set<() => void>();
@@ -63,11 +81,16 @@ export class RunController {
   private backfillBuffer: EventEnvelope[] = [];
   private catchingUp = false;
   private everConnected = false;
+  private graphFetched = false;
 
-  constructor(private readonly streamFactory: RunStreamFactory) {}
+  constructor(
+    private readonly streamFactory: RunStreamFactory,
+    private readonly graphFetcher?: GraphFetcher,
+  ) {}
 
   start(): void {
     if (this.stream) return;
+    void this.fetchGraph();
     this.stream = this.streamFactory({
       onSnapshot: (run) => this.onSnapshot(run),
       onEvent: (env) => this.onEvent(env),
@@ -92,10 +115,13 @@ export class RunController {
 
   private onSnapshot(run: RunResponse): void {
     // A fresh snapshot re-seeds derived state (also on reconnect); events that
-    // follow re-apply the tail, and the seq guard keeps it idempotent.
+    // follow re-apply the tail, and the seq guard keeps it idempotent. The
+    // snapshot topology is merged into whatever the graph read already brought
+    // (union — expansion is additive-only, so order does not matter).
     this.catchingUp = true;
     this.backfillBuffer = [];
-    this.set({ run: fromSnapshot(run), error: undefined });
+    const topology = mergeTopology(this.state.topology, topologyFromSnapshot(run));
+    this.set({ run: fromSnapshot(run), topology, error: undefined });
   }
 
   private onEvent(env: EventEnvelope): void {
@@ -103,22 +129,43 @@ export class RunController {
     const lastSeq = Math.max(this.state.lastSeq, env.seq);
     if (this.catchingUp) {
       this.backfillBuffer.push(env);
-      this.set({ events, lastSeq });
+      // Apply topology-shaping events during backfill too (idempotent), so an
+      // expansion that happened before this connection is reflected at once.
+      const topology = applyGraphEvent(this.state.topology, env);
+      this.set({ events, lastSeq, topology });
       return;
     }
     const run = this.state.run ? applyEvent(this.state.run, env) : this.state.run;
-    this.set({ events, lastSeq, run });
+    const topology = applyGraphEvent(this.state.topology, env);
+    this.set({ events, lastSeq, run, topology });
   }
 
   private onCaughtUp(seq: number): void {
     this.catchingUp = false;
     this.everConnected = true;
     let run = this.state.run;
+    let topology = this.state.topology;
     if (run) {
-      for (const env of this.backfillBuffer) run = applyEvent(run, env);
+      for (const env of this.backfillBuffer) {
+        run = applyEvent(run, env);
+        topology = applyGraphEvent(topology, env);
+      }
     }
     this.backfillBuffer = [];
-    this.set({ run, lastSeq: Math.max(this.state.lastSeq, seq), connection: "live" });
+    this.set({ run, topology, lastSeq: Math.max(this.state.lastSeq, seq), connection: "live" });
+  }
+
+  private async fetchGraph(): Promise<void> {
+    if (this.graphFetched || !this.graphFetcher) return;
+    this.graphFetched = true;
+    try {
+      const graph = await this.graphFetcher();
+      // Union with whatever the snapshot / events already brought.
+      this.set({ topology: mergeTopology(this.state.topology, topologyFromGraph(graph)), graphError: undefined });
+    } catch (err) {
+      // Degrade to the snapshot topology; the canvas still renders.
+      this.set({ graphError: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   private onState(s: RunStreamState): void {

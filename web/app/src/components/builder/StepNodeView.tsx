@@ -15,6 +15,11 @@ export interface NodeSkin {
   className?: string;
   /** A short status chip rendered in the header (e.g. "running"). */
   badge?: React.ReactNode;
+  /** Overrides the config summary in the node body (e.g. a run-status line).
+   * When absent, the catalog's config summary is shown (the builder default). */
+  summary?: React.ReactNode;
+  /** An optional footer row under the body (e.g. a provenance badge). */
+  footer?: React.ReactNode;
 }
 
 export interface StepNodeViewProps {
@@ -65,9 +70,13 @@ export function StepNodeView({ step, selected, skin, problemCount = 0, highlight
           </span>
         </div>
       </div>
-      <div className="truncate px-3 py-2 text-xs text-muted-foreground" title={meta.summary(step)}>
-        {meta.summary(step)}
+      <div
+        className="truncate px-3 py-2 text-xs text-muted-foreground"
+        title={skin?.summary != null ? undefined : meta.summary(step)}
+      >
+        {skin?.summary ?? meta.summary(step)}
       </div>
+      {skin?.footer ? <div className="border-t px-3 py-1">{skin.footer}</div> : null}
     </div>
   );
 }

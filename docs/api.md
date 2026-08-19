@@ -528,9 +528,11 @@ curl -s "http://127.0.0.1:8080/v1/runs/$RUN_ID/graph" \
   "run_id": "…",
   "graph_version": 2,
   "steps_total": 5,
+  "event_seq": 24,
   "nodes": [
     { "id": "plan", "type": "planner", "status": "succeeded", "depth": 0,
-      "graph_version": 1, "origin": { "kind": "definition" }, "added_at": "…" },
+      "graph_version": 1, "origin": { "kind": "definition" }, "added_at": "…",
+      "position": { "x": 40, "y": 120 } },
     { "id": "work_a", "type": "llm", "status": "succeeded", "depth": 1,
       "graph_version": 2, "origin": { "kind": "planner", "step": "plan" }, "added_at": "…" }
   ],
@@ -550,6 +552,14 @@ version-1 base. `expansions` is reconstructed from the run's `graph_expanded`
 events (with each expansion's injection time as `added_at`) — the feed the M18
 dashboard animates. A run that never expanded returns its authored graph with an
 empty `expansions` list; a missing run is `404 run_not_found`.
+
+For the live dashboard (ticket 18.2) the response also carries `event_seq` (the
+run's `= max(events.seq)` as-of / resume cursor — a live `graph_expanded` is
+folded over this graph only when its `seq` exceeds it), an authored node's
+`position` lifted from the run's definition-snapshot `ui.nodes.<id>.position`
+(absent for injected nodes and for runs whose definition carried no `ui` hints),
+and a `decision` marker (`approve`/`reject`) on an edge leaving a human-approval
+gate.
 
 ## The plugin catalog
 

@@ -408,6 +408,13 @@ type RunGraphResponse struct {
 	Nodes        []GraphNodeView      `json:"nodes"`
 	Edges        []GraphEdgeView      `json:"edges"`
 	Expansions   []GraphExpansionView `json:"expansions"`
+	// EventSeq is the run's highest event sequence number as of this read
+	// (runs.next_seq = max(events.seq); ticket 18.2, ADR-018) — the same
+	// as-of / resume cursor RunView carries. The dashboard folds live
+	// graph_expanded events over this graph and applies one only when its seq
+	// exceeds this value, so a graph read and the event feed reconcile without
+	// double-applying an expansion this response already reflects.
+	EventSeq int64 `json:"event_seq"`
 }
 
 // GraphOriginView is a node's or edge's provenance (ticket 13.6, ADR-015).
@@ -431,16 +438,34 @@ type GraphNodeView struct {
 	GraphVersion int             `json:"graph_version"`
 	Origin       GraphOriginView `json:"origin"`
 	AddedAt      time.Time       `json:"added_at"`
+	// Position is the node's authored canvas hint, lifted from the run's
+	// definition snapshot ui.nodes.<id>.position (ticket 18.2, ADR-019). It is
+	// present only for an authored node whose definition carried a `ui` hint;
+	// injected nodes (planner / map / loop) have none — the dashboard lays them
+	// out incrementally. `ui` is engine-opaque, so a malformed or absent block
+	// simply yields no positions.
+	Position *GraphPositionView `json:"position,omitempty"`
+}
+
+// GraphPositionView is an authored node's canvas position hint (ticket 18.2):
+// the {x, y} the builder persisted under ui.nodes.<id>.position.
+type GraphPositionView struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
 }
 
 // GraphEdgeView is one graph edge with its provenance and the version at
 // which it was spliced in. (Named distinctly from the run-detail EdgeView,
 // which omits provenance.)
 type GraphEdgeView struct {
-	From         string          `json:"from"`
-	To           string          `json:"to"`
-	Type         string          `json:"type"`
-	When         string          `json:"when,omitempty"`
+	From string `json:"from"`
+	To   string `json:"to"`
+	Type string `json:"type"`
+	When string `json:"when,omitempty"`
+	// Decision is the human-approval routing marker (ticket 15.3): "approve" or
+	// "reject" on an edge leaving an approval gate, absent otherwise. The
+	// dashboard renders it from the correct source port (ticket 18.2).
+	Decision     string          `json:"decision,omitempty"`
 	Resolution   string          `json:"resolution"`
 	GraphVersion int             `json:"graph_version"`
 	Origin       GraphOriginView `json:"origin"`
