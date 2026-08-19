@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRunController } from "@/lib/dashboard/useRunController";
+import { useRunCost } from "@/lib/dashboard/useStepInspector";
 import { runStatusVariant } from "@/lib/status";
 import { Badge } from "@/components/ui/badge";
 import { ConnectionPill } from "@/components/dashboard/ConnectionPill";
@@ -17,13 +18,18 @@ import { emptyTopology } from "@/lib/pure/dashboard/graph-topology";
  * fills out the inspector; the step map + selection are wired here.
  */
 export function RunDetail({ runId }: { runId: string }) {
-  const s = useRunController(runId);
+  const { state: s, controller } = useRunController(runId);
   const [selected, setSelected] = useState<string | undefined>(undefined);
 
   const run = s.run?.run;
   const steps = s.run?.steps;
   const topology = s.topology ?? emptyTopology();
   const selectedStep = selected && steps ? steps.get(selected) : undefined;
+
+  // The cost breakdown feeds the inspector's Cost tab; refetch when a
+  // cost_updated event lands (the count of them is the live cost cursor).
+  const costSeq = useMemo(() => s.events.filter((e) => e.type === "cost_updated").length, [s.events]);
+  const cost = useRunCost(runId, costSeq);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="run-detail" data-run-status={run?.status ?? ""}>
@@ -75,8 +81,14 @@ export function RunDetail({ runId }: { runId: string }) {
             <p className="p-4 text-sm text-muted-foreground">Waiting for steps…</p>
           )}
         </div>
-        <div className="min-h-0 w-96 shrink-0 overflow-auto p-4">
-          <InspectorPane step={selectedStep} />
+        <div className="flex min-h-0 w-[26rem] shrink-0 flex-col overflow-hidden p-4">
+          <InspectorPane
+            runId={runId}
+            step={selectedStep}
+            events={s.events}
+            cost={cost}
+            controller={controller}
+          />
         </div>
       </div>
 

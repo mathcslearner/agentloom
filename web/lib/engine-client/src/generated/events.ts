@@ -407,6 +407,7 @@ export interface StepClaimed {
   step_id: string;
   claim_id: string;
   attempt: number;
+  worker_id?: string;
 }
 
 export interface StepCollected {

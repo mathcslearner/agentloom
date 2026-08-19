@@ -1,0 +1,268 @@
+{
+  "run": {
+    "id": "22222222-2222-2222-2222-222222222222",
+    "status": "failed",
+    "on_failure": "continue_independent_branches",
+    "steps_total": 4,
+    "steps_succeeded": 2,
+    "steps_failed": 1,
+    "steps_skipped": 0,
+    "steps_cancelled": 0,
+    "steps_collected": 0,
+    "created_at": "2026-08-18T09:00:00Z",
+    "started_at": "2026-08-18T09:00:00Z",
+    "finished_at": "2026-08-18T09:00:30Z",
+    "event_seq": 20,
+    "cost": {
+      "spent_nano_usd": 4200000,
+      "saved_nano_usd": 0,
+      "spent_usd": "0.0042",
+      "saved_usd": "0",
+      "on_budget_exceeded": "park"
+    }
+  },
+  "steps": [
+    {
+      "id": "draft",
+      "type": "llm",
+      "status": "succeeded",
+      "remaining_deps": 0,
+      "fired_deps": 0,
+      "attempt_count": 2,
+      "output": {
+        "model": "mock/sim-1",
+        "text": "Launch blurb. APPROVED"
+      },
+      "transport_failures": 0,
+      "validation_failures": 1,
+      "started_at": "2026-08-18T09:00:00Z",
+      "finished_at": "2026-08-18T09:00:10Z",
+      "attempts": [
+        {
+          "attempt": 1,
+          "claim_id": "aaaaaaaa-0000-0000-0000-000000000001",
+          "outcome": "validation_failed",
+          "worker_id": "worker-alpha",
+          "usage": {
+            "input_tokens": 12,
+            "output_tokens": 8
+          },
+          "verdict": {
+            "schema_version": 1,
+            "status": "fail",
+            "issues": [
+              {
+                "validator": "contains",
+                "code": "missing_substring",
+                "path": "/text",
+                "message": "output does not contain \"APPROVED\""
+              }
+            ],
+            "results": [
+              {
+                "validator": "contains",
+                "status": "fail"
+              }
+            ]
+          },
+          "started_at": "2026-08-18T09:00:00Z",
+          "finished_at": "2026-08-18T09:00:04Z"
+        },
+        {
+          "attempt": 2,
+          "claim_id": "bbbbbbbb-0000-0000-0000-000000000002",
+          "outcome": "succeeded",
+          "worker_id": "worker-alpha",
+          "usage": {
+            "input_tokens": 40,
+            "output_tokens": 11
+          },
+          "verdict": {
+            "schema_version": 1,
+            "status": "pass",
+            "results": [
+              {
+                "validator": "contains",
+                "status": "pass"
+              }
+            ]
+          },
+          "feedback": {
+            "schema_version": 1,
+            "semantic_attempt": 2,
+            "max_attempts": 3,
+            "prior_attempt": 1,
+            "text": "This is attempt 2 of 3. Your previous draft was rejected:\noutput does not contain \"APPROVED\"\n\nRevise it and end with APPROVED once it is ready."
+          },
+          "started_at": "2026-08-18T09:00:05Z",
+          "finished_at": "2026-08-18T09:00:10Z"
+        }
+      ],
+      "config": {
+        "model": "mock/sim-1",
+        "prompt": "Write a blurb and end with APPROVED.",
+        "max_tokens": 256
+      },
+      "idempotency_key": "b001ea8d-7bb4-56f7-835a-576299cec2a4",
+      "validation": {
+        "attempts": 2,
+        "passed": 1,
+        "failed": 1,
+        "last_attempt": 2,
+        "last_status": "pass",
+        "last_issue_count": 0,
+        "validators": [
+          {
+            "name": "",
+            "passed": 1,
+            "failed": 1,
+            "skipped": 0,
+            "errored": 0,
+            "last_status": "pass"
+          }
+        ]
+      }
+    },
+    {
+      "id": "crunch",
+      "type": "tool",
+      "status": "succeeded",
+      "remaining_deps": 0,
+      "fired_deps": 0,
+      "attempt_count": 2,
+      "output": {
+        "result": 42
+      },
+      "transport_failures": 0,
+      "validation_failures": 0,
+      "started_at": "2026-08-18T09:00:02Z",
+      "finished_at": "2026-08-18T09:00:18Z",
+      "attempts": [
+        {
+          "attempt": 1,
+          "claim_id": "cccccccc-0000-0000-0000-000000000003",
+          "outcome": "lost",
+          "worker_id": "worker-alpha",
+          "started_at": "2026-08-18T09:00:02Z",
+          "finished_at": "2026-08-18T09:00:12Z"
+        },
+        {
+          "attempt": 2,
+          "claim_id": "dddddddd-0000-0000-0000-000000000004",
+          "outcome": "succeeded",
+          "worker_id": "worker-bravo",
+          "started_at": "2026-08-18T09:00:13Z",
+          "finished_at": "2026-08-18T09:00:18Z"
+        }
+      ],
+      "config": {
+        "tool": "json_transform",
+        "args": {
+          "expr": ".x"
+        }
+      },
+      "idempotency_key": "06878034-716d-5151-9682-ffd731d5c70a"
+    },
+    {
+      "id": "summarize",
+      "type": "llm",
+      "status": "succeeded",
+      "remaining_deps": 0,
+      "fired_deps": 0,
+      "attempt_count": 1,
+      "output": {
+        "model": "mock/cheap",
+        "text": "Summary."
+      },
+      "transport_failures": 0,
+      "validation_failures": 0,
+      "started_at": "2026-08-18T09:00:19Z",
+      "finished_at": "2026-08-18T09:00:24Z",
+      "attempts": [
+        {
+          "attempt": 1,
+          "claim_id": "eeeeeeee-0000-0000-0000-000000000005",
+          "outcome": "succeeded",
+          "worker_id": "worker-bravo",
+          "usage": {
+            "input_tokens": 30,
+            "output_tokens": 6
+          },
+          "started_at": "2026-08-18T09:00:19Z",
+          "finished_at": "2026-08-18T09:00:24Z"
+        }
+      ],
+      "config": {
+        "model": "mock/expensive",
+        "prompt": "Summarize.",
+        "max_tokens": 128,
+        "model_fallbacks": [
+          {
+            "model": "mock/cheap",
+            "at_budget_fraction": 0.5
+          }
+        ]
+      },
+      "idempotency_key": "383e9e17-4d50-5e0d-85e1-6621a5567c3c"
+    },
+    {
+      "id": "boom",
+      "type": "tool",
+      "status": "dead_lettered",
+      "remaining_deps": 0,
+      "fired_deps": 0,
+      "attempt_count": 1,
+      "error": {
+        "class": "permanent",
+        "message": "host not allowed"
+      },
+      "transport_failures": 0,
+      "validation_failures": 0,
+      "started_at": "2026-08-18T09:00:25Z",
+      "finished_at": "2026-08-18T09:00:26Z",
+      "attempts": [
+        {
+          "attempt": 1,
+          "claim_id": "ffffffff-0000-0000-0000-000000000006",
+          "outcome": "permanent",
+          "error": {
+            "class": "permanent",
+            "message": "host not allowed"
+          },
+          "worker_id": "worker-alpha",
+          "started_at": "2026-08-18T09:00:25Z",
+          "finished_at": "2026-08-18T09:00:26Z"
+        }
+      ],
+      "config": {
+        "tool": "http_request",
+        "args": {
+          "url": "https://blocked.example"
+        }
+      },
+      "idempotency_key": "e4a5f37c-8bf9-5085-a415-c9a4e12af482"
+    }
+  ],
+  "edges": [
+    {
+      "from": "draft",
+      "to": "crunch",
+      "type": "normal",
+      "resolution": "fired"
+    }
+  ],
+  "dead_letters": [
+    {
+      "step_id": "boom",
+      "seq": 1,
+      "source": "permanent",
+      "class": "permanent",
+      "error": {
+        "class": "permanent",
+        "message": "host not allowed"
+      },
+      "attempts_at_death": 1,
+      "created_at": "2026-08-18T09:00:26Z"
+    }
+  ]
+}

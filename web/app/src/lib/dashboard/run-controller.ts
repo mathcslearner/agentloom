@@ -17,7 +17,7 @@
  */
 import type { EventEnvelope, RunStreamState } from "@agentloom/engine-client";
 import type { RunResponse, RunGraphResponse } from "@agentloom/api-client";
-import { applyEvent, fromSnapshot, type RunState } from "@/lib/pure/dashboard/run-state";
+import { applyEvent, fromSnapshot, mergeRunResponse, type RunState } from "@/lib/pure/dashboard/run-state";
 import {
   applyGraphEvent,
   emptyTopology,
@@ -48,6 +48,10 @@ export interface RunDashboardState {
 /** Fetches the run-graph introspection view (GET /v1/runs/{id}/graph). Injected
  * so tests drive the controller without a network. */
 export type GraphFetcher = () => Promise<RunGraphResponse>;
+
+/** Fetches the run-detail body (GET /v1/runs/{id}) so the inspector picks up
+ * new attempts/verdicts/logs cursors (ticket 18.3). Injected for tests. */
+export type RunFetcher = () => Promise<RunResponse>;
 
 export interface StreamLike {
   start(): unknown;
@@ -83,10 +87,35 @@ export class RunController {
   private everConnected = false;
   private graphFetched = false;
 
+  private refreshing = false;
+
   constructor(
     private readonly streamFactory: RunStreamFactory,
     private readonly graphFetcher?: GraphFetcher,
+    private readonly runFetcher?: RunFetcher,
   ) {}
+
+  /**
+   * Refetch the run-detail body and fold its step views into state (ticket
+   * 18.3): the inspector calls this when a selected step advanced past its
+   * captured view seq, so new attempts/verdicts appear without a page reload.
+   * Coalesces concurrent calls; failures are surfaced on `error` but never
+   * disturb the live event-derived state.
+   */
+  async refreshViews(): Promise<void> {
+    if (this.refreshing || !this.runFetcher || !this.state.run) return;
+    this.refreshing = true;
+    try {
+      const body = await this.runFetcher();
+      if (this.state.run) {
+        this.set({ run: mergeRunResponse(this.state.run, body) });
+      }
+    } catch (err) {
+      this.set({ error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      this.refreshing = false;
+    }
+  }
 
   start(): void {
     if (this.stream) return;

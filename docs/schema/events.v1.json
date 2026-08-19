@@ -1796,6 +1796,9 @@
         },
         "attempt": {
           "type": "integer"
+        },
+        "worker_id": {
+          "type": "string"
         }
       },
       "additionalProperties": false,

@@ -1,0 +1,13 @@
+-- Worker identity per execution attempt (ticket 18.3). The claim CAS records
+-- the claiming worker's consumer name on the attempt row so the step inspector
+-- can show a step's claim/worker history — in particular, a reclaimed step
+-- names both the worker that lost the lease (the `lost` attempt) and the one
+-- that took it over (the succeeding attempt), the visible half of the
+-- crash-recovery demo (18.3 DoD-3).
+--
+-- The worker id is the queue consumer name (queue.NewConsumerName), already
+-- carried on every log line as worker_id; persisting it on the attempt makes
+-- the claim history a durable projection rather than a log scrape. NULL means
+-- no identity was recorded — a claim by a worker built before 18.3, and all
+-- pre-0028 rows.
+ALTER TABLE step_attempts ADD COLUMN worker_id TEXT;

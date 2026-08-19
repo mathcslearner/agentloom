@@ -72,6 +72,10 @@ type StepClaimed struct {
 	StepID  string `json:"step_id"`
 	ClaimID string `json:"claim_id"`
 	Attempt int32  `json:"attempt"`
+	// WorkerID is the claiming worker's consumer name (ticket 18.3), so the
+	// step inspector's claim/worker history is event-sourced live before any
+	// refetch. Omitted when the worker records no identity.
+	WorkerID string `json:"worker_id,omitempty"`
 }
 
 func (StepClaimed) EventType() Type       { return TypeStepClaimed }

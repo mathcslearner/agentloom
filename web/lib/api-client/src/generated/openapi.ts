@@ -938,6 +938,10 @@ export interface components {
             finished_at?: string;
             attempts?: components["schemas"]["AttemptView"][];
             validation?: components["schemas"]["ValidationSummary"];
+            /** @description The step's materialized configuration (run_steps.config), the same JSON handed to the executor after templating was resolved (ticket 18.3). The inspector reads it for a model call's authored prompt to reconstruct and diff each semantic-retry attempt's effective prompt. Any JSON value; absent for a step with no config. */
+            config?: unknown;
+            /** @description The step's stable side-effect idempotency key (ticket 5.5): a derived UUIDv5 over (run_id, step_id), identical across every attempt/retry/reclaim/takeover. */
+            idempotency_key?: string;
         };
         /** @description A step's output-validation roll-up (ticket 11.6, ADR-013): a compact summary derived at read time from the step's attempt verdicts. Present only when at least one attempt carried a verdict; absent for every unvalidated step. */
         ValidationSummary: {
@@ -997,6 +1001,8 @@ export interface components {
             outcome?: components["schemas"]["AttemptOutcome"];
             /** @description The attempt's failure document. Any JSON value. */
             error?: unknown;
+            /** @description The consumer name of the worker that claimed this attempt (ticket 18.3). On a reclaimed step the `lost` attempt and its successor carry different worker ids — the crash-recovery evidence. Absent when no identity was recorded. */
+            worker_id?: string;
             /** @description Token accounting for a successful llm attempt (ticket 8.6); absent for every other step type and outcome. Feeds M10's cost ledger. On a response-cache hit (ticket 9.5) the attempt carries the counterfactual "would-have-cost" usage marked cache_hit=true — the tokens were not spent, so this records the savings rather than real usage. */
             usage?: {
                 /** Format: int64 */
@@ -2078,6 +2084,7 @@ export interface components {
             step_id: string;
             claim_id: string;
             attempt: number;
+            worker_id?: string;
         };
         StepSucceeded: {
             step_id: string;

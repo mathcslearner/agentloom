@@ -1241,13 +1241,13 @@ Reuse builder node components with status skins (pending/ready/running/succeeded
 - [x] Planner expansion animates in with provenance badge; layout remains stable (no full reshuffle) *(`dashboard-graph.spec.ts` submits a planner-with-warmup run, asserts `work_a`/`work_b` appear live with `data-origin-kind="planner"` + a provenance badge, and that the authored `gather` node's canvas transform is byte-identical before and after the expansion; sticky layout is unit-proven in `layout.test.ts`)*
 - [x] Crash demo visible: kill a worker → node flips retrying → running on another worker (scripted e2e against compose) *(`dashboard-crash.spec.ts`, gated behind `AGENTLOOM_E2E_CRASH=1`: SIGKILLs the PEL lease holder and asserts the node shows `data-reclaims="1"` + a fresh attempt live, then the run completes on the survivor — our crash semantics is reclaim/takeover rather than a plain retry. Also fixed a latent backend bug this surfaced: the run WS live Tailer failed to re-decode `graph_expanded` (the `dag.StepConfig` interface), stalling any live-tailed expansion — `event.GraphExpanded.UnmarshalJSON` now routes the delta through `dag.DecodePlanOutput`)*
 
-#### 18.3 — Step inspector
+#### 18.3 — Step inspector ✅
 **Depends on:** 18.2, 7.4, 11.4
 Inspector tabs per selected node: **Overview** (timings, attempts timeline, model used incl. downgrades, idempotency key, claim/worker history), **Output** (JSON viewer), **Logs** (per-attempt via 7.4 API, level filter, follow mode), **Validation** (verdicts, issues, and a diff view of semantic-retry prompt augmentations), **Cost** (per-attempt breakdown incl. overhead + cache savings).
 **Done when:**
-- [ ] All tabs render from both fixtures and a live run
-- [ ] Semantic-retry diff view shows prompt deltas between attempts (the killer demo — e2e asserted)
-- [ ] Reclaimed step shows both workers in the claim history
+- [x] All tabs render from both fixtures and a live run *(five tabs in `src/components/dashboard/inspector/`; `inspector-tabs.test.tsx` renders all tabs from the committed Go goldens `internal/api/testdata/run_{detail,cost}_fixture.json` + `step_logs_fixture.json`, and the Playwright `dashboard-inspector.spec.ts` walks every tab live against a compose semantic-retry run)*
+- [x] Semantic-retry diff view shows prompt deltas between attempts (the killer demo — e2e asserted) *(the pure `diff.ts` LCS + `inspector.ts` `effectivePrompts`/`promptDiff` reconstruct each attempt's effective prompt exactly as `LLMExecutor.WithFeedback` does; the `prompt-diff` panel carries `data-added-lines`/`data-deleted-lines`; `dashboard-inspector.spec.ts` asserts added>0, deleted=0, and that the added lines carry the feedback text)*
+- [x] Reclaimed step shows both workers in the claim history *(migration 0028 stamps `step_attempts.worker_id` at claim; `AttemptView.worker_id` + the `step_claimed.worker_id` event field; `claimHistory`/`workerIds` union the attempts with live claim events; the fixture render test and the gated crash-spec extension assert both worker ids)*
 
 #### 18.4 — Live cost meter & budget UX
 **Depends on:** 18.3, 10.5

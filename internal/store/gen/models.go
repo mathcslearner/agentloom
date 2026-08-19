@@ -214,6 +214,7 @@ type StepAttempt struct {
 	Verdict    json.RawMessage
 	Repair     json.RawMessage
 	Feedback   json.RawMessage
+	WorkerID   *string
 }
 
 type StepLog struct {

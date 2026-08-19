@@ -8,16 +8,17 @@
  */
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { RunController, type RunDashboardState } from "@/lib/dashboard/run-controller";
-import { createRunStream, fetchRunGraph } from "@/lib/dashboard/streams";
+import { createRunStream, fetchRun, fetchRunGraph } from "@/lib/dashboard/streams";
 import { useRuntimeConfig } from "@/lib/runtime-config";
 
-export function useRunController(runId: string): RunDashboardState {
+export function useRunController(runId: string): { state: RunDashboardState; controller: RunController } {
   const { apiPublicUrl } = useRuntimeConfig();
   const controller = useMemo(
     () =>
       new RunController(
         (handlers) => createRunStream(apiPublicUrl, runId, handlers),
         () => fetchRunGraph(runId),
+        () => fetchRun(runId),
       ),
     [apiPublicUrl, runId],
   );
@@ -25,5 +26,6 @@ export function useRunController(runId: string): RunDashboardState {
     controller.start();
     return () => controller.stop();
   }, [controller]);
-  return useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
+  const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
+  return { state, controller };
 }

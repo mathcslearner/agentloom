@@ -4,6 +4,15 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [react()],
+  server: {
+    fs: {
+      // The inspector tests read the committed Go goldens under
+      // internal/api/testdata (repo root, outside web/) — the exact API
+      // contract they render (ticket 18.3). Allow the monorepo root so the
+      // Vite fs sandbox does not deny them.
+      allow: [fileURLToPath(new URL("../../..", import.meta.url))],
+    },
+  },
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

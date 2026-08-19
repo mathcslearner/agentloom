@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mathcslearner/agentloom/internal/dag"
+	"github.com/mathcslearner/agentloom/internal/exec/effects"
 	"github.com/mathcslearner/agentloom/internal/obs/log"
 	obstrace "github.com/mathcslearner/agentloom/internal/obs/trace"
 	"github.com/mathcslearner/agentloom/internal/store"
@@ -538,6 +539,9 @@ func buildRunResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge, att
 		if a.Outcome != nil {
 			v.Outcome = *a.Outcome
 		}
+		if a.WorkerID != nil {
+			v.WorkerID = *a.WorkerID
+		}
 		byStep[a.StepID] = append(byStep[a.StepID], v)
 	}
 
@@ -580,6 +584,8 @@ func buildRunResponse(run gen.Run, steps []gen.RunStep, edges []gen.RunEdge, att
 			FinishedAt:         s.FinishedAt,
 			Attempts:           byStep[s.StepID],
 			Validation:         summarizeVerdicts(byStep[s.StepID]),
+			Config:             s.Config,
+			IdempotencyKey:     effects.Key(run.ID, s.StepID),
 		})
 	}
 	for _, e := range edges {

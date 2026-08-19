@@ -3,10 +3,12 @@
 
 -- feedback is the semantic-retry critique this attempt was given (ticket
 -- 11.4), copied off the step's pending run_steps.feedback at claim; NULL on a
--- first attempt or a step with no semantic policy.
+-- first attempt or a step with no semantic policy. worker_id is the claiming
+-- worker's consumer name (ticket 18.3); NULL when the worker records no
+-- identity.
 -- name: CreateStepAttempt :one
-INSERT INTO step_attempts (run_id, step_id, attempt_no, claim_id, started_at, feedback)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO step_attempts (run_id, step_id, attempt_no, claim_id, started_at, feedback, worker_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- FinishStepAttempt closes an attempt with its outcome; called by the

@@ -1,0 +1,139 @@
+{
+  "run_id": "22222222-2222-2222-2222-222222222222",
+  "summary": {
+    "spent_nano_usd": 4200000,
+    "saved_nano_usd": 300000,
+    "spent_usd": "0.0042",
+    "saved_usd": "0.0003",
+    "budget_nano_usd": 100000000,
+    "budget_usd": "0.1",
+    "on_budget_exceeded": "park"
+  },
+  "by_step": [
+    {
+      "step_id": "draft",
+      "entries": 3,
+      "spent_nano_usd": 3000000,
+      "saved_nano_usd": 0,
+      "overhead_nano_usd": 1000000,
+      "spent_usd": "0.003",
+      "saved_usd": "0",
+      "overhead_usd": "0.001"
+    },
+    {
+      "step_id": "summarize",
+      "entries": 2,
+      "spent_nano_usd": 1200000,
+      "saved_nano_usd": 300000,
+      "overhead_nano_usd": 0,
+      "spent_usd": "0.0012",
+      "saved_usd": "0.0003",
+      "overhead_usd": "0"
+    }
+  ],
+  "by_resource": [
+    {
+      "resource": "mock:sim-1",
+      "entries": 2,
+      "input_tokens": 52,
+      "output_tokens": 19,
+      "spent_nano_usd": 2000000,
+      "saved_nano_usd": 0,
+      "spent_usd": "0.002",
+      "saved_usd": "0"
+    },
+    {
+      "resource": "mock:cheap",
+      "entries": 1,
+      "input_tokens": 30,
+      "output_tokens": 6,
+      "spent_nano_usd": 1200000,
+      "saved_nano_usd": 300000,
+      "spent_usd": "0.0012",
+      "saved_usd": "0.0003"
+    }
+  ],
+  "entries": [
+    {
+      "step_id": "draft",
+      "attempt": 1,
+      "entry": "0",
+      "resource": "mock:sim-1",
+      "usage": {
+        "input_tokens": 12,
+        "output_tokens": 8
+      },
+      "rate": {
+        "input_per_mtok": 0.5,
+        "output_per_mtok": 1.5
+      },
+      "rate_source": "catalog",
+      "cache_hit": false,
+      "overhead": false,
+      "spent_nano_usd": 1000000,
+      "saved_nano_usd": 0,
+      "created_at": "2026-08-18T09:00:04Z"
+    },
+    {
+      "step_id": "draft",
+      "attempt": 2,
+      "entry": "0",
+      "resource": "mock:sim-1",
+      "usage": {
+        "input_tokens": 40,
+        "output_tokens": 11
+      },
+      "rate": {
+        "input_per_mtok": 0.5,
+        "output_per_mtok": 1.5
+      },
+      "rate_source": "catalog",
+      "cache_hit": false,
+      "overhead": false,
+      "spent_nano_usd": 1000000,
+      "saved_nano_usd": 0,
+      "created_at": "2026-08-18T09:00:10Z"
+    },
+    {
+      "step_id": "draft",
+      "attempt": 2,
+      "entry": "judge:0",
+      "resource": "mock:cheap",
+      "usage": {
+        "input_tokens": 20,
+        "output_tokens": 4
+      },
+      "rate": {
+        "input_per_mtok": 0.1,
+        "output_per_mtok": 0.2
+      },
+      "rate_source": "catalog",
+      "cache_hit": false,
+      "overhead": true,
+      "spent_nano_usd": 1000000,
+      "saved_nano_usd": 0,
+      "created_at": "2026-08-18T09:00:10Z"
+    },
+    {
+      "step_id": "summarize",
+      "attempt": 1,
+      "entry": "0",
+      "resource": "mock:cheap",
+      "usage": {
+        "input_tokens": 30,
+        "output_tokens": 6,
+        "cache_hit": true
+      },
+      "rate": {
+        "input_per_mtok": 0.1,
+        "output_per_mtok": 0.2
+      },
+      "rate_source": "catalog",
+      "cache_hit": true,
+      "overhead": false,
+      "spent_nano_usd": 0,
+      "saved_nano_usd": 300000,
+      "created_at": "2026-08-18T09:00:24Z"
+    }
+  ]
+}

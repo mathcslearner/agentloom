@@ -227,6 +227,18 @@ type StepView struct {
 	StartedAt          *time.Time    `json:"started_at,omitempty"`
 	FinishedAt         *time.Time    `json:"finished_at,omitempty"`
 	Attempts           []AttemptView `json:"attempts,omitempty"`
+	// Config is the step's materialized configuration (run_steps.config), the
+	// same JSON the executor was handed after templating was resolved (ticket
+	// 18.3). The inspector reads it for the model call's authored prompt so it
+	// can reconstruct each semantic-retry attempt's effective prompt and diff
+	// the feedback augmentation between attempts. Emitted verbatim; absent for
+	// a step with no config.
+	Config json.RawMessage `json:"config,omitempty"`
+	// IdempotencyKey is the step's stable side-effect idempotency key (ticket
+	// 5.5): a derived UUIDv5 over (run_id, step_id), identical across every
+	// attempt/retry/reclaim/takeover. Shown in the inspector so an operator can
+	// correlate a step with the external effect it guards. Always present.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	// Validation is the per-step output-validation summary (ticket 11.6,
 	// ADR-013): a compact roll-up of the step's attempt verdicts (pass/fail
 	// counts, the latest verdict, and a per-validator breakdown), so a client
@@ -285,6 +297,12 @@ type AttemptView struct {
 	ClaimID string          `json:"claim_id"`
 	Outcome string          `json:"outcome,omitempty"`
 	Error   json.RawMessage `json:"error,omitempty"`
+	// WorkerID is the consumer name of the worker that claimed this attempt
+	// (ticket 18.3): the inspector's claim/worker history, and — on a
+	// reclaimed step — the evidence that a `lost` attempt and its successor
+	// ran on different workers. Absent when no identity was recorded (a
+	// pre-18.3 attempt, or a programmatic claim).
+	WorkerID string `json:"worker_id,omitempty"`
 	// Usage is the attempt's token accounting, present only on a
 	// successful llm attempt (ticket 8.6): {input_tokens, output_tokens}.
 	// Absent for every other step type and outcome.

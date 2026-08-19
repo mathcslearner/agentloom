@@ -86,5 +86,18 @@ test.describe(() => {
 
     // …and the run completes on the survivor.
     await expect(page.getByTestId("run-detail")).toHaveAttribute("data-run-status", "succeeded", { timeout: 90_000 });
+
+    // 18.3 DoD-3: the inspector's claim history names both workers — the killed
+    // lease holder (the displaced `lost` attempt) and the survivor that took over.
+    await node.click();
+    await expect(page.getByTestId("inspector-pane")).toHaveAttribute("data-step-id", "long_task");
+    const workers = await page
+      .getByTestId("claim-history")
+      .locator("tr[data-worker]")
+      .evaluateAll((rows) => rows.map((r) => r.getAttribute("data-worker")).filter((w): w is string => !!w));
+    const distinct = new Set(workers);
+    expect(distinct.size, `claim history should name two distinct workers, saw ${[...distinct].join(", ")}`).toBeGreaterThanOrEqual(2);
+    // The killed consumer is one of them (the displaced holder).
+    expect(workers.some((w) => holder.includes(w) || w.includes(holder))).toBe(true);
   });
 });

@@ -655,6 +655,59 @@ new dep `elkjs` (lazy-loaded so the builder route doesn't pay for it).
   log follow + semantic-retry diff (18.3), the cost meter/budget UX (18.4), the
   approval inbox (18.5), and DLQ/ops views (18.6).
 
+### Step inspector (as built, 18.3)
+
+The 18.1 inspector placeholder becomes a five-tab pane
+(`src/components/dashboard/inspector/`): Overview, Output, Logs, Validation,
+Cost, over the selected step. Entirely under `web/app` (plus the ADR-018 backend
+additions); the pure derivations sit under the app's no-React `pure/` boundary.
+
+- **Pure derivations, fixture-tested** (`pure/dashboard/inspector.ts`,
+  `inspector-cost.ts`, `logs.ts`, `diff.ts`). Each tab's content is a pure
+  function of the step's `StepView` (attempts, config, verdicts) plus the live
+  event feed — `attemptTimeline`/`claimHistory`/`workerIds`/`modelHistory`/
+  `effectivePrompts`/`verdictRows`/`stepCost`/`appendLogPage`. They are unit-
+  tested against the committed Go goldens (`inspector-fixtures.ts` reads
+  `internal/api/testdata/run_{detail,cost}_fixture.json` + `step_logs_fixture.json`
+  via `fs`), so a drift in the backend projection regenerates a golden and shows
+  up here — DoD-1's "render from fixtures" half, over the real wire shape.
+
+- **The semantic-retry prompt diff (the killer demo, DoD-2).** `diff.ts` is a
+  dependency-free line-level LCS; `effectivePrompts` reconstructs each attempt's
+  effective prompt exactly as the engine's `LLMExecutor.WithFeedback` does — base
+  authored prompt + the attempt's `feedback.text` (prompt-suffix or trailing user
+  message). The base is unrendered (`${{ }}` refs visible) but identical across a
+  step's semantic attempts, so `promptDiff(step, k, k+1)` is exactly the feedback
+  augmentation: the `prompt-diff` panel carries `data-added-lines`/
+  `data-deleted-lines`, and the e2e asserts added>0, deleted=0, feedback text
+  present.
+
+- **Claim/worker history (DoD-3).** `claimHistory` unions the step's attempts
+  (each carrying `worker_id`, ADR-018 §18.3) with any live
+  `step_claimed`/`step_reclaimed` events not yet in a refetched attempt row, so a
+  reclaimed step names both the displaced holder and the survivor before *and*
+  after the next detail refresh.
+
+- **Live view refresh + fetches** (`useStepInspector.ts`, `run-controller.ts`).
+  The step map (18.1) carries only event-derived status; the full `StepView`
+  (attempts/verdicts) is refetched via `GET /v1/runs/{id}` when the selected step
+  advances past its captured `viewSeq` — `mergeRunResponse` folds the fresher
+  body into `StepState.view` while *preserving* the event-derived status (the
+  body never regresses live status; a stale body is a no-op under the seq guard).
+  Cost is fetched from `GET /v1/runs/{id}/cost`, refetched on a `cost_updated`
+  event. Logs page from `GET .../logs` and, in follow mode while the attempt is
+  non-terminal, poll the tail — logs stay poll-based in v1 (no WS log channel, the
+  M18 backlog decision).
+
+- **Decisions:** pure derivations tested against the Go goldens (the strongest
+  form of "render from fixtures"); worker identity persisted on the attempt (a
+  claim id is a fence, not an identity); `config` exposed on the detail body for
+  the diff rather than persisting rendered prompts per attempt (a bigger
+  migration, larger rows — the delta is exact, the base approximate); a
+  dependency-free diff + JSON viewer under the pure boundary; logs poll-based.
+  **Accepted residuals:** the cost meter/budget UX (18.4), the approval inbox
+  (18.5), and DLQ/ops views (18.6).
+
 ## Consequences
 
 - **The serialization boundary is a single, testable leaf.** The whole

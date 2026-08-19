@@ -551,6 +551,45 @@ changes the event contract or the WS protocol.
   projections of already-persisted data (`buildRunGraphResponse` reads them off
   the run/edge rows) — no migration, no new read.
 
+### Step inspector — worker identity on attempts & detail-body additions (as built, 18.3)
+
+The tabbed step inspector (ROADMAP 18.3) reads a step's durable projection to
+render its Overview/Output/Logs/Validation/Cost tabs. Three additive backend
+facilities support it; none changes the event or WS contract.
+
+- **`step_attempts.worker_id` (migration 0028) + `step_claimed.worker_id`.** The
+  DoD requires a reclaimed step to name *both* workers — the one that lost the
+  lease and the one that took over. A `claim_id` is a fencing token, not an
+  identity, so the claiming worker's consumer name (`queue.NewConsumerName`,
+  already on every log line as `worker_id`) is now stamped on the attempt row by
+  the claim CAS (`ClaimStepArgs.WorkerID`, threaded through the one
+  `CreateStepAttempt` insert both the fresh-claim and takeover-then-reclaim paths
+  flow through) and, additively, on the `step_claimed` event payload
+  (`worker_id`, `omitempty`) so the inspector's claim history is event-sourced
+  live before the next detail refetch. `TestClaimStampsWorkerID` proves a
+  takeover + re-claim leaves two attempts naming both workers; an empty worker id
+  stores NULL (a programmatic claim). The `step_claimed.worker_id` schema
+  addition is on an append-only feed, so it is a safe additive wire change (the
+  16.5 two-layer drift regenerated `events.v1.json` and the TS client).
+
+- **`StepView.config` + `StepView.idempotency_key` on the run-detail body.** The
+  Validation tab's semantic-retry prompt diff (the killer demo) needs the model
+  call's *authored* prompt to reconstruct each attempt's effective prompt (base
+  prompt + the attempt's `feedback.text`, mirroring `LLMExecutor.WithFeedback`).
+  `config` is the materialized `run_steps.config` emitted verbatim (a pure
+  projection — the graph endpoint still carries no config, keeping 13.6's
+  "no config in nodes"); the base prompt is *unrendered* (`${{ }}` refs visible)
+  but identical across a step's semantic attempts, so the inter-attempt diff is
+  exactly the feedback augmentation. `idempotency_key` is the derived
+  `effects.Key(run_id, step_id)` (ticket 5.5) surfaced for correlation — a pure
+  read, no storage. Both are additive `StepView` fields.
+
+- **Exported Go goldens.** `internal/api/testdata/run_{detail,cost}_fixture.json`
+  and `step_logs_fixture.json` are the exact wire shapes the pure builders
+  produce (`TestRunDetailFixtureGolden` etc.), and the frontend inspector tests
+  read them directly — tying the tabs' rendering to the backend contract, the
+  13.6 `run_graph_fixture.json` precedent.
+
 ## Consequences
 
 - **The feed is a versioned, generator-backed contract.** `events.v1.json` is

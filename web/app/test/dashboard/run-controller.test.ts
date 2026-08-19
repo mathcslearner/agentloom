@@ -167,3 +167,38 @@ describe("RunController", () => {
     expect(ctrl.getSnapshot().topology.nodes.get("w#1")?.origin.kind).toBe("planner");
   });
 });
+
+describe("RunController.refreshViews (ticket 18.3)", () => {
+  it("folds a refetched detail body into step views without regressing status", async () => {
+    let fake!: FakeStream;
+    const body = {
+      run: makeRun({ event_seq: 5, status: "running" }),
+      steps: [makeStep({ id: "a", status: "succeeded", attempt_count: 2, attempts: [{ attempt: 1, claim_id: "c1", outcome: "lost", worker_id: "w1" }, { attempt: 2, claim_id: "c2", outcome: "succeeded", worker_id: "w2" }] })],
+    };
+    const ctrl = new RunController(
+      (h) => (fake = new FakeStream(h)),
+      undefined,
+      async () => body as never,
+    );
+    ctrl.start();
+    fake.snapshot(makeRun({ event_seq: 0 }));
+    fake.caughtUp(0);
+    fake.event(makeEnv("step_succeeded", 5, { attempt: 2 }, "a"));
+    expect(ctrl.getSnapshot().run?.steps.get("a")?.view?.attempts).toBeUndefined();
+
+    await ctrl.refreshViews();
+    const step = ctrl.getSnapshot().run?.steps.get("a");
+    expect(step?.view?.attempts).toHaveLength(2);
+    // Live status preserved; view populated.
+    expect(step?.status).toBe("succeeded");
+    expect(step?.viewSeq).toBe(5);
+  });
+
+  it("is a no-op without a run fetcher", async () => {
+    let fake!: FakeStream;
+    const ctrl = new RunController((h) => (fake = new FakeStream(h)));
+    ctrl.start();
+    fake.snapshot(makeRun({ event_seq: 0 }));
+    await expect(ctrl.refreshViews()).resolves.toBeUndefined();
+  });
+});

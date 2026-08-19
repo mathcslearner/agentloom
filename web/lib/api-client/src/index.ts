@@ -34,6 +34,15 @@ export type RunStatus = Schema<"RunStatus">;
 export type DefinitionView = Schema<"DefinitionView">;
 export type ListDefinitionsResponse = Schema<"ListDefinitionsResponse">;
 export type EdgeView = Schema<"EdgeView">;
+export type AttemptView = Schema<"AttemptView">;
+export type ValidationSummary = Schema<"ValidationSummary">;
+export type ValidatorSummary = Schema<"ValidatorSummary">;
+export type RunCostResponse = Schema<"RunCostResponse">;
+export type CostEntryView = Schema<"CostEntryView">;
+export type CostByStepView = Schema<"CostByStepView">;
+export type CostByResourceView = Schema<"CostByResourceView">;
+export type StepLogsResponse = Schema<"StepLogsResponse">;
+export type StepLogLineView = Schema<"StepLogLineView">;
 export type PluginInfoView = Schema<"PluginInfo">;
 export type ListPluginsResponse = Schema<"ListPluginsResponse">;
 // The run-graph introspection view (ticket 13.6/18.2, ADR-015) — the dashboard's

@@ -155,13 +155,13 @@ export through the DOM, the nav guard) and `e2e/save-submit.spec.ts` (compose �
 the full import → edit → save v1/v2 → version-conflict → save anyway → submit
 loop, and open-in-builder).
 
-## Live execution dashboard (M18.1–18.2)
+## Live execution dashboard (M18.1–18.3)
 
 The dashboard watches runs execute live over the event feed
 (`@agentloom/engine-client`, ADR-018). 18.1 shipped the run list and the
-run-detail scaffold; 18.2 replaced the steps pane with the live DAG canvas.
-Later M18 tickets fill in the step inspector, cost meter, approval inbox, and
-ops views.
+run-detail scaffold; 18.2 replaced the steps pane with the live DAG canvas; 18.3
+filled in the tabbed step inspector. Later M18 tickets add the cost meter,
+approval inbox, and ops views.
 
 - **`/runs`** — a runs table with live status chips over the multi-run firehose,
   status/definition/time filters (synced to the URL), keyset pagination, a
@@ -171,10 +171,30 @@ ops views.
   connection), the live **DAG canvas** (18.2 — builder node components with
   run-status skins, animated active edges, sticky elkjs layout honoring `ui`
   hints, planner/map/loop injections animating in with a provenance badge, and
-  loop/map instances grouped into collapsible containers), a basic **step
-  inspector**, and the collapsible **event timeline strip** (category filtering,
-  click-to-select a step). State loads snapshot → backfill → live-tail through
-  the 16.5 client and resumes across reconnects with no gaps.
+  loop/map instances grouped into collapsible containers), the tabbed **step
+  inspector** (18.3), and the collapsible **event timeline strip** (category
+  filtering, click-to-select a step). State loads snapshot → backfill →
+  live-tail through the 16.5 client and resumes across reconnects with no gaps.
+
+### The step inspector (18.3)
+
+Selecting a node opens a five-tab pane
+(`src/components/dashboard/inspector/`): **Overview** (timings, attempt
+timeline, model chain incl. downgrades, idempotency key, claim/worker history),
+**Output** (a dependency-free JSON tree viewer), **Logs** (per-attempt via the
+7.4 API, level filter, follow mode — logs are poll-based in v1), **Validation**
+(per-attempt verdicts + issues, and the **semantic-retry prompt diff** — the
+killer demo: the effective prompts of two attempts diffed, showing the feedback
+augmentation as pure additions), and **Cost** (per-attempt ledger rows incl.
+`llm_judge` overhead and cache savings). The tab content is derived by pure
+functions under `src/lib/pure/dashboard/{inspector,inspector-cost,logs,diff}.ts`,
+unit-tested against the committed Go goldens `internal/api/testdata/run_{detail,cost}_fixture.json`
++ `step_logs_fixture.json`. The full `StepView` (attempts/verdicts) is refetched
+from `GET /v1/runs/{id}` as the selected step advances (`useStepInspector`), so
+new attempts appear without a reload. E2e: `e2e/dashboard-inspector.spec.ts`
+walks every tab against a compose semantic-retry run and asserts the prompt
+diff; the gated `dashboard-crash.spec.ts` asserts the reclaimed step's claim
+history names both workers.
 
 ### The live DAG (18.2)
 

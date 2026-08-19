@@ -1,0 +1,34 @@
+{
+  "run_id": "22222222-2222-2222-2222-222222222222",
+  "step_id": "draft",
+  "attempt": 2,
+  "lines": [
+    {
+      "seq": 1,
+      "level": "info",
+      "message": "calling model",
+      "fields": {
+        "model": "mock/sim-1"
+      },
+      "trace_id": "0af7651916cd43dd8448eb211c80319c",
+      "logged_at": "2026-08-18T09:00:01Z"
+    },
+    {
+      "seq": 2,
+      "level": "debug",
+      "message": "prompt assembled",
+      "fields": {
+        "chars": 41
+      },
+      "logged_at": "2026-08-18T09:00:01.001Z"
+    },
+    {
+      "seq": 4,
+      "level": "warn",
+      "message": "retrying after transient error",
+      "logged_at": "2026-08-18T09:00:01.002Z"
+    }
+  ],
+  "truncated": true,
+  "dropped_lines": 1
+}

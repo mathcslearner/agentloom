@@ -44,6 +44,10 @@ export interface StepState {
   /** The last-known full step projection (from a snapshot); absent for a step
    * injected mid-run by a `graph_expanded` event before the next snapshot. */
   view?: StepView;
+  /** The run's `event_seq` when `view` was captured (ticket 18.3). A refetched
+   * detail body replaces `view` only when its `event_seq` is at least this — so
+   * a stale body never clobbers a fresher one, mirroring the `asOf` guard. */
+  viewSeq?: number;
   /** Provenance for an injected step (origin step id + kind), for 18.2 badges. */
   origin?: { step: string; kind: string };
 }
@@ -71,9 +75,45 @@ export function fromSnapshot(snapshot: { run: RunView; steps: StepView[] }): Run
       // the seq guard keeps that idempotent.
       reclaims: 0,
       view: s,
+      viewSeq: snapshot.run.event_seq,
     });
   }
   return { run: { ...snapshot.run }, steps, asOf: snapshot.run.event_seq };
+}
+
+/**
+ * Fold a refetched run-detail body into the state's step views (ticket 18.3):
+ * the inspector fetches `GET /v1/runs/{id}` to pick up new attempts/verdicts.
+ * A step's `view` is replaced only when the body's `event_seq` is at least the
+ * captured `viewSeq` (never regress to a stale body), and the live
+ * event-derived fields (`status`, `attempt`, `reclaims`, `lastEvent*`) are
+ * preserved — the detail body is authoritative for `view` only, the event feed
+ * for live status. Steps present live but absent from the body (injected after
+ * the body was read) keep their event-derived state.
+ */
+export function mergeRunResponse(
+  state: RunState,
+  body: { run: RunView; steps: StepView[] },
+): RunState {
+  const bodySeq = body.run.event_seq;
+  const steps = new Map(state.steps);
+  for (const s of body.steps) {
+    const prev = steps.get(s.id);
+    if (prev && prev.viewSeq !== undefined && prev.viewSeq > bodySeq) continue;
+    steps.set(s.id, {
+      id: s.id,
+      type: prev?.type || s.type,
+      status: prev?.status ?? (s.status as DisplayStepStatus),
+      attempt: prev?.attempt ?? s.attempt_count,
+      reclaims: prev?.reclaims ?? 0,
+      lastEventType: prev?.lastEventType,
+      lastEventSeq: prev?.lastEventSeq,
+      origin: prev?.origin,
+      view: s,
+      viewSeq: bodySeq,
+    });
+  }
+  return { ...state, steps };
 }
 
 /** Map a run-lifecycle event to a run status; undefined ⇒ no run-status change. */

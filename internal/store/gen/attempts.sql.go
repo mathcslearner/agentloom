@@ -68,9 +68,9 @@ func (q *Queries) CountValidationFailures(ctx context.Context, arg CountValidati
 
 const createStepAttempt = `-- name: CreateStepAttempt :one
 
-INSERT INTO step_attempts (run_id, step_id, attempt_no, claim_id, started_at, feedback)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair, feedback
+INSERT INTO step_attempts (run_id, step_id, attempt_no, claim_id, started_at, feedback, worker_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair, feedback, worker_id
 `
 
 type CreateStepAttemptParams struct {
@@ -80,13 +80,16 @@ type CreateStepAttemptParams struct {
 	ClaimID   uuid.UUID
 	StartedAt *time.Time
 	Feedback  json.RawMessage
+	WorkerID  *string
 }
 
 // One row per execution try. Outcome/error/finished_at are written by the
 // completion transitions (transitions.go, ticket 2.6).
 // feedback is the semantic-retry critique this attempt was given (ticket
 // 11.4), copied off the step's pending run_steps.feedback at claim; NULL on a
-// first attempt or a step with no semantic policy.
+// first attempt or a step with no semantic policy. worker_id is the claiming
+// worker's consumer name (ticket 18.3); NULL when the worker records no
+// identity.
 func (q *Queries) CreateStepAttempt(ctx context.Context, arg CreateStepAttemptParams) (StepAttempt, error) {
 	row := q.db.QueryRow(ctx, createStepAttempt,
 		arg.RunID,
@@ -95,6 +98,7 @@ func (q *Queries) CreateStepAttempt(ctx context.Context, arg CreateStepAttemptPa
 		arg.ClaimID,
 		arg.StartedAt,
 		arg.Feedback,
+		arg.WorkerID,
 	)
 	var i StepAttempt
 	err := row.Scan(
@@ -110,6 +114,7 @@ func (q *Queries) CreateStepAttempt(ctx context.Context, arg CreateStepAttemptPa
 		&i.Verdict,
 		&i.Repair,
 		&i.Feedback,
+		&i.WorkerID,
 	)
 	return i, err
 }
@@ -160,7 +165,7 @@ func (q *Queries) FinishStepAttempt(ctx context.Context, arg FinishStepAttemptPa
 }
 
 const listRunStepAttempts = `-- name: ListRunStepAttempts :many
-SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair, feedback FROM step_attempts
+SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair, feedback, worker_id FROM step_attempts
 WHERE run_id = $1
 ORDER BY step_id, attempt_no
 `
@@ -189,6 +194,7 @@ func (q *Queries) ListRunStepAttempts(ctx context.Context, runID uuid.UUID) ([]S
 			&i.Verdict,
 			&i.Repair,
 			&i.Feedback,
+			&i.WorkerID,
 		); err != nil {
 			return nil, err
 		}
@@ -201,7 +207,7 @@ func (q *Queries) ListRunStepAttempts(ctx context.Context, runID uuid.UUID) ([]S
 }
 
 const listStepAttempts = `-- name: ListStepAttempts :many
-SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair, feedback FROM step_attempts
+SELECT run_id, step_id, attempt_no, claim_id, outcome, error, started_at, finished_at, usage, verdict, repair, feedback, worker_id FROM step_attempts
 WHERE run_id = $1 AND step_id = $2
 ORDER BY attempt_no
 `
@@ -233,6 +239,7 @@ func (q *Queries) ListStepAttempts(ctx context.Context, arg ListStepAttemptsPara
 			&i.Verdict,
 			&i.Repair,
 			&i.Feedback,
+			&i.WorkerID,
 		); err != nil {
 			return nil, err
 		}

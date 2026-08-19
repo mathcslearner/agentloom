@@ -73,6 +73,7 @@ func (e *Engine) Handle(ctx context.Context, d queue.Delivery) error {
 			StepID:    d.Envelope.StepID,
 			Now:       now,
 			TraceSpan: attemptSpan,
+			WorkerID:  e.workerID,
 		})
 		return err
 	})
@@ -145,6 +146,7 @@ func (e *Engine) takeoverAndClaim(ctx context.Context, d queue.Delivery, holderC
 		step, origin, cerr = store.ClaimStepWithOrigin(ctx, q, store.ClaimStepArgs{
 			RunID: d.Envelope.RunID, StepID: d.Envelope.StepID, Now: now,
 			TraceSpan: attemptSpan,
+			WorkerID:  e.workerID,
 		})
 		return cerr
 	})

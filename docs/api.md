@@ -145,6 +145,21 @@ curl -s http://127.0.0.1:8080/v1/runs/$RUN_ID \
 `transport_failures` and `validation_failures` on each step count the two
 disjoint retry budgets separately (ADR-006 transport vs ADR-013 semantic).
 
+Each step also carries `idempotency_key` (its stable side-effect key, ticket
+5.5 — identical across every attempt/retry/reclaim/takeover) and `config` (the
+materialized configuration handed to the executor, ticket 18.3 — the dashboard
+step inspector reads it for a model call's authored prompt). Each attempt row
+(`attempts[]`) carries `worker_id`, the consumer name of the worker that
+claimed it (ticket 18.3): on a reclaimed step the `lost` attempt and its
+successor name different workers — the crash-recovery evidence the inspector's
+claim history renders.
+
+```bash
+curl -s http://127.0.0.1:8080/v1/runs/$RUN_ID \
+  -H "Authorization: Bearer $API_KEY" \
+  | jq '.steps[] | {id, idempotency_key, attempts: [.attempts[] | {attempt, outcome, worker_id}]}'
+```
+
 A definition that fails validation is a `400` with path-qualified
 issues:
 

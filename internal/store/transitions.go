@@ -54,6 +54,12 @@ type ClaimStepArgs struct {
 	// takeovers link back to the attempt they re-execute. Empty means no
 	// context (tracing off).
 	TraceSpan string
+	// WorkerID is the claiming worker's consumer name (ticket 18.3),
+	// stamped onto the attempt row and the step_claimed event so the step
+	// inspector's claim/worker history is a durable projection. Empty means
+	// no identity (the queue worker always supplies one; a programmatic
+	// claim may not).
+	WorkerID string
 }
 
 // ClaimOrigin describes the row a winning claim CAS consumed: the step's
@@ -178,12 +184,14 @@ func ClaimStepWithOrigin(ctx context.Context, q Querier, args ClaimStepArgs) (ge
 		// so the executor sees it and the attempt history is diffable. It stays
 		// on the step row until success/DLQ, so a takeover re-claim sees it too.
 		Feedback: step.Feedback,
+		WorkerID: nullableText(args.WorkerID),
 	})
 	if err != nil {
 		return gen.RunStep{}, origin, wrapErr(op+": insert attempt", err)
 	}
 	if err := appendEvent(ctx, gq, op, args.RunID, event.StepClaimed{
 		StepID: args.StepID, ClaimID: claimID.String(), Attempt: step.AttemptCount,
+		WorkerID: args.WorkerID,
 	}); err != nil {
 		return gen.RunStep{}, origin, err
 	}
