@@ -541,7 +541,10 @@ export interface paths {
          *     serially, so concurrent appenders get consecutive versions. The
          *     body's spec `name` must match the path — a mismatch is a `400`,
          *     not a rename. An unknown name is a `404` pointing at
-         *     `POST /v1/definitions`.
+         *     `POST /v1/definitions`. An optional `If-Match` header (the version
+         *     the client opened) is an optimistic-concurrency precondition: if the
+         *     name's latest version has advanced since, the append is refused with
+         *     `409 version_conflict` (a stale save) instead of silently forking.
          */
         post: operations["createDefinitionVersion"];
         delete?: never;
@@ -770,7 +773,7 @@ export interface components {
          * @description Stable machine-readable error code; renaming one is a breaking change.
          * @enum {string}
          */
-        ErrorCode: "invalid_request" | "invalid_definition" | "definition_not_found" | "run_not_found" | "step_not_found" | "key_not_found" | "unauthorized" | "forbidden" | "rate_limited" | "conflict" | "idempotency_key_conflict" | "not_found" | "method_not_allowed" | "internal" | "cache_unavailable" | "approval_not_found" | "approval_not_pending" | "approval_decision_invalid" | "stream_unavailable" | "bad_message" | "filter_invalid" | "subscription_limit" | "unknown_subscription";
+        ErrorCode: "invalid_request" | "invalid_definition" | "definition_not_found" | "run_not_found" | "step_not_found" | "key_not_found" | "unauthorized" | "forbidden" | "rate_limited" | "conflict" | "idempotency_key_conflict" | "version_conflict" | "not_found" | "method_not_allowed" | "internal" | "cache_unavailable" | "approval_not_found" | "approval_not_pending" | "approval_decision_invalid" | "stream_unavailable" | "bad_message" | "filter_invalid" | "subscription_limit" | "unknown_subscription";
         /** @description One path-qualified definition problem. */
         Issue: {
             /** @description The dag validation code; empty for codec-level errors. */
@@ -2733,6 +2736,8 @@ export interface components {
         DefinitionName: string;
         /** @description Client-chosen idempotency token, at most 200 bytes (longer is a `400`). Same key + same payload replays the original run (`200`, `reused: true`); same key + different payload is a `409` with code `idempotency_key_conflict`. Tokens are global across API keys. */
         IdempotencyKey: string;
+        /** @description Optimistic-concurrency precondition on a definition-version append (ticket 17.6): the version number the client opened the definition at, as a positive integer. If the name's latest version has advanced past it, the append is refused with `409 version_conflict`. Absent skips the check. */
+        IfMatchVersion: number;
         /** @description Page size; an integer in [1, 200]. */
         PageLimit: number;
         /** @description Opaque keyset cursor from the previous page's `next_cursor`; pass it back verbatim. A cursor from one list endpoint is not valid on another. Garbage is a `400`. */
@@ -3469,7 +3474,10 @@ export interface operations {
     createDefinitionVersion: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Optimistic-concurrency precondition on a definition-version append (ticket 17.6): the version number the client opened the definition at, as a positive integer. If the name's latest version has advanced past it, the append is refused with `409 version_conflict`. Absent skips the check. */
+                "If-Match"?: components["parameters"]["IfMatchVersion"];
+            };
             path: {
                 /** @description The definition name (the spec's `name` field). */
                 name: components["parameters"]["DefinitionName"];

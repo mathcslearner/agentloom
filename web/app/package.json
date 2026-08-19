@@ -24,6 +24,7 @@
     "@agentloom/api-client": "workspace:*",
     "@agentloom/engine-client": "workspace:*",
     "@agentloom/graphdef": "workspace:*",
+    "@radix-ui/react-dialog": "^1.1.4",
     "@radix-ui/react-slot": "^1.1.1",
     "@xyflow/react": "^12.4.2",
     "class-variance-authority": "^0.7.1",

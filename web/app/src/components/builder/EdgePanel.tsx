@@ -16,10 +16,18 @@ import { useProblemsCtx } from "@/lib/builder/problems-context";
 
 export function EdgePanel({ selected }: { selected: CanvasEdge }) {
   const patchEdge = useBuilderStore((s) => s.patchEdge);
+  const nodes = useBuilderStore((s) => s.nodes);
   const { problems } = useProblemsCtx();
   const edge = edgeData(selected).edge ?? { from: selected.source, target: selected.target };
   const isLoop = (edge as { type?: string }).type === "loop";
   const issues = problems.byEdge.get(selected.id) ?? [];
+
+  // A `decision` marker is meaningful only on a normal edge leaving a
+  // human_approval step (ADR-017 reject routing).
+  const sourceNode = nodes.find((n) => n.id === selected.source);
+  const sourceStep = (sourceNode?.data as { step?: { type?: string } } | undefined)?.step;
+  const fromApproval = sourceStep?.type === "human_approval";
+  const noProgress = (edge as { no_progress?: Record<string, unknown> }).no_progress;
 
   const set = (patch: Record<string, unknown>) => patchEdge(selected.id, patch);
 
@@ -80,17 +88,75 @@ export function EdgePanel({ selected }: { selected: CanvasEdge }) {
               <option value="fail">fail (dead-letter the loop)</option>
             </select>
           </div>
+
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              data-testid="edge-no-progress-toggle"
+              checked={noProgress !== undefined}
+              onChange={(e) =>
+                set({ no_progress: e.target.checked ? { policy: "proceed" } : undefined })
+              }
+            />
+            <span>No-progress guard (stop if the body output stops changing)</span>
+          </label>
+          {noProgress !== undefined ? (
+            <div className="space-y-3 border-l pl-3">
+              <div className="space-y-1">
+                <Label htmlFor="edge-np-step">Compared step (optional — defaults to the loop source)</Label>
+                <Input
+                  id="edge-np-step"
+                  data-testid="edge-np-step"
+                  value={String((noProgress as { step?: string }).step ?? "")}
+                  placeholder="body step id"
+                  onChange={(e) =>
+                    set({ no_progress: { ...noProgress, step: e.target.value === "" ? undefined : e.target.value } })
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="edge-np-policy">No-progress policy</Label>
+                <select
+                  id="edge-np-policy"
+                  data-testid="edge-np-policy"
+                  className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                  value={String((noProgress as { policy?: string }).policy ?? "proceed")}
+                  onChange={(e) => set({ no_progress: { ...noProgress, policy: e.target.value } })}
+                >
+                  <option value="proceed">proceed</option>
+                  <option value="fail">fail</option>
+                </select>
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : (
-        <div className="mt-3 space-y-1">
-          <Label htmlFor="edge-when">When (CEL guard, optional)</Label>
-          <Input
-            id="edge-when"
-            data-testid="edge-when"
-            value={String((edge as { when?: string }).when ?? "")}
-            placeholder="output.category == 'refund'"
-            onChange={(e) => set({ when: e.target.value === "" ? undefined : e.target.value })}
-          />
+        <div className="mt-3 space-y-3">
+          <div className="space-y-1">
+            <Label htmlFor="edge-when">When (CEL guard, optional)</Label>
+            <Input
+              id="edge-when"
+              data-testid="edge-when"
+              value={String((edge as { when?: string }).when ?? "")}
+              placeholder="output.category == 'refund'"
+              onChange={(e) => set({ when: e.target.value === "" ? undefined : e.target.value })}
+            />
+          </div>
+          {fromApproval ? (
+            <div className="space-y-1">
+              <Label htmlFor="edge-decision">Decision route (human_approval)</Label>
+              <select
+                id="edge-decision"
+                data-testid="edge-decision"
+                className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                value={String((edge as { decision?: string }).decision ?? "")}
+                onChange={(e) => set({ decision: e.target.value === "" ? undefined : e.target.value })}
+              >
+                <option value="">(any — fires on approve)</option>
+                <option value="approve">approve</option>
+                <option value="reject">reject</option>
+              </select>
+            </div>
+          ) : null}
         </div>
       )}
 

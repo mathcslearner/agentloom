@@ -64,6 +64,25 @@ func (e *IdempotencyMismatchError) Error() string {
 
 func (e *IdempotencyMismatchError) Unwrap() error { return ErrConflict }
 
+// VersionConflictError reports a CreateDefinitionVersion whose caller-supplied
+// expected base version (the `If-Match` precondition, ticket 17.6) no longer
+// matches the name's latest stored version — someone appended a version in
+// between (a stale save). The append is refused so the client can reconcile.
+// Latest is the current newest version; Expected is what the caller asserted.
+// Unwraps to ErrConflict.
+type VersionConflictError struct {
+	Name     string
+	Expected int32
+	Latest   int32
+}
+
+func (e *VersionConflictError) Error() string {
+	return fmt.Sprintf("definition %q version precondition failed: expected latest %d, but latest is %d",
+		e.Name, e.Expected, e.Latest)
+}
+
+func (e *VersionConflictError) Unwrap() error { return ErrConflict }
+
 // ConflictReason classifies why a transition was rejected.
 type ConflictReason string
 

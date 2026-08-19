@@ -36,7 +36,7 @@ const PASSTHROUGH_RESPONSE_HEADERS = [
 ];
 
 /** Request headers safe to forward to the backend. */
-const FORWARD_REQUEST_HEADERS = ["content-type", "accept", "idempotency-key"];
+const FORWARD_REQUEST_HEADERS = ["content-type", "accept", "idempotency-key", "if-match"];
 
 function envelope(code: string, message: string, status: number): NextResponse {
   return NextResponse.json({ error: { code, message } }, { status });

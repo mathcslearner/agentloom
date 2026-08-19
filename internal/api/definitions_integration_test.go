@@ -110,6 +110,44 @@ func TestDefinitionRegistryRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDefinitionVersionIfMatch exercises the 17.6 optimistic-concurrency
+// precondition: an append whose If-Match names a stale version is refused with
+// 409 version_conflict; one that names the current latest (or omits the header)
+// succeeds.
+func TestDefinitionVersionIfMatch(t *testing.T) {
+	t.Parallel()
+	_, srv, key := newServer(t)
+
+	createDef(t, srv, key, defBody(t, "guarded", "v1"))
+
+	// A concurrent append lands v2 (no precondition).
+	var v2 api.DefinitionResponse
+	if res := doAuth(t, srv, http.MethodPost, "/v1/definitions/guarded/versions", key, defBody(t, "guarded", "v2"), &v2); res.StatusCode != http.StatusCreated || v2.Version != 2 {
+		t.Fatalf("append v2 = %d (v%d), want 201 v2", res.StatusCode, v2.Version)
+	}
+
+	// A client that opened at v1 saves with If-Match: 1 — stale → 409.
+	var envelope api.ErrorBody
+	res := doAuthHdr(t, srv, http.MethodPost, "/v1/definitions/guarded/versions", key,
+		map[string]string{api.IfMatchHeader: "1"}, defBody(t, "guarded", "v3-stale"), &envelope)
+	if res.StatusCode != http.StatusConflict || envelope.Error.Code != api.ErrCodeVersionConflict {
+		t.Fatalf("stale save = %d/%q, want 409/version_conflict", res.StatusCode, envelope.Error.Code)
+	}
+
+	// Retrying with the current latest (2) succeeds and lands v3.
+	var v3 api.DefinitionResponse
+	if res := doAuthHdr(t, srv, http.MethodPost, "/v1/definitions/guarded/versions", key,
+		map[string]string{api.IfMatchHeader: "2"}, defBody(t, "guarded", "v3"), &v3); res.StatusCode != http.StatusCreated || v3.Version != 3 {
+		t.Fatalf("matched save = %d (v%d), want 201 v3", res.StatusCode, v3.Version)
+	}
+
+	// A non-integer If-Match is a 400.
+	if res := doAuthHdr(t, srv, http.MethodPost, "/v1/definitions/guarded/versions", key,
+		map[string]string{api.IfMatchHeader: "notanumber"}, defBody(t, "guarded", "v4"), nil); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad If-Match = %d, want 400", res.StatusCode)
+	}
+}
+
 func TestDefinitionValidationAndMisses(t *testing.T) {
 	t.Parallel()
 	_, srv, key := newServer(t)

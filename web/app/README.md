@@ -88,10 +88,9 @@ boundary, ADR-019).
 `/builder` is a React Flow canvas over `@agentloom/graphdef`. The palette adds
 any catalog step type (drag-to-create, or click / Enter); nodes carry typed
 connection handles (`in`; `out`/`loop`; `approve`/`reject` on approval steps);
-the store (zustand + zundo) gives undo/redo with drag-coalescing. Import/export,
-save & submit arrive in 17.6; a new node starts with an empty config. The
-presentational `StepNodeView` is reused by the M18 dashboard with run-status
-skins.
+the store (zustand + zundo) gives undo/redo with drag-coalescing. A new node
+starts with an empty config. The presentational `StepNodeView` is reused by the
+M18 dashboard with run-status skins.
 
 ## Schema-driven config panels (M17.4)
 
@@ -122,5 +121,36 @@ issue's own path points at** — a cycle's `edges[i]` opens the minimal edge
 inspector (`EdgePanel`) where it's fixed by marking the edge a loop — and
 `fitView`s to it; hovering previews the highlight. Invalid/highlighted nodes and
 edges get destructive/amber strokes. The toolbar shows `N errors · M warnings`
-and disables Submit while errors block it (the real submit flow is 17.6). Import/
-export/save/submit and full loop-edge authoring polish are 17.6.
+and disables Save/Submit while errors block them.
+
+## Import, export, save & submit (M17.6)
+
+The toolbar's action cluster (`BuilderActions`) owns the persistence flows:
+
+- **Import** (`ImportDialog`): load a definition from a file or pasted JSON.
+  Parse and `toFlow` shape errors are surfaced; a `validateDefinition` summary is
+  shown before loading; an invalid-but-well-shaped definition can still be
+  imported (the Problems panel then reports it). Importing clears the source.
+- **Export**: downloads `canonicalize(toDefinition(...))` as `<name>.json` — the
+  byte-for-byte canonical form the backend stores (`@agentloom/graphdef`'s
+  `canonicalize`, pinned against a Go golden).
+- **Save** (`SaveDialog`): creates version 1 for a fresh name, or appends the
+  next version for a canvas opened from a stored definition, guarded by an
+  `If-Match: <opened-version>` precondition. A name clash offers "append a
+  version instead"; a `409 version_conflict` (someone appended since) opens a
+  reconcile prompt with "Save anyway"; a 400 surfaces the backend's issues and
+  selects the first offending step.
+- **Submit** (`SubmitDialog`): a params modal (typed, required-enforced fields
+  from the definition's `params`), submitting by `definition_id` when the canvas
+  is clean and saved, else inline, with a fresh `Idempotency-Key`.
+- **Open in builder**: the definitions list links to `/builder?definition=<id>`,
+  which loads the stored spec client-side through the proxy.
+- **Unsaved-changes guard** (`NavigationGuard`): a dirty flag (`selectIsDirty`)
+  drives a `beforeunload` warning and an in-app confirm on internal navigation,
+  plus a discard prompt before Import.
+
+Dialogs use `@radix-ui/react-dialog`; a tiny zustand `toast` surface reports
+outcomes. E2e coverage: `e2e/import-export.spec.ts` (client-only — byte-for-byte
+export through the DOM, the nav guard) and `e2e/save-submit.spec.ts` (compose —
+the full import → edit → save v1/v2 → version-conflict → save anyway → submit
+loop, and open-in-builder).

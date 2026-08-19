@@ -25,6 +25,18 @@ export function emptyDefinition(): Record<string, unknown> {
   return { schema_version: 1, name: "untitled", steps: [], edges: [] };
 }
 
+/**
+ * The stored definition a canvas was opened from / last saved as (ticket 17.6):
+ * its registry id, name, and version. `null` for a fresh, never-saved document.
+ * Drives the save flow (append a version vs. create) and the version-conflict
+ * precondition, and is untracked (not on the undo stack).
+ */
+export interface DefinitionSource {
+  id: string;
+  name: string;
+  version: number;
+}
+
 export interface BuilderState {
   doc: Record<string, unknown>;
   ui: Record<string, unknown>;
@@ -32,8 +44,19 @@ export interface BuilderState {
   nodes: CanvasNode[];
   edges: CanvasEdge[];
 
-  /** Replace the whole canvas from a Flow and reset undo history. */
-  load: (flow: Flow) => void;
+  /** The stored definition this canvas maps to (null = unsaved). Untracked. */
+  source: DefinitionSource | null;
+  /** The tracked-slice snapshot as of the last load/save; `isDirty` compares
+   *  the current tracked slice against it. Untracked. */
+  savedSnapshot: string;
+
+  /** Replace the whole canvas from a Flow and reset undo history. `source` is
+   *  the stored definition it came from (null for import / new). */
+  load: (flow: Flow, source?: DefinitionSource | null) => void;
+  /** Mark the current canvas as saved as `source` (clears the dirty flag). */
+  markSaved: (source: DefinitionSource) => void;
+  /** Shallow-merge a patch into the document meta (name/description edits). */
+  patchDoc: (patch: Record<string, unknown>) => void;
   onNodesChange: (changes: NodeChange<CanvasNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<CanvasEdge>[]) => void;
   /** Add a step of a type; returns its allocated id. */
@@ -104,16 +127,29 @@ export const useBuilderStore = create<BuilderState>()(
       uiPresent: false,
       nodes: [],
       edges: [],
+      source: null,
+      savedSnapshot: "",
 
-      load: (flow) => {
+      load: (flow, source = null) => {
         set({
           doc: flow.doc,
           ui: flow.ui,
           uiPresent: flow.uiPresent,
           nodes: seedNodes(flow),
           edges: seedEdges(flow),
+          source,
         });
+        // The freshly-loaded canvas is the clean baseline.
+        set({ savedSnapshot: stable(partialize(get())) });
         useBuilderStore.temporal.getState().clear();
+      },
+
+      markSaved: (source) => {
+        set({ source, savedSnapshot: stable(partialize(get())) });
+      },
+
+      patchDoc: (patch) => {
+        set({ doc: { ...get().doc, ...patch } });
       },
 
       onNodesChange: (changes) => set({ nodes: applyNodeChanges(changes, get().nodes) }),
@@ -254,6 +290,16 @@ export const useBuilderStore = create<BuilderState>()(
     },
   ),
 );
+
+// The pristine empty document is the initial clean baseline, so a freshly
+// opened builder is not reported dirty until the user actually changes it.
+useBuilderStore.setState({ savedSnapshot: stable(partialize(useBuilderStore.getState())) });
+
+/** Is the canvas changed since the last load/save? Compares the tracked slice
+ *  against the saved-baseline snapshot. */
+export function selectIsDirty(s: BuilderState): boolean {
+  return stable(partialize(s)) !== s.savedSnapshot;
+}
 
 // ── Interaction batching ─────────────────────────────────────────────────────
 // A node drag emits a stream of position changes. Pausing history for the drag

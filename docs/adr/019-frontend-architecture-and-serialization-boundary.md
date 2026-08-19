@@ -225,16 +225,85 @@ object level across the fixture corpus and asserts the round-trip is still
 lossless. Because the backend is strict, the builder never *invents* unknown
 fields; it only preserves ones a human or a newer backend put there.
 
-### Canonical export (arrives in 17.6)
+### Canonical export (as built, 17.6)
 
-Import accepts any legal definition; **export produces canonical bytes**. A TS
-`canonicalize(def): string` will mirror Go's `Encode` — fixed top-level field
-order, Go-struct field order within objects, sorted map keys, `omitempty`
-semantics, and the `ui` block emitted with sorted keys — and will be pinned
-against Go-produced goldens (the `UPDATE_GOLDEN` fixture discipline from 13.6), so
-"export equals canonical backend serialization byte-for-byte" is a fixture
-assertion. 17.2 ships the lossless *value*-level round-trip; 17.6 adds the
-*byte*-level canonical form.
+Import accepts any legal definition; **export produces canonical bytes**. The TS
+`canonicalize(def): string` (`web/lib/graphdef/src/canonical/`) mirrors Go's
+`Encode` (`internal/dag/encode.go`) driven by `DEFINITION_SCHEMA` — the invopop
+reflector preserves Go struct-field order in each `$def`'s `properties`, and
+`required` is exactly the non-`omitempty` set, so the schema *is* the field-order
+and omitempty table. On top of that the canonicalizer applies: the two
+value-level edge drops from `Edge.MarshalJSON` (`type:"normal"`,
+`on_exhausted:"proceed"`); sorted keys for the `params`/`agents`/`templates`
+maps; a recursively-sorted, compact `ui` block; and a small hand-pinned
+**pointer-numeric override set** (the `*int`/`*float64` fields like `temperature`,
+`budget_usd`, `at_budget_fraction`, the `expansion.*` caps) for which a present
+`0` is a non-nil pointer and is *kept* — the one distinction the JSON Schema does
+not encode, guarded by a drift test that re-derives it from the schema.
+
+Byte equality is pinned against a Go-produced golden
+(`internal/dag/testdata/canonical.golden.json`, `UPDATE_GOLDEN` discipline) over
+the whole decodable corpus, asserted two ways in `web/lib/graphdef/test/canonical.test.ts`:
+`canonicalize(parse(text)) === golden` and `canonicalize(toDefinition(toFlow(parse(text)))) === golden`
+(the full builder round-trip). Two modelled points:
+
+- **The `ui` block is emitted sorted-compact, not verbatim.** Go's `Encode`
+  splices `ui` byte-for-byte (it has no reason to reformat authored bytes), but
+  the builder *owns* `ui` (it writes `ui.nodes.<id>.position` + viewport), so
+  there is no authored formatting to preserve — canonical export sorts it. The Go
+  golden test therefore normalizes `ui` to the same sorted-compact form before
+  encoding; this stays a fixed point through the backend (`Encode(Decode(golden)) == golden`,
+  since Encode splices the already-canonical `ui` unchanged).
+- **Opaque `json.RawMessage` payloads** (tool `input`, output-format `schema`,
+  approval `payload`/`edit_schema`, map `items`, blackboard `value`, validator
+  `config`) are re-serialized from the parsed value rather than spliced verbatim,
+  because the value-level `graphdef` pipeline has already lost the authored byte
+  spelling. The two agree for canonically-authored payloads (the corpus, and any
+  round-tripped canonical document) — object key order is preserved either way
+  (both keep insertion order), and numbers/strings match for canonical spellings;
+  a payload authored as `1.0` or with a `<` escape would re-serialize to `1`
+  / `<`. This is the byte guarantee ADR-019 states: identity asserted against
+  canonical input.
+
+Export can additionally *offer* to prune orphan `ui.nodes` entries / unknown
+fields as a deliberate builder action (see the Alternatives), but the default
+export is a faithful canonicalization of the current document.
+
+### Import / export, save & submit (as built, 17.6)
+
+The flows are entirely in `web/app`, over the typed proxy client. **Import**
+(`ImportDialog`) accepts a file or pasted JSON, parses it, maps it through
+`toFlow` (surfacing a `GraphdefError`'s `{code, path}` on a shape/dup-id
+violation), and shows a `validateDefinition` summary before loading — an
+invalid-but-well-shaped definition may still be imported (a `Flow` can hold an
+invalid graph; the Problems panel then reports it). **Export** (`BuilderActions`)
+downloads `canonicalize(toDefinition(...))` as `<name>.json`. **Save**
+(`SaveDialog`) creates version 1 for a fresh name (`POST /v1/definitions`; a name
+clash offers "append a version instead") or appends the next version for a canvas
+opened from a stored definition, guarded by an **`If-Match: <opened-version>`**
+precondition (see below); a 400 surfaces the backend's `issues[]` and selects the
+first offending step by its path. **Submit** (`SubmitDialog`) renders a params
+modal (one typed, required-enforced field per `params` entry — the backend stores
+params opaquely, so the enforcement is client-side), submits by `definition_id`
+when the canvas is clean and saved (else inline), with a fresh `Idempotency-Key`
+per open so a retry replays. **Open in builder** loads a stored definition's spec
+client-side (through the proxy) via `?definition=<id>`. A **dirty flag**
+(`selectIsDirty`, comparing the tracked slice against the last load/save
+snapshot) drives an unsaved-changes guard: `beforeunload` for hard navigation and
+an in-app confirm on internal link clicks (`NavigationGuard`), plus a discard
+prompt before Import.
+
+**Version-conflict / stale-save handling.** The backend gains one additive,
+optional precondition: `POST /v1/definitions/{name}/versions` accepts an
+`If-Match` header carrying the version the client opened at. Inside the existing
+per-name advisory-locked allocation transaction, if the name's current latest
+version has advanced past it, the append is refused with `409 version_conflict`
+(a new `*store.VersionConflictError` → `ErrCodeVersionConflict`). The builder
+sends `If-Match: source.version`; a conflict opens a reconcile prompt offering
+"Save anyway" (re-append without the precondition, taking the next version). The
+server CAS is the authority — detection is TOCTOU-free, unlike a client-side
+pre-read. Absent header = legacy behavior (unconditional append). This is the
+same optimistic-concurrency discipline the rest of the engine uses.
 
 ### Validation parity (arrives in 17.5)
 

@@ -75,7 +75,7 @@ func TestCreateDefinitionSemantics(t *testing.T) {
 	}
 
 	// Appending works and allocates 2.
-	v2, err := s.CreateDefinitionVersion(ctx, registryDef(t, "reg", "v2"))
+	v2, err := s.CreateDefinitionVersion(ctx, registryDef(t, "reg", "v2"), nil)
 	if err != nil {
 		t.Fatalf("CreateDefinitionVersion: %v", err)
 	}
@@ -84,8 +84,27 @@ func TestCreateDefinitionSemantics(t *testing.T) {
 	}
 
 	// Appending to an unseen name is ErrNotFound, not a silent create.
-	if _, err := s.CreateDefinitionVersion(ctx, registryDef(t, "ghost", "x")); !errors.Is(err, store.ErrNotFound) {
+	if _, err := s.CreateDefinitionVersion(ctx, registryDef(t, "ghost", "x"), nil); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("unseen-name append error = %v, want ErrNotFound", err)
+	}
+
+	// If-Match precondition (ticket 17.6): the latest is now v2. An append that
+	// asserts it opened at v1 (stale) is refused; asserting v2 (current) works.
+	stale := int32(1)
+	var vc *store.VersionConflictError
+	if _, err := s.CreateDefinitionVersion(ctx, registryDef(t, "reg", "v3-stale"), &stale); !errors.As(err, &vc) {
+		t.Fatalf("stale-precondition append error = %v, want *VersionConflictError", err)
+	}
+	if vc.Expected != 1 || vc.Latest != 2 {
+		t.Errorf("VersionConflictError = %+v, want expected 1 latest 2", vc)
+	}
+	current := int32(2)
+	v3, err := s.CreateDefinitionVersion(ctx, registryDef(t, "reg", "v3"), &current)
+	if err != nil {
+		t.Fatalf("matched-precondition append: %v", err)
+	}
+	if v3.Version != 3 {
+		t.Errorf("appended version = %d, want 3", v3.Version)
 	}
 
 	// ListLatest shows only the head.
@@ -93,8 +112,8 @@ func TestCreateDefinitionSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListLatest: %v", err)
 	}
-	if len(latest) != 1 || latest[0].Version != 2 {
-		t.Errorf("ListLatest = %+v, want [reg v2]", latest)
+	if len(latest) != 1 || latest[0].Version != 3 {
+		t.Errorf("ListLatest = %+v, want [reg v3]", latest)
 	}
 }
 
@@ -118,7 +137,7 @@ func TestCreateDefinitionVersionConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			row, err := s.CreateDefinitionVersion(ctx, registryDef(t, "contended", fmt.Sprintf("v-%d", i)))
+			row, err := s.CreateDefinitionVersion(ctx, registryDef(t, "contended", fmt.Sprintf("v-%d", i)), nil)
 			versions[i], errs[i] = row.Version, err
 		}()
 	}

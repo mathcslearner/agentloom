@@ -22,6 +22,7 @@ export { edgeId, assignEdgeIds } from "./edge-id.js";
 export { toFlow } from "./to-flow.js";
 export { toDefinition } from "./to-definition.js";
 export { parseDefinition } from "./parse.js";
+export { canonicalize } from "./canonical/canonicalize.js";
 
 // Validation (17.4/17.5) — the full client-side graph validator (ADR-019
 // §"Validation parity"), its config-scoped façade, and the schema-subset shape

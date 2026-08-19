@@ -7,23 +7,25 @@
 // helpers) and a ProblemsProvider (one whole-graph validation shared by the
 // canvas marks, the edge highlights, and the Problems panel's click-to-focus).
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
+import { toFlow } from "@agentloom/graphdef";
 import "@xyflow/react/dist/style.css";
 import { redo, undo, useBuilderStore } from "@/lib/builder/store";
+import { fetchDefinition } from "@/lib/builder/persistence";
+import { toast } from "@/components/ui/toast";
 import { useBuilderKeyboardShortcuts } from "@/lib/builder/useKeyboardShortcuts";
 import { useCatalogStore } from "@/lib/builder/catalog-store";
-import { ProblemsProvider, useProblemsCtx } from "@/lib/builder/problems-context";
+import { ProblemsProvider } from "@/lib/builder/problems-context";
 import { Button } from "@/components/ui/button";
 import { Canvas } from "./Canvas";
 import { Palette } from "./Palette";
 import { Inspector } from "./Inspector";
+import { BuilderActions } from "./BuilderActions";
+import { NavigationGuard } from "./NavigationGuard";
 
 function Toolbar() {
   const count = useBuilderStore((s) => s.nodes.length);
-  const { problems, focusIssue } = useProblemsCtx();
-  const errorCount = problems.errors.length;
-  const warningCount = problems.warnings.length;
   return (
     <div className="flex items-center gap-2 border-b px-3 py-2">
       <span className="text-sm font-semibold tracking-tight">Builder</span>
@@ -35,59 +37,46 @@ function Toolbar() {
           Redo
         </Button>
       </div>
+      <span className="ml-3 text-xs text-muted-foreground" data-testid="node-count">
+        {count} {count === 1 ? "step" : "steps"}
+      </span>
 
-      <div className="ml-auto flex items-center gap-3">
-        {errorCount > 0 || warningCount > 0 ? (
-          <button
-            type="button"
-            data-testid="problem-count"
-            onClick={() => {
-              const first = problems.errors[0] ?? problems.warnings[0];
-              if (first) focusIssue(first);
-            }}
-            className="text-xs font-medium"
-            title="Jump to the first problem"
-          >
-            {errorCount > 0 ? (
-              <span className="text-destructive">
-                {errorCount} {errorCount === 1 ? "error" : "errors"}
-              </span>
-            ) : null}
-            {errorCount > 0 && warningCount > 0 ? <span className="text-muted-foreground"> · </span> : null}
-            {warningCount > 0 ? (
-              <span className="text-amber-600 dark:text-amber-500">
-                {warningCount} {warningCount === 1 ? "warning" : "warnings"}
-              </span>
-            ) : null}
-          </button>
-        ) : (
-          <span className="text-xs font-medium text-emerald-600 dark:text-emerald-500" data-testid="problem-count-ok">
-            No problems
-          </span>
-        )}
-        <span className="text-xs text-muted-foreground" data-testid="node-count">
-          {count} {count === 1 ? "step" : "steps"}
-        </span>
-        <Button
-          size="sm"
-          disabled={errorCount > 0}
-          aria-label="Submit run"
-          data-testid="submit-run"
-          title={errorCount > 0 ? `${errorCount} ${errorCount === 1 ? "error" : "errors"} block submit` : "Submit a run (17.6)"}
-        >
-          Submit
-        </Button>
+      <div className="ml-auto">
+        <BuilderActions />
       </div>
     </div>
   );
 }
 
-export function BuilderShell() {
+export function BuilderShell({ openDefinitionId }: { openDefinitionId?: string }) {
   useBuilderKeyboardShortcuts();
   const loadCatalog = useCatalogStore((s) => s.load);
+  const load = useBuilderStore((s) => s.load);
+  const openedRef = useRef<string | null>(null);
   useEffect(() => {
     void loadCatalog();
   }, [loadCatalog]);
+
+  // "Open in builder": load a stored definition once per id (client-side, so the
+  // spec fetch rides the same-origin proxy).
+  useEffect(() => {
+    if (!openDefinitionId || openedRef.current === openDefinitionId) return;
+    openedRef.current = openDefinitionId;
+    void (async () => {
+      const res = await fetchDefinition(openDefinitionId);
+      if (res.kind !== "ok") {
+        toast({ title: "Could not open definition", description: res.message, variant: "error" });
+        return;
+      }
+      try {
+        load(toFlow(res.spec), { id: res.id, name: res.name, version: res.version });
+        toast({ title: `Opened ${res.name} v${res.version}`, variant: "success" });
+      } catch (e) {
+        toast({ title: "Could not open definition", description: (e as Error).message, variant: "error" });
+      }
+    })();
+  }, [openDefinitionId, load]);
+
   return (
     <ReactFlowProvider>
       <ProblemsProvider>
@@ -100,6 +89,7 @@ export function BuilderShell() {
             </div>
             <Inspector className="flex w-80 shrink-0 flex-col border-l" />
           </div>
+          <NavigationGuard />
         </div>
       </ProblemsProvider>
     </ReactFlowProvider>

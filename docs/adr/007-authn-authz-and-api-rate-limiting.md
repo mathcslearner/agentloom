@@ -355,6 +355,15 @@ Submission idempotency was hardened here (the post-M4 audit items):
   scoping later is an additive column keyed on `key_id`, not a contract
   break, and v1's operator count makes collisions a non-issue.
 
+Optimistic concurrency on definition-version appends (ticket 17.6): `POST
+/v1/definitions/{name}/versions` accepts an optional `If-Match` header carrying
+the version the client opened at (a plain integer, not an opaque ETag — the
+builder tracks versions, not hashes). Checked inside the existing per-name
+advisory-locked allocation transaction; a mismatch (the latest advanced past the
+opened version) is a `409 version_conflict` (new code `version_conflict`), so a
+stale save is refused rather than silently forking. Absent header = unconditional
+append (the pre-17.6 behavior). Scope/class are unchanged (`submit`/`submit`).
+
 Easier:
 
 - 6.2 is pure wiring: the verifier, scope model, and error semantics are

@@ -33,7 +33,14 @@ func (s *Store) CreateDefinition(ctx context.Context, def *dag.Definition) (gen.
 // transaction serialized by a per-name advisory lock, so concurrent
 // appenders get consecutive versions instead of racing the (name, version)
 // constraint (MAX+1 alone cannot lock rows that do not exist yet).
-func (s *Store) CreateDefinitionVersion(ctx context.Context, def *dag.Definition) (gen.WorkflowDefinition, error) {
+//
+// expected is the optional optimistic-concurrency precondition (the builder's
+// `If-Match`, ticket 17.6): when non-nil it is the caller's belief about the
+// name's current latest version. If the actual latest (the version about to be
+// superseded, MAX = next-1) differs, someone appended in between and the append
+// is refused with a *VersionConflictError — the CAS the rest of the engine
+// uses, here guarding a stale save. nil skips the check (legacy behavior).
+func (s *Store) CreateDefinitionVersion(ctx context.Context, def *dag.Definition, expected *int32) (gen.WorkflowDefinition, error) {
 	spec, err := canonicalSpec(def)
 	if err != nil {
 		return gen.WorkflowDefinition{}, fmt.Errorf("store: CreateDefinitionVersion: %w", err)
@@ -49,6 +56,12 @@ func (s *Store) CreateDefinitionVersion(ctx context.Context, def *dag.Definition
 		}
 		if version == 1 {
 			return fmt.Errorf("store: CreateDefinitionVersion: definition %q: %w", def.Name, ErrNotFound)
+		}
+		if expected != nil {
+			latest := version - 1 // the newest existing row's version
+			if *expected != latest {
+				return &VersionConflictError{Name: def.Name, Expected: *expected, Latest: latest}
+			}
 		}
 		row, err = q.Definitions().Create(ctx, gen.CreateDefinitionParams{Name: def.Name, Version: version, Spec: spec})
 		return err

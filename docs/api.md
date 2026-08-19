@@ -207,6 +207,19 @@ curl -s http://127.0.0.1:8080/v1/definitions/linear-pipeline/versions \
   -d "{\"definition\": $(cat examples/definitions/linear.json)}" | jq '{id, version}'
 ```
 
+Optimistic concurrency (ticket 17.6): pass `If-Match: <version>` on the versions
+append to assert the version you opened. If the latest has advanced since, the
+append is refused with `409 version_conflict` instead of forking — the guard the
+visual builder uses for stale saves. Absent header = unconditional append.
+
+```bash
+# refuse the append unless the current latest is exactly v2
+curl -s http://127.0.0.1:8080/v1/definitions/linear-pipeline/versions \
+  -H "Authorization: Bearer $API_KEY" -H 'If-Match: 2' \
+  -H 'Content-Type: application/json' \
+  -d "{\"definition\": $(cat examples/definitions/linear.json)}" | jq '{id, version}'
+```
+
 Browse and submit by ref:
 
 ```bash

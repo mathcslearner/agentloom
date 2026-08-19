@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { problem, type DefinitionView } from "@agentloom/api-client";
 import { serverApi } from "@/lib/api/server";
 import { isConfigured } from "@/lib/config";
@@ -35,6 +36,7 @@ export default async function DefinitionsPage() {
               <TableHead>Version</TableHead>
               <TableHead>ID</TableHead>
               <TableHead>Created</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -45,6 +47,15 @@ export default async function DefinitionsPage() {
                 <TableCell className="font-mono text-xs text-muted-foreground">{d.id}</TableCell>
                 <TableCell className="text-muted-foreground">
                   {new Date(d.created_at).toLocaleString()}
+                </TableCell>
+                <TableCell className="text-right">
+                  <Link
+                    href={`/builder?definition=${encodeURIComponent(d.id)}`}
+                    className="text-sm font-medium text-primary hover:underline"
+                    data-testid="open-in-builder"
+                  >
+                    Open in builder
+                  </Link>
                 </TableCell>
               </TableRow>
             ))}

@@ -1029,9 +1029,13 @@ paths:
         serially, so concurrent appenders get consecutive versions. The
         body's spec `name` must match the path — a mismatch is a `400`,
         not a rename. An unknown name is a `404` pointing at
-        `POST /v1/definitions`.
+        `POST /v1/definitions`. An optional `If-Match` header (the version
+        the client opened) is an optimistic-concurrency precondition: if the
+        name's latest version has advanced since, the append is refused with
+        `409 version_conflict` (a stale save) instead of silently forking.
       parameters:
         - $ref: "#/components/parameters/DefinitionName"
+        - $ref: "#/components/parameters/IfMatchVersion"
       requestBody:
         required: true
         description: The new version's definition document; its `name` must match the path.
@@ -1440,6 +1444,19 @@ components:
       schema:
         type: string
         maxLength: 200
+    IfMatchVersion:
+      name: If-Match
+      in: header
+      required: false
+      description: >
+        Optimistic-concurrency precondition on a definition-version append
+        (ticket 17.6): the version number the client opened the definition at,
+        as a positive integer. If the name's latest version has advanced past
+        it, the append is refused with `409 version_conflict`. Absent skips the
+        check.
+      schema:
+        type: integer
+        minimum: 1
     PageLimit:
       name: limit
       in: query
@@ -1704,6 +1721,7 @@ components:
         - rate_limited
         - conflict
         - idempotency_key_conflict
+        - version_conflict
         - not_found
         - method_not_allowed
         - internal

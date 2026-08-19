@@ -9,8 +9,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -49,6 +51,31 @@ func (h *Handler) handleCreateDefinition(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusCreated, definitionResponse(row))
 }
 
+// IfMatchHeader carries the optimistic-concurrency precondition on a
+// definition-version append (ticket 17.6): the version number the client
+// opened the definition at. A plain integer (the version), so the builder need
+// not track opaque ETags.
+const IfMatchHeader = "If-Match"
+
+// parseIfMatchVersion reads the optional If-Match precondition. An absent
+// header yields (nil, true) — no precondition. A present but non-integer or
+// non-positive value is a 400 (returns false after writing the error).
+func parseIfMatchVersion(w http.ResponseWriter, raw string) (*int32, bool) {
+	if raw == "" {
+		return nil, true
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 || n > (1<<31-1) {
+		writeError(w, http.StatusBadRequest, ErrorDetail{
+			Code:    ErrCodeInvalidRequest,
+			Message: IfMatchHeader + " must be a positive integer version",
+		})
+		return nil, false
+	}
+	v := int32(n) //nolint:gosec // bounded to [1, 2^31-1] above
+	return &v, true
+}
+
 // handleCreateDefinitionVersion is POST /v1/definitions/{name}/versions:
 // append the next version of an existing name. The body's spec name must
 // match the path — a mismatch is a client error, not a rename.
@@ -65,13 +92,28 @@ func (h *Handler) handleCreateDefinitionVersion(w http.ResponseWriter, r *http.R
 		})
 		return
 	}
-	row, err := h.st.CreateDefinitionVersion(r.Context(), def)
+	// Optional optimistic-concurrency precondition (ticket 17.6): the builder
+	// sends the version it opened as `If-Match`, so a save racing another
+	// append is refused (409 version_conflict) instead of silently forking.
+	expected, ok := parseIfMatchVersion(w, r.Header.Get(IfMatchHeader))
+	if !ok {
+		return
+	}
+	row, err := h.st.CreateDefinitionVersion(r.Context(), def, expected)
 	var conflict *store.ConflictError
+	var versionConflict *store.VersionConflictError
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, ErrorDetail{
 			Code:    ErrCodeDefinitionNotFound,
 			Message: "no definition named " + name + "; POST /v1/definitions creates it",
+		})
+		return
+	case errors.As(err, &versionConflict):
+		writeError(w, http.StatusConflict, ErrorDetail{
+			Code: ErrCodeVersionConflict,
+			Message: fmt.Sprintf("stale save: %s was at version %d when opened, but its latest is now %d",
+				name, versionConflict.Expected, versionConflict.Latest),
 		})
 		return
 	case errors.As(err, &conflict):

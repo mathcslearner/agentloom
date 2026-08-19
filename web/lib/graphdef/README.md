@@ -24,6 +24,11 @@ const back = toDefinition(flow);         // canvas state → definition value (l
   `ui` keys, orphan `ui.nodes` entries — **verbatim**. It does *not* validate
   configs, edge endpoints, cycles, or CEL (that is the client validator, 17.5).
 - `toDefinition(flow)` — the exact inverse at the JSON-value level.
+- `canonicalize(def)` — renders a definition value as the **canonical bytes** the
+  backend stores (ticket 17.6): a byte-for-byte mirror of Go's `dag.Encode`
+  (fixed field order from the schema, `omitempty`, sorted maps, sorted-compact
+  `ui`, edge value-drops). Pinned against a Go golden over the corpus
+  (`test/canonical.test.ts`). The builder's Export uses it.
 - `Flow` is the canvas state model: `{ doc, nodes, edges, ui, uiPresent }`, with
   `FlowNode`/`FlowEdge` structurally compatible with React Flow's `Node`/`Edge`
   (no `@xyflow/*` dependency).

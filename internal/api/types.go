@@ -49,6 +49,10 @@ const (
 	// the replay is refused instead of returning the original run (409,
 	// ticket 6.5).
 	ErrCodeIdempotencyMismatch = "idempotency_key_conflict"
+	// ErrCodeVersionConflict: a definition-version append carried an If-Match
+	// precondition that no longer matches the name's latest stored version
+	// (a stale save, ticket 17.6). 409.
+	ErrCodeVersionConflict = "version_conflict"
 	// ErrCodeNotFound / ErrCodeMethodNotAllowed: routing misses.
 	ErrCodeNotFound         = "not_found"
 	ErrCodeMethodNotAllowed = "method_not_allowed"
