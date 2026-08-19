@@ -14,6 +14,7 @@ export type {
   ErrorFrame,
   EventFilter,
   EventFrame,
+  FirehoseCaughtUpFrame,
   FirehoseControl,
   FirehoseErrorCode,
   FirehoseFrame,

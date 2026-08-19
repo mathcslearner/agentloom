@@ -142,13 +142,26 @@ web-install: ## Install the web workspace dependencies (pnpm, via Corepack)
 	$(WEB) install --frozen-lockfile
 
 .PHONY: web-generate
-web-generate: ## Regenerate the TS types from docs/schema (run after `make generate` on event changes)
-	$(WEB) -r run generate
+web-generate: ## Regenerate the TS types from docs/schema + api/openapi.yaml (run after `make generate` / OpenAPI edits)
+	$(WEB) -r --if-present run generate
 
 .PHONY: web-test
-web-test: ## Typecheck + unit-test the web workspace
-	$(WEB) -r run typecheck
-	$(WEB) -r run test
+web-test: ## Lint + typecheck + unit-test the web workspace
+	$(WEB) -r --if-present run lint
+	$(WEB) -r --if-present run typecheck
+	$(WEB) -r --if-present run test
+
+.PHONY: web-build
+web-build: ## Production build of the web workspace (Next app + lib type builds)
+	$(WEB) -r --if-present run build
+
+.PHONY: web-dev
+web-dev: ## Run the Next.js app in dev mode (reads web/app/.env.local)
+	$(WEB) --filter @agentloom/app run dev
+
+.PHONY: web-e2e
+web-e2e: ## Boot compose + build the app + run the Playwright smoke against it (ticket 17.1)
+	bash scripts/web-e2e-smoke.sh
 
 .PHONY: psql
 psql: ## Open a psql shell inside the running postgres container

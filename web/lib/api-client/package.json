@@ -1,8 +1,8 @@
 {
-  "name": "@agentloom/engine-client",
+  "name": "@agentloom/api-client",
   "version": "0.0.0",
   "private": true,
-  "description": "Typed client for the agentloom event feed: ticket auth, snapshot/backfill/tail, seq dedupe, resume, reconnection backoff (M16.5, ADR-018).",
+  "description": "Typed REST client for the agentloom control-plane API: types generated from api/openapi.yaml, a thin openapi-fetch wrapper, and the error-envelope helper (M17.1, ADR-007/006).",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -19,17 +19,20 @@
     "src"
   ],
   "scripts": {
-    "generate": "tsx scripts/gen-events-types.ts",
+    "generate": "tsx scripts/gen-openapi-types.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "example:run": "tsx examples/tail-run.ts",
-    "example:firehose": "tsx examples/tail-firehose.ts",
     "lint": "tsc --noEmit"
   },
+  "dependencies": {
+    "openapi-fetch": "^0.13.4"
+  },
   "devDependencies": {
+    "@agentloom/engine-client": "workspace:*",
     "@types/node": "^22.10.0",
+    "openapi-typescript": "^7.13.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"

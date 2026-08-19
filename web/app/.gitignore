@@ -1,0 +1,10 @@
+/.next/
+/out/
+/build/
+/dist/
+*.tsbuildinfo
+/coverage/
+/playwright-report/
+/test-results/
+/.env.local
+/.env*.local

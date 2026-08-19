@@ -768,6 +768,30 @@ Headless tailing: `pnpm exec tsx examples/tail-run.ts --run <id>`; the
 `make smoke-ws-tail` harness drives it through a forced api restart. See
 `web/lib/engine-client/README.md`.
 
+### Typed REST client
+
+`web/lib/api-client` (`@agentloom/api-client`, ticket 17.1) is the typed client
+for this control-plane API. Its types are generated from `api/openapi.yaml` by
+`openapi-typescript` (CI-drift-checked, the same discipline as the event
+client), and the runtime is a thin [`openapi-fetch`](https://openapi-ts.dev/openapi-fetch/)
+wrapper — so every path, query, body, and response is typed against the spec:
+
+```ts
+import { createApiClient, problem } from "@agentloom/api-client";
+
+// Server-side (Node): the key stays on the server.
+const api = createApiClient({ baseUrl: "http://127.0.0.1:8080", apiKey: process.env.AGENTLOOM_API_KEY });
+
+const { data, error } = await api.GET("/v1/runs", { params: { query: { status: "running", limit: 25 } } });
+if (error) throw new Error(problem(error)?.message ?? "request failed");
+for (const run of data.runs) console.log(run.id, run.status);
+```
+
+The API has no CORS, so a browser never calls it directly: browser code builds
+`createApiClient({ baseUrl: "/api/agentloom" })` (no key) and a same-origin proxy
+injects the key server-side. The agentloom web app (`web/app`) ships that proxy.
+See `web/lib/api-client/README.md`.
+
 ## Errors and rate limits
 
 Every non-2xx response carries one envelope:

@@ -95,16 +95,48 @@ jobs:
         run: corepack enable
       - name: install
         run: pnpm install --frozen-lockfile
-      - name: generated TS types are current against docs/schema
-        # events.ts is generated from the committed docs/schema/events.v1.json
-        # (itself Go-CI-diffed in the lint job). Regenerate and fail on drift, so
-        # a Go event-payload change that isn't reflected in the TS types fails CI.
+      - name: generated TS types are current against the schemas + spec
+        # engine-client/events.ts is generated from docs/schema/events.v1.json;
+        # api-client/openapi.ts is generated from api/openapi.yaml. Both source
+        # files are Go-CI-diffed (schema in the lint job, route/op coverage in the
+        # api unit tests). Regenerate and fail on drift, so a Go wire-shape change
+        # not reflected in the TS types fails CI on one side or the other.
         run: |
           pnpm generate
-          git diff --exit-code -- lib/engine-client/src/generated
+          git diff --exit-code -- lib/engine-client/src/generated lib/api-client/src/generated
+      - name: lint
+        run: pnpm lint
       - name: typecheck
         run: pnpm typecheck
       - name: unit tests
         run: pnpm test
       - name: build
         run: pnpm build
+      - name: API key never reaches the browser bundle (proxy mode)
+        # Builds the app with a sentinel key in the server env and asserts it
+        # (and the env-var name) are absent from .next/static (ticket 17.1 DoD).
+        run: pnpm --filter @agentloom/app run build:verify
+
+  web-e2e:
+    # Playwright smoke against the compose backend (ticket 17.1 DoD): the app
+    # lists definitions/runs through the typed client and the same-origin proxy,
+    # and no browser request carries the API key. scripts/web-e2e-smoke.sh boots
+    # the app profile (generating an ephemeral root key), builds the app, and
+    # runs the smoke.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.node-version
+      - name: enable corepack (pnpm)
+        run: corepack enable
+      - name: run the web e2e smoke against compose
+        run: bash scripts/web-e2e-smoke.sh
+      - name: upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/app/playwright-report/
+          retention-days: 7

@@ -8,10 +8,13 @@
     "node": ">=22"
   },
   "scripts": {
-    "generate": "pnpm --recursive run generate",
-    "typecheck": "pnpm --recursive run typecheck",
-    "test": "pnpm --recursive run test",
-    "build": "pnpm --recursive run build",
-    "lint": "pnpm --recursive run lint"
+    "generate": "pnpm --recursive --if-present run generate",
+    "typecheck": "pnpm --recursive --if-present run typecheck",
+    "test": "pnpm --recursive --if-present run test",
+    "build": "pnpm --recursive --if-present run build",
+    "lint": "pnpm --recursive --if-present run lint",
+    "build:verify": "pnpm --recursive --if-present run build:verify",
+    "dev": "pnpm --filter @agentloom/app run dev",
+    "e2e": "pnpm --filter @agentloom/app run e2e"
   }
 }
