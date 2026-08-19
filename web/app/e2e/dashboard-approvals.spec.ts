@@ -152,8 +152,12 @@ test("DoD-2: a concurrent decision from another session surfaces the 409 gracefu
   expect(decideRes.ok(), `decide: ${decideRes.status()} ${await decideRes.text()}`).toBeTruthy();
 
   // This session tries to approve — the dialog reveals the decided-elsewhere
-  // state (either from the live event or the 409 on submit).
-  await page.getByTestId("decision-approve").click().catch(() => {});
+  // state either from the live approval_decided event (which, on a fast stack,
+  // arrives first and swaps the dialog to the conflict view, removing the
+  // approve button) or from the 409 on submit. The click is best-effort with a
+  // short timeout so a vanished button (the live-event-won race) does not hang
+  // the whole test before the conflict assertion runs.
+  await page.getByTestId("decision-approve").click({ timeout: 3000 }).catch(() => {});
   await expect(page.getByTestId("decision-conflict")).toBeVisible({ timeout: 30_000 });
 });
 
