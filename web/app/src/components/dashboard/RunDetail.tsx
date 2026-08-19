@@ -7,6 +7,9 @@ import { useRunCost } from "@/lib/dashboard/useStepInspector";
 import { runStatusVariant } from "@/lib/status";
 import { Badge } from "@/components/ui/badge";
 import { ConnectionPill } from "@/components/dashboard/ConnectionPill";
+import { CostMeter } from "@/components/dashboard/CostMeter";
+import { BudgetBanners } from "@/components/dashboard/BudgetBanners";
+import { RaiseBudgetDialog } from "@/components/dashboard/RaiseBudgetDialog";
 import { RunGraph } from "@/components/dashboard/graph/RunGraph";
 import { InspectorPane } from "@/components/dashboard/InspectorPane";
 import { Timeline } from "@/components/dashboard/Timeline";
@@ -20,6 +23,7 @@ import { emptyTopology } from "@/lib/pure/dashboard/graph-topology";
 export function RunDetail({ runId }: { runId: string }) {
   const { state: s, controller } = useRunController(runId);
   const [selected, setSelected] = useState<string | undefined>(undefined);
+  const [budgetOpen, setBudgetOpen] = useState(false);
 
   const run = s.run?.run;
   const steps = s.run?.steps;
@@ -55,18 +59,36 @@ export function RunDetail({ runId }: { runId: string }) {
             {run.steps_skipped > 0 ? ` · ${run.steps_skipped} skipped` : ""}
           </span>
         ) : null}
-        {run?.park_reason ? (
+        {run?.park_reason && run.park_reason !== "budget_exceeded" ? (
           <span className="text-xs text-amber-600 dark:text-amber-400">parked: {run.park_reason}</span>
         ) : null}
-        {run && run.cost.spent_nano_usd > 0 ? (
-          <span className="text-sm text-muted-foreground tabular-nums">
-            ${(run.cost.spent_nano_usd / 1e9).toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}
-          </span>
+        {run ? <CostMeter run={run} /> : null}
+        {run && (run.cost.budget_nano_usd !== undefined || run.status === "parked") ? (
+          <button
+            type="button"
+            onClick={() => setBudgetOpen(true)}
+            data-testid="raise-budget-open"
+            className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          >
+            Raise budget
+          </button>
         ) : null}
         <div className="ml-auto">
           <ConnectionPill state={s.connection} reconnects={s.reconnects} lastSeq={s.lastSeq} />
         </div>
       </header>
+
+      <BudgetBanners events={s.events} run={run} onRaise={() => setBudgetOpen(true)} />
+
+      {run ? (
+        <RaiseBudgetDialog
+          runId={runId}
+          run={run}
+          controller={controller}
+          open={budgetOpen}
+          onOpenChange={setBudgetOpen}
+        />
+      ) : null}
 
       {s.error ? (
         <p className="px-6 py-2 text-sm text-red-600 dark:text-red-400">{s.error}</p>

@@ -31,6 +31,37 @@ describe("mergeRunResponse (ticket 18.3)", () => {
     expect(merged.steps.get("a")?.viewSeq).toBe(10);
   });
 
+  it("folds the run-level cost/budget from a fresh body (18.4)", () => {
+    const state = fromSnapshot({
+      run: makeRun({ event_seq: 3, cost: { ...makeRun().cost, budget_nano_usd: 100 } }),
+      steps: [makeStep({ id: "a" })],
+    });
+    const body = {
+      run: makeRun({
+        event_seq: 3,
+        cost: { ...makeRun().cost, spent_nano_usd: 40, budget_nano_usd: 1000 },
+      }),
+      steps: [makeStep({ id: "a" })],
+    };
+    const merged = mergeRunResponse(state, body);
+    expect(merged.run.cost.budget_nano_usd).toBe(1000);
+    expect(merged.run.cost.spent_nano_usd).toBe(40);
+  });
+
+  it("a stale body never regresses the run-level projection (18.4)", () => {
+    const state = fromSnapshot({
+      run: makeRun({ event_seq: 10, cost: { ...makeRun().cost, spent_nano_usd: 90, budget_nano_usd: 1000 } }),
+      steps: [makeStep({ id: "a" })],
+    });
+    const stale = {
+      run: makeRun({ event_seq: 4, cost: { ...makeRun().cost, spent_nano_usd: 5, budget_nano_usd: 100 } }),
+      steps: [makeStep({ id: "a" })],
+    };
+    const merged = mergeRunResponse(state, stale);
+    expect(merged.run.cost.spent_nano_usd).toBe(90);
+    expect(merged.run.cost.budget_nano_usd).toBe(1000);
+  });
+
   it("fills a view for an injected step that had none", () => {
     let state = fromSnapshot({ run: makeRun({ event_seq: 0 }), steps: [] });
     state = applyEvent(

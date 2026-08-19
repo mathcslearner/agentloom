@@ -590,6 +590,64 @@ facilities support it; none changes the event or WS contract.
   read them directly — tying the tabs' rendering to the backend contract, the
   13.6 `run_graph_fixture.json` precedent.
 
+### Live cost meter & budget UX (as built, 18.4)
+
+The run header's cost meter and budget controls (ROADMAP 18.4) are **entirely
+under `web/app`** — no Go change, no migration, no config var, no metric. The
+meter is stateless off the event feed: the running totals ride the `cost_updated`
+event (`run_spent_nano_usd`/`run_saved_nano_usd`, non-decreasing in seq order by
+construction — 10.5) and the budget rides `cost_updated`/`run_budget_updated`
+(the latter's payload carries the new total). The 18.1 run-state reducer folds
+those into `run.cost` under the same `asOf` seq guard the rest of derived state
+uses, so the meter updates live with no cost refetch — the 10.5 note that "the
+M18 meter reads the total straight off the stream, stateless" realized.
+
+- **`run-state.ts` additions.** `cost_updated` now also carries the run's
+  budget when the payload includes it; `run_budget_updated` sets the budget from
+  its payload (correcting the 18.1 placeholder that assumed the budget was not on
+  the payload — it is); and `mergeRunResponse` folds the body's run-level
+  projection (`cost`/`status`/`park_reason`) when the body is at least as fresh
+  as `asOf`, so a refetch after a raise/unpark reconciles those fields but a
+  stale body never regresses live status.
+
+- **Pure derivations** (`src/lib/pure/dashboard/`, the no-React boundary):
+  `cost-meter.ts` projects the folded `CostSummaryView` onto a meter model with
+  a `BudgetTier` (`unbudgeted`/`ok`/`warn`/`danger`/`exceeded` at 75%/90%/100%,
+  `exceeded` also when the run is parked for budget); `foldCostEvents` proves in
+  tests that the totals a run of `cost_updated` events converges to equal the
+  cost summary — the DoD-3 consistency assertion, pre-paid at the reducer level.
+  `budget-banners.ts` projects `model_downgraded`/`budget_exceeded`/
+  `run_budget_updated` onto typed, seq-keyed banners (dedupe across a
+  re-backfill; downgrade banners carry from/to models + a resolved trigger label
+  for the DoD-2 assertion), and pins a live "parked at budget cap" affordance
+  while `run.status==="parked" && park_reason==="budget_exceeded"` (gone on
+  unpark) that carries the Raise action.
+
+- **Raise = PATCH + optional unpark.** `useBudgetActions` drives the documented
+  resume path (ADR-012): `PATCH /v1/runs/{id}/budget` then, if the user opted to
+  resume, `POST /v1/runs/{id}/unpark`. The park→resume is reflected live through
+  `run_budget_updated` + `run_unparked`, so the hook holds no optimistic state —
+  it tracks pending/error and asks the controller to reconcile the detail body as
+  belt-and-braces. A 409 on the unpark (the run already resumed via a concurrent
+  action, or was not parked) is tolerated — the raise still succeeded. The
+  existing `setRunBudget`'s 400 (non-positive) / 409 (terminal) / 403 map onto
+  inline dialog errors.
+
+- **Components.** `CostMeter` (header ticker + `role="progressbar"` budget bar
+  with tier colouring + saved-by-cache indicator), `BudgetBanners` (dismissible
+  stack), `RaiseBudgetDialog` (prefilled USD input, warns-not-blocks when the new
+  budget is below current spend, a resume checkbox defaulting on when parked for
+  budget). They replace the 18.1 ad-hoc `$` span in `RunDetail`.
+
+**Decisions:** the meter is stateless off `cost_updated` (no client accumulation
+— the stream totals are authoritative and monotonic); raise combines PATCH +
+optional unpark in one dialog; warn-not-block on a sub-spend budget; no backend
+change (every fact the meter needs was already on the feed and the REST budget
+PATCH). **Accepted residual:** an unbudgeted run shows only the spend ticker (no
+bar); the meter's budget arithmetic in the e2e is calibrated to the offline mock
+pricing (`mock:*` = $1/$2 per Mtok) with response caching disabled per step (the
+global cache would serve a repeat run for $0).
+
 ## Consequences
 
 - **The feed is a versioned, generator-backed contract.** `events.v1.json` is

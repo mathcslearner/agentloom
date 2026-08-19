@@ -12,6 +12,7 @@ import {
   type FirehoseHandlers,
 } from "@agentloom/engine-client";
 import type { RunResponse, RunGraphResponse, RunCostResponse, StepLogsResponse } from "@agentloom/api-client";
+import { problem } from "@agentloom/api-client";
 import type { LogLevel } from "@/lib/pure/dashboard/logs";
 import { mintRunTicket, mintFirehoseTicket } from "@/lib/dashboard/tickets";
 import { browserApi } from "@/lib/api/browser";
@@ -79,6 +80,46 @@ export async function fetchStepLogs(
   });
   if (error || !data) throw new Error(`step logs fetch failed: ${runId}/${stepId}`);
   return data;
+}
+
+/** Outcome of a budget/park action (ticket 18.4). */
+export type BudgetActionOutcome =
+  | { kind: "ok" }
+  | { kind: "invalid"; message: string }
+  | { kind: "conflict"; message: string }
+  | { kind: "forbidden"; message: string }
+  | { kind: "error"; message: string };
+
+function classifyActionError(error: unknown): BudgetActionOutcome {
+  const p = problem(error);
+  if (!p) return { kind: "error", message: "the request failed" };
+  switch (p.code) {
+    case "invalid_request":
+      return { kind: "invalid", message: p.message };
+    case "conflict":
+      return { kind: "conflict", message: p.message };
+    case "forbidden":
+      return { kind: "forbidden", message: p.message };
+    default:
+      return { kind: "error", message: p.message };
+  }
+}
+
+/** Raise a run's spend budget (PATCH /v1/runs/{id}/budget) through the proxy. */
+export async function setRunBudget(runId: string, budgetUsd: number): Promise<BudgetActionOutcome> {
+  const { error } = await browserApi().PATCH("/v1/runs/{run_id}/budget", {
+    params: { path: { run_id: runId } },
+    body: { budget_usd: budgetUsd },
+  });
+  return error ? classifyActionError(error) : { kind: "ok" };
+}
+
+/** Unpark a run (POST /v1/runs/{id}/unpark) through the proxy. */
+export async function unparkRun(runId: string): Promise<BudgetActionOutcome> {
+  const { error } = await browserApi().POST("/v1/runs/{run_id}/unpark", {
+    params: { path: { run_id: runId } },
+  });
+  return error ? classifyActionError(error) : { kind: "ok" };
 }
 
 export function createFirehose(baseUrl: string, handlers: FirehoseHandlers): FirehoseStream {

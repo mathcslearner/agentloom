@@ -155,13 +155,13 @@ export through the DOM, the nav guard) and `e2e/save-submit.spec.ts` (compose �
 the full import → edit → save v1/v2 → version-conflict → save anyway → submit
 loop, and open-in-builder).
 
-## Live execution dashboard (M18.1–18.3)
+## Live execution dashboard (M18.1–18.4)
 
 The dashboard watches runs execute live over the event feed
 (`@agentloom/engine-client`, ADR-018). 18.1 shipped the run list and the
 run-detail scaffold; 18.2 replaced the steps pane with the live DAG canvas; 18.3
-filled in the tabbed step inspector. Later M18 tickets add the cost meter,
-approval inbox, and ops views.
+filled in the tabbed step inspector; 18.4 added the live cost meter and budget
+controls. Later M18 tickets add the approval inbox and ops views.
 
 - **`/runs`** — a runs table with live status chips over the multi-run firehose,
   status/definition/time filters (synced to the URL), keyset pagination, a
@@ -175,6 +175,26 @@ approval inbox, and ops views.
   inspector** (18.3), and the collapsible **event timeline strip** (category
   filtering, click-to-select a step). State loads snapshot → backfill →
   live-tail through the 16.5 client and resumes across reconnects with no gaps.
+
+### The cost meter & budget UX (18.4)
+
+The run header carries a live **cost meter** (`CostMeter`): a spend ticker, a
+saved-by-cache indicator, and — on a budgeted run — a budget progress bar with
+threshold colouring (`ok`/`warn`/`danger`/`exceeded` at 75/90/100%). It is
+**stateless off the event feed** — the running totals ride `cost_updated`
+(non-decreasing in seq, 10.5) and the budget rides `run_budget_updated`, both
+folded into `run.cost` by the run-state reducer under the seq guard, so the
+meter updates live with no cost refetch. Downgrades, budget-exceeded parks/fails,
+and budget raises surface as dismissible **banners** (`BudgetBanners`); a live
+"parked at cap" banner carries a **Raise budget** action. The
+`RaiseBudgetDialog` does the documented resume path (ADR-012): `PATCH
+.../budget` then optional `POST .../unpark`, with park→resume reflected live via
+`run_budget_updated`+`run_unparked`. Pure derivations live in
+`src/lib/pure/dashboard/{cost-meter,budget-banners}.ts` (unit-tested, incl. a
+`foldCostEvents` convergence check against the Go cost golden). E2e:
+`e2e/dashboard-cost.spec.ts` climbs the meter, parks at cap, raises + resumes,
+asserts a downgrade banner, and checks the meter total equals `GET
+/v1/runs/{id}/cost` at completion.
 
 ### The step inspector (18.3)
 

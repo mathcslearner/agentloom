@@ -708,6 +708,31 @@ additions); the pure derivations sit under the app's no-React `pure/` boundary.
   **Accepted residuals:** the cost meter/budget UX (18.4), the approval inbox
   (18.5), and DLQ/ops views (18.6).
 
+### Live cost meter & budget UX (as built, 18.4)
+
+The run header's cost meter, budget banners, and raise-budget dialog are
+**entirely under `web/app`**, no Go/graphdef change. The meter is stateless off
+the event feed (see ADR-018 §18.4): the running totals and budget ride
+`cost_updated`/`run_budget_updated`, folded into `run.cost` by the 18.1
+run-state reducer under the `asOf` seq guard.
+
+- **Pure derivations** (`pure/dashboard/cost-meter.ts`, `budget-banners.ts`):
+  `deriveCostMeter` projects the folded cost summary onto a display model with a
+  threshold tier; `deriveBudgetBanners` projects the cost-lifecycle events onto
+  typed, seq-keyed banners (downgrade names from/to models + trigger; a live
+  parked-for-budget affordance carries the Raise action). `foldCostEvents` is a
+  test-only fold proving convergence to the cost summary (DoD-3, at the reducer
+  level).
+- **Actions** (`useBudgetActions.ts`, `streams.ts`): raise = `PATCH .../budget`
+  then optional `POST .../unpark` (the ADR-012 resume path); park→resume is
+  reflected live through `run_budget_updated`+`run_unparked`, so no optimistic
+  state. A 409 on the unpark is tolerated (the raise still landed).
+- **Components** (`CostMeter`, `BudgetBanners`, `RaiseBudgetDialog`) replace the
+  18.1 ad-hoc `$` span in `RunDetail`.
+- **Decisions:** stateless meter off `cost_updated`; raise + optional unpark in
+  one dialog; warn-not-block on a sub-spend budget; no backend change.
+  **Accepted residuals:** the approval inbox (18.5) and DLQ/ops views (18.6).
+
 ## Consequences
 
 - **The serialization boundary is a single, testable leaf.** The whole

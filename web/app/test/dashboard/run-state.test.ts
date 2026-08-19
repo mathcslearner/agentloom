@@ -81,4 +81,29 @@ describe("applyEvent", () => {
     expect(s.run.cost.spent_nano_usd).toBe(12345);
     expect(s.run.cost.saved_nano_usd).toBe(6);
   });
+
+  it("carries the run budget from a budgeted cost_updated (18.4)", () => {
+    let s = seed(0);
+    s = applyEvent(
+      s,
+      makeEnv("cost_updated", 1, { run_spent_nano_usd: 50, run_saved_nano_usd: 0, budget_nano_usd: 100 }, "a"),
+    );
+    expect(s.run.cost.budget_nano_usd).toBe(100);
+  });
+
+  it("raises the budget total from run_budget_updated (18.4)", () => {
+    let s = seed(0);
+    s = applyEvent(s, makeEnv("run_budget_updated", 1, { previous_nano_usd: 100, budget_nano_usd: 500 }));
+    expect(s.run.cost.budget_nano_usd).toBe(500);
+  });
+
+  it("reflects a budget park and unpark on the run status (18.4)", () => {
+    let s = seed(0);
+    s = applyEvent(s, makeEnv("run_parked", 1, { reason: "budget_exceeded" }));
+    expect(s.run.status).toBe("parked");
+    expect(s.run.park_reason).toBe("budget_exceeded");
+    s = applyEvent(s, makeEnv("run_unparked", 2, {}));
+    expect(s.run.status).toBe("running");
+    expect(s.run.park_reason).toBeUndefined();
+  });
 });

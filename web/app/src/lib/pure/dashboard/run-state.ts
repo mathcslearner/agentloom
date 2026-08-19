@@ -96,6 +96,11 @@ export function mergeRunResponse(
   body: { run: RunView; steps: StepView[] },
 ): RunState {
   const bodySeq = body.run.event_seq;
+  // Fold the run-level projection (cost/budget/status/park_reason) only when the
+  // body is at least as fresh as the derived state — so a refetch after a budget
+  // raise or unpark reconciles those fields, but a stale body never regresses the
+  // event-derived live status/totals (mirrors the applyEvent asOf guard).
+  const run: RunView = bodySeq >= state.asOf ? { ...state.run, ...body.run } : state.run;
   const steps = new Map(state.steps);
   for (const s of body.steps) {
     const prev = steps.get(s.id);
@@ -113,7 +118,7 @@ export function mergeRunResponse(
       viewSeq: bodySeq,
     });
   }
-  return { ...state, steps };
+  return { ...state, run, steps };
 }
 
 /** Map a run-lifecycle event to a run status; undefined ⇒ no run-status change. */
@@ -195,15 +200,24 @@ export function applyEvent(state: RunState, env: EventEnvelope): RunState {
   }
 
   // Cost totals ride the cost_updated event (the 18.4 meter reads them live).
+  // The running totals are non-decreasing in seq order by construction (10.5),
+  // so folding them here keeps the header meter live with no cost refetch.
   if (env.type === "cost_updated") {
     run.cost = {
       ...run.cost,
       spent_nano_usd: env.payload.run_spent_nano_usd,
       saved_nano_usd: env.payload.run_saved_nano_usd,
+      // A cost_updated on a budgeted run carries the run's budget after the
+      // bump; carry it so a fresh subscriber's meter shows the cap at once.
+      ...(env.payload.budget_nano_usd !== undefined
+        ? { budget_nano_usd: env.payload.budget_nano_usd }
+        : {}),
     };
   }
-  if (env.type === "run_budget_updated" && typeof env.payload === "object") {
-    // budget total isn't on the payload; a snapshot poll reconciles it.
+  // A budget raise (18.4 PATCH) carries the new total on the payload — the
+  // meter's budget bar reflects it live, no snapshot poll needed.
+  if (env.type === "run_budget_updated") {
+    run.cost = { ...run.cost, budget_nano_usd: env.payload.budget_nano_usd };
   }
 
   // Injected steps from a graph expansion.
