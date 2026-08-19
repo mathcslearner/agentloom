@@ -1,0 +1,6 @@
+# pnpm workspace for the agentloom frontend.
+#
+# lib/*   — pure TS libraries (M16.5: engine-client). No React/UI imports.
+# The Next.js app (M17.1) is added here as its own package when it lands.
+packages:
+  - "lib/*"

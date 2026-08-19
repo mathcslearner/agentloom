@@ -126,6 +126,30 @@ smoke-dashboards: ## Boot app+obs, drive a chaos-grade workload (incl. a worker 
 smoke-trace: ## Boot app+obs, run a retrying fan-out, and assert one Jaeger trace spans 2 workers with a retry link (ticket 7.3)
 	bash scripts/trace-smoke.sh
 
+.PHONY: smoke-ws-tail
+smoke-ws-tail: ## Boot app, tail a run with the typed TS client through a forced api restart, assert no gaps/dupes (ticket 16.5)
+	bash scripts/ws-tail-smoke.sh
+
+# ── web workspace (M16.5 onward): the typed TS engine client + (M17) the app ──
+# pnpm is managed via Corepack; the version is pinned by web/package.json's
+# `packageManager` field. `-r run` recurses into each package's own scripts
+# (tsc/vitest/tsx), so these work with only Corepack on PATH — no `corepack
+# enable` needed locally. CI runs the same steps through the `web` job.
+WEB := cd web && corepack pnpm
+
+.PHONY: web-install
+web-install: ## Install the web workspace dependencies (pnpm, via Corepack)
+	$(WEB) install --frozen-lockfile
+
+.PHONY: web-generate
+web-generate: ## Regenerate the TS types from docs/schema (run after `make generate` on event changes)
+	$(WEB) -r run generate
+
+.PHONY: web-test
+web-test: ## Typecheck + unit-test the web workspace
+	$(WEB) -r run typecheck
+	$(WEB) -r run test
+
 .PHONY: psql
 psql: ## Open a psql shell inside the running postgres container
 	$(COMPOSE) exec postgres sh -c 'exec psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'

@@ -411,13 +411,65 @@ and close identically.
   tailing a continuous run load; zero slow-closes, commit→receipt p95 within
   budget, REST p95 within a degradation budget of the no-client baseline).
 
-### Typed TS client (arrives in 16.5)
+### Typed TS client (as built, 16.5)
 
-`web/lib/engine-client`: TS types **generated from `docs/schema/events.v1.json`**
-(the schema this ADR's leaf package generates via `internal/dag/gen -events-out`,
-committed and CI-drift-checked alongside the definition and PlanOutput schemas),
-implementing ticket auth, snapshot/backfill/tail, seq dedupe, resume, and
-reconnection backoff.
+`web/lib/engine-client` is the typed client for the feed — the first package in
+the new `web/` pnpm workspace (managed via Corepack; the Next.js app is added in
+M17). It is a **pure library with no React/UI imports and no runtime dependency**
+(the global `WebSocket` and `fetch`; Node >= 22), so M17/M18 build directly on
+it, and it runs headless in Node.
+
+- **Generated event types + drift check.** `src/generated/events.ts` is emitted
+  from the committed `docs/schema/events.v1.json` by `scripts/gen-events-types.ts`
+  — a small, **dependency-free deterministic emitter** over the exact vocabulary
+  the invopop reflector produces (object/enum/primitive/array defs, `$ref`,
+  `const`, `true`). Determinism (byte-stable output across environments) is what
+  a drift check needs; a code-gen library's formatting could flake the diff. The
+  emitter renders one interface/alias per `$defs` entry, then a discriminated
+  layer: `EVENT_TYPES` (runtime const) + `EventType` (union) + `EventPayloadMap`
+  + `EventEnvelope` (`{ [K in EventType]: base & { type: K; payload: Map[K] } }[EventType]`),
+  so `switch (env.type)` narrows `env.payload`. The one non-obvious override:
+  the reflected `UUID` def is a 16-byte array (`[16]byte`), but google/uuid
+  marshals a **string** on the wire — the client consumes the wire, so `UUID` is
+  emitted as `string`. **Drift is two-layer:** Go structs → `events.v1.json`
+  (existing Go-CI diff) → `events.ts` (the new `web` CI job regenerates and
+  `git diff --exit-code`s). A Go payload change that isn't reflected in the TS
+  types fails CI on one side or the other.
+- **Ticket auth, two modes.** `{ apiKey }` mints tickets itself with a `read`
+  bearer (Node/server side; the key stays server-side); `{ mintTicket }` lets the
+  caller supply them (a browser calling its own server-side proxy so the API key
+  never reaches the browser — the M17 path). A fresh ticket is minted on **every
+  (re)connect** (TTL ~60s). A `read` bearer on the upgrade is the documented
+  non-browser alternative, reachable via a custom `webSocketFactory` (standard
+  `WebSocket` can't set headers).
+- **Deterministic recovery.** `RunStream` runs `snapshot → backfill from
+  last_seq → live tail`; `close`d connections reconnect with `last_seq` = the
+  highest seq seen (a fresh snapshot is re-emitted — consumers replace state),
+  and the server re-backfills the exact tail, so the union across reconnects is
+  gap-free and dup-free by seq. A **4001 slow-consumer close resumes
+  immediately**; every other close backs off (exponential + full jitter, reset on
+  `caught_up`). `FirehoseStream` manages subscriptions client-side and **re-issues
+  every subscription with its tracked per-run cursors on reconnect** (bounded to
+  the server's `MaxCursorRuns`, non-terminal runs preferred), deduping each run's
+  events by seq across the re-backfill. In-band firehose `error` frames are
+  surfaced and leave the connection open.
+- **Wire frames are hand-mirrored** from the OpenAPI `WS*Frame` schemas (M16.5
+  predates the generated OpenAPI REST client of M17.1; the one type that actually
+  drifts — the event vocabulary — is the generated part). Every transport seam
+  (the socket, the timers, `fetch`) is injectable, so the streams are unit-tested
+  against an in-memory fake transport + fake clock (26 tests: backoff, cursor
+  dedupe/gap classification, run resume/dedupe/4001/user-close/mint-failure-backoff/
+  mintTicket-auth/terminal-close, firehose filtered delivery/cross-run dedupe/
+  cursor re-subscribe/in-band-error/unsubscribe/cursor-bound, and a generated-types
+  sanity check). The `make smoke-ws-tail` compose harness (DoD-2) tails a live run
+  from the Node example (`examples/tail-run.ts`) through an api restart mid-run and
+  asserts the received seqs are exactly `1..max(events.seq)` with a reconnect.
+- **Accepted residuals.** Frame types are hand-mirrored until the M17.1 OpenAPI
+  client replaces them; a bearer header on the WS upgrade needs a custom
+  `webSocketFactory` (the standard `WebSocket` limitation); the resume cursor map
+  is bounded to `MaxCursorRuns` (terminal-first drop — a dropped terminal run
+  re-backfills from 0 on rediscovery and is deduped client-side, wasteful but
+  correct). The 16.3/16.4 ticket residuals carry over.
 
 ## Consequences
 

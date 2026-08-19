@@ -739,6 +739,35 @@ first time an event matches a subscription, so you never miss a run's
 `run_created`. Slow-client (4001) and `503 stream_unavailable` behave as for the
 per-run stream.
 
+### Typed TS client
+
+`web/lib/engine-client` (`@agentloom/engine-client`) is the typed client for the
+feed, generated from `docs/schema/events.v1.json` (CI-drift-checked) and usable
+from Node or the browser. It handles ticket auth, snapshot → backfill → live
+tail, seq dedupe, resume, and reconnection backoff, so a consumer only writes
+handlers:
+
+```ts
+import { RunStream } from "@agentloom/engine-client";
+
+const stream = new RunStream({
+  baseUrl: "http://localhost:8080",
+  runId,
+  auth: { apiKey: process.env.AGENTLOOM_API_KEY! }, // Node; or { mintTicket } in a browser
+  handlers: {
+    onSnapshot: (run) => render(run),
+    onEvent: (env) => {
+      if (env.type === "cost_updated") meter(env.payload.run_spent_nano_usd); // narrowed
+    },
+  },
+}).start();
+```
+
+`FirehoseStream` is the cross-run equivalent (`subscribe(id, filter, cursors?)`).
+Headless tailing: `pnpm exec tsx examples/tail-run.ts --run <id>`; the
+`make smoke-ws-tail` harness drives it through a forced api restart. See
+`web/lib/engine-client/README.md`.
+
 ## Errors and rate limits
 
 Every non-2xx response carries one envelope:

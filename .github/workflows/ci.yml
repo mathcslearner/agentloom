@@ -77,3 +77,34 @@ jobs:
         run: make up
       - name: go test (integration)
         run: go test -race -tags integration ./...
+
+  web:
+    # The typed TS event client (M16.5) and, from M17, the Next.js app.
+    # pnpm is provided by Corepack; the exact version is pinned in
+    # web/package.json's `packageManager` field.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.node-version
+      - name: enable corepack (pnpm)
+        run: corepack enable
+      - name: install
+        run: pnpm install --frozen-lockfile
+      - name: generated TS types are current against docs/schema
+        # events.ts is generated from the committed docs/schema/events.v1.json
+        # (itself Go-CI-diffed in the lint job). Regenerate and fail on drift, so
+        # a Go event-payload change that isn't reflected in the TS types fails CI.
+        run: |
+          pnpm generate
+          git diff --exit-code -- lib/engine-client/src/generated
+      - name: typecheck
+        run: pnpm typecheck
+      - name: unit tests
+        run: pnpm test
+      - name: build
+        run: pnpm build

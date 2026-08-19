@@ -1,0 +1,17 @@
+{
+  "name": "agentloom-web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "agentloom frontend workspace (M16.5 onward). The Next.js app arrives in M17.1; the engine-client library is the first package.",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "generate": "pnpm --recursive run generate",
+    "typecheck": "pnpm --recursive run typecheck",
+    "test": "pnpm --recursive run test",
+    "build": "pnpm --recursive run build",
+    "lint": "pnpm --recursive run lint"
+  }
+}
