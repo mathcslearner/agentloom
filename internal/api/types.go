@@ -77,6 +77,20 @@ const (
 	// The durable feed stays available via GET /v1/runs/{id} and the events
 	// backfill; only the live stream is off.
 	ErrCodeStreamUnavailable = "stream_unavailable"
+	// Firehose control-message errors (ticket 16.4). These are delivered as
+	// in-band WSErrorFrame frames on the live connection — the connection stays
+	// open — never HTTP statuses.
+	//
+	// ErrCodeBadMessage: an unparseable or unknown-type control message.
+	ErrCodeBadMessage = "bad_message"
+	// ErrCodeFilterInvalid: a subscribe filter is malformed (bad uuid,
+	// unknown event type, too many entries).
+	ErrCodeFilterInvalid = "filter_invalid"
+	// ErrCodeSubscriptionLimit: the connection already holds the maximum
+	// number of subscriptions.
+	ErrCodeSubscriptionLimit = "subscription_limit"
+	// ErrCodeUnknownSubscription: an unsubscribe named an unknown id.
+	ErrCodeUnknownSubscription = "unknown_subscription"
 )
 
 // ErrorBody is the envelope every non-2xx response carries.
@@ -793,6 +807,16 @@ const (
 	WSFrameEvent    = "event"
 	WSFrameCaughtUp = "caught_up"
 	WSFrameError    = "error"
+	// Firehose server frames (ticket 16.4).
+	WSFrameSubscribed   = "subscribed"
+	WSFrameUnsubscribed = "unsubscribed"
+)
+
+// Firehose client control-message types (ticket 16.4). A client sends these as
+// JSON text frames on GET /v1/events/ws to manage its filtered subscriptions.
+const (
+	WSMsgSubscribe   = "subscribe"
+	WSMsgUnsubscribe = "unsubscribe"
 )
 
 // WSSnapshotFrame carries the run's current state — the same body as
@@ -803,10 +827,14 @@ type WSSnapshotFrame struct {
 	Run  RunResponse `json:"run"`
 }
 
-// WSEventFrame carries one normalized event envelope (internal/event).
+// WSEventFrame carries one normalized event envelope (internal/event). On the
+// firehose (ticket 16.4) Subscriptions names the subscription ids this envelope
+// matched, so a client fanning one connection into several UI views knows which
+// view(s) to route it to; it is absent on the single-subscription run WS.
 type WSEventFrame struct {
-	Type  string         `json:"type"` // WSFrameEvent
-	Event event.Envelope `json:"event"`
+	Type          string         `json:"type"` // WSFrameEvent
+	Event         event.Envelope `json:"event"`
+	Subscriptions []string       `json:"subscriptions,omitempty"`
 }
 
 // WSCaughtUpFrame marks the end of the backfill and the start of the live
@@ -817,10 +845,65 @@ type WSCaughtUpFrame struct {
 	LastSeq int64  `json:"last_seq"`
 }
 
-// WSErrorFrame is sent immediately before a non-normal close so the client
-// has a machine-readable reason in addition to the close code.
+// WSErrorFrame is sent immediately before a non-normal close (run WS) or in-band
+// as a control-message rejection that leaves the connection open (firehose,
+// ticket 16.4) so the client has a machine-readable reason in addition to any
+// close code. ID, when set, names the subscription the error concerns.
 type WSErrorFrame struct {
 	Type    string `json:"type"` // WSFrameError
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	ID      string `json:"id,omitempty"`
+}
+
+// ----- Firehose protocol (GET /v1/events/ws, ticket 16.4) -----
+
+// WSFilter narrows a firehose subscription server-side. An empty filter matches
+// every event. RunIDs / Types / DefinitionID / DefinitionName are ANDed; within
+// RunIDs or Types the values are ORed. DefinitionName matches inline (unstored)
+// runs, which have no DefinitionID.
+type WSFilter struct {
+	RunIDs         []string `json:"run_ids,omitempty"`
+	Types          []string `json:"types,omitempty"`
+	DefinitionID   string   `json:"definition_id,omitempty"`
+	DefinitionName string   `json:"definition_name,omitempty"`
+}
+
+// WSSubscribeMessage opens or replaces one filtered subscription on the
+// connection. ID is the client-chosen subscription id (echoed on matching event
+// frames). Cursors resumes specific runs from a prior seq (0 = full history);
+// runs absent from Cursors are delivered live from first sighting.
+type WSSubscribeMessage struct {
+	Type    string           `json:"type"` // WSMsgSubscribe
+	ID      string           `json:"id"`
+	Filter  WSFilter         `json:"filter"`
+	Cursors map[string]int64 `json:"cursors,omitempty"`
+}
+
+// WSUnsubscribeMessage cancels one subscription by id.
+type WSUnsubscribeMessage struct {
+	Type string `json:"type"` // WSMsgUnsubscribe
+	ID   string `json:"id"`
+}
+
+// WSSubscribedFrame acknowledges a subscribe, echoing the effective filter.
+type WSSubscribedFrame struct {
+	Type   string   `json:"type"` // WSFrameSubscribed
+	ID     string   `json:"id"`
+	Filter WSFilter `json:"filter"`
+}
+
+// WSUnsubscribedFrame acknowledges an unsubscribe.
+type WSUnsubscribedFrame struct {
+	Type string `json:"type"` // WSFrameUnsubscribed
+	ID   string `json:"id"`
+}
+
+// WSFirehoseCaughtUpFrame marks the end of the cursor backfill for one
+// subscription; Cursors reports the highest seq delivered per resumed run — the
+// client's resume point for those runs.
+type WSFirehoseCaughtUpFrame struct {
+	Type    string           `json:"type"` // WSFrameCaughtUp
+	ID      string           `json:"id"`
+	Cursors map[string]int64 `json:"cursors"`
 }

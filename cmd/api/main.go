@@ -370,6 +370,10 @@ func (w wsSubscriber) SubscribeRun(ctx context.Context, runID uuid.UUID) (api.WS
 	return w.sub.SubscribeRun(ctx, runID)
 }
 
+func (w wsSubscriber) SubscribeFirehose(ctx context.Context) (api.WSEventStream, error) {
+	return w.sub.SubscribeFirehose(ctx)
+}
+
 // randomWSTicketSecret generates a per-process WS ticket signing secret when
 // the operator configures none (ticket 16.3). Tickets are then valid only
 // within one replica's lifetime; a multi-replica deployment sets a shared

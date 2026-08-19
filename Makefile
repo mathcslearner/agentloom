@@ -61,6 +61,10 @@ test: ## Run unit tests with the race detector
 test-integration: ## Run integration tests (requires the Docker Compose stack: make up)
 	go test -race -tags integration ./...
 
+.PHONY: test-firehose-load
+test-firehose-load: ## Run the 16.4 100-client firehose load test (requires the Compose stack)
+	go test -tags integration -run TestFirehoseHundredClients -count=1 -timeout 5m -v ./internal/api
+
 .PHONY: test-chaos-long
 test-chaos-long: ## Run the sustained chaos suite in long mode (override with AGENTLOOM_CHAOS_DURATION=10m)
 	AGENTLOOM_CHAOS_DURATION=$${AGENTLOOM_CHAOS_DURATION:-5m} \

@@ -70,6 +70,8 @@ security:
 tags:
   - name: Runs
     description: Submit, inspect, and steer workflow runs.
+  - name: Events
+    description: Live event streaming — the multi-run firehose WebSocket (ADR-018).
   - name: Definitions
     description: The stored, versioned workflow-definition registry.
   - name: Approvals
@@ -782,6 +784,102 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/StreamUnavailable"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/events/ws-ticket:
+    post:
+      operationId: mintFirehoseWSTicket
+      tags: [Events]
+      summary: Mint a short-lived ticket for the multi-run firehose WebSocket
+      description: |
+        Scope `read`, rate-limit class `read`. Mints a short-lived, signed,
+        opaque ticket scoped to the firehose audience and the `read` scope
+        (ticket 16.4, ADR-018). Unlike the run ticket it is not bound to a run —
+        the firehose is cross-run and narrowed by the client's `subscribe`
+        filters. The ticket expires quickly (`expires_at`); the client re-mints
+        when it expires. `503 stream_unavailable` when event streaming is not
+        enabled on this server.
+      responses:
+        "200":
+          description: A signed ticket for the firehose WebSocket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WSTicketResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/StreamUnavailable"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /v1/events/ws:
+    get:
+      operationId: streamEvents
+      tags: [Events]
+      summary: Stream a filtered, multi-run event feed over WebSocket
+      description: |
+        Rate-limit class `read`. Upgrades to a WebSocket and streams a filtered,
+        cross-run event feed for the dashboard's run list (ticket 16.4,
+        ADR-018). Authentication is EITHER a `ticket` query parameter (minted at
+        `POST /v1/events/ws-ticket`, the browser path) OR a `read`-scoped bearer
+        key (for non-browser clients); a failure is the uniform `401`.
+
+        Protocol (JSON text frames, discriminated by `type`). The client manages
+        subscriptions with control messages: `subscribe` (`{type, id, filter,
+        cursors}`) opens or replaces one filtered subscription; `unsubscribe`
+        (`{type, id}`) cancels it. The server replies with a `subscribed` ack,
+        then `event` frames backfilled from any `cursors`, a `caught_up` frame,
+        then live `event` frames — each tagged with the `subscriptions` ids it
+        matched. A malformed or over-limit control message yields an in-band
+        `error` frame and leaves the connection open. Filters (`run_ids`,
+        `types`, `definition_id`, `definition_name`) are ANDed; clients dedupe
+        and order by `(run_id, seq)` and resume runs via `cursors`. A client that
+        falls too far behind is closed with application close code `4001` (slow
+        consumer) and resumes. `503 stream_unavailable` when event streaming is
+        not enabled on this server.
+      parameters:
+        - name: ticket
+          in: query
+          required: false
+          schema:
+            type: string
+          description: A ticket from POST /v1/events/ws-ticket (the browser auth path).
+      responses:
+        "101":
+          description: |
+            The connection is upgraded to a WebSocket. Frames follow the
+            subscribe → backfill → live-tail protocol described above. The
+            content schema below documents the frame shapes (a text frame is one
+            of these); it is not a conventional HTTP body.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/WSEventFrame"
+                  - $ref: "#/components/schemas/WSSubscribedFrame"
+                  - $ref: "#/components/schemas/WSUnsubscribedFrame"
+                  - $ref: "#/components/schemas/WSFirehoseCaughtUpFrame"
+                  - $ref: "#/components/schemas/WSErrorFrame"
+                discriminator:
+                  propertyName: type
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "429":
           $ref: "#/components/responses/RateLimited"
         "503":
@@ -1614,6 +1712,10 @@ components:
         - approval_not_pending
         - approval_decision_invalid
         - stream_unavailable
+        - bad_message
+        - filter_invalid
+        - subscription_limit
+        - unknown_subscription
     Issue:
       type: object
       description: One path-qualified definition problem.
@@ -3128,7 +3230,9 @@ components:
       description: >
         One normalized event envelope (ticket 16.1/16.3), backfilled then live.
         Clients dedupe and order by (run_id, seq). The `event` schema is the
-        generated event feed envelope (docs/schema/events.v1.json).
+        generated event feed envelope (docs/schema/events.v1.json). On the
+        firehose (16.4), `subscriptions` names the subscription ids this envelope
+        matched; it is absent on the single-subscription run WebSocket.
       required: [type, event]
       properties:
         type:
@@ -3136,6 +3240,72 @@ components:
           enum: [event]
         event:
           $ref: "../docs/schema/events.v1.json"
+        subscriptions:
+          type: array
+          items:
+            type: string
+          description: Firehose only — the matched subscription ids.
+    WSSubscribedFrame:
+      type: object
+      description: >
+        Firehose (ticket 16.4): acknowledges a `subscribe`, echoing the effective
+        filter.
+      required: [type, id, filter]
+      properties:
+        type:
+          type: string
+          enum: [subscribed]
+        id:
+          type: string
+        filter:
+          $ref: "#/components/schemas/WSFilter"
+    WSUnsubscribedFrame:
+      type: object
+      description: "Firehose (ticket 16.4): acknowledges an `unsubscribe`."
+      required: [type, id]
+      properties:
+        type:
+          type: string
+          enum: [unsubscribed]
+        id:
+          type: string
+    WSFirehoseCaughtUpFrame:
+      type: object
+      description: >
+        Firehose (ticket 16.4): marks the end of a subscription's cursor
+        backfill. `cursors` reports the highest seq delivered per resumed run.
+      required: [type, id, cursors]
+      properties:
+        type:
+          type: string
+          enum: [caught_up]
+        id:
+          type: string
+        cursors:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+    WSFilter:
+      type: object
+      description: >
+        Firehose subscription filter (ticket 16.4). An empty filter matches every
+        event. Fields are ANDed; values within run_ids/types are ORed.
+      properties:
+        run_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        types:
+          type: array
+          items:
+            type: string
+        definition_id:
+          type: string
+          format: uuid
+        definition_name:
+          type: string
     WSCaughtUpFrame:
       type: object
       description: >
@@ -3152,8 +3322,10 @@ components:
     WSErrorFrame:
       type: object
       description: >
-        Sent immediately before a non-normal WebSocket close (ticket 16.3) so
-        the client has a machine-readable reason alongside the close code.
+        Sent before a non-normal WebSocket close (run WS, ticket 16.3) or in-band
+        as a control-message rejection that leaves the connection open (firehose,
+        ticket 16.4), so the client has a machine-readable reason. `id`, when
+        present, names the subscription the error concerns.
       required: [type, code, message]
       properties:
         type:
@@ -3162,4 +3334,6 @@ components:
         code:
           type: string
         message:
+          type: string
+        id:
           type: string

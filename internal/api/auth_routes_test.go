@@ -36,6 +36,7 @@ var routeScopes = map[string]Scope{
 	"GET /v1/runs/{runID}/blackboard":              ScopeRead,
 	"GET /v1/runs/{runID}/graph":                   ScopeRead,
 	"POST /v1/runs/{runID}/ws-ticket":              ScopeRead,
+	"POST /v1/events/ws-ticket":                    ScopeRead,
 	"POST /v1/definitions":                         ScopeSubmit,
 	"GET /v1/definitions":                          ScopeRead,
 	"GET /v1/definitions/{defID}":                  ScopeRead,
@@ -81,7 +82,7 @@ func TestV1RouteScopeCoverage(t *testing.T) {
 		// deliberately absent from the route→scope table; TestWSTicket* and the
 		// WS integration suite cover its auth. Every other /v1 route uses
 		// requireScope and must appear here.
-		if key == "GET /v1/runs/{runID}/ws" {
+		if key == "GET /v1/runs/{runID}/ws" || key == "GET /v1/events/ws" {
 			return nil
 		}
 		seen[key] = true

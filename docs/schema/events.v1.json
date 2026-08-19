@@ -1674,6 +1674,9 @@
         "name": {
           "type": "string"
         },
+        "definition_id": {
+          "type": "string"
+        },
         "steps_total": {
           "type": "integer"
         }

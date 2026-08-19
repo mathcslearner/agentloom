@@ -150,10 +150,10 @@ func TestOpenAPIOperationContracts(t *testing.T) {
 			t.Errorf("%s: no responses documented", key)
 			continue
 		}
-		// The run WebSocket (ticket 16.3) upgrades the connection: its success
-		// is 101 Switching Protocols, which carries no body. Everything else
-		// documents a schema'd 2xx.
-		if key == "GET /v1/runs/{}/ws" {
+		// The WebSocket endpoints (tickets 16.3/16.4) upgrade the connection:
+		// their success is 101 Switching Protocols, which carries no body.
+		// Everything else documents a schema'd 2xx.
+		if key == "GET /v1/runs/{}/ws" || key == "GET /v1/events/ws" {
 			if _, ok := op.Responses["101"]; !ok {
 				t.Errorf("%s: WebSocket upgrade must document 101", key)
 			}

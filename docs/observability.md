@@ -126,11 +126,20 @@ scrape-target health, and `engine_build_info` per instance.
 Redis): `engine_events_published_total{channel}` (`run`/`firehose`),
 `engine_events_publish_failures_total`, `engine_events_publish_dropped_total`,
 and `engine_events_publish_latency_seconds` (commit-to-published, local budget
-under 100ms). These have no dedicated dashboard row yet — the Events row lands
-with the connection/backpressure metrics in ticket 16.4 — but a non-zero
-failures or dropped rate means Redis pub/sub is degraded (the events stay durable
-in Postgres and consumers heal via DB backfill, so this is a latency-hint
-degradation, never data loss).
+under 100ms). A non-zero failures or dropped rate means Redis pub/sub is degraded
+(the events stay durable in Postgres and consumers heal via DB backfill, so this
+is a latency-hint degradation, never data loss).
+
+**WebSocket streaming (ticket 16.4).** The run WS (16.3) and multi-run firehose
+(16.4) export the `api`-subsystem WS metrics, labelled `kind` ∈ {`run`,
+`firehose`}: `engine_api_ws_connections{kind}` and `engine_api_ws_subscriptions`
+(open connections and active firehose subscriptions),
+`engine_api_ws_frames_sent_total{kind}`, `engine_api_ws_slow_closes_total{kind}`
+(a client closed 4001 for slow consumption — it resumes, so a low rate is
+benign; a spike means clients can't keep up), `engine_api_ws_hub_dropped_total`
+(firehose envelopes dropped at a full per-connection inbox — healed by backfill,
+never lost), and the `engine_api_ws_send_queue_fill_ratio{kind}` histogram (the
+direct backpressure signal; a fill ratio riding near 1 precedes slow-closes).
 
 ## The API dashboard (`agentloom-api`)
 

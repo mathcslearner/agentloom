@@ -46,6 +46,13 @@ import (
 // resumable: the client reconnects with its last_seq and misses nothing.
 const wsCloseSlowConsumer = 4001
 
+// WS connection kinds — the bounded metric label distinguishing the per-run
+// endpoint from the multi-run firehose (ticket 16.4).
+const (
+	wsKindRun      = "run"
+	wsKindFirehose = "firehose"
+)
+
 // WS driver defaults. All are overridable via WSOptions so tests can drive the
 // slow-client path on a short timeout.
 const (
@@ -55,6 +62,12 @@ const (
 	defaultWSResyncInterval    = 10 * time.Second
 	defaultWSSlowClientTimeout = 10 * time.Second
 	defaultWSWriteTimeout      = 10 * time.Second
+	// Firehose defaults (ticket 16.4).
+	defaultWSHubBuffer        = 1024
+	defaultWSMaxSubscriptions = 16
+	defaultWSMaxCursorRuns    = 256
+	defaultWSMaxTrackedRuns   = 2048
+	defaultWSRunMetaCacheSize = 4096
 	// defaultWSTicketTTL is the ticket validity when WithWebSocket is wired with
 	// a secret but no TTL. cmd/api always passes the config value; this keeps a
 	// programmatic caller from minting already-expired tickets (ttl 0).
@@ -81,6 +94,10 @@ type WSEventStream interface {
 // pub/sub is disabled or Redis is down.
 type WSSubscriber interface {
 	SubscribeRun(ctx context.Context, runID uuid.UUID) (WSEventStream, error)
+	// SubscribeFirehose opens a subscription to the all-runs firehose channel
+	// (ticket 16.4). The firehose hub holds one such subscription per process
+	// and fans it out to every connected multi-run client.
+	SubscribeFirehose(ctx context.Context) (WSEventStream, error)
 }
 
 // WSOptions configures the run WebSocket endpoint (ticket 16.3). The zero value
@@ -113,6 +130,25 @@ type WSOptions struct {
 	SlowClientTimeout time.Duration
 	// WriteTimeout bounds one frame write. Default defaultWSWriteTimeout.
 	WriteTimeout time.Duration
+
+	// Firehose knobs (ticket 16.4). Zero ⇒ the documented default.
+
+	// HubBuffer is the per-connection inbox the hub fans firehose envelopes
+	// into; a full inbox drops the envelope (a seq gap healed by backfill).
+	// Default defaultWSHubBuffer.
+	HubBuffer int
+	// MaxSubscriptions caps concurrent subscriptions on one firehose
+	// connection. Default defaultWSMaxSubscriptions.
+	MaxSubscriptions int
+	// MaxCursorRuns caps run ids in one subscribe's cursors map and one
+	// filter's run_ids list. Default defaultWSMaxCursorRuns.
+	MaxCursorRuns int
+	// MaxTrackedRuns caps the runs one firehose connection tails at once.
+	// Default defaultWSMaxTrackedRuns.
+	MaxTrackedRuns int
+	// RunMetaCacheSize bounds the hub's shared run→definition metadata cache.
+	// Default defaultWSRunMetaCacheSize.
+	RunMetaCacheSize int
 }
 
 func (o WSOptions) withDefaults() WSOptions {
@@ -136,6 +172,21 @@ func (o WSOptions) withDefaults() WSOptions {
 	}
 	if o.WriteTimeout <= 0 {
 		o.WriteTimeout = defaultWSWriteTimeout
+	}
+	if o.HubBuffer <= 0 {
+		o.HubBuffer = defaultWSHubBuffer
+	}
+	if o.MaxSubscriptions <= 0 {
+		o.MaxSubscriptions = defaultWSMaxSubscriptions
+	}
+	if o.MaxCursorRuns <= 0 {
+		o.MaxCursorRuns = defaultWSMaxCursorRuns
+	}
+	if o.MaxTrackedRuns <= 0 {
+		o.MaxTrackedRuns = defaultWSMaxTrackedRuns
+	}
+	if o.RunMetaCacheSize <= 0 {
+		o.RunMetaCacheSize = defaultWSRunMetaCacheSize
 	}
 	return o
 }
@@ -263,8 +314,147 @@ func (h *Handler) handleRunWS(w http.ResponseWriter, r *http.Request) {
 	}).run(ctx)
 }
 
-// wsConn drives one accepted connection. It is created per request and used by
-// a single handler goroutine (plus the writer goroutine it spawns).
+// wsLink is the shared transport half of a WebSocket connection, used by both
+// the run endpoint (wsConn, 16.3) and the firehose (firehoseConn, 16.4). It owns
+// the connection's outbound path — a bounded per-connection buffer drained by a
+// sole writer goroutine — and the close-disposition + backpressure discipline.
+// The protocol (what frames, in what order, and reading control messages) is the
+// driver's business.
+//
+// The subtlety worth stating: a slow client is signalled through the outbound
+// buffer, NOT by cancelling the writer's context — coder/websocket closes the
+// connection when a Write's context is cancelled, which would prevent the very
+// close frame we want the client to see. So on a slow client we stop feeding,
+// let the writer drain what it can as the client resumes reading, and only then
+// send the 4001 close frame. connCtx is cancelled only for a genuine teardown
+// (peer gone, server shutdown, write error), where a clean close is moot.
+type wsLink struct {
+	conn    *websocket.Conn
+	opts    *WSOptions
+	metrics RequestMetrics
+	log     *slog.Logger
+	kind    string // metric label: wsKindRun | wsKindFirehose
+
+	connCtx    context.Context
+	cancel     context.CancelFunc
+	send       chan []byte
+	writerDone chan struct{}
+	sendClosed bool
+	// slow is set once enqueue times out waiting for the buffer; the driver's
+	// finish then closes 4001. Written only by the single driver goroutine.
+	slow bool
+}
+
+// newWSLink starts the writer goroutine and returns a link whose connCtx is a
+// child of parent. metrics.WSConnClosed is recorded by finish.
+func newWSLink(parent context.Context, conn *websocket.Conn, opts *WSOptions, metrics RequestMetrics, logger *slog.Logger, kind string) *wsLink {
+	connCtx, cancel := context.WithCancel(parent)
+	l := &wsLink{
+		conn: conn, opts: opts, metrics: metrics, log: logger, kind: kind,
+		connCtx: connCtx, cancel: cancel,
+		send:       make(chan []byte, opts.Buffer),
+		writerDone: make(chan struct{}),
+	}
+	metrics.WSConnOpened(kind)
+	go l.writeLoop()
+	return l
+}
+
+// enqueue offers one frame to the writer, returning false if the connection is
+// torn down or the client is too slow (slow is then set so finish records the
+// 4001 disposition). It never cancels the writer.
+func (l *wsLink) enqueue(b []byte) bool {
+	if c := cap(l.send); c > 0 {
+		l.metrics.WSSendQueue(l.kind, float64(len(l.send))/float64(c))
+	}
+	select {
+	case l.send <- b:
+		return true
+	case <-l.connCtx.Done():
+		return false
+	case <-time.After(l.opts.SlowClientTimeout):
+		l.slow = true
+		return false
+	}
+}
+
+// enqueueJSON marshals v and enqueues it. A marshal error is a bug (the DB has
+// the truth); it is skipped and reported as "not slow/torn" so the driver
+// continues, matching the 16.3 behaviour.
+func (l *wsLink) enqueueJSON(v any) bool {
+	b, err := json.Marshal(v)
+	if err != nil {
+		l.log.WarnContext(l.connCtx, "ws: marshalling frame", slog.Any("error", err))
+		return true
+	}
+	return l.enqueue(b)
+}
+
+// ping sends one keepalive ping; an error means an unresponsive peer, so the
+// connection is torn down.
+func (l *wsLink) ping() {
+	ctx, cancel := context.WithTimeout(l.connCtx, l.opts.WriteTimeout)
+	err := l.conn.Ping(ctx)
+	cancel()
+	if err != nil {
+		l.cancel()
+	}
+}
+
+// finish closes the connection with (code, reason), overriding both with the
+// 4001 slow-consumer close if the client fell behind. It stops feeding, lets the
+// writer drain (a resuming slow client unblocks it), then closes — bounded so a
+// truly-dead peer cannot hang the handler beyond one write timeout.
+func (l *wsLink) finish(code websocket.StatusCode, reason string) {
+	if l.slow {
+		code, reason = wsCloseSlowConsumer, "slow consumer"
+		l.metrics.WSSlowClose(l.kind)
+	}
+	if !l.sendClosed {
+		close(l.send)
+		l.sendClosed = true
+	}
+	select {
+	case <-l.writerDone:
+	case <-time.After(l.opts.WriteTimeout + time.Second):
+	}
+	if err := l.conn.Close(code, reason); err != nil {
+		_ = l.conn.CloseNow()
+	}
+	l.metrics.WSConnClosed(l.kind)
+}
+
+// writeLoop is the sole frame writer. It drains send and writes each frame as a
+// text message under a per-frame deadline. On a genuine write error (a dead or
+// wedged peer that stays dead past the timeout) it cancels the connection; when
+// send is closed it drains the remainder first, so a slow client that resumes
+// reading still receives the buffered frames and the subsequent close frame. It
+// always closes writerDone on return.
+func (l *wsLink) writeLoop() {
+	defer close(l.writerDone)
+	for {
+		select {
+		case <-l.connCtx.Done():
+			return
+		case b, ok := <-l.send:
+			if !ok {
+				return // slow-close drain complete
+			}
+			wctx, wcancel := context.WithTimeout(l.connCtx, l.opts.WriteTimeout)
+			err := l.conn.Write(wctx, websocket.MessageText, b)
+			wcancel()
+			if err != nil {
+				l.cancel()
+				return
+			}
+			l.metrics.WSFrameSent(l.kind)
+		}
+	}
+}
+
+// wsConn drives one accepted run-WebSocket connection (16.3). It is created per
+// request and used by a single handler goroutine (plus the wsLink writer it
+// spawns).
 type wsConn struct {
 	h        *Handler
 	conn     *websocket.Conn
@@ -274,98 +464,34 @@ type wsConn struct {
 	log      *slog.Logger
 }
 
-// run executes the protocol. It owns the connection's lifecycle: on return the
-// connection is closed with the appropriate code.
-//
-// The subtlety worth stating: a slow client is signalled through the outbound
-// buffer, NOT by cancelling the writer's context — coder/websocket closes the
-// connection when a Write's context is cancelled, which would prevent the very
-// close frame we want the client to see. So on a slow client we stop feeding,
-// let the writer drain what it can as the client resumes reading, and only then
-// send the 4001 close frame. connCtx is cancelled only for a genuine teardown
-// (peer gone, server shutdown, write error), where a clean close is moot.
+// run executes the run protocol: snapshot → backfill → live-tail. On return the
+// connection is closed with the appropriate code (via the link's finish).
 func (c *wsConn) run(parent context.Context) {
 	opts := c.h.ws
-	connCtx, cancel := context.WithCancel(parent)
-	defer cancel()
+	l := newWSLink(parent, c.conn, opts, c.h.metrics, c.log, wsKindRun)
 
 	// CloseRead drains incoming frames (so pongs are read and a client close is
 	// observed) and returns a context cancelled when the peer goes away. We do
-	// not expect application messages from the client in 16.3.
-	readCtx := c.conn.CloseRead(connCtx)
+	// not expect application messages from a run-WS client.
+	readCtx := c.conn.CloseRead(l.connCtx)
 	go func() {
 		<-readCtx.Done()
-		cancel()
+		l.cancel()
 	}()
-
-	// The outbound buffer + sole writer goroutine. deliver enqueues here; the
-	// writer serializes frame writes. A stalled client keeps the buffer full,
-	// which deliver detects (a bounded enqueue wait) and turns into a graceful
-	// 4001 close.
-	send := make(chan []byte, opts.Buffer)
-	writerDone := make(chan struct{})
-	go c.writeLoop(connCtx, send, writerDone, cancel)
 
 	closeCode := websocket.StatusNormalClosure
 	closeReason := ""
-	sendClosed := false
-	closeSend := func() {
-		if !sendClosed {
-			close(send)
-			sendClosed = true
-		}
-	}
-	defer func() {
-		// Stop feeding, let the writer drain (a resuming slow client unblocks it),
-		// then close. Bounded so a truly-dead peer cannot hang the handler beyond
-		// one write timeout.
-		closeSend()
-		select {
-		case <-writerDone:
-		case <-time.After(opts.WriteTimeout + time.Second):
-		}
-		if err := c.conn.Close(closeCode, closeReason); err != nil {
-			_ = c.conn.CloseNow()
-		}
-	}()
+	defer func() { l.finish(closeCode, closeReason) }()
 
-	// enqueue offers one frame to the writer, returning false if the connection
-	// is torn down or the client is too slow (slow is set so the caller records
-	// the 4001 disposition). It never cancels the writer.
-	slow := false
-	enqueue := func(b []byte) bool {
-		select {
-		case send <- b:
-			return true
-		case <-connCtx.Done():
-			return false
-		case <-time.After(opts.SlowClientTimeout):
-			slow = true
-			return false
-		}
-	}
 	deliver := func(env event.Envelope) {
-		b, err := json.Marshal(WSEventFrame{Type: WSFrameEvent, Event: env})
-		if err != nil {
-			return // an un-marshalable envelope is a bug; skip it, the DB has it
-		}
-		if enqueue(b) && env.Seq > c.lastSeq {
+		if l.enqueueJSON(WSEventFrame{Type: WSFrameEvent, Event: env}) && env.Seq > c.lastSeq {
 			c.lastSeq = env.Seq
-		}
-	}
-	// markClose records the disposition for the deferred close.
-	markClose := func() {
-		if slow {
-			closeCode, closeReason = wsCloseSlowConsumer, "slow consumer"
 		}
 	}
 
 	// 1. Snapshot.
-	if b, err := json.Marshal(WSSnapshotFrame{Type: WSFrameSnapshot, Run: c.snapshot}); err == nil {
-		if !enqueue(b) {
-			markClose()
-			return
-		}
+	if !l.enqueueJSON(WSSnapshotFrame{Type: WSFrameSnapshot, Run: c.snapshot}) {
+		return
 	}
 
 	// Subscribe BEFORE the backfill so no live event is missed in the window
@@ -374,9 +500,9 @@ func (c *wsConn) run(parent context.Context) {
 	// subscriber wired) degrades to poll-only — never an error to the client.
 	var live <-chan event.Envelope
 	if opts.Subscriber != nil {
-		sub, err := opts.Subscriber.SubscribeRun(connCtx, c.runID)
+		sub, err := opts.Subscriber.SubscribeRun(l.connCtx, c.runID)
 		if err != nil {
-			c.log.WarnContext(connCtx, "ws: live subscribe failed, falling back to polling",
+			c.log.WarnContext(l.connCtx, "ws: live subscribe failed, falling back to polling",
 				slog.Any("error", err))
 		} else {
 			defer func() { _ = sub.Close() }()
@@ -387,25 +513,20 @@ func (c *wsConn) run(parent context.Context) {
 	tailer := pubsub.NewTailer(c.runID, c.lastSeq, c.h.st.Events(), deliver, wsBackfillPageSize)
 
 	// 2. Backfill from last_seq to head.
-	if err := tailer.Catchup(connCtx); err != nil {
-		if connCtx.Err() != nil || slow {
-			markClose()
+	if err := tailer.Catchup(l.connCtx); err != nil {
+		if l.connCtx.Err() != nil || l.slow {
 			return
 		}
 		closeCode, closeReason = websocket.StatusInternalError, "backfill failed"
 		return
 	}
-	if slow {
-		markClose()
+	if l.slow {
 		return
 	}
 
 	// 3. caught_up marks the live boundary.
-	if b, err := json.Marshal(WSCaughtUpFrame{Type: WSFrameCaughtUp, LastSeq: tailer.LastSeq()}); err == nil {
-		if !enqueue(b) {
-			markClose()
-			return
-		}
+	if !l.enqueueJSON(WSCaughtUpFrame{Type: WSFrameCaughtUp, LastSeq: tailer.LastSeq()}) {
+		return
 	}
 
 	// 4. Live tail.
@@ -422,60 +543,26 @@ func (c *wsConn) run(parent context.Context) {
 	defer resyncT.Stop()
 
 	for {
-		if slow {
-			markClose()
+		if l.slow {
 			return
 		}
 		select {
-		case <-connCtx.Done():
-			markClose()
+		case <-l.connCtx.Done():
 			return
 		case env, ok := <-live:
 			if !ok {
 				live = nil // subscription closed; keep polling via resync
 				continue
 			}
-			if err := tailer.Offer(connCtx, env); err != nil && connCtx.Err() == nil && !slow {
-				c.log.WarnContext(connCtx, "ws: tail offer failed", slog.Any("error", err))
+			if err := tailer.Offer(l.connCtx, env); err != nil && l.connCtx.Err() == nil && !l.slow {
+				c.log.WarnContext(l.connCtx, "ws: tail offer failed", slog.Any("error", err))
 			}
 		case <-resyncT.C:
-			if err := tailer.Catchup(connCtx); err != nil && connCtx.Err() == nil && !slow {
-				c.log.WarnContext(connCtx, "ws: resync backfill failed", slog.Any("error", err))
+			if err := tailer.Catchup(l.connCtx); err != nil && l.connCtx.Err() == nil && !l.slow {
+				c.log.WarnContext(l.connCtx, "ws: resync backfill failed", slog.Any("error", err))
 			}
 		case <-pingT.C:
-			pingCtx, pingCancel := context.WithTimeout(connCtx, opts.WriteTimeout)
-			err := c.conn.Ping(pingCtx)
-			pingCancel()
-			if err != nil {
-				cancel() // unresponsive peer
-			}
-		}
-	}
-}
-
-// writeLoop is the sole frame writer. It drains send and writes each frame as a
-// text message under a per-frame deadline. On a genuine write error (a dead or
-// wedged peer that stays dead past the timeout) it cancels the connection; when
-// send is closed it drains the remainder first, so a slow client that resumes
-// reading still receives the buffered frames and the subsequent close frame. It
-// always closes writerDone on return.
-func (c *wsConn) writeLoop(connCtx context.Context, send <-chan []byte, writerDone chan<- struct{}, cancel context.CancelFunc) {
-	defer close(writerDone)
-	for {
-		select {
-		case <-connCtx.Done():
-			return
-		case b, ok := <-send:
-			if !ok {
-				return // slow-close drain complete
-			}
-			wctx, wcancel := context.WithTimeout(connCtx, c.h.ws.WriteTimeout)
-			err := c.conn.Write(wctx, websocket.MessageText, b)
-			wcancel()
-			if err != nil {
-				cancel()
-				return
-			}
+			l.ping()
 		}
 	}
 }

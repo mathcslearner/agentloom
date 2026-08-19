@@ -244,58 +244,85 @@ func (h *Handler) requireScope(want Scope) func(http.Handler) http.Handler {
 // and logger exactly as requireScope does, so the request log line and 6.4's
 // per-key rate-limit bucket work unchanged. A failure is the same uniform 401
 // as any credential failure. WS not enabled ⇒ the handler answers 503.
-func (h *Handler) requireReadOrTicket(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-		var id identity
+// wsTicketAuth verifies the endpoint's ticket flavour against the request,
+// returning the minting key's id on success. It is the one part of the handshake
+// that differs between the run WS (a run-scoped ticket bound to the route's run)
+// and the firehose (an audience-scoped ticket with no run). Every failure it
+// signals as errInvalidTicket so requireReadOrTicket answers the uniform 401.
+type wsTicketAuth func(r *http.Request) (keyID string, err error)
 
-		// Bearer path first (explicit credential wins).
-		if r.Header.Get("Authorization") != "" {
-			got, err := h.authenticate(r)
-			switch {
-			case errors.Is(err, errUnauthorized):
-				h.wsUnauthorized(w, r)
-				return
-			case err != nil:
-				internalError(w, r, "authenticating request", err)
-				return
-			}
-			if !hasScope(got.scopes, ScopeRead) {
-				log.From(ctx).InfoContext(ctx, "api: ws request forbidden",
-					log.KeyID(got.keyID), slog.String("missing_scope", string(ScopeRead)))
-				writeError(w, http.StatusForbidden, ErrorDetail{
-					Code: ErrCodeForbidden, Message: fmt.Sprintf("key lacks the %q scope", ScopeRead),
-				})
-				return
-			}
-			id = got
-		} else if h.wsEnabled() {
-			// Ticket path: verify the signed ticket against the route's run.
-			runID, err := uuid.Parse(chi.URLParam(r, "runID"))
-			if err != nil {
-				h.wsUnauthorized(w, r)
-				return
-			}
-			claims, err := verifyWSTicket(h.ws.TicketSecret, r.URL.Query().Get("ticket"), runID, h.now())
-			if err != nil {
-				h.wsUnauthorized(w, r)
-				return
-			}
-			// A ticket grants exactly read on its one run; its subject is the
-			// minting key's id (for the connection's log/rate-limit bucket).
-			id = identity{keyID: claims.KeyID, scopes: []string{string(ScopeRead)}}
-		} else {
-			h.wsUnauthorized(w, r)
-			return
-		}
+// runTicketAuth verifies a run ticket against the {runID} route param (16.3).
+func (h *Handler) runTicketAuth(r *http.Request) (string, error) {
+	runID, err := uuid.Parse(chi.URLParam(r, "runID"))
+	if err != nil {
+		return "", errInvalidTicket
+	}
+	claims, err := verifyWSTicket(h.ws.TicketSecret, r.URL.Query().Get("ticket"), runID, h.now())
+	if err != nil {
+		return "", err
+	}
+	return claims.KeyID, nil
+}
 
-		if stamp, ok := authStampFrom(ctx); ok {
-			stamp.keyID = id.keyID
-		}
-		logger := log.From(ctx).With(log.KeyID(id.keyID))
-		ctx = identityInto(log.Into(ctx, logger), id)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+// firehoseTicketAuth verifies a firehose ticket (audience-scoped, no run) (16.4).
+func (h *Handler) firehoseTicketAuth(r *http.Request) (string, error) {
+	claims, err := verifyFirehoseWSTicket(h.ws.TicketSecret, r.URL.Query().Get("ticket"), h.now())
+	if err != nil {
+		return "", err
+	}
+	return claims.KeyID, nil
+}
+
+func (h *Handler) requireReadOrTicket(ticketAuth wsTicketAuth) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
+			var id identity
+
+			// Bearer path first (explicit credential wins).
+			if r.Header.Get("Authorization") != "" {
+				got, err := h.authenticate(r)
+				switch {
+				case errors.Is(err, errUnauthorized):
+					h.wsUnauthorized(w, r)
+					return
+				case err != nil:
+					internalError(w, r, "authenticating request", err)
+					return
+				}
+				if !hasScope(got.scopes, ScopeRead) {
+					log.From(ctx).InfoContext(ctx, "api: ws request forbidden",
+						log.KeyID(got.keyID), slog.String("missing_scope", string(ScopeRead)))
+					writeError(w, http.StatusForbidden, ErrorDetail{
+						Code: ErrCodeForbidden, Message: fmt.Sprintf("key lacks the %q scope", ScopeRead),
+					})
+					return
+				}
+				id = got
+			} else if h.wsEnabled() {
+				// Ticket path: verify the endpoint's ticket flavour.
+				keyID, err := ticketAuth(r)
+				if err != nil {
+					h.wsUnauthorized(w, r)
+					return
+				}
+				// A ticket grants exactly read on its one stream; its subject is
+				// the minting key's id (for the connection's log/rate-limit
+				// bucket).
+				id = identity{keyID: keyID, scopes: []string{string(ScopeRead)}}
+			} else {
+				h.wsUnauthorized(w, r)
+				return
+			}
+
+			if stamp, ok := authStampFrom(ctx); ok {
+				stamp.keyID = id.keyID
+			}
+			logger := log.From(ctx).With(log.KeyID(id.keyID))
+			ctx = identityInto(log.Into(ctx, logger), id)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 }
 
 // wsUnauthorized answers a WS handshake credential failure with the uniform

@@ -115,6 +115,8 @@ those tickets implement against a decided model):
 | `POST /v1/approvals/{id}:decide` | `approve` | 15.3 (rate class `submit`) |
 | `POST /v1/runs/{id}/ws-ticket` | `read` | 16.3 |
 | `GET /v1/runs/{id}/ws` | `read` (bearer) or a signed ticket | 16.3 (ticket or bearer; see ADR-018) |
+| `POST /v1/events/ws-ticket` | `read` | 16.4 (firehose-audience ticket) |
+| `GET /v1/events/ws` | `read` (bearer) or a signed firehose ticket | 16.4 (ticket or bearer; see ADR-018) |
 
 ### Lifecycle
 

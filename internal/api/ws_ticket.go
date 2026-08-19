@@ -31,16 +31,28 @@ import (
 // future breaking change bumps it).
 const wsTicketVersion = 1
 
-// wsTicketClaims is the signed payload. Kept minimal: the run it authorizes,
-// the minting key's id (for the connection's request log and rate-limit
-// bucket), the expiry, and a nonce so two tickets minted in the same second
-// differ (defense in depth; the signature already makes them unforgeable).
+// Ticket audiences (ticket 16.4). The audience binds a ticket to exactly one
+// endpoint: a run ticket carries wsAudRun and a run id; a firehose ticket
+// carries wsAudFirehose and no run id. Verification checks the audience, so a
+// run ticket presented to the firehose (or vice-versa) is rejected — a ticket
+// grants access to exactly the stream it was minted for.
+const (
+	wsAudRun      = "run"
+	wsAudFirehose = "firehose"
+)
+
+// wsTicketClaims is the signed payload. Kept minimal: the audience + run it
+// authorizes, the minting key's id (for the connection's request log and
+// rate-limit bucket), the expiry, and a nonce so two tickets minted in the same
+// second differ (defense in depth; the signature already makes them
+// unforgeable).
 type wsTicketClaims struct {
-	Version int    `json:"v"`
-	RunID   string `json:"run_id"`
-	KeyID   string `json:"key_id"`
-	Expires int64  `json:"exp"` // Unix seconds
-	Nonce   string `json:"nonce"`
+	Version  int    `json:"v"`
+	Audience string `json:"aud"`
+	RunID    string `json:"run_id,omitempty"`
+	KeyID    string `json:"key_id"`
+	Expires  int64  `json:"exp"` // Unix seconds
+	Nonce    string `json:"nonce"`
 }
 
 // errInvalidTicket collapses every ticket failure — bad shape, bad signature,
@@ -48,20 +60,32 @@ type wsTicketClaims struct {
 // reveals which check failed (the ADR-007 uniform-401 discipline).
 var errInvalidTicket = errors.New("invalid or expired ticket")
 
-// mintWSTicket signs claims for runID/keyID valid for ttl from now. secret must
-// be non-empty (New guarantees a random one when the operator sets none).
+// mintWSTicket signs a run ticket (audience wsAudRun) for runID/keyID valid for
+// ttl from now. secret must be non-empty (New guarantees a random one when the
+// operator sets none).
 func mintWSTicket(secret string, runID uuid.UUID, keyID string, now time.Time, ttl time.Duration) (string, time.Time, error) {
+	return mintTicket(secret, wsAudRun, runID.String(), keyID, now, ttl)
+}
+
+// mintFirehoseWSTicket signs a firehose ticket (audience wsAudFirehose, no run
+// id) for keyID valid for ttl from now (ticket 16.4).
+func mintFirehoseWSTicket(secret, keyID string, now time.Time, ttl time.Duration) (string, time.Time, error) {
+	return mintTicket(secret, wsAudFirehose, "", keyID, now, ttl)
+}
+
+func mintTicket(secret, audience, runID, keyID string, now time.Time, ttl time.Duration) (string, time.Time, error) {
 	nonce := make([]byte, 8)
 	if _, err := rand.Read(nonce); err != nil {
 		return "", time.Time{}, err
 	}
 	exp := now.Add(ttl)
 	claims := wsTicketClaims{
-		Version: wsTicketVersion,
-		RunID:   runID.String(),
-		KeyID:   keyID,
-		Expires: exp.Unix(),
-		Nonce:   base64.RawURLEncoding.EncodeToString(nonce),
+		Version:  wsTicketVersion,
+		Audience: audience,
+		RunID:    runID,
+		KeyID:    keyID,
+		Expires:  exp.Unix(),
+		Nonce:    base64.RawURLEncoding.EncodeToString(nonce),
 	}
 	payload, err := json.Marshal(claims)
 	if err != nil {
@@ -74,11 +98,37 @@ func mintWSTicket(secret string, runID uuid.UUID, keyID string, now time.Time, t
 	return payloadB64 + "." + sig, time.Unix(exp.Unix(), 0), nil
 }
 
-// verifyWSTicket checks a ticket against secret and returns its claims. It
+// verifyWSTicket checks a run ticket against secret and returns its claims. It
 // enforces: the two-part shape, a constant-time signature match, the schema
-// version, expiry against now, and that the ticket names wantRun. Every failure
-// is errInvalidTicket.
+// version, the run audience, expiry against now, and that the ticket names
+// wantRun. Every failure is errInvalidTicket.
 func verifyWSTicket(secret, ticket string, wantRun uuid.UUID, now time.Time) (wsTicketClaims, error) {
+	claims, err := verifyTicketSigned(secret, ticket, now)
+	if err != nil {
+		return wsTicketClaims{}, err
+	}
+	if claims.Audience != wsAudRun || claims.RunID != wantRun.String() {
+		return wsTicketClaims{}, errInvalidTicket
+	}
+	return claims, nil
+}
+
+// verifyFirehoseWSTicket checks a firehose ticket (audience wsAudFirehose,
+// no run scope) against secret (ticket 16.4). Every failure is errInvalidTicket.
+func verifyFirehoseWSTicket(secret, ticket string, now time.Time) (wsTicketClaims, error) {
+	claims, err := verifyTicketSigned(secret, ticket, now)
+	if err != nil {
+		return wsTicketClaims{}, err
+	}
+	if claims.Audience != wsAudFirehose {
+		return wsTicketClaims{}, errInvalidTicket
+	}
+	return claims, nil
+}
+
+// verifyTicketSigned validates the shape, signature, version, and expiry common
+// to every ticket; the audience/run checks are the caller's.
+func verifyTicketSigned(secret, ticket string, now time.Time) (wsTicketClaims, error) {
 	payloadB64, sig, ok := cutLast(ticket, '.')
 	if !ok {
 		return wsTicketClaims{}, errInvalidTicket
@@ -99,9 +149,6 @@ func verifyWSTicket(secret, ticket string, wantRun uuid.UUID, now time.Time) (ws
 		return wsTicketClaims{}, errInvalidTicket
 	}
 	if !now.Before(time.Unix(claims.Expires, 0)) {
-		return wsTicketClaims{}, errInvalidTicket
-	}
-	if claims.RunID != wantRun.String() {
 		return wsTicketClaims{}, errInvalidTicket
 	}
 	return claims, nil

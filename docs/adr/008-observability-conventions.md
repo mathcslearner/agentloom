@@ -113,6 +113,7 @@ requires amending this table first, and must be a closed vocabulary.
 | `action` | budget action taken (10.5): `park`, `fail` | 2 |
 | `trigger` | model-downgrade trigger (10.5): `budget_threshold`, `budget_projection` | 2 |
 | `channel` | event pub/sub channel kind (16.2): `run`, `firehose` — never the concrete `run:{id}` channel name (that would be unbounded) | 2 |
+| `kind` | WebSocket endpoint kind (16.4): `run` (per-run WS) or `firehose` (multi-run WS) — never a connection or run identifier | 2 |
 
 Worst-case series count per metric is the product of its label bounds;
 any metric whose product exceeds ~1,000 needs an explicit justification
@@ -156,6 +157,12 @@ from the allowlist above.
 | `engine_api_requests_in_flight` | gauge | — | request middleware (7.5): started/finished bracket around every request; unlabeled — route is only known after routing |
 | `engine_api_ratelimit_decisions_total` | counter | `class`, `bucket`, `decision` | the 6.4 `RateLimitMetrics` seam's Prometheus implementation |
 | `engine_api_ratelimit_failopen_total` | counter | `class` | same (errored acquire allowed through) |
+| `engine_api_ws_connections` | gauge | `kind` | WebSocket driver (16.4): open connections, by run/firehose kind |
+| `engine_api_ws_subscriptions` | gauge | — | firehose driver (16.4): active subscriptions across all connections; unlabeled (firehose only) |
+| `engine_api_ws_frames_sent_total` | counter | `kind` | WebSocket writer (16.4): frames written to clients |
+| `engine_api_ws_slow_closes_total` | counter | `kind` | WebSocket driver (16.4): connections closed 4001 for slow consumption (client resumes) |
+| `engine_api_ws_hub_dropped_total` | counter | — | firehose hub (16.4): envelopes dropped at a full per-connection inbox — a seq gap healed by backfill, never a lost durable event |
+| `engine_api_ws_send_queue_fill_ratio` | histogram | `kind` | WebSocket driver (16.4): outbound buffer fill ratio at frame enqueue — the slow-client backpressure signal |
 | `engine_steplog_captured_total` | counter | — | step-log capture (7.4): lines accepted into the sink's queue |
 | `engine_steplog_dropped_total` | counter | — | step-log capture (7.4): lines lost before storage — queue overflow (drop-oldest) or a failed flush; ring-cap evictions are not drops (stored, then rotated out) |
 | `engine_steplog_flush_failures_total` | counter | — | step-log capture (7.4): flush transactions that failed and dropped their batch |

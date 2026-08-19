@@ -691,6 +691,14 @@ type APIMetrics struct {
 	rlFailOpen       *prometheus.CounterVec
 	approvalDecided  *prometheus.CounterVec
 
+	// WebSocket streaming instruments (ticket 16.4). kind ∈ {run, firehose}.
+	wsConnections   *prometheus.GaugeVec
+	wsSubscriptions prometheus.Gauge
+	wsFramesSent    *prometheus.CounterVec
+	wsSlowCloses    *prometheus.CounterVec
+	wsHubDropped    prometheus.Counter
+	wsSendQueue     *prometheus.HistogramVec
+
 	// The API also publishes committed events (run_created/step_ready from
 	// instantiation, lifecycle events from engine.Control), so it carries the
 	// same events instruments (ticket 16.2).
@@ -727,8 +735,34 @@ func NewAPIMetrics(reg *prometheus.Registry) *APIMetrics {
 			Namespace: Namespace, Subsystem: "approval", Name: "decisions_total",
 			Help: "Human-approval decisions recorded (ticket 15.3, ADR-017), by decision (approve/reject) and source (human/timeout). The pending gauge is engine_approval_pending (ticket 15.2).",
 		}, []string{"decision", "source"}),
+		wsConnections: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: Namespace, Subsystem: "api", Name: "ws_connections",
+			Help: "Open WebSocket connections, by kind (run / firehose) (ticket 16.4, ADR-018).",
+		}, []string{"kind"}),
+		wsSubscriptions: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: Namespace, Subsystem: "api", Name: "ws_subscriptions",
+			Help: "Active firehose subscriptions across all connections (ticket 16.4). Unlabeled — firehose only.",
+		}),
+		wsFramesSent: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "api", Name: "ws_frames_sent_total",
+			Help: "WebSocket frames written to clients, by connection kind (ticket 16.4).",
+		}, []string{"kind"}),
+		wsSlowCloses: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "api", Name: "ws_slow_closes_total",
+			Help: "WebSocket connections closed 4001 for slow consumption, by kind (ticket 16.4). The client resumes from its last seq.",
+		}, []string{"kind"}),
+		wsHubDropped: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "api", Name: "ws_hub_dropped_total",
+			Help: "Firehose envelopes dropped at a full per-connection hub inbox (ticket 16.4). A seq gap the connection heals via backfill — never a lost durable event.",
+		}),
+		wsSendQueue: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: Namespace, Subsystem: "api", Name: "ws_send_queue_fill_ratio",
+			Help:    "Per-connection outbound buffer fill ratio at frame enqueue (ticket 16.4) — the slow-client backpressure signal, by kind.",
+			Buckets: []float64{0, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 1},
+		}, []string{"kind"}),
 	}
-	reg.MustRegister(m.requests, m.requestDuration, m.requestsInFlight, m.rlDecisions, m.rlFailOpen, m.approvalDecided)
+	reg.MustRegister(m.requests, m.requestDuration, m.requestsInFlight, m.rlDecisions, m.rlFailOpen, m.approvalDecided,
+		m.wsConnections, m.wsSubscriptions, m.wsFramesSent, m.wsSlowCloses, m.wsHubDropped, m.wsSendQueue)
 	m.eventsInstruments = newEventsInstruments()
 	reg.MustRegister(m.collectors()...)
 	return m
@@ -770,4 +804,32 @@ func (m *APIMetrics) FailOpen(class string) { m.rlFailOpen.WithLabelValues(class
 // (ticket 15.3). decision is approve/reject; source is human/timeout.
 func (m *APIMetrics) ApprovalDecided(decision, source string) {
 	m.approvalDecided.WithLabelValues(decision, source).Inc()
+}
+
+// The WS streaming instruments (ticket 16.4). kind ∈ {run, firehose}.
+
+// WSConnOpened satisfies api.RequestMetrics.
+func (m *APIMetrics) WSConnOpened(kind string) { m.wsConnections.WithLabelValues(kind).Inc() }
+
+// WSConnClosed satisfies api.RequestMetrics.
+func (m *APIMetrics) WSConnClosed(kind string) { m.wsConnections.WithLabelValues(kind).Dec() }
+
+// WSSubscriptionOpened satisfies api.RequestMetrics.
+func (m *APIMetrics) WSSubscriptionOpened() { m.wsSubscriptions.Inc() }
+
+// WSSubscriptionClosed satisfies api.RequestMetrics.
+func (m *APIMetrics) WSSubscriptionClosed() { m.wsSubscriptions.Dec() }
+
+// WSFrameSent satisfies api.RequestMetrics.
+func (m *APIMetrics) WSFrameSent(kind string) { m.wsFramesSent.WithLabelValues(kind).Inc() }
+
+// WSSlowClose satisfies api.RequestMetrics.
+func (m *APIMetrics) WSSlowClose(kind string) { m.wsSlowCloses.WithLabelValues(kind).Inc() }
+
+// WSHubDropped satisfies api.RequestMetrics.
+func (m *APIMetrics) WSHubDropped() { m.wsHubDropped.Inc() }
+
+// WSSendQueue satisfies api.RequestMetrics.
+func (m *APIMetrics) WSSendQueue(kind string, fillRatio float64) {
+	m.wsSendQueue.WithLabelValues(kind).Observe(fillRatio)
 }

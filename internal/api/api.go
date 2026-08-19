@@ -132,6 +132,11 @@ type Handler struct {
 	// 503 stream_unavailable. It carries the ticket signing secret, TTL, the
 	// live subscriber (nil ⇒ poll-only), and the connection tuning.
 	ws *WSOptions
+	// hub, when set, is the process-wide multi-run firehose fan-out (ticket
+	// 16.4). Built by New whenever ws is wired; it holds at most one firehose
+	// Redis subscription (refcounted by connected clients) and dispatches each
+	// envelope to every connected multi-run client.
+	hub *firehoseHub
 }
 
 // CacheOps is the API's seam onto the response-cache store (ticket 9.6,
@@ -164,6 +169,34 @@ type RequestMetrics interface {
 	// ADR-017/008): the engine_approval_decisions_total{decision,source}
 	// counter. Recorded from the decide handler on a committed decision.
 	ApprovalDecided(decision, source string)
+
+	// WS streaming instruments (ticket 16.4, ADR-008). kind is the bounded WS
+	// route label ("run" for the per-run endpoint, "firehose" for the multi-run
+	// one). These bracket a long-lived connection and its firehose subscriptions
+	// and surface backpressure; they must not block (they sit on the frame hot
+	// path).
+	//
+	// WSConnOpened/WSConnClosed move the engine_api_ws_connections{kind} gauge.
+	WSConnOpened(kind string)
+	WSConnClosed(kind string)
+	// WSSubscriptionOpened/WSSubscriptionClosed move the unlabeled
+	// engine_api_ws_subscriptions gauge (firehose subscriptions only).
+	WSSubscriptionOpened()
+	WSSubscriptionClosed()
+	// WSFrameSent counts one frame written to a client
+	// (engine_api_ws_frames_sent_total{kind}).
+	WSFrameSent(kind string)
+	// WSSlowClose counts one connection closed 4001 for slow consumption
+	// (engine_api_ws_slow_closes_total{kind}).
+	WSSlowClose(kind string)
+	// WSHubDropped counts one firehose envelope dropped at a full per-connection
+	// hub inbox (engine_api_ws_hub_dropped_total) — a seq gap the connection
+	// heals via backfill, never a lost durable event.
+	WSHubDropped()
+	// WSSendQueue observes a connection's outbound buffer fill ratio at enqueue
+	// time (engine_api_ws_send_queue_fill_ratio{kind}) — the direct
+	// slow-client-backpressure signal.
+	WSSendQueue(kind string, fillRatio float64)
 }
 
 // nopRequestMetrics is the default RequestMetrics.
@@ -173,6 +206,14 @@ func (nopRequestMetrics) Request(string, string, int, time.Duration) {}
 func (nopRequestMetrics) RequestStarted()                            {}
 func (nopRequestMetrics) RequestFinished()                           {}
 func (nopRequestMetrics) ApprovalDecided(string, string)             {}
+func (nopRequestMetrics) WSConnOpened(string)                        {}
+func (nopRequestMetrics) WSConnClosed(string)                        {}
+func (nopRequestMetrics) WSSubscriptionOpened()                      {}
+func (nopRequestMetrics) WSSubscriptionClosed()                      {}
+func (nopRequestMetrics) WSFrameSent(string)                         {}
+func (nopRequestMetrics) WSSlowClose(string)                         {}
+func (nopRequestMetrics) WSHubDropped()                              {}
+func (nopRequestMetrics) WSSendQueue(string, float64)                {}
 
 // Option customizes a Handler beyond New's required arguments.
 type Option func(*Handler)
@@ -232,6 +273,12 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 	h := &Handler{st: st, now: now, logger: logger, keyRand: cryptoRand, rl: rl, metrics: nopRequestMetrics{}}
 	for _, opt := range opts {
 		opt(h)
+	}
+	// Build the firehose hub once ws is wired and metrics are final (ticket
+	// 16.4). It lazily holds one firehose subscription refcounted by connected
+	// clients, so there is no background goroutine or Close to manage.
+	if h.ws != nil {
+		h.hub = newFirehoseHub(h.ws, h.st, h.metrics, logger)
 	}
 	// Build the run-control surface after opts so an optionally-wired expiry
 	// canceller (ticket 15.4) reaches it. No dispatcher nudge — the API's
@@ -295,7 +342,14 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 		// browser cannot set an Authorization header — so it is absent from the
 		// requireScope-based auth matrix and instead covered by TestWSTicket*.
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Post("/runs/{runID}/ws-ticket", h.handleMintWSTicket)
-		r.With(h.requireReadOrTicket, h.rateLimit(classRead)).Get("/runs/{runID}/ws", h.handleRunWS)
+		r.With(h.requireReadOrTicket(h.runTicketAuth), h.rateLimit(classRead)).Get("/runs/{runID}/ws", h.handleRunWS)
+		// Multi-run firehose (ticket 16.4, ADR-018): mint a firehose ticket
+		// (read scope), then open the filtered multi-run WebSocket with it (or a
+		// read bearer). Like the run WS, the /ws route authenticates with a
+		// ticket-or-bearer middleware and is absent from the requireScope auth
+		// matrix (covered by TestWSTicket*/the firehose integration suite).
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Post("/events/ws-ticket", h.handleMintFirehoseWSTicket)
+		r.With(h.requireReadOrTicket(h.firehoseTicketAuth), h.rateLimit(classRead)).Get("/events/ws", h.handleEventsWS)
 		// Definition registry (ticket 6.5).
 		r.With(h.requireScope(ScopeSubmit), h.rateLimit(classSubmit)).Post("/definitions", h.handleCreateDefinition)
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/definitions", h.handleListDefinitions)

@@ -5,6 +5,7 @@ package store_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -206,7 +207,8 @@ func TestCreateRunFanout(t *testing.T) {
 	if events[0].Seq != 1 || events[0].Type != store.EventRunCreated {
 		t.Errorf("event 1 = (%d, %q), want (1, run_created)", events[0].Seq, events[0].Type)
 	}
-	if !jsonEqual(t, events[0].Payload, json.RawMessage(`{"name":"fanout-fanin","steps_total":6}`)) {
+	wantCreated := json.RawMessage(fmt.Sprintf(`{"name":"fanout-fanin","definition_id":%q,"steps_total":6}`, defID))
+	if !jsonEqual(t, events[0].Payload, wantCreated) {
 		t.Errorf("run_created payload = %s", events[0].Payload)
 	}
 	if events[1].Seq != 2 || events[1].Type != store.EventStepReady {

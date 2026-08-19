@@ -322,11 +322,94 @@ backfill — **no migration, no new metric**; one config block
   request host by default (same-origin dashboards need nothing more);
   cross-origin support is a later `OriginPatterns` knob.
 
-### Multi-run firehose (arrives in 16.4)
+### Multi-run firehose (as built, 16.4)
 
-`GET /v1/events/ws` with server-side filters (run ids, event types, definition)
-for the dashboard's run list, subscription-management messages, a per-connection
-registry with backpressure metrics, same ticket auth.
+`GET /v1/events/ws` streams a filtered, cross-run event feed for the dashboard's
+run list — the run WebSocket (16.3) generalized to many runs on one connection.
+It reuses the 16.2/16.3 machinery: **no migration, no new config var, no new
+store table**; one additive event-payload field (`run_created.definition_id`)
+and one new API subsystem metric group. The connection transport (bounded
+outbound buffer + sole writer goroutine + the 4001 slow-client discipline) is the
+shared `wsLink` the run WS was refactored onto, so both endpoints back-pressure
+and close identically.
+
+- **One process-wide firehose subscription, refcounted.** A per-`Handler`
+  `firehoseHub` holds at most one Redis `SubscribeFirehose` subscription for the
+  whole process, opened lazily on the first firehose connection and released when
+  the last one leaves. It fans each committed envelope out to every connected
+  client's bounded inbox (non-blocking — a full inbox drops the envelope, a seq
+  gap the client heals via backfill, metered as `ws_hub_dropped_total`). There is
+  no background goroutine or `Close` to manage on the `Handler`. When no live
+  subscriber is wired (or the subscribe fails), connections self-discover new
+  runs by polling the run list at `PollInterval` — the 16.3 poll-fallback parity.
+
+- **Per-connection subscriptions + per-run Tailers.** A client manages
+  subscriptions with control messages: `subscribe {id, filter, cursors}` opens or
+  replaces one filtered subscription; `unsubscribe {id}` cancels it (bounded by
+  `MaxSubscriptions`). The connection tracks each run some subscription wants
+  through one `pubsub.Tailer` (the same seq-order/dedupe/gap-heal as 16.3), so
+  cursors and gap-healing are per client. A run is **discovered and backfilled to
+  head** the first time a live envelope for it matches a subscription, so the
+  complete per-run feed is delivered even though `run_created` (written by the
+  API) and step events (written by workers) publish from **different processes**
+  and can arrive out of order — the run list must never miss a run's
+  `run_created`. A supplied cursor resumes from a later seq instead. Terminal
+  runs are marked so resync skips them; tracked runs are bounded by
+  `MaxTrackedRuns` (terminal-first eviction).
+
+- **Server-side filters.** `run_ids`, `types` (validated against the event
+  catalog), `definition_id`, and `definition_name` are ANDed (values within
+  `run_ids`/`types` ORed). `definition_name` matches inline (unstored) runs, which
+  have no `definition_id`. Run→definition resolution rides a shared, bounded
+  hub-level cache filled cheaply from the new `run_created.definition_id`/`name`
+  payload (added additively under the one envelope version) — a per-run DB `Get`
+  only for a definition-filtered run first seen mid-stream, cached once across all
+  connections. An event is delivered once, tagged with the `subscriptions` ids it
+  matched (a connection fanning into several UI views knows which to route it to);
+  a run tracked for a subscription whose type filter excludes this event advances
+  the cursor but sends no frame.
+
+- **Protocol** (JSON text frames): `subscribe`/`unsubscribe` in, `subscribed`
+  ack → cursor-backfilled `event` frames → a `caught_up {id, cursors}` frame →
+  live `event` frames → `unsubscribed` acks. A malformed or over-limit control
+  message yields an **in-band `error` frame** (`bad_message` / `filter_invalid` /
+  `subscription_limit` / `unknown_subscription`) and leaves the connection open.
+  Unlike the run WS (which `CloseRead`s), the firehose runs a control-reader
+  goroutine (`conn.Read`) with a 64 KiB read limit.
+
+- **Auth** is the same ticket, minted at `POST /v1/events/ws-ticket` with a new
+  **audience** claim (`aud: "firehose"`, no `run_id`) — a run ticket is rejected
+  at the firehose and vice-versa. A `read` bearer is the non-browser alternative.
+  Both routes are absent from the requireScope auth-matrix walk (covered by
+  `TestFirehose*`), and answer **503 `stream_unavailable`** when WS is not wired.
+
+- **Backpressure metrics** (ADR-008 `api` subsystem, `kind` ∈ {run, firehose}):
+  `engine_api_ws_connections{kind}` + `engine_api_ws_subscriptions` gauges,
+  `engine_api_ws_frames_sent_total{kind}`, `engine_api_ws_slow_closes_total{kind}`,
+  `engine_api_ws_hub_dropped_total`, and the `engine_api_ws_send_queue_fill_ratio
+  {kind}` histogram (observed per enqueue — the direct slow-client signal). The
+  16.3 run WS was retrofitted onto the same instruments. Per-connection stats
+  (frames, high-water) are logged at close, not labelled.
+
+- **Decisions.** One process-wide subscription fanned out (not one Redis sub per
+  connection); per-connection Tailers (cursors are per client); backfill-from-0 on
+  cursorless discovery (complete feed under cross-publisher reorder beats
+  live-only); ticket audience split; the api never imports go-redis (the
+  `WSSubscriber` seam gained `SubscribeFirehose`). **Accepted residuals:** a
+  hub-inbox drop of a run's only event delays that run's discovery to its next
+  event or a resync; the poll fallback is degraded (poll latency, run-level
+  discovery); `subscriptions` tags are computed at delivery time (a mid-flight
+  filter change is not retroactive); the 16.3 ticket residuals carry over.
+
+- **Tests.** Unit: ticket-audience split, filter compile/match, cursor parse,
+  run-meta extraction, frame encodings. Integration (`firehose_integration_test`):
+  `TestFirehoseFilteredDelivery` (DoD-1 — run/type/definition filters + a
+  two-subscription connection each get exactly their filter's events with correct
+  tags, no gaps/dupes), cursor resume, auth matrix, control errors, slow-client
+  4001, poll fallback, metrics. Load (`firehose_load_integration_test`,
+  `make test-firehose-load`): `TestFirehoseHundredClients` (DoD-2 — 100 clients
+  tailing a continuous run load; zero slow-closes, commit→receipt p95 within
+  budget, REST p95 within a degradation budget of the no-client baseline).
 
 ### Typed TS client (arrives in 16.5)
 

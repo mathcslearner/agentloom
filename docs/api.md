@@ -698,6 +698,47 @@ scope and expires quickly (60s by default); re-mint when it expires. If the
 server has streaming disabled the ticket route answers `503 stream_unavailable`
 and the durable feed is still available via `GET /v1/runs/{id}`.
 
+### Multi-run firehose
+
+`GET /v1/events/ws` streams a filtered, **cross-run** event feed — the source
+for the dashboard's run list (ADR-018, ticket 16.4). Authenticate with a
+firehose ticket (a distinct audience — a run ticket is not accepted here) or a
+`read` bearer:
+
+```bash
+TICKET=$(curl -s -X POST "$API/v1/events/ws-ticket" \
+  -H "Authorization: Bearer $KEY" | jq -r .ticket)
+websocat "${API/http/ws}/v1/events/ws?ticket=$TICKET"
+```
+
+Unlike the per-run stream, you manage what you receive with **subscribe**
+control messages (send them as JSON text frames). A `filter` narrows by
+`run_ids`, `types`, `definition_id`, and `definition_name` (all ANDed); a
+`cursors` map resumes specific runs from a seq:
+
+```json
+{"type":"subscribe","id":"list","filter":{"types":["run_created","run_succeeded","run_failed"]}}
+{"type":"subscribe","id":"one","filter":{"run_ids":["…"]},"cursors":{"…":7}}
+{"type":"unsubscribe","id":"one"}
+```
+
+The server replies with a `subscribed` ack, backfilled `event` frames for any
+`cursors`, a `caught_up` frame, then live `event` frames — each tagged with the
+`subscriptions` ids it matched:
+
+```json
+{"type":"subscribed","id":"list","filter":{…}}
+{"type":"caught_up","id":"list","cursors":{}}
+{"type":"event","event":{"seq":1,"type":"run_created", …},"subscriptions":["list"]}
+```
+
+A malformed or over-limit control message yields an in-band `error` frame
+(`bad_message`, `filter_invalid`, `subscription_limit`, `unknown_subscription`)
+and leaves the connection open. Runs are discovered and backfilled to head the
+first time an event matches a subscription, so you never miss a run's
+`run_created`. Slow-client (4001) and `503 stream_unavailable` behave as for the
+per-run stream.
+
 ## Errors and rate limits
 
 Every non-2xx response carries one envelope:

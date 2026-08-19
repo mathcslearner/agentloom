@@ -355,8 +355,12 @@ func (p *instantiationPlan) insert(ctx context.Context, q Querier, args CreateRu
 		return gen.Run{}, err
 	}
 
+	defID := ""
+	if args.DefinitionID != nil {
+		defID = args.DefinitionID.String()
+	}
 	if err := p.appendEvent(ctx, q, run.ID,
-		event.RunCreated{Name: p.def.Name, StepsTotal: len(p.def.Steps)}); err != nil {
+		event.RunCreated{Name: p.def.Name, DefinitionID: defID, StepsTotal: len(p.def.Steps)}); err != nil {
 		return gen.Run{}, err
 	}
 	for _, id := range p.entry {

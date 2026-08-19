@@ -21,11 +21,17 @@ import (
 
 // ---- Run instantiation (ticket 2.5) ---------------------------------------
 
-// RunCreated (run_created) is written by run instantiation: the run's name and
-// its total step count.
+// RunCreated (run_created) is written by run instantiation: the run's name, its
+// stored-definition id (empty for an inline definition), and its total step
+// count. DefinitionID lets a firehose subscriber filter by definition without a
+// per-run DB lookup at the moment a new run is first seen (ticket 16.4).
 type RunCreated struct {
-	Name       string `json:"name"`
-	StepsTotal int    `json:"steps_total"`
+	Name string `json:"name"`
+	// DefinitionID is the registry definition the run came from; empty for an
+	// inline (unregistered) definition. Added additively in 16.4 (ADR-018
+	// payload evolution under one envelope version).
+	DefinitionID string `json:"definition_id,omitempty"`
+	StepsTotal   int    `json:"steps_total"`
 }
 
 func (RunCreated) EventType() Type { return TypeRunCreated }

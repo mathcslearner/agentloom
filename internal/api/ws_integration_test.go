@@ -57,6 +57,10 @@ func (w wsPubSubSubscriber) SubscribeRun(ctx context.Context, runID uuid.UUID) (
 	return w.sub.SubscribeRun(ctx, runID)
 }
 
+func (w wsPubSubSubscriber) SubscribeFirehose(ctx context.Context) (api.WSEventStream, error) {
+	return w.sub.SubscribeFirehose(ctx)
+}
+
 // wsFrame is the client-side decode of any server frame (discriminated by Type).
 type wsFrame struct {
 	Type    string          `json:"type"`
@@ -100,7 +104,7 @@ func mintTicket(t *testing.T, srv *httptest.Server, bearer, runID string) string
 
 // wsFleet wires a sink-published store + a two-worker engine fleet + an
 // httptest server with the run WebSocket enabled over a real pub/sub subscriber.
-func wsFleet(t *testing.T, wsOpts api.WSOptions) (*store.Store, *httptest.Server, string) {
+func wsFleet(t *testing.T, wsOpts api.WSOptions, extra ...api.Option) (*store.Store, *httptest.Server, string) {
 	t.Helper()
 	ctx := t.Context()
 	h := queuetest.New(t)
@@ -117,7 +121,8 @@ func wsFleet(t *testing.T, wsOpts api.WSOptions) (*store.Store, *httptest.Server
 		wsOpts.Subscriber = wsPubSubSubscriber{sub: pubsub.NewSubscriber(h.Client(), prefix, nil)}
 	}
 	rootKey := mintTestKey(t)
-	handler, err := api.New(s, time.Now, nil, rootKey, api.RateLimitOptions{}, api.WithWebSocket(wsOpts))
+	opts := append([]api.Option{api.WithWebSocket(wsOpts)}, extra...)
+	handler, err := api.New(s, time.Now, nil, rootKey, api.RateLimitOptions{}, opts...)
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}
@@ -496,15 +501,23 @@ func (f fakeWSSubscriber) SubscribeRun(context.Context, uuid.UUID) (api.WSEventS
 	return fakeWSStream(f), nil
 }
 
+func (f fakeWSSubscriber) SubscribeFirehose(context.Context) (api.WSEventStream, error) {
+	return fakeWSStream(f), nil
+}
+
 type fakeWSStream struct{ ch chan event.Envelope }
 
 func (f fakeWSStream) Events() <-chan event.Envelope { return f.ch }
 func (f fakeWSStream) Close() error                  { return nil }
 
-// noSubscriber's SubscribeRun always fails, so the driver falls back to polling.
+// noSubscriber's Subscribe* always fail, so the driver falls back to polling.
 type noSubscriber struct{}
 
 func (noSubscriber) SubscribeRun(context.Context, uuid.UUID) (api.WSEventStream, error) {
+	return nil, errors.New("no live subscriber")
+}
+
+func (noSubscriber) SubscribeFirehose(context.Context) (api.WSEventStream, error) {
 	return nil, errors.New("no live subscriber")
 }
 

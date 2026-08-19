@@ -46,6 +46,7 @@ var allowedLabels = map[string]bool{
 	"resource": true, "plugin": true,
 	"limit": true, "action": true, "trigger": true,
 	"validator": true, "channel": true,
+	"kind": true,
 }
 
 // exercise touches every instrument at least once so vec children exist
@@ -108,6 +109,14 @@ func exercise(w *metrics.WorkerMetrics, a *metrics.APIMetrics) {
 	a.Decision("submit", false, true)
 	a.Decision("submit", true, false)
 	a.FailOpen("read")
+	a.WSConnOpened("firehose")
+	a.WSConnClosed("firehose")
+	a.WSSubscriptionOpened()
+	a.WSSubscriptionClosed()
+	a.WSFrameSent("run")
+	a.WSSlowClose("run")
+	a.WSHubDropped()
+	a.WSSendQueue("firehose", 0.5)
 	a.EventPublished("run")
 	a.PublishFailed()
 	a.PublishDropped(1)
