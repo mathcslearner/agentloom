@@ -1,0 +1,671 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`StepNodeView snapshots > renders a selected node 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-primary ring-2 ring-ring"
+  data-selected="true"
+  data-step-type="llm"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="llm_1"
+    >
+      llm_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        LLM
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="mock/sim-1"
+  >
+    mock/sim-1
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders a status skin (M18 reuse) 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-blue-500"
+  data-selected="false"
+  data-step-type="llm"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="llm_1"
+    >
+      llm_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        data-testid="chip"
+      >
+        running
+      </span>
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        LLM
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="model call"
+  >
+    model call
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders agent deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="agent"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="agent_1"
+    >
+      agent_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Agent
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="agent turn"
+  >
+    agent turn
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders blackboard_write deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="blackboard_write"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="blackboard_write_1"
+    >
+      blackboard_write_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Blackboard write
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="blackboard write"
+  >
+    blackboard write
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders branch deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="branch"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="branch_1"
+    >
+      branch_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Branch
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="exclusive routing"
+  >
+    exclusive routing
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders counter deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="counter"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="counter_1"
+    >
+      counter_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Counter
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="append-only ledger"
+  >
+    append-only ledger
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders echo deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="echo"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="echo_1"
+    >
+      echo_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Echo
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="echo input"
+  >
+    echo input
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders effectful_echo deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="effectful_echo"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="effectful_echo_1"
+    >
+      effectful_echo_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Effectful echo
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="journaled echo"
+  >
+    journaled echo
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders fail_n_times deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="fail_n_times"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="fail_n_times_1"
+    >
+      fail_n_times_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Fail N×
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="fail then succeed"
+  >
+    fail then succeed
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders gather deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="gather"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="gather_1"
+    >
+      gather_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Gather
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="fan-in barrier"
+  >
+    fan-in barrier
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders human_approval deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="human_approval"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="human_approval_1"
+    >
+      human_approval_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Approval
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="human gate"
+  >
+    human gate
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders join deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="join"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="join_1"
+    >
+      join_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Join
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="synchronization"
+  >
+    synchronization
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders llm deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="llm"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="llm_1"
+    >
+      llm_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        LLM
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="model call"
+  >
+    model call
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders map deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="map"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="map_1"
+    >
+      map_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Map
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="fan-out"
+  >
+    fan-out
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders noop deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="noop"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="noop_1"
+    >
+      noop_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        No-op
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="no operation"
+  >
+    no operation
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders planner deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="planner"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="planner_1"
+    >
+      planner_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Planner
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="dynamic plan"
+  >
+    dynamic plan
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders retrieve deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="retrieve"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="retrieve_1"
+    >
+      retrieve_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Retrieve
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="retrieval"
+  >
+    retrieval
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders sleep deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="sleep"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="sleep_1"
+    >
+      sleep_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Sleep
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="delay"
+  >
+    delay
+  </div>
+</div>
+`;
+
+exports[`StepNodeView snapshots > renders tool deterministically 1`] = `
+<div
+  class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-selected="false"
+  data-step-type="tool"
+  data-testid="step-node"
+>
+  <div
+    class="flex items-center justify-between gap-2 border-b px-3 py-1.5"
+  >
+    <span
+      class="truncate text-sm font-medium"
+      title="tool_1"
+    >
+      tool_1
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-1.5"
+    >
+      <span
+        class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        Tool
+      </span>
+    </div>
+  </div>
+  <div
+    class="truncate px-3 py-2 text-xs text-muted-foreground"
+    title="tool call"
+  >
+    tool call
+  </div>
+</div>
+`;

@@ -258,6 +258,81 @@ The client mirrors the backend's rules so the user gets immediate feedback, but
 4. **Config-level rules** come from the plugin JSON Schemas served by
    `GET /v1/plugins` (17.4), not hard-coded per-plugin.
 
+### Canvas, palette & node components (as built, 17.3)
+
+The React Flow canvas is the first UI consumer of `graphdef`. It lives entirely
+under `web/app`; `graphdef` is untouched (the canvas holds React Flow's own
+`Node`/`Edge` with the graphdef step/edge object carried in `data`, read back
+through typed accessors, since React Flow v12 constrains `data` to
+`Record<string, unknown>`).
+
+- **Pure canvas helpers** sit under `src/lib/pure/builder` (the app's
+  no-React/UI eslint boundary): `catalog.ts` (per-`StepType` label/group/one-line
+  config summary, exhaustive over `StepType`), `ports.ts` (the connection-handle
+  contract), and `steps.ts` (id allocation + a bare `{ id, type, config: {} }`
+  step). They import only graphdef types.
+
+- **The handle contract** (`ports.ts`) is the "typed connection handles, edge
+  rules by port" the ticket asks for. Handles are **canvas-owned presentation
+  state** (ADR-019 already fixed that `graphdef` never persists
+  `sourceHandle`/`targetHandle`). Every node exposes one `in` target and an `out`
+  + `loop` source; a `human_approval` node adds `approve`/`reject` sources. The
+  module is the single source of truth for both directions: `deriveHandles(edge)`
+  picks the source handle an existing edge renders from (`type:"loop"` → `loop`,
+  `decision:"approve"|"reject"` → that handle, else `out`), and
+  `edgeSeedForHandle(handle)` seeds the edge fields a new connection from a handle
+  carries (`loop` → `{ type:"loop", condition:"", max_iterations:3 }` for 17.6's
+  inspector to fill; the decision handles → a `decision` marker). Loop authoring
+  is included now so the port typing and the `LoopEdge` renderer exist; 17.6 only
+  edits the placeholder fields. `isValidConnection` enforces **only** the port
+  rules (a source and target, target on `in`, no self-connection, no exact
+  duplicate `(source, sourceHandle, target)`); graph-level rules (cycles except
+  marked loop edges, dangling endpoints, decision-vs-`on_reject`) are 17.5's, so
+  the canvas faithfully carries an invalid-but-well-shaped graph, matching
+  `toFlow`'s stance.
+
+- **The store** (`src/lib/builder/store.ts`) is zustand under zundo's `temporal`
+  middleware. The tracked (undoable) slice is the serializable canvas
+  (`doc`/`ui`/`nodes`/`edges`); React Flow runtime churn — **selection,
+  measurement, viewport** — is kept out of history by `partialize` + a structural
+  `equality`, so a select or a re-measure pushes no undo entry. A **drag is
+  coalesced into one undo entry**: history is paused for the drag and the pre-drag
+  snapshot is pushed once on drag stop (React Flow emits a stream of position
+  changes, and a naive pause/resume would drop the move from history entirely —
+  the manual push is what makes a move undoable as a unit). Edge ids are the
+  deterministic `graphdef.edgeId(from, to, n)` at the lowest free duplicate
+  ordinal. The `adapter.ts` beside the store seeds React Flow arrays from a `Flow`
+  (deriving handles + render type) and strips runtime fields back off, so
+  `toDefinition` sees exactly the ADR-019 shapes.
+
+- **`StepNode` splits into a presentational `StepNodeView` and a React-Flow
+  wrapper.** `StepNodeView` is status-neutral, imports no React Flow, and takes an
+  optional `skin` slot (an accent class + a status chip) — this is the component
+  **the M18 dashboard reuses** with per-step run-status skins. The wrapper adds
+  the typed handles. Two edge renderers (`step`, `loop`) draw normal vs. dashed
+  loop edges with routing labels.
+
+- **Routing.** The existing list pages move into a `(site)` route group (a
+  centred max-width column); the builder gets a `(builder)` group with a
+  full-bleed layout. URLs are unchanged (route groups do not affect the path).
+  Next must be told to resolve `graphdef`'s runtime `.js` extension specifiers
+  onto its `.ts` source — a webpack `resolve.extensionAlias` in `next.config.ts`
+  (api-client's `.js` imports are type-only and erased, so this is the first place
+  it bites).
+
+- **Tests.** vitest covers the pure helpers (`ports`/`steps`/`catalog`/`adapter`)
+  and the store (create/connect/delete undo-redo, drag coalescing = one entry,
+  selection/viewport untracked); **DOM snapshots** of `StepNodeView` for every
+  `StepType` are the deterministic visual-regression baseline (a DOM snapshot is
+  byte-stable across machines, unlike a screenshot). A Playwright `builder.spec`
+  builds a 10-node graph with every core type via mouse + keyboard, connects a
+  reject-port decision edge (asserting the serialized `decision:"reject"`), and
+  exercises undo/redo across delete and move. **Decisions:** zundo for the
+  temporal store; click/keyboard add as the primary path with HTML5 drag-drop
+  secondary (drag is flaky to drive in tests); DOM snapshots over screenshots;
+  the loop port seeds a placeholder edge now (fields edited in 17.6); no cycle /
+  ancestry rules until 17.5.
+
 ## Consequences
 
 - **The serialization boundary is a single, testable leaf.** The whole

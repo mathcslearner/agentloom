@@ -8,7 +8,7 @@ vi.mock("@/lib/api/browser", () => ({
   browserApi: () => ({ GET: get }),
 }));
 
-import RunsPage from "@/app/runs/page";
+import RunsPage from "@/app/(site)/runs/page";
 
 afterEach(() => {
   cleanup();

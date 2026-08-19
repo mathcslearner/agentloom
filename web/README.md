@@ -20,7 +20,8 @@ via Corepack (`packageManager` pins the exact version).
   zero React/UI imports (lint-enforced). See `lib/graphdef/README.md`.
 - **`app`** — the Next.js visual builder + live dashboard (M17.1 onward). App
   Router, TS strict, Tailwind + shadcn/ui. Talks to the backend through a
-  same-origin proxy that holds the API key server-side. See `app/README.md`.
+  same-origin proxy that holds the API key server-side. The `/builder` route
+  (M17.3) is a React Flow canvas over `graphdef`. See `app/README.md`.
 
 All three `lib/*` packages are pure TypeScript with no React/UI imports.
 

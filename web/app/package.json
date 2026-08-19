@@ -23,7 +23,9 @@
   "dependencies": {
     "@agentloom/api-client": "workspace:*",
     "@agentloom/engine-client": "workspace:*",
+    "@agentloom/graphdef": "workspace:*",
     "@radix-ui/react-slot": "^1.1.1",
+    "@xyflow/react": "^12.4.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.469.0",
@@ -31,7 +33,9 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "server-only": "^0.0.1",
-    "tailwind-merge": "^2.6.0"
+    "tailwind-merge": "^2.6.0",
+    "zundo": "^2.3.0",
+    "zustand": "^5.0.3"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",

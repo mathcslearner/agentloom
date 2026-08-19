@@ -6,7 +6,9 @@ shadcn/ui.
 
 M17.1 ships the scaffold: the typed API client wiring, a same-origin proxy that
 holds the key server-side, and definition/run list pages that read the compose
-backend through the typed client.
+backend through the typed client. **M17.3** adds the visual DAG builder at
+`/builder` — a React Flow canvas over the `@agentloom/graphdef` serialization
+boundary, with a node palette, typed connection handles, and undo/redo.
 
 ## Backend access (proxy mode)
 
@@ -59,16 +61,34 @@ asserts no browser request carries an Authorization header. In CI this is the
 ```
 src/
   app/                    App Router pages
-    page.tsx              home — backend health / setup
-    definitions/page.tsx  server-rendered definition list (direct client)
-    runs/page.tsx         client-rendered run list (proxy client)
+    (site)/               centred-column list pages (route group; URLs unchanged)
+      page.tsx            home — backend health / setup
+      definitions/page.tsx  server-rendered definition list (direct client)
+      runs/page.tsx       client-rendered run list (proxy client)
+    (builder)/builder/    full-bleed visual DAG builder (M17.3)
     api/agentloom/[...path]/route.ts   the same-origin proxy
-  components/ui/          shadcn-style primitives (badge, button, card, table)
+  components/
+    ui/                   shadcn-style primitives (badge, button, card, table)
+    builder/              canvas, palette, node/edge components, inspector shell
   lib/
     api/{server,browser}.ts   the two typed-client factories
     config.ts             server-only env
     status.ts             run-status → badge variant
+    builder/              zustand+zundo store, adapter, keyboard shortcuts
+    pure/builder/         pure canvas helpers (catalog, ports, steps) — no React
 ```
 
 The typed clients come from the workspace libraries `@agentloom/api-client`
-(REST) and `@agentloom/engine-client` (event WebSocket).
+(REST) and `@agentloom/engine-client` (event WebSocket); the visual builder maps
+canvas state ⇄ definition JSON through `@agentloom/graphdef` (the serialization
+boundary, ADR-019).
+
+## Visual builder (M17.3)
+
+`/builder` is a React Flow canvas over `@agentloom/graphdef`. The palette adds
+any catalog step type (drag-to-create, or click / Enter); nodes carry typed
+connection handles (`in`; `out`/`loop`; `approve`/`reject` on approval steps);
+the store (zustand + zundo) gives undo/redo with drag-coalescing. Config editing,
+client-side validation, and import/export/save/submit arrive in 17.4–17.6; a new
+node starts with an empty config. The presentational `StepNodeView` is reused by
+the M18 dashboard with run-status skins.
