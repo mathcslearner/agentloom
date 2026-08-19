@@ -86,7 +86,11 @@ func (h *Handler) handleEventsWS(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{})
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		// Same-host by default; a cross-origin dashboard lists its host in
+		// WSOptions.OriginPatterns (AGENTLOOM_API_WS_ORIGINS). See ws.go.
+		OriginPatterns: h.ws.OriginPatterns,
+	})
 	if err != nil {
 		log.From(r.Context()).InfoContext(r.Context(), "ws: firehose upgrade failed", slog.Any("error", err))
 		return

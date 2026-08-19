@@ -550,3 +550,128 @@ func waitRunTerminalAPI(t *testing.T, srv *httptest.Server, bearer, runID string
 
 // oneStepDef is a minimal single-noop run for the slow-client test's small feed.
 var oneStepDef = []byte(`{"schema_version":1,"name":"ws-onestep","steps":[{"id":"a","type":"noop"}],"edges":[]}`)
+
+// TestWSOriginPatterns proves the cross-origin allowlist (ticket 18.1): a
+// browser dialing from a foreign Origin is rejected by default (same-host only,
+// the 16.3/16.4 behaviour) and accepted only when its host is listed in
+// WSOptions.OriginPatterns — the knob the M18 dashboard needs, since it runs on
+// its own origin and dials the API's WebSocket directly.
+func TestWSOriginPatterns(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	const foreignOrigin = "http://dash.example.com"
+	dialForeign := func(t *testing.T, srv *httptest.Server, rootKey, runID string) (*websocket.Conn, *http.Response, error) {
+		ticket := mintTicket(t, srv, rootKey, runID)
+		return websocket.Dial(ctx, wsURL(srv.URL, runID, ticket, 0), &websocket.DialOptions{
+			HTTPHeader: http.Header{"Origin": {foreignOrigin}},
+		})
+	}
+
+	t.Run("rejected by default", func(t *testing.T) {
+		t.Parallel()
+		s, srv, rootKey := wsFleet(t, api.WSOptions{})
+		var sub api.SubmitRunResponse
+		if status := postJSON(t, srv, rootKey, submitBody(t, fanoutJSON(t), ``), &sub); status != http.StatusCreated {
+			t.Fatalf("submit = %d, want 201", status)
+		}
+		_ = s
+		c, resp, err := dialForeign(t, srv, rootKey, sub.RunID)
+		if err == nil {
+			_ = c.Close(websocket.StatusNormalClosure, "")
+			t.Fatal("foreign-origin upgrade succeeded with no OriginPatterns; want rejection")
+		}
+		if resp == nil || resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("foreign-origin upgrade status = %v, want 403", resp)
+		}
+	})
+
+	t.Run("allowed when listed", func(t *testing.T) {
+		t.Parallel()
+		s, srv, rootKey := wsFleet(t, api.WSOptions{OriginPatterns: []string{"dash.example.com"}})
+		var sub api.SubmitRunResponse
+		if status := postJSON(t, srv, rootKey, submitBody(t, fanoutJSON(t), ``), &sub); status != http.StatusCreated {
+			t.Fatalf("submit = %d, want 201", status)
+		}
+		_ = s
+		c, _, err := dialForeign(t, srv, rootKey, sub.RunID)
+		if err != nil {
+			t.Fatalf("foreign-origin upgrade with matching pattern failed: %v", err)
+		}
+		defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+		// The first frame is the snapshot — a completed handshake.
+		typ, _, err := readWSFrame(ctx, c)
+		if err != nil {
+			t.Fatalf("read snapshot: %v", err)
+		}
+		if typ != api.WSFrameSnapshot {
+			t.Fatalf("first frame = %q, want snapshot", typ)
+		}
+	})
+}
+
+// TestWSSnapshotEventSeq proves RunView.event_seq (ticket 18.1): the WS
+// snapshot carries an as-of cursor, and at completion the REST run view's
+// event_seq equals the run's highest event seq (max(events.seq)) — the exact
+// point a dashboard resumes the live feed from.
+func TestWSSnapshotEventSeq(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, srv, rootKey := wsFleet(t, api.WSOptions{})
+
+	var sub api.SubmitRunResponse
+	if status := postJSON(t, srv, rootKey, submitBody(t, fanoutJSON(t), `{"topic":"seq"}`), &sub); status != http.StatusCreated {
+		t.Fatalf("submit = %d, want 201", status)
+	}
+
+	// The snapshot frame's run projection carries event_seq (the as-of cursor).
+	ticket := mintTicket(t, srv, rootKey, sub.RunID)
+	c, _, err := websocket.Dial(ctx, wsURL(srv.URL, sub.RunID, ticket, 0), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	_, snap, err := c.Read(ctx)
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	_ = c.Close(websocket.StatusNormalClosure, "")
+	var snapFrame struct {
+		Run struct {
+			Run struct {
+				EventSeq int64 `json:"event_seq"`
+			} `json:"run"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(snap, &snapFrame); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+	if snapFrame.Run.Run.EventSeq < 0 {
+		t.Fatalf("snapshot event_seq = %d, want >= 0", snapFrame.Run.Run.EventSeq)
+	}
+
+	// Drive the run to completion, then event_seq == max(events.seq).
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		var runResp struct {
+			Run struct {
+				Status   string `json:"status"`
+				EventSeq int64  `json:"event_seq"`
+			} `json:"run"`
+		}
+		doAuth(t, srv, http.MethodGet, "/v1/runs/"+sub.RunID, rootKey, nil, &runResp)
+		if runResp.Run.Status == "succeeded" || runResp.Run.Status == "failed" {
+			rows, err := s.Events().List(ctx, uuid.MustParse(sub.RunID), 0, 10000)
+			if err != nil {
+				t.Fatalf("list events: %v", err)
+			}
+			if runResp.Run.EventSeq != int64(len(rows)) {
+				t.Fatalf("run event_seq = %d, want max(events.seq) = %d", runResp.Run.EventSeq, len(rows))
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run did not complete; last status %q", runResp.Run.Status)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

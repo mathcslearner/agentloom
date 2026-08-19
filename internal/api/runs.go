@@ -505,6 +505,7 @@ func buildRunView(run gen.Run) RunView {
 		StartedAt:      run.StartedAt,
 		FinishedAt:     run.FinishedAt,
 		DeadlineAt:     run.DeadlineAt,
+		EventSeq:       run.NextSeq,
 		Cost:           costSummary(run),
 	}
 	if run.DefinitionID != nil {

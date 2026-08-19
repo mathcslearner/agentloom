@@ -178,6 +178,14 @@ type RunView struct {
 	StartedAt      *time.Time `json:"started_at,omitempty"`
 	FinishedAt     *time.Time `json:"finished_at,omitempty"`
 	DeadlineAt     *time.Time `json:"deadline_at,omitempty"`
+	// EventSeq is the run's highest event sequence number as of this read —
+	// runs.next_seq, bumped in the same transaction as every run-lock
+	// transition, so it equals max(events.seq) (ticket 18.1, ADR-018). It is
+	// the dashboard's as-of / resume cursor: a client that patches derived run
+	// state from the live event feed applies an event only when its seq exceeds
+	// this value, and subscribes/backfills the WS stream from it — so a REST
+	// list row and a WS snapshot both carry an exact point to resume after.
+	EventSeq int64 `json:"event_seq"`
 	// Cost is the run's materialized cost summary (ticket 10.2, ADR-012):
 	// cumulative spend and cache savings. Always present; zero for a run with
 	// no cost-bearing attempts.

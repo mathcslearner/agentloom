@@ -471,6 +471,52 @@ it, and it runs headless in Node.
   re-backfills from 0 on rediscovery and is deduped client-side, wasteful but
   correct). The 16.3/16.4 ticket residuals carry over.
 
+### Dashboard scaffolding — the as-of cursor and the cross-origin knob (as built, 18.1)
+
+The M18 live dashboard (ROADMAP 18.1) consumes this feed from the browser. Two
+additive facilities landed here; neither changes the event contract, the WS
+protocol, or any persisted state.
+
+- **`RunView.event_seq` — the as-of / resume cursor.** The run view (both the
+  REST run body and the WS snapshot's `run`) now carries `event_seq`, the run's
+  `runs.next_seq`. Because `next_seq` is bumped in the same run-locked
+  transaction as every event append (`AllocateEventSeq` returns the post-increment
+  value), it equals `max(events.seq)` — no new column, no new read (the run row is
+  already loaded). It is the exact point a client patches derived state from and
+  resumes the WS stream at: the dashboard applies a live event to derived run
+  state **only when its seq exceeds `event_seq`** (events at or below it are
+  already reflected in the snapshot and are timeline-only), and subscribes the
+  firehose per run from `{run_id: event_seq}`. Every transition sets an absolute
+  status (never an increment), so re-applying an already-seen suffix event after
+  a reconnect — or replaying the backfill over a fresher snapshot read whose
+  later step/attempt rows advanced past it — is idempotent. The run **list** rows
+  have no per-step map, so there terminal step events *increment* counters; the
+  same `seq > event_seq` guard makes each event count at most once, so a
+  redelivery never double-counts.
+
+- **Cross-origin WS allowlist (`AGENTLOOM_API_WS_ORIGINS`).** A WebSocket upgrade
+  cannot be forwarded through a Next.js route handler, so the browser dashboard
+  dials the API's `/ws` endpoints **directly** at a public origin — a different
+  origin than the app itself (app on `:3000`, API on `:8080`). coder/websocket's
+  default `Accept` authorizes the `Origin` only against the request `Host`, so a
+  cross-origin upgrade 403s. The forecast "later `OriginPatterns` knob" (16.3) is
+  now `config.APIConfig.WSOrigins` → `WSOptions.OriginPatterns`, threaded into
+  both `Accept` calls (run WS and firehose). Empty (the binary default) keeps the
+  same-host-only 16.3/16.4 behaviour unchanged; compose defaults it to the local
+  dev origins. The key never rides the upgrade — the browser mints a ws-ticket
+  through the same-origin proxy (the `mintTicket` auth mode 16.5 built), and the
+  ticket is the credential. `AGENTLOOM_API_PUBLIC_URL` (web app config, defaults
+  to `AGENTLOOM_API_URL`) is the browser-reachable origin the app dials for the
+  WS; it is public (an origin, no secret), carried to client code via a small
+  runtime-config provider, never `NEXT_PUBLIC_`-baked.
+
+- **Not this ticket:** the live cost meter/budget UX (18.4), the tabbed step
+  inspector with log follow and semantic-retry diffs (18.3), and the React Flow
+  status-skinned DAG with elkjs layout and expansion animation (18.2). 18.1 ships
+  the run list with live chips, the run-detail scaffold (a status-badged steps
+  pane, a basic inspector, the event timeline strip), and the snapshot →
+  backfill → live-tail wiring through the 16.5 client.
+
 ## Consequences
 
 - **The feed is a versioned, generator-backed contract.** `events.v1.json` is

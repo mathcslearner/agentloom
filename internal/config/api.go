@@ -18,6 +18,7 @@ const (
 	EnvAPITestExecutors   = "AGENTLOOM_API_TEST_EXECUTORS"
 	EnvAPIWSTicketSecret  = "AGENTLOOM_API_WS_TICKET_SECRET" //nolint:gosec // env var name, not a secret value
 	EnvAPIWSTicketTTL     = "AGENTLOOM_API_WS_TICKET_TTL"
+	EnvAPIWSOrigins       = "AGENTLOOM_API_WS_ORIGINS"
 )
 
 // Environment variables read by APIRateLimitConfig (ticket 6.4, ADR-007).
@@ -116,6 +117,14 @@ type APIConfig struct {
 	// WSTicketTTL bounds a ticket's validity (ticket 16.3). Clamped to
 	// [MinAPIWSTicketTTL, MaxAPIWSTicketTTL]; defaults to DefaultAPIWSTicketTTL.
 	WSTicketTTL time.Duration
+	// WSOrigins allowlists cross-origin browsers on the WebSocket upgrade
+	// (ticket 18.1, ADR-018). A comma-separated list of host patterns (each
+	// may include a `*` wildcard, e.g. `localhost:*`, `dash.example.com`).
+	// Empty (the default) authorizes only same-host upgrades — the 16.3/16.4
+	// behaviour, unchanged. The M18 dashboard runs on its own origin and dials
+	// the API's WebSocket directly (a Next.js proxy cannot forward an upgrade),
+	// so a browser dashboard on a different origin needs its host listed here.
+	WSOrigins []string
 }
 
 // APIRateLimitClass is one token bucket's parameters: Capacity is the burst
@@ -196,6 +205,9 @@ func (c *APIConfig) applyEnv(fn LookupFunc) []error {
 	}
 	if c.WSTicketTTL > MaxAPIWSTicketTTL {
 		c.WSTicketTTL = MaxAPIWSTicketTTL
+	}
+	if raw, ok := lookup(fn, EnvAPIWSOrigins); ok {
+		c.WSOrigins = parseHostList(raw)
 	}
 	errs = applyBool(errs, fn, EnvAPIRateLimitEnabled, &c.RateLimit.Enabled)
 	applyString(fn, EnvAPIRateLimitKeyPrefix, &c.RateLimit.KeyPrefix)

@@ -154,3 +154,37 @@ outcomes. E2e coverage: `e2e/import-export.spec.ts` (client-only — byte-for-by
 export through the DOM, the nav guard) and `e2e/save-submit.spec.ts` (compose —
 the full import → edit → save v1/v2 → version-conflict → save anyway → submit
 loop, and open-in-builder).
+
+## Live execution dashboard (M18.1)
+
+The dashboard watches runs execute live over the event feed
+(`@agentloom/engine-client`, ADR-018). 18.1 ships the run list and the
+run-detail scaffold; later M18 tickets fill in the DAG canvas, step inspector,
+cost meter, approval inbox, and ops views.
+
+- **`/runs`** — a runs table with live status chips over the multi-run firehose,
+  status/definition/time filters (synced to the URL), keyset pagination, a
+  connection pill, and per-row links into the detail page. A run submitted while
+  the page is open appears live (via `run_created`).
+- **`/runs/{id}`** — the run-detail view: a header (status, counters, cost,
+  connection), a status-badged **steps pane** (the graph pane 18.2 replaces with
+  the React Flow canvas + run-status skins), a basic **step inspector**, and the
+  collapsible **event timeline strip** (category filtering, click-to-select a
+  step). State loads snapshot → backfill → live-tail through the 16.5 client and
+  resumes across reconnects with no gaps.
+
+### WebSocket connectivity
+
+A WebSocket upgrade cannot be forwarded through the same-origin proxy, so the
+browser dials the API's `/ws` endpoints **directly** at `AGENTLOOM_API_PUBLIC_URL`
+(defaults to `AGENTLOOM_API_URL`). The API key never rides the upgrade — the
+browser mints a short-lived ws-ticket through the proxy (so the key stays
+server-side) and passes it as `?ticket=`. Because the app and API are different
+origins, the API must allowlist the app's origin via `AGENTLOOM_API_WS_ORIGINS`
+(compose defaults it to the local dev origins).
+
+Pure reducers live under `src/lib/pure/dashboard/` (the no-React eslint
+boundary), unit-tested in `test/dashboard/`; the stream glue and hooks under
+`src/lib/dashboard/`. E2e: `e2e/dashboard-runs.spec.ts` (a submitted run appears
+and flips status live) and `e2e/dashboard-run-detail.spec.ts` (mid-run reconnect
+resumes gap-free; timeline category filtering).

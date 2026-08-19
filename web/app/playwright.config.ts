@@ -32,6 +32,11 @@ export default defineConfig({
     env: {
       AGENTLOOM_API_URL: process.env.AGENTLOOM_API_URL ?? "http://127.0.0.1:8080",
       AGENTLOOM_API_KEY: process.env.AGENTLOOM_API_KEY ?? "",
+      // Browser-reachable API origin for the dashboard's WebSocket (ticket 18.1).
+      // The app dials the API's WS directly (a proxy can't forward an upgrade);
+      // the key never rides along — a proxy-minted ws-ticket authenticates it.
+      AGENTLOOM_API_PUBLIC_URL:
+        process.env.AGENTLOOM_API_PUBLIC_URL ?? process.env.AGENTLOOM_API_URL ?? "http://127.0.0.1:8080",
     },
   },
 });

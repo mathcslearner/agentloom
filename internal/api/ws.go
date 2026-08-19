@@ -149,6 +149,14 @@ type WSOptions struct {
 	// RunMetaCacheSize bounds the hub's shared run→definition metadata cache.
 	// Default defaultWSRunMetaCacheSize.
 	RunMetaCacheSize int
+	// OriginPatterns allowlists cross-origin browsers on the WS upgrade
+	// (ticket 18.1, ADR-018). Each entry is a host pattern passed to
+	// coder/websocket's AcceptOptions.OriginPatterns (a `*` wildcard is
+	// supported). Empty (the default) authorizes only same-host upgrades —
+	// the 16.3/16.4 behaviour. The M18 dashboard runs on its own origin and
+	// dials the WS directly (no proxy can forward an upgrade), so its host
+	// must be listed for a cross-origin browser to connect.
+	OriginPatterns []string
 }
 
 func (o WSOptions) withDefaults() WSOptions {
@@ -295,8 +303,10 @@ func (h *Handler) handleRunWS(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// The browser origin is authorized against the request host by default;
-		// a same-origin dashboard needs nothing more. Cross-origin dashboards
-		// set OriginPatterns via a future config knob if needed.
+		// a same-origin dashboard needs nothing more. A cross-origin dashboard
+		// (the M18 default: app on :3000, API on :8080) lists its host in
+		// WSOptions.OriginPatterns (AGENTLOOM_API_WS_ORIGINS).
+		OriginPatterns: h.ws.OriginPatterns,
 	})
 	if err != nil {
 		// Accept has already written a response; just note it.

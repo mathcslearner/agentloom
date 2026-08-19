@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -82,7 +83,7 @@ func TestLoadDefaults(t *testing.T) {
 		WSTicketTTL:     config.DefaultAPIWSTicketTTL,
 		RateLimit:       defaultRateLimit(),
 	}
-	if cfg.API != wantAPI {
+	if !reflect.DeepEqual(cfg.API, wantAPI) {
 		t.Errorf("default API config = %+v, want %+v", cfg.API, wantAPI)
 	}
 	wantObs := config.ObsConfig{
@@ -140,8 +141,32 @@ func TestLoadAPIOverrides(t *testing.T) {
 		WSTicketTTL:     2 * time.Minute,
 		RateLimit:       defaultRateLimit(),
 	}
-	if cfg.API != want {
+	if !reflect.DeepEqual(cfg.API, want) {
 		t.Errorf("API config = %+v, want %+v", cfg.API, want)
+	}
+}
+
+func TestLoadAPIWSOrigins(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(lookupFrom(map[string]string{
+		config.EnvAPIWSOrigins: "localhost:*, dash.example.com ,",
+	}))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	// Comma-separated, whitespace-trimmed, empty entries dropped (ticket 18.1).
+	want := []string{"localhost:*", "dash.example.com"}
+	if !reflect.DeepEqual(cfg.API.WSOrigins, want) {
+		t.Errorf("WSOrigins = %#v, want %#v", cfg.API.WSOrigins, want)
+	}
+	// Unset ⇒ nil (same-host-only, the 16.3/16.4 default).
+	cfg, err = config.Load(lookupFrom(map[string]string{}))
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	if cfg.API.WSOrigins != nil {
+		t.Errorf("default WSOrigins = %#v, want nil", cfg.API.WSOrigins)
 	}
 }
 

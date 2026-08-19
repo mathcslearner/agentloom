@@ -107,6 +107,12 @@ services:
       # dev api). Set a shared value for a multi-replica deployment so a
       # ticket minted on one replica is accepted on another.
       AGENTLOOM_API_WS_TICKET_SECRET: ${AGENTLOOM_API_WS_TICKET_SECRET:-}
+      # Cross-origin WS allowlist (ticket 18.1, ADR-018). The M18 dashboard runs
+      # on its own origin (e.g. localhost:3000) and dials the API's WebSocket
+      # directly — a Next.js route handler cannot forward a WS upgrade — so its
+      # host must be allowlisted. Defaults to local dev origins; empty = same-host
+      # only (the pre-18.1 behaviour). Override for a deployed dashboard host.
+      AGENTLOOM_API_WS_ORIGINS: ${AGENTLOOM_API_WS_ORIGINS:-localhost:*,127.0.0.1:*}
       # Telemetry (ticket 7.1, ADR-008). The admin port serving /metrics
       # is in-network only — Prometheus (obs profile) scrapes it; it is
       # never published to the host. OTel export defaults off because the

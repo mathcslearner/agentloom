@@ -290,7 +290,7 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 		}
 		logger.WarnContext(ctx, "api: no AGENTLOOM_API_WS_TICKET_SECRET set — using a random per-process secret; ws tickets are not valid across replicas or restarts")
 	}
-	wsOpts := api.WSOptions{TicketSecret: wsSecret, TicketTTL: cfg.API.WSTicketTTL}
+	wsOpts := api.WSOptions{TicketSecret: wsSecret, TicketTTL: cfg.API.WSTicketTTL, OriginPatterns: cfg.API.WSOrigins}
 	if cfg.Events.PubSubEnabled && rdb != nil {
 		wsOpts.Subscriber = wsSubscriber{sub: pubsub.NewSubscriber(rdb, cfg.Events.ChannelPrefix, logger)}
 	}

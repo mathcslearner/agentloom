@@ -680,6 +680,12 @@ progresses. Everything is anchored on the durable per-run `seq`, so a dropped
 connection resumes with **zero gaps or dupes** by reconnecting with
 `last_seq` = the highest seq you have seen.
 
+The run view (both `GET /v1/runs/{id}` and the WS `snapshot`) carries
+`event_seq` — the run's highest event seq as of that read (`= max(events.seq)`).
+A UI that patches derived run state from the live feed uses it as the *as-of*
+cursor: apply a live event to state only when its `seq` exceeds `event_seq`, and
+resume the stream from it. (Ticket 18.1.)
+
 A browser cannot set an `Authorization` header on a WebSocket, so authenticate
 with a **short-lived signed ticket** minted with your `read` key:
 
@@ -710,6 +716,13 @@ closed with application code **4001** ("slow consumer") — reconnect with your
 scope and expires quickly (60s by default); re-mint when it expires. If the
 server has streaming disabled the ticket route answers `503 stream_unavailable`
 and the durable feed is still available via `GET /v1/runs/{id}`.
+
+**Cross-origin browsers.** By default the WS upgrade is authorized only when the
+`Origin` matches the request host. A browser dashboard on a different origin
+(e.g. the app on `:3000`, the API on `:8080`) must have its host allowlisted via
+`AGENTLOOM_API_WS_ORIGINS` (comma-separated host patterns, `*` wildcard
+supported). The bearer key never rides the upgrade — the ws-ticket above is the
+credential. (Ticket 18.1.)
 
 ### Multi-run firehose
 

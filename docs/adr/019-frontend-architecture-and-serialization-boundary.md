@@ -555,6 +555,52 @@ it. **Accepted residuals:** full loop-edge authoring polish (autocomplete in
 conditions, `no_progress`, decision routing) and import/export/save/submit are
 17.6; the advisory set is deliberately small.
 
+### Live dashboard scaffolding (as built, 18.1)
+
+M18 opens the live execution dashboard over the same app and the 16.5 event
+client. 18.1 is entirely under `web/app` (plus the additive Go `event_seq` /
+origins knob recorded in ADR-018); no `graphdef`/`api-client`/`engine-client`
+source change beyond the regenerated `api-client` types.
+
+- **Pure reducers under the `pure/` boundary** (`src/lib/pure/dashboard/`):
+  `events.ts` maps an event envelope to a display category + a one-line summary
+  through a switch **exhaustive over `EventType`** (a new backend event fails
+  typecheck until handled — the timeline can never silently drop a kind);
+  `run-state.ts` folds a snapshot + events into `{run, steps: Map, asOf}` for the
+  detail page (run counters **derived from the step map**, never incremented;
+  injected steps added from `graph_expanded`); `run-list.ts` folds firehose
+  events onto list rows (counters **incremented**, safe under the per-row
+  `event_seq` guard) plus the filter predicates and the filter⇄URL codec. All
+  are unit-tested in isolation.
+
+- **The stream glue** (`src/lib/dashboard/`): `RunController` owns one
+  `RunStream` (injected as a factory, so tests drive the real recovery logic
+  against a fake stream) and enforces the render discipline — the snapshot shows
+  immediately, backfill events buffer and apply to derived state in one batch at
+  `caught_up` (no flicker), live events apply individually, and every event
+  (backfill or live) appends to the timeline (the underlying `RunStream` dedupes
+  by seq, so the list is gap-free/dup-free across reconnects). Tickets are minted
+  through the same-origin proxy; the WS dials `apiPublicUrl` directly (ADR-018).
+  A `useRunListLive` hook overlays the firehose onto the REST-loaded list rows,
+  discovering a freshly-submitted run via `run_created` + a `GET /v1/runs/{id}`.
+
+- **The pages:** `/runs` gains live status chips, status/definition/time filters
+  (URL-synced), a connection pill, and per-row links; `/runs/{id}` (a full-bleed
+  `(dashboard)` route group) is the run-detail scaffold — a status-badged steps
+  pane (the graph pane 18.2 replaces with the React Flow canvas + skins), a basic
+  step inspector (18.3 tabs it out), and the collapsible event timeline strip
+  with category filtering and click-to-select-step. The builder's
+  `StepNodeView` `skin` slot (17.3) is still the reuse seam 18.2 will drive.
+
+- **Decisions:** browser dials the WS directly with an origin allowlist (a proxy
+  cannot forward an upgrade); `event_seq` as the as-of/resume cursor for both
+  pages; detail counters derived from the step map, list counters event-sourced
+  under the seq guard; the graph/inspector panes are honest placeholders in 18.1
+  (the live step map + selection they need are already wired). **Accepted
+  residuals:** the DAG canvas/layout/animation (18.2), the tabbed inspector +
+  log follow + semantic-retry diff (18.3), the cost meter/budget UX (18.4), the
+  approval inbox (18.5), and DLQ/ops views (18.6).
+
 ## Consequences
 
 - **The serialization boundary is a single, testable leaf.** The whole

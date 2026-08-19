@@ -873,6 +873,11 @@ export interface components {
              * @description The materialized max_wall_clock deadline; absent when the definition sets none.
              */
             deadline_at?: string;
+            /**
+             * Format: int64
+             * @description The run's highest event sequence number as of this read (ADR-018, ticket 18.1) — equal to max(events.seq). The dashboard's as-of / resume cursor: patch derived run state from the live feed only for events with a higher seq, and subscribe/backfill the WS stream from this value so a REST row and a WS snapshot resume from an exact point.
+             */
+            event_seq: number;
             cost: components["schemas"]["CostSummaryView"];
         };
         /**

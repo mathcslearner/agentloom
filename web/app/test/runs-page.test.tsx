@@ -8,6 +8,20 @@ vi.mock("@/lib/api/browser", () => ({
   browserApi: () => ({ GET: get }),
 }));
 
+// The runs page reads/writes the URL and overlays a firehose; stub the router,
+// the search params, and the live hooks (their behaviour is unit-tested
+// separately in test/dashboard). The REST + render path is what's under test here.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
+}));
+vi.mock("@/lib/dashboard/useRunListLive", () => ({
+  useRunListLive: () => "live",
+}));
+vi.mock("@/lib/dashboard/useDefinitionLabels", () => ({
+  useDefinitionLabels: () => ({}),
+}));
+
 import RunsPage from "@/app/(site)/runs/page";
 
 afterEach(() => {
@@ -38,8 +52,9 @@ describe("RunsPage", () => {
     });
 
     render(<RunsPage />);
-    await waitFor(() => expect(screen.getByText("run-abc")).toBeInTheDocument());
-    expect(screen.getByText("succeeded", { selector: "span" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("run-row")).toBeInTheDocument());
+    expect(screen.getByTestId("run-row")).toHaveAttribute("data-run-id", "run-abc");
+    expect(screen.getByTestId("run-status")).toHaveTextContent("succeeded");
     expect(get).toHaveBeenCalledWith("/v1/runs", { params: { query: { limit: 25 } } });
   });
 
