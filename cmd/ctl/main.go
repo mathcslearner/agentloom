@@ -56,6 +56,6 @@ func newRootCmd(lookup func(string) (string, bool)) *cobra.Command {
 	root.AddCommand(newValidateCmd(), newSubmitCmd(), newWatchCmd(), newRunsCmd(),
 		newCancelCmd(), newParkCmd(), newUnparkCmd(), newBudgetCmd(), newRequeueCmd(),
 		newKeysCmd(), newPluginsCmd(), newCacheCmd(), newBlackboardCmd(),
-		newApprovalsCmd(), newApproveCmd(), newRejectCmd())
+		newApprovalsCmd(), newApproveCmd(), newRejectCmd(), newOpsCmd())
 	return root
 }

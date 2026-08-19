@@ -116,6 +116,9 @@ type RunRepo interface {
 	// filters, cursor = the previous page's last row. Nil filter/cursor
 	// fields are disabled.
 	ListPage(ctx context.Context, arg gen.ListRunsPageParams) ([]gen.Run, error)
+	// CountActive counts non-terminal runs (running, parked, cancelling) —
+	// the "runs active" figure on /v1/system/stats (ticket 18.6).
+	CountActive(ctx context.Context) (int64, error)
 	// Delete cascades to the run's steps, edges, attempts, and events.
 	Delete(ctx context.Context, id uuid.UUID) error
 	// AllocateEventSeq returns the next per-run event sequence number
@@ -175,6 +178,11 @@ func (r runRepo) ListByStatus(ctx context.Context, status string, limit int32) (
 func (r runRepo) ListPage(ctx context.Context, arg gen.ListRunsPageParams) ([]gen.Run, error) {
 	runs, err := r.q.ListRunsPage(ctx, arg)
 	return runs, wrapErr("list runs page", err)
+}
+
+func (r runRepo) CountActive(ctx context.Context) (int64, error) {
+	n, err := r.q.CountActiveRuns(ctx)
+	return n, wrapErr("count active runs", err)
 }
 
 func (r runRepo) Delete(ctx context.Context, id uuid.UUID) error {
@@ -411,6 +419,36 @@ type DeadLetterRepo interface {
 	// ListByRun returns every dead-letter record of the run in
 	// (step_id, seq) order.
 	ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.DeadLetter, error)
+	// ListPage returns a cross-run keyset page of dead-letter records with
+	// live step/run context (ticket 18.6) — the operator DLQ list. Newest
+	// first; args carry the optional filters and the previous page's last
+	// row as the cursor.
+	ListPage(ctx context.Context, arg DeadLetterPageArgs) ([]gen.ListDeadLettersPageRow, error)
+	// CountOpen counts steps currently dead_lettered and awaiting requeue —
+	// the DLQ backlog on /v1/system/stats (ticket 18.6).
+	CountOpen(ctx context.Context) (int64, error)
+}
+
+// DeadLetterCursor is one cross-run DLQ list page's keyset position (ticket
+// 18.6): the previous page's last row in list order (created_at DESC, run_id,
+// step_id, seq). The zero value means the first page.
+type DeadLetterCursor struct {
+	CreatedAt time.Time
+	RunID     uuid.UUID
+	StepID    string
+	Seq       int32
+}
+
+// DeadLetterPageArgs parameterizes DeadLetterRepo.ListPage (ticket 18.6). A nil
+// RunID / empty Source disables that filter; OpenOnly keeps only steps still
+// dead_lettered at their latest death; Cursor (nil = first page) is the keyset
+// position; Limit bounds the page.
+type DeadLetterPageArgs struct {
+	RunID    *uuid.UUID
+	Source   string
+	OpenOnly bool
+	Cursor   *DeadLetterCursor
+	Limit    int32
 }
 
 type deadLetterRepo struct{ q *gen.Queries }
@@ -423,6 +461,32 @@ func (r deadLetterRepo) ListByStep(ctx context.Context, runID uuid.UUID, stepID 
 func (r deadLetterRepo) ListByRun(ctx context.Context, runID uuid.UUID) ([]gen.DeadLetter, error) {
 	rows, err := r.q.ListDeadLettersByRun(ctx, runID)
 	return rows, wrapErr("list dead letters by run", err)
+}
+
+func (r deadLetterRepo) ListPage(ctx context.Context, arg DeadLetterPageArgs) ([]gen.ListDeadLettersPageRow, error) {
+	params := gen.ListDeadLettersPageParams{
+		RunID:    arg.RunID,
+		OpenOnly: arg.OpenOnly,
+		RowLimit: arg.Limit,
+	}
+	if arg.Source != "" {
+		params.Source = &arg.Source
+	}
+	if arg.Cursor != nil {
+		params.CursorCreatedAt = &arg.Cursor.CreatedAt
+		runID := arg.Cursor.RunID
+		params.CursorRunID = &runID
+		params.CursorStepID = &arg.Cursor.StepID
+		seq := arg.Cursor.Seq
+		params.CursorSeq = &seq
+	}
+	rows, err := r.q.ListDeadLettersPage(ctx, params)
+	return rows, wrapErr("list dead letters page", err)
+}
+
+func (r deadLetterRepo) CountOpen(ctx context.Context) (int64, error) {
+	n, err := r.q.CountOpenDeadLetters(ctx)
+	return n, wrapErr("count open dead letters", err)
 }
 
 // EventRepo stores the append-only per-run event log. Append-only is

@@ -770,6 +770,48 @@ golden, and the only cross-package edit was four ergonomic type re-exports from
   residuals:** no nav-wide pending badge; a per-field structured edit form
   deferred; scope-gated control hiding is 18.6's; DLQ/ops views (18.6).
 
+### Ops views (as built, 18.6)
+
+The operator surface — a `/ops` page (queue-health panel + cross-run DLQ list
+with requeue) and scope-gated run controls in the run header — closing M18.
+Entirely under `web/app` over three additive backend endpoints (ADR-018).
+
+- **Rendered permissions.** A `PermissionsProvider` (root layout) fetches the
+  caller's scopes once from `GET /v1/auth/whoami`; the pure `permissions.ts`
+  resolves each control to hidden / disabled / enabled: **disabled while loading**
+  (scopes unknown), **hidden when a scope is definitely missing** (a ready state
+  without the scope), **enabled when whoami is unavailable** (fail-open — the
+  server enforces every scope, so a missing scope surfaces as an inline 403).
+  `usePermissions` is safe outside a provider (fail-open), and the rendered-
+  permissions vitest drives the matrix directly.
+- **Run controls** (`RunControls`) are a header Park/Unpark/Cancel group whose
+  availability derives from run status (pure `run-controls.ts`) and whose
+  visibility is `submit`-gated; Cancel confirms (irreversible). The 18.5 Decide
+  affordance gains `approve`-gating, the Raise-budget button `submit`-gating.
+  Actions hold no optimistic state — the live feed reflects the transition, and
+  a body refetch pulls `cancel_reason` (absent from the event payload).
+- **The DLQ list** (`/ops`) mirrors the 18.5 approval inbox: REST page + a
+  firehose overlay (`useDeadLetterList` folds `step_dead_lettered`/`step_requeued`
+  under a per-row seq guard; a fresh death re-fetches its run's page for the
+  error context, the 18.5 partial-record pattern), URL-synced filters, keyset
+  paging, expandable error JSON, and a `submit`-gated Requeue that drives the 6.5
+  route (the live `step_requeued` closes the row). `run-state.ts` gained
+  `RunState.deadLetters` (step-keyed, from the run body) for the inspector's
+  Requeue affordance, and `RunController` refetches on a live `step_dead_lettered`.
+- **The queue-health panel** (`QueueHealthPanel`) polls `GET /v1/system/stats`
+  (visibility-aware), rendering health-tiered tiles + a worker roster + an
+  "as of" staleness indicator; a `queue: null` response degrades to the
+  Postgres-sourced tiles.
+
+**Decisions:** whoami as the scope channel (an env var would drift from the real
+key); fail-open permissions (loading→disabled, definite-missing→hidden,
+unavailable→enabled); a real DLQ list endpoint over a run fan-out; polling for
+queue depth (no event carries it). Pure derivations are golden-tested against the
+Go `dead_letter_list`/`system_stats` fixtures. **Accepted residuals:** two
+requeue entry points (inspector + `/ops`, both the 6.5 route); the node-footer/
+inspector Decide buttons are not scope-gated (only the prominent banner Decide
+is — they lead to the DecisionDialog's inline 403).
+
 ## Consequences
 
 - **The serialization boundary is a single, testable leaf.** The whole

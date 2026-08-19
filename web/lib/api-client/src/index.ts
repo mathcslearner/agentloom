@@ -49,6 +49,22 @@ export type DecideApprovalRequest = Schema<"DecideApprovalRequest">;
 export type DecideApprovalResponse = Schema<"DecideApprovalResponse">;
 export type PluginInfoView = Schema<"PluginInfo">;
 export type ListPluginsResponse = Schema<"ListPluginsResponse">;
+// Run-control response shapes (ticket 6.5) — the DLQ requeue + cancel/park/unpark
+// ops the dashboard drives (ticket 18.6).
+export type CancelRunResponse = Schema<"CancelRunResponse">;
+export type ParkRunResponse = Schema<"ParkRunResponse">;
+export type UnparkRunResponse = Schema<"UnparkRunResponse">;
+export type RequeueStepResponse = Schema<"RequeueStepResponse">;
+export type Scope = Schema<"Scope">;
+export type StepStatus = Schema<"StepStatus">;
+// Ops views (ticket 18.6) — the DLQ list, the queue-health stats, and whoami.
+export type DeadLetterView = Schema<"DeadLetterView">;
+export type DeadLetterListItem = Schema<"DeadLetterListItem">;
+export type DeadLetterListResponse = Schema<"DeadLetterListResponse">;
+export type SystemStatsResponse = Schema<"SystemStatsResponse">;
+export type QueueStatsView = Schema<"QueueStatsView">;
+export type ConsumerView = Schema<"ConsumerView">;
+export type WhoAmIResponse = Schema<"WhoAmIResponse">;
 // The run-graph introspection view (ticket 13.6/18.2, ADR-015) — the dashboard's
 // live-DAG topology + provenance + expansion deltas.
 export type RunGraphResponse = Schema<"RunGraphResponse">;

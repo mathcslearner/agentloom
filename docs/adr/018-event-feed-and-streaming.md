@@ -705,6 +705,50 @@ inbox (a REST refetch heals). The flagship's own gate is decided in the Go
 `TestFlagshipResearchCriticWriter`; the Playwright e2e drives the identical UI
 path on the deterministic `approval_gate.json` shape offline.
 
+### Ops views (as built, 18.6)
+
+The operator surface — a cross-run dead-letter list, a queue-health snapshot,
+and the caller-identity endpoint that powers rendered permissions — is three
+additive `read`-scoped REST endpoints plus one migration (0029, two additive
+indexes). No new event, metric, config var, outcome, or class.
+
+- **`GET /v1/system/stats`** composes a **read-only** queue-introspection seam
+  (`api.QueueIntrospector` — a narrow `QueueStats(ctx) (QueueStatsView, error)`
+  interface satisfied by a thin cmd/api adapter over the `*queue.Queue` +
+  `*queue.Delayed` cmd/api already builds for 15.4, so the api package never
+  imports `internal/queue` or go-redis — the CacheOps discipline) with Postgres
+  counts. Postgres is the only hard dependency, so the endpoint **always answers
+  200**: when queue introspection is unwired (no Redis on this API) or a queue
+  read fails, `queue` is `null` + a `queue_error` string and the Postgres blocks
+  (DLQ backlog, active runs, outbox) still render. XLEN/XPENDING/XINFO/ZCARD are
+  reads, not dispatches, so ADR-002 holds. `workers` is the roster from a new
+  additive `queue.ListConsumers` (XINFO CONSUMERS → name/idle/pending, sorted);
+  a not-yet-bootstrapped group (`ErrNoGroup`) is reported as an empty-but-present
+  queue (zeros), never an error.
+- **`GET /v1/dead-letters`** is a cross-run keyset page of dead-letter records,
+  newest-first (uniform-descending keyset, the run-list convention), each joined
+  to its **live** step/run status so `open` (still `dead_lettered` at its latest
+  death) is honest. A real list endpoint — not a fan-out over
+  `GET /v1/runs?status=failed` — because `step_dead_lettered` events carry no
+  error document and the run body is per-run; the list is the honest minimum,
+  the `GET /v1/approvals` precedent. The requeue action itself stays the 6.5
+  `POST …/steps/{sid}/requeue`.
+- **`GET /v1/auth/whoami`** returns the caller's own key id + scopes — what makes
+  rendered permissions possible at all (the browser talks through a server-held
+  key and otherwise cannot learn its scopes). `read`-scoped (a key without `read`
+  cannot render the dashboard anyway); the server still enforces every scope, so
+  this is a UX affordance, never the authorization.
+
+Migration 0029: `dead_letters_created_idx` (the DLQ-list keyset) and a partial
+`run_steps_dead_lettered_idx WHERE status='dead_lettered'` (the open-count /
+open-join). Exported Go goldens `internal/api/testdata/{dead_letter_list,
+system_stats}_fixture.json` are the frontend contract; OpenAPI gains a `System`
+tag + the three ops (100/100).
+
+**Accepted residuals:** the queue-health panel polls (no event carries queue
+depth); the stats endpoint degrades to `queue: null` rather than 503 when Redis
+is unwired.
+
 ## Consequences
 
 - **The feed is a versioned, generator-backed contract.** `events.v1.json` is

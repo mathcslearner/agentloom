@@ -40,7 +40,11 @@ func newFleet(t *testing.T) fleet {
 	h := queuetest.New(t)
 	h.EnsureGroup(ctx)
 	rootKey := mintTestKey(t)
-	handler, err := api.New(s, time.Now, nil, rootKey, api.RateLimitOptions{})
+	// Wire the read-only queue-introspection seam (ticket 18.6) over the same
+	// queue the fleet uses, so /v1/system/stats reflects the live fleet.
+	stats := fleetQueueStats{q: h.Queue(), delayed: h.Delayed(), idle: 30 * time.Second}
+	handler, err := api.New(s, time.Now, nil, rootKey, api.RateLimitOptions{},
+		api.WithQueueIntrospector(stats))
 	if err != nil {
 		t.Fatalf("api.New: %v", err)
 	}

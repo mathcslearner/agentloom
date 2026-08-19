@@ -28,6 +28,9 @@
 //	GET    /v1/definitions/{id}                     read    read    one stored definition, spec included
 //	GET    /v1/definitions/{name}/versions          read    read    every version of one name
 //	POST   /v1/definitions/{name}/versions          submit  submit  append the next version of an existing name
+//	GET    /v1/auth/whoami                          read    read    the caller's own key id + scopes (ticket 18.6)
+//	GET    /v1/dead-letters                         read    read    cross-run dead-letter list, keyset pages (ticket 18.6)
+//	GET    /v1/system/stats                         read    read    queue/PEL/delayed/DLQ/workers snapshot (ticket 18.6)
 //	GET    /v1/plugins                              read    read    plugin catalog: manifests + config schemas (ticket 8.1)
 //	POST   /v1/cache/bust                           admin   admin   bust response-cache entries by namespace (ticket 9.6)
 //	GET    /v1/cache/stats                          admin   admin   per-plugin cache hit/miss/store counters (ticket 9.6)
@@ -137,6 +140,26 @@ type Handler struct {
 	// Redis subscription (refcounted by connected clients) and dispatches each
 	// envelope to every connected multi-run client.
 	hub *firehoseHub
+	// queueStats, when set (WithQueueIntrospector), is the read-only queue
+	// introspection seam behind GET /v1/system/stats (ticket 18.6): stream
+	// depth, PEL, delayed backlog, and the worker roster. cmd/api wires a thin
+	// adapter over the queue handle when Redis is reachable. A read is not a
+	// dispatch, so ADR-002 (the API never dispatches) holds. Nil leaves the
+	// endpoint answering with queue: null (the Postgres figures still render).
+	queueStats QueueIntrospector
+}
+
+// QueueIntrospector is the API's read-only seam onto the Redis Streams ready
+// queue (ticket 18.6) — satisfied by a thin cmd/api adapter over
+// *queue.Queue + *queue.Delayed. It returns the queue snapshot pre-projected
+// into the wire view so the api package never imports internal/queue or
+// go-redis (the CacheOps discipline). Every method is read-only (XLEN /
+// XPENDING / XINFO / ZCARD), so it is not a dispatch and ADR-002 holds.
+type QueueIntrospector interface {
+	// QueueStats returns the current ready/PEL/delayed depths and the worker
+	// roster. WorkersActive counts the roster entries the adapter judged live
+	// (idle within the fleet's activity threshold).
+	QueueStats(ctx context.Context) (QueueStatsView, error)
 }
 
 // CacheOps is the API's seam onto the response-cache store (ticket 9.6,
@@ -235,6 +258,15 @@ func WithRequestMetrics(m RequestMetrics) Option {
 // passes a *cache/redisstore.Store when caching is enabled.
 func WithCacheOps(ops CacheOps) Option {
 	return func(h *Handler) { h.cacheOps = ops }
+}
+
+// WithQueueIntrospector wires the read-only queue-introspection seam behind
+// GET /v1/system/stats (ticket 18.6). cmd/api passes an adapter over the queue
+// handle when Redis is reachable. Nil (the default) leaves the endpoint
+// answering with queue: null and a queue_error note; the Postgres-sourced
+// figures (DLQ backlog, active runs, outbox) still render.
+func WithQueueIntrospector(qi QueueIntrospector) Option {
+	return func(h *Handler) { h.queueStats = qi }
 }
 
 // WithExpiryCanceller wires the delayed-delivery cancellation seam (ticket
@@ -361,6 +393,13 @@ func New(st *store.Store, now func() time.Time, logger *slog.Logger, rootKey str
 		// carries a literal ":decide" verb suffix on the id segment.
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/approvals", h.handleListApprovals)
 		r.With(h.requireScope(ScopeApprove), h.rateLimit(classSubmit)).Post("/approvals/{approvalID}:decide", h.handleDecideApproval)
+		// Ops views (ticket 18.6): the caller's own identity/scopes (whoami —
+		// what the dashboard reads to render permission-gated controls), the
+		// cross-run dead-letter list, and the queue-health system stats. All
+		// read-scoped: they surface operational state, never mutate it.
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/auth/whoami", h.handleWhoAmI)
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/dead-letters", h.handleListDeadLetters)
+		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/system/stats", h.handleSystemStats)
 		// Plugin catalog (ticket 8.1, ADR-009).
 		r.With(h.requireScope(ScopeRead), h.rateLimit(classRead)).Get("/plugins", h.handleListPlugins)
 		// Response-cache ops (ticket 9.6, ADR-011): bust-by-namespace and

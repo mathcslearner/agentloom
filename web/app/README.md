@@ -155,14 +155,14 @@ export through the DOM, the nav guard) and `e2e/save-submit.spec.ts` (compose �
 the full import → edit → save v1/v2 → version-conflict → save anyway → submit
 loop, and open-in-builder).
 
-## Live execution dashboard (M18.1–18.5)
+## Live execution dashboard (M18.1–18.6)
 
 The dashboard watches runs execute live over the event feed
 (`@agentloom/engine-client`, ADR-018). 18.1 shipped the run list and the
 run-detail scaffold; 18.2 replaced the steps pane with the live DAG canvas; 18.3
 filled in the tabbed step inspector; 18.4 added the live cost meter and budget
-controls; 18.5 added the approval inbox and decision UI. Later M18 tickets
-add the ops views (DLQ, queue health).
+controls; 18.5 added the approval inbox and decision UI; 18.6 added the ops views
+(the `/ops` page — DLQ list + queue-health panel) and scope-gated run controls.
 
 - **`/runs`** — a runs table with live status chips over the multi-run firehose,
   status/definition/time filters (synced to the URL), keyset pagination, a
@@ -172,6 +172,11 @@ add the ops views (DLQ, queue health).
   oldest-first over the firehose, filterable by status (default `pending`) and
   run, with an aging indicator and a deadline countdown; each pending row opens
   the decision dialog. Decided/expired rows show the outcome.
+- **`/ops`** — the operator views (18.6): a **queue-health panel** (ready depth /
+  PEL / delayed / DLQ backlog / active runs / worker roster, polled from
+  `GET /v1/system/stats`) and a cross-run **dead-letter list** (`GET
+  /v1/dead-letters`, live over the firehose, filterable by status/run/source,
+  with expandable error JSON and a scope-gated Requeue that re-runs the step).
 - **`/runs/{id}`** — the run-detail view: a header (status, counters, cost,
   connection), the live **DAG canvas** (18.2 — builder node components with
   run-status skins, animated active edges, sticky elkjs layout honoring `ui`
@@ -228,6 +233,39 @@ decision-outcome,edit-validate,approval-list}.ts` (no-React, unit-tested against
 the Go golden `internal/api/testdata/approval_list_fixture.json`). E2e:
 `e2e/dashboard-approvals.spec.ts` covers approve-with-edit → downstream payload,
 the 409 recovery, reject routing, and the live inbox listing.
+
+### Ops views: DLQ, queue health & run controls (18.6)
+
+Three additive `read`-scoped backend endpoints (ADR-018) back the operator
+surface:
+
+- **`GET /v1/system/stats`** — a queue-health snapshot: ready depth / PEL /
+  delayed / worker roster (Redis Streams introspection) plus DLQ backlog /
+  outbox backlog / active runs (Postgres). Always answers 200 — when queue
+  introspection is unwired the `queue` block is `null` and the Postgres figures
+  still render. `QueueHealthPanel` polls it (visibility-aware) into health-tiered
+  tiles.
+- **`GET /v1/dead-letters`** — a cross-run keyset page of dead-lettered steps
+  with live step/run context and an `open` flag; the `/ops` DLQ table lists it,
+  live over the firehose (`useDeadLetterList`), filterable by status
+  (open|all)/run/source, with expandable error JSON and a `submit`-gated Requeue
+  (the 6.5 `POST …/steps/{sid}/requeue`; the live `step_requeued` closes the row).
+- **`GET /v1/auth/whoami`** — the caller's own key id + scopes. A
+  `PermissionsProvider` (root layout) fetches it once; `usePermissions` resolves
+  each control to hidden / disabled / enabled. **Rendered permissions:** disabled
+  while loading, hidden when a scope is definitely missing, enabled when whoami
+  is unavailable (fail-open — the server enforces every scope, a 403 surfaces
+  inline).
+
+The run header gains a scope-gated **`RunControls`** group (Park / Unpark /
+Cancel, availability from run status, Cancel confirms); the 18.5 Decide
+affordance is `approve`-gated and the Raise-budget button `submit`-gated. Pure
+derivations live in `src/lib/pure/dashboard/{permissions,run-controls,
+dead-letters,system-stats}.ts` (no-React, golden-tested against the Go
+`dead_letter_list`/`system_stats` fixtures). E2e:
+`e2e/dashboard-ops.spec.ts` covers requeue-from-`/ops`→run-succeeds→row-closes,
+park→unpark→cancel, and the live queue-health panel; the rendered-permissions
+matrix is a vitest render test.
 
 > **Proxy note:** the `:decide` verb suffix on the decide route is preserved by
 > the same-origin proxy (a blanket `encodeURIComponent` would turn `:` into

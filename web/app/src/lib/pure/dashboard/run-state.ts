@@ -11,7 +11,7 @@
  * No React/UI imports — under the app's `pure/` eslint boundary.
  */
 import type { EventEnvelope, EventType } from "@agentloom/engine-client";
-import type { ApprovalView, RunView, StepView } from "@agentloom/api-client";
+import type { ApprovalView, DeadLetterView, RunView, StepView } from "@agentloom/api-client";
 import {
   type ApprovalMap,
   applyApprovalEvent,
@@ -64,12 +64,33 @@ export interface RunState {
   /** Pending/decided human-approval gates, folded from the feed + REST body
    * (ticket 18.5). Keyed by approval id. */
   approvals: ApprovalMap;
+  /** Dead-letter records folded from the REST body (ticket 18.6), keyed by
+   * step id (a step can die more than once — the array is its death history).
+   * The error context comes only from the body; a live step_dead_lettered
+   * event flips the step status, and the controller refetches to fill this in. */
+  deadLetters: Map<string, DeadLetterView[]>;
   /** Highest event seq reflected in derived state (the resume cursor). */
   asOf: number;
 }
 
 /** A snapshot / REST run body: steps plus the optional approvals array. */
-export type RunBody = { run: RunView; steps: StepView[]; approvals?: ApprovalView[] };
+export type RunBody = {
+  run: RunView;
+  steps: StepView[];
+  approvals?: ApprovalView[];
+  dead_letters?: DeadLetterView[];
+};
+
+/** Group dead-letter records by step id (a step can die more than once). */
+function deadLettersByStep(records: DeadLetterView[] | undefined): Map<string, DeadLetterView[]> {
+  const m = new Map<string, DeadLetterView[]>();
+  for (const d of records ?? []) {
+    const list = m.get(d.step_id) ?? [];
+    list.push(d);
+    m.set(d.step_id, list);
+  }
+  return m;
+}
 
 /** Seed run state from a snapshot / REST run body. */
 export function fromSnapshot(snapshot: RunBody): RunState {
@@ -95,7 +116,13 @@ export function fromSnapshot(snapshot: RunBody): RunState {
     snapshot.run.id,
     snapshot.run.event_seq,
   );
-  return { run: { ...snapshot.run }, steps, approvals, asOf: snapshot.run.event_seq };
+  return {
+    run: { ...snapshot.run },
+    steps,
+    approvals,
+    deadLetters: deadLettersByStep(snapshot.dead_letters),
+    asOf: snapshot.run.event_seq,
+  };
 }
 
 /**
@@ -133,7 +160,9 @@ export function mergeRunResponse(state: RunState, body: RunBody): RunState {
     });
   }
   const approvals = mergeApprovalViews(state.approvals, body.approvals, body.run.id, bodySeq);
-  return { ...state, run, steps, approvals };
+  // The body carries the full dead-letter set; adopt it (it only grows).
+  const deadLetters = body.dead_letters ? deadLettersByStep(body.dead_letters) : state.deadLetters;
+  return { ...state, run, steps, approvals, deadLetters };
 }
 
 /** Map a run-lifecycle event to a run status; undefined ⇒ no run-status change. */
@@ -281,7 +310,7 @@ export function applyEvent(state: RunState, env: EventEnvelope): RunState {
   run.steps_total = Math.max(run.steps_total, steps.size);
   recountFromSteps(run, steps);
 
-  return { run, steps, approvals, asOf: env.seq };
+  return { run, steps, approvals, deadLetters: state.deadLetters, asOf: env.seq };
 }
 
 /** The attempt number an event carries, if any. */

@@ -269,9 +269,19 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 	// ZREM is not a dispatch — ADR-002 (the API never dispatches) holds. When
 	// Redis is unwired the canceller is absent and a stale expiry fires and
 	// no-ops.
+	//
+	// The same queue handle backs the read-only queue introspection behind
+	// GET /v1/system/stats (ticket 18.6): stream depth, PEL, delayed backlog,
+	// and the worker roster. XLEN/XPENDING/XINFO/ZCARD are reads, not
+	// dispatches, so ADR-002 holds. When Redis is unwired the endpoint answers
+	// with queue: null and the Postgres figures still render.
 	if rdb != nil {
-		delayed := queue.New(rdb, cfg.Queue.Stream, cfg.Queue.Group).NewDelayed(cfg.Queue.DelayedKey)
+		q := queue.New(rdb, cfg.Queue.Stream, cfg.Queue.Group)
+		delayed := q.NewDelayed(cfg.Queue.DelayedKey)
 		apiOpts = append(apiOpts, api.WithExpiryCanceller(delayed))
+		apiOpts = append(apiOpts, api.WithQueueIntrospector(queueIntrospector{
+			q: q, delayed: delayed, activeIdleMax: 3 * cfg.Queue.ConsumerBlock,
+		}))
 	}
 
 	// Run event WebSocket (ticket 16.3, ADR-018): the ticket signing secret and
@@ -372,6 +382,61 @@ func (w wsSubscriber) SubscribeRun(ctx context.Context, runID uuid.UUID) (api.WS
 
 func (w wsSubscriber) SubscribeFirehose(ctx context.Context) (api.WSEventStream, error) {
 	return w.sub.SubscribeFirehose(ctx)
+}
+
+// queueIntrospector adapts the queue handle to api.QueueIntrospector (ticket
+// 18.6) so the api package never imports internal/queue or go-redis (the
+// CacheOps discipline). Every call is a read (XLEN/XPENDING/XINFO/ZCARD), so it
+// is not a dispatch and ADR-002 holds. A not-yet-bootstrapped group (no worker
+// has started) is reported as an empty-but-present queue, not an error, so the
+// panel shows zeros rather than "unavailable".
+type queueIntrospector struct {
+	q             *queue.Queue
+	delayed       *queue.Delayed
+	activeIdleMax time.Duration
+}
+
+func (a queueIntrospector) QueueStats(ctx context.Context) (api.QueueStatsView, error) {
+	view := api.QueueStatsView{
+		Stream:  a.q.Stream(),
+		Group:   a.q.Group(),
+		Workers: []api.ConsumerView{},
+	}
+	stats, err := a.q.Stats(ctx)
+	switch {
+	case errors.Is(err, queue.ErrNoGroup):
+		// The consumer group has not been created yet (no worker has
+		// bootstrapped). The queue exists; report zeros with a known lag.
+		view.LagKnown = true
+		return view, nil
+	case err != nil:
+		return api.QueueStatsView{}, err
+	}
+	view.Length = stats.Length
+	view.Pending = stats.Pending
+	view.ReadyDepth = stats.ReadyDepth()
+	view.LagKnown = stats.Lag >= 0
+
+	if n, err := a.delayed.Len(ctx); err == nil {
+		view.Delayed = n
+	} else {
+		return api.QueueStatsView{}, err
+	}
+
+	consumers, err := a.q.ListConsumers(ctx)
+	if err != nil && !errors.Is(err, queue.ErrNoGroup) {
+		return api.QueueStatsView{}, err
+	}
+	for _, c := range consumers {
+		active := c.Idle <= a.activeIdleMax
+		if active {
+			view.WorkersActive++
+		}
+		view.Workers = append(view.Workers, api.ConsumerView{
+			ID: c.Name, IdleMs: c.Idle.Milliseconds(), Pending: c.Pending, Active: active,
+		})
+	}
+	return view, nil
 }
 
 // randomWSTicketSecret generates a per-process WS ticket signing secret when

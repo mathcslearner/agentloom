@@ -610,6 +610,88 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/whoami": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The caller's own identity and scopes
+         * @description Scope `read`, rate-limit class `read`. Returns the authenticated
+         *     caller's API-key id and granted scopes (ticket 18.6). The dashboard
+         *     reads this to render permission-gated controls — hiding a control the
+         *     key cannot use — but the server still enforces every scope on the
+         *     underlying route, so this is a UX affordance, not the authorization
+         *     itself. The root credential reports key id `root` with the `admin`
+         *     scope.
+         */
+        get: operations["whoami"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/dead-letters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List dead-lettered steps across runs
+         * @description Scope `read`, rate-limit class `read`. One keyset page of dead-letter
+         *     records across all runs (ticket 18.6), newest-first — the operator DLQ
+         *     triage view. Each record carries its live step and run status so the
+         *     operator can see what is still open. `status` defaults to `open` (steps
+         *     currently dead-lettered and awaiting a requeue); `all` includes every
+         *     historical death. Filter also by `run_id` and `source`. The requeue
+         *     action itself is `POST /v1/runs/{run_id}/steps/{step_id}/requeue`.
+         *     Pagination is stable: a page's `next_cursor` feeds the next request
+         *     verbatim.
+         */
+        get: operations["listDeadLetters"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/system/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Queue-health and backlog snapshot
+         * @description Scope `read`, rate-limit class `read`. A point-in-time snapshot of the
+         *     fleet's queue health for the operator panel (ticket 18.6): the ready
+         *     queue depth, in-flight PEL, delayed backlog, and worker roster (from
+         *     Redis Streams introspection), plus the transactional-outbox backlog,
+         *     the dead-letter backlog, and the active-run count (from Postgres).
+         *     Postgres is the only hard dependency, so the endpoint always answers
+         *     200: when queue introspection is unwired (no Redis on this API instance)
+         *     or a queue read fails, `queue` is null and `queue_error` carries the
+         *     reason, while the Postgres-sourced figures still render.
+         */
+        get: operations["getSystemStats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/plugins": {
         parameters: {
             query?: never;
@@ -1131,6 +1213,129 @@ export interface components {
             attempts_at_death: number;
             /** Format: date-time */
             created_at: string;
+        };
+        /** @description The authenticated caller's key id and granted scopes (ticket 18.6). */
+        WhoAmIResponse: {
+            /** @description The API key's id (or "root" for the env-provided bootstrap credential). */
+            key_id: string;
+            scopes: components["schemas"]["Scope"][];
+        };
+        /** @description One dead-letter record in the cross-run DLQ list (ticket 18.6): the death record plus the live status of its step and run, and the run's definition id (the client resolves the definition label separately). `open` is true when the step is still dead-lettered at this, its latest, death. */
+        DeadLetterListItem: {
+            /** Format: uuid */
+            run_id: string;
+            step_id: string;
+            step_type: string;
+            step_status: components["schemas"]["StepStatus"];
+            run_status: components["schemas"]["RunStatus"];
+            /**
+             * Format: uuid
+             * @description The run's stored-definition id, if any (absent for inline-definition runs).
+             */
+            definition_id?: string;
+            seq: number;
+            /** @enum {string} */
+            source: "retries_exhausted" | "permanent" | "poison";
+            /** @enum {string} */
+            class?: "transient" | "permanent" | "timeout";
+            /** @description The failure document captured at the step's death. Any JSON value. */
+            error?: unknown;
+            attempts_at_death: number;
+            /** @description Whether the step is still dead-lettered (requeueable). */
+            open: boolean;
+            /** Format: date-time */
+            created_at: string;
+        };
+        /** @description One keyset page of cross-run dead-letter records, newest-first (ticket 18.6). */
+        DeadLetterListResponse: {
+            dead_letters: components["schemas"]["DeadLetterListItem"][];
+            /** @description Opaque cursor for the next page; absent on the last page. */
+            next_cursor?: string;
+        };
+        /** @description A point-in-time queue-health snapshot (ticket 18.6). `queue` is null when queue introspection is unwired or a queue read fails (with the reason in `queue_error`); the Postgres-sourced blocks always render. */
+        SystemStatsResponse: {
+            /** Format: date-time */
+            observed_at: string;
+            /** @description The Redis Streams ready-queue snapshot, or null when unavailable. */
+            queue: components["schemas"]["QueueStatsView"] | null;
+            /** @description Present when `queue` is null — why queue introspection was unavailable. */
+            queue_error?: string;
+            outbox: components["schemas"]["OutboxStatsView"];
+            dead_letters: components["schemas"]["DeadLetterStatsView"];
+            runs: components["schemas"]["RunStatsView"];
+        };
+        /** @description The ready-queue snapshot behind the queue-health panel (ticket 18.6). */
+        QueueStatsView: {
+            stream: string;
+            group: string;
+            /**
+             * Format: int64
+             * @description Undelivered entries — the true ready depth (exact when lag_known).
+             */
+            ready_depth: number;
+            /**
+             * Format: int64
+             * @description Delivered-but-unacked entries (the in-flight/leased count).
+             */
+            pending: number;
+            /**
+             * Format: int64
+             * @description Entries scheduled for future delivery (retries, throttles, approval timeouts).
+             */
+            delayed: number;
+            /**
+             * Format: int64
+             * @description Total stream entries (includes acked-but-untrimmed).
+             */
+            length: number;
+            /** @description Whether Redis reported an exact group lag; when false, ready_depth is the length−pending approximation. */
+            lag_known: boolean;
+            /** @description Workers whose idle time is within the fleet's activity threshold. */
+            workers_active: number;
+            workers: components["schemas"]["ConsumerView"][];
+        };
+        /** @description One group consumer on the worker roster (ticket 18.6). */
+        ConsumerView: {
+            /** @description The consumer name (the worker_id on every log line). */
+            id: string;
+            /** Format: int64 */
+            idle_ms: number;
+            /**
+             * Format: int64
+             * @description The consumer's share of the PEL.
+             */
+            pending: number;
+            /** @description Whether idle_ms is within the fleet's activity threshold. */
+            active: boolean;
+        };
+        /** @description The transactional-outbox backlog (ticket 18.6). */
+        OutboxStatsView: {
+            /**
+             * Format: int64
+             * @description Pending (undispatched) outbox rows.
+             */
+            backlog: number;
+            /**
+             * Format: int64
+             * @description Age of the oldest pending row in milliseconds; absent when the outbox is empty.
+             */
+            oldest_age_ms?: number;
+        };
+        /** @description The dead-letter backlog (ticket 18.6). */
+        DeadLetterStatsView: {
+            /**
+             * Format: int64
+             * @description Steps currently dead-lettered and awaiting a requeue.
+             */
+            open: number;
+        };
+        /** @description The run backlog (ticket 18.6). */
+        RunStatsView: {
+            /**
+             * Format: int64
+             * @description Non-terminal runs (running, parked, cancelling).
+             */
+            active: number;
         };
         /** @description The full run view — run row, steps with attempts, edges, DLQ records, approval records. */
         RunResponse: {
@@ -3603,6 +3808,90 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["DecisionInvalid"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    whoami: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's key id and scopes. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WhoAmIResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    listDeadLetters: {
+        parameters: {
+            query?: {
+                /** @description open (default) = steps still dead-lettered; all = every death record. */
+                status?: "open" | "all";
+                /** @description Filter to one run's dead letters. */
+                run_id?: string;
+                /** @description Filter to one dead-letter source. */
+                source?: "retries_exhausted" | "permanent" | "poison";
+                /** @description DLQ-list page size (default 50, max 200). */
+                limit?: number;
+                /** @description Opaque DLQ-list cursor from a previous page. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of dead-letter records, newest-first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeadLetterListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    getSystemStats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The current system-stats snapshot. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemStatsResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
             500: components["responses"]["Internal"];
         };

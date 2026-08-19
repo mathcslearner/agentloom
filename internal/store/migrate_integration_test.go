@@ -41,7 +41,7 @@ func columnExists(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table, 
 // latestVersion is the highest migration in internal/store/migrations —
 // bump when adding a migration (the round-trip test below walks every
 // down migration regardless, so forgetting only fails the version check).
-const latestVersion = 28
+const latestVersion = 29
 
 func TestMigrateUpDownRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -84,14 +84,30 @@ func TestMigrateUpDownRoundTrip(t *testing.T) {
 	}
 
 	// Down rolls back one step: the newest migration's additions are gone,
-	// earlier ones untouched. 0028 drops step_attempts.worker_id (the claim
+	// earlier ones untouched. 0029 drops the two ops-view indexes
+	// (dead_letters_created_idx, run_steps_dead_lettered_idx) — their revert is
+	// observable while 0028's step_attempts.worker_id survives.
+	if err := mg.Down(); err != nil {
+		t.Fatalf("Down (0029): %v", err)
+	}
+	if tableExists(ctx, t, pool, "dead_letters_created_idx") {
+		t.Fatal("after one Down: dead_letters_created_idx was not dropped by 0029")
+	}
+	if tableExists(ctx, t, pool, "run_steps_dead_lettered_idx") {
+		t.Fatal("after one Down: run_steps_dead_lettered_idx was not dropped by 0029")
+	}
+	if !columnExists(ctx, t, pool, "step_attempts", "worker_id") {
+		t.Fatal("after one Down: step_attempts.worker_id (0028) was dropped prematurely")
+	}
+
+	// Down rolls back 0028: it drops step_attempts.worker_id (the claim
 	// identity) — its revert is observable while everything below it survives,
 	// starting with 0027's approvals.expired_at.
 	if err := mg.Down(); err != nil {
 		t.Fatalf("Down (0028): %v", err)
 	}
 	if columnExists(ctx, t, pool, "step_attempts", "worker_id") {
-		t.Fatal("after one Down: step_attempts.worker_id was not dropped by 0028")
+		t.Fatal("after two Downs: step_attempts.worker_id was not dropped by 0028")
 	}
 	if !columnExists(ctx, t, pool, "approvals", "expired_at") {
 		t.Fatal("after one Down: approvals.expired_at (0027) was dropped prematurely")

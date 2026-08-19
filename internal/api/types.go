@@ -962,3 +962,103 @@ type WSFirehoseCaughtUpFrame struct {
 	ID      string           `json:"id"`
 	Cursors map[string]int64 `json:"cursors"`
 }
+
+// ---- Ops views (ticket 18.6) ------------------------------------------------
+
+// SystemStatsResponse answers GET /v1/system/stats: a point-in-time snapshot of
+// the fleet's queue health, dispatch backlog, dead-letter backlog, and active
+// runs — the operator queue-health panel's source. Postgres is the only hard
+// dependency, so the endpoint always answers 200: Queue is nil (with QueueError
+// set) when the queue-introspection seam is unwired or a queue read fails, and
+// the Postgres-sourced blocks still render.
+type SystemStatsResponse struct {
+	ObservedAt  time.Time           `json:"observed_at"`
+	Queue       *QueueStatsView     `json:"queue"`
+	QueueError  string              `json:"queue_error,omitempty"`
+	Outbox      OutboxStatsView     `json:"outbox"`
+	DeadLetters DeadLetterStatsView `json:"dead_letters"`
+	Runs        RunStatsView        `json:"runs"`
+}
+
+// QueueStatsView is the Redis Streams ready-queue snapshot behind the panel
+// (ticket 18.6): the ready depth (undelivered entries), in-flight PEL, delayed
+// backlog, and the worker roster. LagKnown is false when Redis could not compute
+// an exact group lag (post-trim), in which case ReadyDepth is the
+// Length−Pending approximation.
+type QueueStatsView struct {
+	Stream        string         `json:"stream"`
+	Group         string         `json:"group"`
+	ReadyDepth    int64          `json:"ready_depth"`
+	Pending       int64          `json:"pending"`
+	Delayed       int64          `json:"delayed"`
+	Length        int64          `json:"length"`
+	LagKnown      bool           `json:"lag_known"`
+	WorkersActive int            `json:"workers_active"`
+	Workers       []ConsumerView `json:"workers"`
+}
+
+// ConsumerView is one group consumer on the roster: its name (the worker_id on
+// every log line), idle time in milliseconds, and its share of the PEL.
+type ConsumerView struct {
+	ID      string `json:"id"`
+	IdleMs  int64  `json:"idle_ms"`
+	Pending int64  `json:"pending"`
+	Active  bool   `json:"active"`
+}
+
+// OutboxStatsView is the transactional-outbox backlog: pending (undispatched)
+// rows and the oldest row's age. OldestAgeMs is nil when the outbox is empty.
+type OutboxStatsView struct {
+	Backlog     int64  `json:"backlog"`
+	OldestAgeMs *int64 `json:"oldest_age_ms,omitempty"`
+}
+
+// DeadLetterStatsView is the dead-letter backlog: steps currently dead-lettered
+// and awaiting a requeue.
+type DeadLetterStatsView struct {
+	Open int64 `json:"open"`
+}
+
+// RunStatsView is the run backlog: non-terminal runs (running, parked,
+// cancelling).
+type RunStatsView struct {
+	Active int64 `json:"active"`
+}
+
+// DeadLetterListResponse answers GET /v1/dead-letters: a cross-run keyset page
+// of dead-letter records with live step/run context, newest first. NextCursor
+// is empty on the last page.
+type DeadLetterListResponse struct {
+	DeadLetters []DeadLetterListItem `json:"dead_letters"`
+	NextCursor  string               `json:"next_cursor,omitempty"`
+}
+
+// DeadLetterListItem is one death record in the cross-run DLQ list: the death
+// record itself plus the live status of its step and run (so the operator sees
+// whether it is still open) and the run's definition id (the frontend resolves
+// the definition label separately, like the run list). Open is true when the
+// step is still dead_lettered at this, its latest, death.
+type DeadLetterListItem struct {
+	RunID           string          `json:"run_id"`
+	StepID          string          `json:"step_id"`
+	StepType        string          `json:"step_type"`
+	StepStatus      string          `json:"step_status"`
+	RunStatus       string          `json:"run_status"`
+	DefinitionID    string          `json:"definition_id,omitempty"`
+	Seq             int             `json:"seq"`
+	Source          string          `json:"source"`
+	Class           string          `json:"class,omitempty"`
+	Error           json.RawMessage `json:"error,omitempty"`
+	AttemptsAtDeath int             `json:"attempts_at_death"`
+	Open            bool            `json:"open"`
+	CreatedAt       time.Time       `json:"created_at"`
+}
+
+// WhoAmIResponse answers GET /v1/auth/whoami: the authenticated caller's key id
+// and granted scopes (ticket 18.6). The dashboard reads it to render permission-
+// gated controls (hide a control the key cannot use); the server still enforces
+// every scope, so this is a UX affordance, never the authorization itself.
+type WhoAmIResponse struct {
+	KeyID  string   `json:"key_id"`
+	Scopes []string `json:"scopes"`
+}

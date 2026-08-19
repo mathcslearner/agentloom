@@ -1,0 +1,43 @@
+{
+  "observed_at": "2026-08-19T12:00:05Z",
+  "queue": {
+    "stream": "steps:ready",
+    "group": "workers",
+    "ready_depth": 42,
+    "pending": 7,
+    "delayed": 3,
+    "length": 49,
+    "lag_known": true,
+    "workers_active": 2,
+    "workers": [
+      {
+        "id": "host-a-1234-ab12",
+        "idle_ms": 40,
+        "pending": 4,
+        "active": true
+      },
+      {
+        "id": "host-b-5678-cd34",
+        "idle_ms": 120,
+        "pending": 3,
+        "active": true
+      },
+      {
+        "id": "host-c-9012-ef56",
+        "idle_ms": 60000,
+        "pending": 0,
+        "active": false
+      }
+    ]
+  },
+  "outbox": {
+    "backlog": 5,
+    "oldest_age_ms": 1200
+  },
+  "dead_letters": {
+    "open": 2
+  },
+  "runs": {
+    "active": 11
+  }
+}

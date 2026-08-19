@@ -26,6 +26,20 @@ func (q *Queries) AllocateEventSeq(ctx context.Context, id uuid.UUID) (int64, er
 	return next_seq, err
 }
 
+const countActiveRuns = `-- name: CountActiveRuns :one
+SELECT count(*) FROM runs WHERE status IN ('running', 'parked', 'cancelling')
+`
+
+// CountActiveRuns counts non-terminal runs — running, parked, or cancelling —
+// the "runs active" figure on /v1/system/stats (ticket 18.6). Served by
+// runs_status_created_at_idx (0002).
+func (q *Queries) CountActiveRuns(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveRuns)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createRun = `-- name: CreateRun :one
 
 INSERT INTO runs (id, definition_id, definition, status, params,

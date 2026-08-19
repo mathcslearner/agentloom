@@ -6,6 +6,10 @@ import type { EventEnvelope } from "@agentloom/engine-client";
 import { stepStatusVariant } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { toast } from "@/components/ui/toast";
+import { usePermissions } from "@/lib/permissions";
+import { useRunControls } from "@/lib/dashboard/useRunControls";
 import type { RunController } from "@/lib/dashboard/run-controller";
 import { useStepDetailRefresh } from "@/lib/dashboard/useStepInspector";
 import type { StepState } from "@/lib/pure/dashboard/run-state";
@@ -54,6 +58,8 @@ export function InspectorPane({
   onDecide?: (approvalId: string, stepId: string) => void;
 }) {
   const [tab, setTab] = useState<TabKey>("overview");
+  const perms = usePermissions();
+  const controls = useRunControls(runId, controller);
   useStepDetailRefresh(controller, step);
 
   // Reset to Overview when the selection changes.
@@ -78,6 +84,21 @@ export function InspectorPane({
         <span className="font-mono text-sm">{step.id}</span>
         <Badge variant={stepStatusVariant(step.status)}>{step.status}</Badge>
         <span className="text-xs text-muted-foreground">{step.type || "—"}</span>
+        {step.status === "dead_lettered" && perms.controlState("requeue") !== "hidden" ? (
+          <Button
+            size="sm"
+            className="ml-auto"
+            disabled={perms.controlState("requeue") === "disabled" || controls.pending}
+            data-testid="inspector-requeue"
+            onClick={() => {
+              void controls.requeue(step.id).then((ok) => {
+                if (ok) toast({ title: `Requeued ${step.id}`, variant: "success" });
+              });
+            }}
+          >
+            Requeue
+          </Button>
+        ) : null}
       </div>
 
       {view ? (

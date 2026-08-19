@@ -19,6 +19,9 @@ import type {
   ApprovalListResponse,
   ApprovalView,
   DecideApprovalResponse,
+  DeadLetterListResponse,
+  SystemStatsResponse,
+  WhoAmIResponse,
   Issue,
 } from "@agentloom/api-client";
 import { problem } from "@agentloom/api-client";
@@ -91,7 +94,9 @@ export async function fetchStepLogs(
   return data;
 }
 
-/** Outcome of a budget/park action (ticket 18.4). */
+/** Outcome of a budget/park action (ticket 18.4). Reused by the run controls
+ * (ticket 18.6) — the `conflict` case is a wrong-state op (cancelling a terminal
+ * run, requeueing a non-dead-lettered step) and `forbidden` a missing scope. */
 export type BudgetActionOutcome =
   | { kind: "ok" }
   | { kind: "invalid"; message: string }
@@ -99,7 +104,10 @@ export type BudgetActionOutcome =
   | { kind: "forbidden"; message: string }
   | { kind: "error"; message: string };
 
-function classifyActionError(error: unknown): BudgetActionOutcome {
+/** Alias for the shared run-action outcome (ticket 18.6). */
+export type RunActionOutcome = BudgetActionOutcome;
+
+export function classifyActionError(error: unknown): BudgetActionOutcome {
   const p = problem(error);
   if (!p) return { kind: "error", message: "the request failed" };
   switch (p.code) {
@@ -129,6 +137,62 @@ export async function unparkRun(runId: string): Promise<BudgetActionOutcome> {
     params: { path: { run_id: runId } },
   });
   return error ? classifyActionError(error) : { kind: "ok" };
+}
+
+/** Cancel a run (POST /v1/runs/{id}/cancel) through the proxy (ticket 18.6). */
+export async function cancelRun(runId: string): Promise<RunActionOutcome> {
+  const { error } = await browserApi().POST("/v1/runs/{run_id}/cancel", {
+    params: { path: { run_id: runId } },
+  });
+  return error ? classifyActionError(error) : { kind: "ok" };
+}
+
+/** Park a run (POST /v1/runs/{id}/park) through the proxy (ticket 18.6). */
+export async function parkRun(runId: string): Promise<RunActionOutcome> {
+  const { error } = await browserApi().POST("/v1/runs/{run_id}/park", {
+    params: { path: { run_id: runId } },
+  });
+  return error ? classifyActionError(error) : { kind: "ok" };
+}
+
+/** Requeue a dead-lettered step (POST /v1/runs/{id}/steps/{sid}/requeue)
+ * through the proxy (ticket 18.6). */
+export async function requeueStep(runId: string, stepId: string): Promise<RunActionOutcome> {
+  const { error } = await browserApi().POST("/v1/runs/{run_id}/steps/{step_id}/requeue", {
+    params: { path: { run_id: runId, step_id: stepId } },
+  });
+  return error ? classifyActionError(error) : { kind: "ok" };
+}
+
+/** Fetch a keyset page of dead letters (GET /v1/dead-letters) through the proxy
+ * (ticket 18.6). */
+export async function listDeadLetters(query: {
+  status?: "open" | "all";
+  run_id?: string;
+  source?: "retries_exhausted" | "permanent" | "poison";
+  limit: number;
+  cursor?: string;
+}): Promise<DeadLetterListResponse> {
+  const { data, error } = await browserApi().GET("/v1/dead-letters", { params: { query } });
+  if (error || !data) throw new Error("dead-letter list fetch failed");
+  return data;
+}
+
+/** Fetch the queue-health system stats (GET /v1/system/stats) through the proxy
+ * (ticket 18.6). */
+export async function fetchSystemStats(): Promise<SystemStatsResponse> {
+  const { data, error } = await browserApi().GET("/v1/system/stats");
+  if (error || !data) throw new Error("system stats fetch failed");
+  return data;
+}
+
+/** Fetch the caller's own identity/scopes (GET /v1/auth/whoami) through the
+ * proxy (ticket 18.6). Rejects on any non-2xx so the permissions provider can
+ * mark the state unavailable. */
+export async function fetchWhoAmI(): Promise<WhoAmIResponse> {
+  const { data, error } = await browserApi().GET("/v1/auth/whoami");
+  if (error || !data) throw new Error("whoami fetch failed");
+  return data;
 }
 
 /** Fetch a keyset page of approvals (GET /v1/approvals) through the proxy

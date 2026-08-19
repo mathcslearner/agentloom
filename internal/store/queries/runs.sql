@@ -70,3 +70,9 @@ SELECT id, status, trace_parent, trace_state,
        budget_nano_usd, spent_nano_usd, on_budget_exceeded,
        started_at, deadline_at
 FROM runs WHERE id = $1 FOR UPDATE;
+
+-- CountActiveRuns counts non-terminal runs — running, parked, or cancelling —
+-- the "runs active" figure on /v1/system/stats (ticket 18.6). Served by
+-- runs_status_created_at_idx (0002).
+-- name: CountActiveRuns :one
+SELECT count(*) FROM runs WHERE status IN ('running', 'parked', 'cancelling');

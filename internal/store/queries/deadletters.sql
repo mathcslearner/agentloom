@@ -40,3 +40,37 @@ WHERE rs.run_id = @run_id AND rs.status = 'ready'
       SELECT 1 FROM task_outbox o
       WHERE o.run_id = rs.run_id AND o.step_id = rs.step_id)
 ORDER BY rs.step_id;
+
+-- ListDeadLettersPage is the cross-run DLQ list API's keyset page read (ticket
+-- 18.6). It joins each death record to its step (current status + type) and run
+-- (current status + definition id) so the operator triage view shows live
+-- context. status = 'open' keeps only the death whose step is still
+-- dead_lettered AND whose seq is the step's latest (a requeued-then-re-died step
+-- has multiple rows; only the last is open); an all-mode filter keeps every row.
+-- The optional run_id / source filters and the (created_at, run_id, step_id, seq)
+-- keyset cursor mirror ListApprovals. Order is uniformly descending (newest
+-- first), served by dead_letters_created_idx (0029).
+-- name: ListDeadLettersPage :many
+SELECT dl.*, rs.status AS step_status, rs.step_type,
+       r.status AS run_status, r.definition_id
+FROM dead_letters dl
+JOIN run_steps rs ON rs.run_id = dl.run_id AND rs.step_id = dl.step_id
+JOIN runs r ON r.id = dl.run_id
+WHERE (sqlc.narg('run_id')::uuid IS NULL OR dl.run_id = sqlc.narg('run_id')::uuid)
+  AND (sqlc.narg('source')::text IS NULL OR dl.source = sqlc.narg('source')::text)
+  AND (NOT @open_only::boolean OR (rs.status = 'dead_lettered'
+       AND dl.seq = (SELECT MAX(d2.seq) FROM dead_letters d2
+                     WHERE d2.run_id = dl.run_id AND d2.step_id = dl.step_id)))
+  AND (sqlc.narg('cursor_created_at')::timestamptz IS NULL
+       OR (dl.created_at, dl.run_id, dl.step_id, dl.seq)
+          < (sqlc.narg('cursor_created_at')::timestamptz, sqlc.narg('cursor_run_id')::uuid,
+             sqlc.narg('cursor_step_id')::text, sqlc.narg('cursor_seq')::int))
+ORDER BY dl.created_at DESC, dl.run_id DESC, dl.step_id DESC, dl.seq DESC
+LIMIT @row_limit;
+
+-- CountOpenDeadLetters counts the steps currently dead_lettered and awaiting a
+-- requeue — the DLQ backlog behind /v1/system/stats (ticket 18.6). One dead
+-- step counts once regardless of how many times it has died. Served by
+-- run_steps_dead_lettered_idx (0029).
+-- name: CountOpenDeadLetters :one
+SELECT count(*) FROM run_steps WHERE status = 'dead_lettered';

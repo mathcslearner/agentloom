@@ -328,6 +328,61 @@ curl -s -X POST http://127.0.0.1:8080/v1/runs/$RUN_ID/steps/flaky-fetch/requeue 
 Requeueing a step that is not dead-lettered — or any step of a
 cancelled run — is a `409`.
 
+## Ops views (ticket 18.6)
+
+Three `read`-scoped endpoints back the operator dashboard's ops surface.
+
+`GET /v1/dead-letters` lists dead-lettered steps **across runs**, newest-first,
+each joined to its live step/run status so you can see what is still `open`
+(requeueable). Filter by `status` (`open` default / `all`), `run_id`, and
+`source`; page with the opaque `next_cursor`:
+
+```bash
+curl -s -H "Authorization: Bearer $API_KEY" \
+  "$API/v1/dead-letters?status=open&source=retries_exhausted" | jq '.dead_letters[0]'
+```
+
+```json
+{
+  "run_id": "018f3b1c-…", "step_id": "flaky", "step_type": "llm",
+  "step_status": "dead_lettered", "run_status": "failed",
+  "seq": 1, "source": "retries_exhausted", "class": "transient",
+  "error": {"class": "transient", "message": "upstream 503"},
+  "attempts_at_death": 3, "open": true, "created_at": "2026-08-19T12:00:02Z"
+}
+```
+
+`GET /v1/system/stats` is a queue-health snapshot for the ops panel. Postgres is
+the only hard dependency, so it always answers `200`: when queue introspection
+is unwired (no Redis on this API instance) `queue` is `null` with a
+`queue_error`, and the DLQ / outbox / active-run figures still render.
+
+```bash
+curl -s -H "Authorization: Bearer $API_KEY" "$API/v1/system/stats" | jq
+```
+
+```json
+{
+  "observed_at": "2026-08-19T12:00:05Z",
+  "queue": {"stream": "steps:ready", "group": "workers", "ready_depth": 42,
+            "pending": 7, "delayed": 3, "length": 49, "lag_known": true,
+            "workers_active": 2, "workers": [{"id": "host-a-…", "idle_ms": 40,
+            "pending": 4, "active": true}]},
+  "outbox": {"backlog": 5, "oldest_age_ms": 1200},
+  "dead_letters": {"open": 2},
+  "runs": {"active": 11}
+}
+```
+
+`GET /v1/auth/whoami` returns the caller's own key id and scopes — the dashboard
+reads it to render permission-gated controls (the server still enforces every
+scope, so this is a UX affordance):
+
+```bash
+curl -s -H "Authorization: Bearer $API_KEY" "$API/v1/auth/whoami" | jq
+# {"key_id": "root", "scopes": ["admin"]}
+```
+
 ## Cost
 
 Every cost-bearing attempt (an LLM call or a priced tool invocation) is

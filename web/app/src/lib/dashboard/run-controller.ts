@@ -169,8 +169,12 @@ export class RunController {
     this.set({ events, lastSeq, run, topology });
     // A new gate parked (18.5): the event carries no payload/edit_schema, so
     // pull the authoritative record from the run body — cheap and rare — so the
-    // decision dialog can render the proposed action.
-    if (env.type === "approval_requested") void this.refreshViews();
+    // decision dialog can render the proposed action. A step dead-lettered
+    // (18.6): the event carries no error document, so refetch to fill in the
+    // dead-letter context for the inspector's Requeue affordance.
+    if (env.type === "approval_requested" || env.type === "step_dead_lettered") {
+      void this.refreshViews();
+    }
   }
 
   private onCaughtUp(seq: number): void {

@@ -116,6 +116,37 @@ func (q *Queue) ActiveConsumers(ctx context.Context, maxIdle time.Duration) (int
 	return active, nil
 }
 
+// ConsumerInfo is one group consumer as XINFO CONSUMERS reports it — the
+// worker-fleet detail behind /v1/system/stats (ticket 18.6). Name is the
+// queue consumer name (queue.NewConsumerName, the worker_id on every log line);
+// Idle is how long since it last read; Pending is its share of the PEL.
+type ConsumerInfo struct {
+	Name    string
+	Idle    time.Duration
+	Pending int64
+}
+
+// ListConsumers returns the group's consumers (XINFO CONSUMERS) with idle time
+// and PEL share, sorted by name for deterministic output — the fleet roster the
+// system-stats panel renders. ActiveConsumers gives only a count; this gives the
+// per-worker breakdown. Fails with ErrNoGroup like Stats when the group does not
+// exist yet.
+func (q *Queue) ListConsumers(ctx context.Context) ([]ConsumerInfo, error) {
+	consumers, err := q.client.XInfoConsumers(ctx, q.stream, q.group).Result()
+	if err != nil {
+		if isNoGroup(err) {
+			return nil, fmt.Errorf("queue: group %s on %s: %w", q.group, q.stream, ErrNoGroup)
+		}
+		return nil, fmt.Errorf("queue: XINFO CONSUMERS %s %s: %w", q.stream, q.group, err)
+	}
+	out := make([]ConsumerInfo, 0, len(consumers))
+	for _, c := range consumers {
+		out = append(out, ConsumerInfo{Name: c.Name, Idle: c.Idle, Pending: c.Pending})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
 // isNoGroup reports whether err is Redis's NOGROUP reply. Same necessity
 // as isBusyGroup: go-redis surfaces error replies as plain errors.
 func isNoGroup(err error) bool {

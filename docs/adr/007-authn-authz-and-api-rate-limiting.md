@@ -117,6 +117,9 @@ those tickets implement against a decided model):
 | `GET /v1/runs/{id}/ws` | `read` (bearer) or a signed ticket | 16.3 (ticket or bearer; see ADR-018) |
 | `POST /v1/events/ws-ticket` | `read` | 16.4 (firehose-audience ticket) |
 | `GET /v1/events/ws` | `read` (bearer) or a signed firehose ticket | 16.4 (ticket or bearer; see ADR-018) |
+| `GET /v1/auth/whoami` | `read` | 18.6 (the caller's own key id + scopes; powers rendered permissions) |
+| `GET /v1/dead-letters` | `read` | 18.6 (cross-run DLQ list) |
+| `GET /v1/system/stats` | `read` | 18.6 (queue-health snapshot) |
 
 ### Lifecycle
 

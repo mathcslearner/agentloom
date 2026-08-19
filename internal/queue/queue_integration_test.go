@@ -158,6 +158,48 @@ func TestStats(t *testing.T) {
 	}
 }
 
+// TestListConsumers: the worker roster behind /v1/system/stats (ticket 18.6) —
+// XINFO CONSUMERS with per-consumer idle + PEL, sorted by name; ErrNoGroup
+// before the group exists.
+func TestListConsumers(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+
+	h := queuetest.New(t)
+	// A stream that exists but has no group yet: ListConsumers reports
+	// ErrNoGroup (the Stats-without-group contract), never fabricating a roster.
+	h.Enqueue(ctx, minimalEnvelope())
+	if _, err := h.Queue().ListConsumers(ctx); !errors.Is(err, queue.ErrNoGroup) {
+		t.Errorf("ListConsumers without group: err = %v, want ErrNoGroup", err)
+	}
+	h.EnsureGroup(ctx)
+	for range 2 {
+		h.Enqueue(ctx, minimalEnvelope())
+	}
+	// Two leases to "b", one to "a" — both become registered consumers.
+	h.ReadOne(ctx, "b")
+	h.ReadOne(ctx, "b")
+	h.ReadOne(ctx, "a")
+
+	consumers, err := h.Queue().ListConsumers(ctx)
+	if err != nil {
+		t.Fatalf("ListConsumers: %v", err)
+	}
+	if len(consumers) != 2 {
+		t.Fatalf("consumers = %+v, want 2", consumers)
+	}
+	if consumers[0].Name != "a" || consumers[1].Name != "b" {
+		t.Errorf("consumer order = %s, %s, want a, b (sorted)", consumers[0].Name, consumers[1].Name)
+	}
+	if consumers[0].Pending != 1 || consumers[1].Pending != 2 {
+		t.Errorf("pending = a:%d b:%d, want a:1 b:2", consumers[0].Pending, consumers[1].Pending)
+	}
+	if consumers[0].Idle < 0 || consumers[1].Idle < 0 {
+		t.Errorf("idle times = a:%v b:%v, want non-negative", consumers[0].Idle, consumers[1].Idle)
+	}
+}
+
 func TestStatsWithoutGroup(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)

@@ -12,9 +12,13 @@ import { decidable } from "@/lib/pure/dashboard/approvals";
 export function ApprovalBanner({
   approvals,
   onDecide,
+  canDecide = true,
 }: {
   approvals: ApprovalMap | undefined;
   onDecide: (approvalId: string, stepId: string) => void;
+  /** Whether the caller may decide (ticket 18.6). False (missing `approve`
+   * scope) shows the banner but hides the Decide button. */
+  canDecide?: boolean;
 }) {
   const pending = useMemo(() => {
     if (!approvals) return [];
@@ -35,14 +39,16 @@ export function ApprovalBanner({
       className="flex items-center justify-between gap-3 border-b border-violet-500/40 bg-violet-500/10 px-6 py-2 text-sm"
     >
       <span className="text-violet-800 dark:text-violet-200">{label}</span>
-      <button
-        type="button"
-        data-testid="approval-banner-decide"
-        className="rounded bg-violet-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-violet-500"
-        onClick={() => onDecide(first.id, first.step_id)}
-      >
-        Decide →
-      </button>
+      {canDecide ? (
+        <button
+          type="button"
+          data-testid="approval-banner-decide"
+          className="rounded bg-violet-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-violet-500"
+          onClick={() => onDecide(first.id, first.step_id)}
+        >
+          Decide →
+        </button>
+      ) : null}
     </div>
   );
 }

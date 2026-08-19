@@ -223,6 +223,28 @@ func (c *client) cacheStats(ctx context.Context) (api.CacheStatsResponse, error)
 	return resp, err
 }
 
+func (c *client) whoami(ctx context.Context) (api.WhoAmIResponse, error) {
+	var resp api.WhoAmIResponse
+	err := c.do(ctx, http.MethodGet, "/v1/auth/whoami", nil, &resp)
+	return resp, err
+}
+
+func (c *client) systemStats(ctx context.Context) (api.SystemStatsResponse, error) {
+	var resp api.SystemStatsResponse
+	err := c.do(ctx, http.MethodGet, "/v1/system/stats", nil, &resp)
+	return resp, err
+}
+
+func (c *client) listDeadLetters(ctx context.Context, query string) (api.DeadLetterListResponse, error) {
+	var resp api.DeadLetterListResponse
+	path := "/v1/dead-letters"
+	if query != "" {
+		path += "?" + query
+	}
+	err := c.do(ctx, http.MethodGet, path, nil, &resp)
+	return resp, err
+}
+
 // do runs one request, decoding 2xx into out and anything else into an
 // *apiError. Each mod, if any, edits the request before it is sent (e.g.
 // extra headers).

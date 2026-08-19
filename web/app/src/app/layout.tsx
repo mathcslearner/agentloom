@@ -3,6 +3,7 @@ import Link from "next/link";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toast";
 import { RuntimeConfigProvider } from "@/lib/runtime-config";
+import { PermissionsProvider } from "@/lib/permissions";
 import { serverConfig } from "@/lib/config";
 
 export const metadata: Metadata = {
@@ -16,6 +17,7 @@ const NAV = [
   { href: "/definitions", label: "Definitions" },
   { href: "/runs", label: "Runs" },
   { href: "/approvals", label: "Approvals" },
+  { href: "/ops", label: "Ops" },
 ];
 
 // The root layout is the app chrome only (header + nav). The page body is laid
@@ -27,6 +29,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className="flex min-h-screen flex-col antialiased">
         <RuntimeConfigProvider value={{ apiPublicUrl }}>
+          <PermissionsProvider>
           <header className="shrink-0 border-b">
             <div className="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3">
               <Link href="/" className="font-semibold tracking-tight">
@@ -43,6 +46,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </header>
           {children}
           <Toaster />
+          </PermissionsProvider>
         </RuntimeConfigProvider>
       </body>
     </html>

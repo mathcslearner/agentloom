@@ -11,7 +11,9 @@ import { CostMeter } from "@/components/dashboard/CostMeter";
 import { BudgetBanners } from "@/components/dashboard/BudgetBanners";
 import { RaiseBudgetDialog } from "@/components/dashboard/RaiseBudgetDialog";
 import { ApprovalBanner } from "@/components/dashboard/ApprovalBanner";
+import { RunControls } from "@/components/dashboard/RunControls";
 import { DecisionDialog } from "@/components/dashboard/DecisionDialog";
+import { usePermissions } from "@/lib/permissions";
 import { RunGraph } from "@/components/dashboard/graph/RunGraph";
 import { InspectorPane } from "@/components/dashboard/InspectorPane";
 import { Timeline } from "@/components/dashboard/Timeline";
@@ -24,6 +26,7 @@ import { emptyTopology } from "@/lib/pure/dashboard/graph-topology";
  */
 export function RunDetail({ runId }: { runId: string }) {
   const { state: s, controller } = useRunController(runId);
+  const perms = usePermissions();
   const [selected, setSelected] = useState<string | undefined>(undefined);
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [decideId, setDecideId] = useState<string | undefined>(undefined);
@@ -74,23 +77,31 @@ export function RunDetail({ runId }: { runId: string }) {
           <span className="text-xs text-amber-600 dark:text-amber-400">parked: {run.park_reason}</span>
         ) : null}
         {run ? <CostMeter run={run} /> : null}
-        {run && (run.cost.budget_nano_usd !== undefined || run.status === "parked") ? (
+        {run &&
+        (run.cost.budget_nano_usd !== undefined || run.status === "parked") &&
+        perms.controlState("raiseBudget") !== "hidden" ? (
           <button
             type="button"
             onClick={() => setBudgetOpen(true)}
+            disabled={perms.controlState("raiseBudget") === "disabled"}
             data-testid="raise-budget-open"
-            className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
           >
             Raise budget
           </button>
         ) : null}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-3">
+          {run ? <RunControls run={run} controller={controller} /> : null}
           <ConnectionPill state={s.connection} reconnects={s.reconnects} lastSeq={s.lastSeq} />
         </div>
       </header>
 
       <BudgetBanners events={s.events} run={run} onRaise={() => setBudgetOpen(true)} />
-      <ApprovalBanner approvals={approvals} onDecide={openDecide} />
+      <ApprovalBanner
+        approvals={approvals}
+        onDecide={openDecide}
+        canDecide={perms.controlState("decide") !== "hidden"}
+      />
 
       {run ? (
         <RaiseBudgetDialog

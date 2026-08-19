@@ -33,3 +33,12 @@ export function fixtureStep(id: string) {
 export const approvalListFixture = load<import("@agentloom/api-client").ApprovalListResponse>(
   "approval_list_fixture.json",
 );
+
+// The ops-view goldens (ticket 18.6): the exact GET /v1/dead-letters and
+// GET /v1/system/stats wire shapes.
+export const deadLetterListFixture = load<import("@agentloom/api-client").DeadLetterListResponse>(
+  "dead_letter_list_fixture.json",
+);
+export const systemStatsFixture = load<import("@agentloom/api-client").SystemStatsResponse>(
+  "system_stats_fixture.json",
+);
