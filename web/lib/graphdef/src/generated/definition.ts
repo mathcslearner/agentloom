@@ -248,10 +248,14 @@ export interface NoopConfig {
 }
 
 export interface OutputFormat {
-  type?: string;
+  type?: OutputFormatType;
   schema?: unknown;
-  mode?: string;
+  mode?: OutputFormatMode;
 }
+
+export type OutputFormatMode = "auto" | "repair_only";
+
+export type OutputFormatType = "json" | "json_schema";
 
 export interface ParamSpec {
   type: ParamType;

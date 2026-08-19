@@ -211,6 +211,19 @@ func (ApprovalRejectPolicy) JSONSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "string", Enum: enumAny(approvalRejectPolicies)}
 }
 
+// JSONSchema declares the output-format-type enum in the generated schema
+// (ADR-013). Rendered as a closed vocabulary so the builder's config panel
+// (17.4) offers a select rather than a free-text field.
+func (OutputFormatType) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny(outputFormatTypes)}
+}
+
+// JSONSchema declares the output-format-mode enum in the generated schema
+// (ADR-013).
+func (OutputFormatMode) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Enum: enumAny(outputFormatModes)}
+}
+
 // JSONSchema declares the map item-failure-policy enum in the generated schema
 // (ADR-015, ticket 13.4b).
 func (ItemFailurePolicy) JSONSchema() *jsonschema.Schema {

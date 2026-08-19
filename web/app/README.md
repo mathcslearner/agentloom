@@ -88,7 +88,25 @@ boundary, ADR-019).
 `/builder` is a React Flow canvas over `@agentloom/graphdef`. The palette adds
 any catalog step type (drag-to-create, or click / Enter); nodes carry typed
 connection handles (`in`; `out`/`loop`; `approve`/`reject` on approval steps);
-the store (zustand + zundo) gives undo/redo with drag-coalescing. Config editing,
-client-side validation, and import/export/save/submit arrive in 17.4–17.6; a new
-node starts with an empty config. The presentational `StepNodeView` is reused by
-the M18 dashboard with run-status skins.
+the store (zustand + zundo) gives undo/redo with drag-coalescing. Import/export,
+save & submit arrive in 17.6; a new node starts with an empty config. The
+presentational `StepNodeView` is reused by the M18 dashboard with run-status
+skins.
+
+## Schema-driven config panels (M17.4)
+
+Selecting a step opens a config panel whose form is **generated from the
+plugin's JSON Schema** (`GET /v1/plugins`, fetched once through the proxy into
+`catalog-store.ts`, with the published-schema fallback when the catalog is
+unavailable) — no per-plugin hardcoded forms. `SchemaForm` renders a widget per
+field (model picker, tool/retriever/agent/template picker, prompt editor with
+upstream-only `${{ }}` autocomplete, enum select, number/boolean, string/object
+lists, JSON-editor fallback for raw-JSON fields). Required-ness and specialized
+widgets come from a small hand-maintained `hints.ts` (the schema encodes
+neither). Invalid config marks the node (a destructive ring + a problem count)
+and the toolbar shows the total error count; the client validator lives in
+`@agentloom/graphdef` (`validateStepConfigs`) and reports the backend's issue
+codes/paths (proven against the Go verdict golden). The autocomplete offers
+exactly the upstream steps' output paths (ancestors over normal edges only,
+mirroring the backend) and declared run params. Client-side graph validation and
+the submit flow are 17.5/17.6.

@@ -38,6 +38,10 @@ export interface BuilderState {
   onEdgesChange: (changes: EdgeChange<CanvasEdge>[]) => void;
   /** Add a step of a type; returns its allocated id. */
   addStep: (type: StepType, position?: Position) => string;
+  /** Shallow-merge a patch into a step's object (config/envelope edits, 17.4). */
+  patchStep: (id: string, patch: Record<string, unknown>) => void;
+  /** Replace a step's envelope blocks (everything but id/type/config), 17.4. */
+  setStepEnvelope: (id: string, envelope: Record<string, unknown>) => void;
   /** Create an edge from a proposed connection, honoring the port rules. */
   connect: (conn: ConnectionLike) => void;
   /** Delete the currently selected nodes (and their edges) and selected edges. */
@@ -130,6 +134,31 @@ export const useBuilderStore = create<BuilderState>()(
           nodes: [...nodes.map((n) => (n.selected ? { ...n, selected: false } : n)), node],
         });
         return id;
+      },
+
+      patchStep: (id, patch) => {
+        const { nodes } = get();
+        set({
+          nodes: nodes.map((n) => {
+            if (n.id !== id) return n;
+            const data = n.data as unknown as { step: Record<string, unknown> };
+            const step = { ...data.step, ...patch };
+            return { ...n, data: { ...data, step } as unknown as Record<string, unknown> };
+          }),
+        });
+      },
+
+      setStepEnvelope: (id, envelope) => {
+        const { nodes } = get();
+        set({
+          nodes: nodes.map((n) => {
+            if (n.id !== id) return n;
+            const data = n.data as unknown as { step: Record<string, unknown> };
+            const s = data.step;
+            const step = { id: s["id"], type: s["type"], ...(s["config"] !== undefined ? { config: s["config"] } : {}), ...envelope };
+            return { ...n, data: { ...data, step } as unknown as Record<string, unknown> };
+          }),
+        });
       },
 
       connect: (conn) => {

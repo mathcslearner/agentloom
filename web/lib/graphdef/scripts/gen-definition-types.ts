@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = resolve(here, "../../../../docs/schema/workflow-definition.v1.json");
 const OUT_PATH = resolve(here, "../src/generated/definition.ts");
+const SCHEMA_OUT_PATH = resolve(here, "../src/generated/definition.schema.ts");
 
 // JSON Schema (draft 2020-12) subset the definition schema uses.
 interface Schema {
@@ -224,6 +225,24 @@ function main(): void {
 
   writeFileSync(OUT_PATH, out.join("\n"));
   process.stdout.write(`wrote ${OUT_PATH}\n`);
+
+  // Also emit the schema itself as a runtime constant, so graphdef's shape
+  // checker (17.4) and the app's offline config-schema fallback have the
+  // published JSON Schema without a fetch. Embedded as a JSON string parsed at
+  // load (not an object literal) so tsc does no giant literal-type inference
+  // and the output is byte-stable — the committed workflow-definition.v1.json
+  // is itself deterministic (`make generate`), so this file is CI-diffable too.
+  const schemaOut: string[] = [];
+  schemaOut.push("// Code generated from docs/schema/workflow-definition.v1.json — DO NOT EDIT.");
+  schemaOut.push("//");
+  schemaOut.push("// The published definition JSON Schema (draft 2020-12) as a runtime constant,");
+  schemaOut.push("// emitted by `pnpm generate` (web/lib/graphdef) alongside definition.ts.");
+  schemaOut.push("");
+  schemaOut.push("/** The workflow-definition JSON Schema (ADR-003), parsed from its committed source. */");
+  schemaOut.push(`export const DEFINITION_SCHEMA = JSON.parse(${JSON.stringify(raw)}) as Record<string, unknown>;`);
+  schemaOut.push("");
+  writeFileSync(SCHEMA_OUT_PATH, schemaOut.join("\n"));
+  process.stdout.write(`wrote ${SCHEMA_OUT_PATH}\n`);
 }
 
 main();

@@ -3,6 +3,7 @@
 exports[`StepNodeView snapshots > renders a selected node 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-primary ring-2 ring-ring"
+  data-invalid="false"
   data-selected="true"
   data-step-type="llm"
   data-testid="step-node"
@@ -38,6 +39,7 @@ exports[`StepNodeView snapshots > renders a selected node 1`] = `
 exports[`StepNodeView snapshots > renders a status skin (M18 reuse) 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-blue-500"
+  data-invalid="false"
   data-selected="false"
   data-step-type="llm"
   data-testid="step-node"
@@ -78,6 +80,7 @@ exports[`StepNodeView snapshots > renders a status skin (M18 reuse) 1`] = `
 exports[`StepNodeView snapshots > renders agent deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="agent"
   data-testid="step-node"
@@ -113,6 +116,7 @@ exports[`StepNodeView snapshots > renders agent deterministically 1`] = `
 exports[`StepNodeView snapshots > renders blackboard_write deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="blackboard_write"
   data-testid="step-node"
@@ -148,6 +152,7 @@ exports[`StepNodeView snapshots > renders blackboard_write deterministically 1`]
 exports[`StepNodeView snapshots > renders branch deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="branch"
   data-testid="step-node"
@@ -183,6 +188,7 @@ exports[`StepNodeView snapshots > renders branch deterministically 1`] = `
 exports[`StepNodeView snapshots > renders counter deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="counter"
   data-testid="step-node"
@@ -218,6 +224,7 @@ exports[`StepNodeView snapshots > renders counter deterministically 1`] = `
 exports[`StepNodeView snapshots > renders echo deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="echo"
   data-testid="step-node"
@@ -253,6 +260,7 @@ exports[`StepNodeView snapshots > renders echo deterministically 1`] = `
 exports[`StepNodeView snapshots > renders effectful_echo deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="effectful_echo"
   data-testid="step-node"
@@ -288,6 +296,7 @@ exports[`StepNodeView snapshots > renders effectful_echo deterministically 1`] =
 exports[`StepNodeView snapshots > renders fail_n_times deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="fail_n_times"
   data-testid="step-node"
@@ -323,6 +332,7 @@ exports[`StepNodeView snapshots > renders fail_n_times deterministically 1`] = `
 exports[`StepNodeView snapshots > renders gather deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="gather"
   data-testid="step-node"
@@ -358,6 +368,7 @@ exports[`StepNodeView snapshots > renders gather deterministically 1`] = `
 exports[`StepNodeView snapshots > renders human_approval deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="human_approval"
   data-testid="step-node"
@@ -393,6 +404,7 @@ exports[`StepNodeView snapshots > renders human_approval deterministically 1`] =
 exports[`StepNodeView snapshots > renders join deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="join"
   data-testid="step-node"
@@ -428,6 +440,7 @@ exports[`StepNodeView snapshots > renders join deterministically 1`] = `
 exports[`StepNodeView snapshots > renders llm deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="llm"
   data-testid="step-node"
@@ -463,6 +476,7 @@ exports[`StepNodeView snapshots > renders llm deterministically 1`] = `
 exports[`StepNodeView snapshots > renders map deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="map"
   data-testid="step-node"
@@ -498,6 +512,7 @@ exports[`StepNodeView snapshots > renders map deterministically 1`] = `
 exports[`StepNodeView snapshots > renders noop deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="noop"
   data-testid="step-node"
@@ -533,6 +548,7 @@ exports[`StepNodeView snapshots > renders noop deterministically 1`] = `
 exports[`StepNodeView snapshots > renders planner deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="planner"
   data-testid="step-node"
@@ -568,6 +584,7 @@ exports[`StepNodeView snapshots > renders planner deterministically 1`] = `
 exports[`StepNodeView snapshots > renders retrieve deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="retrieve"
   data-testid="step-node"
@@ -603,6 +620,7 @@ exports[`StepNodeView snapshots > renders retrieve deterministically 1`] = `
 exports[`StepNodeView snapshots > renders sleep deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="sleep"
   data-testid="step-node"
@@ -638,6 +656,7 @@ exports[`StepNodeView snapshots > renders sleep deterministically 1`] = `
 exports[`StepNodeView snapshots > renders tool deterministically 1`] = `
 <div
   class="w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors border-border"
+  data-invalid="false"
   data-selected="false"
   data-step-type="tool"
   data-testid="step-node"

@@ -11,6 +11,7 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { Step } from "@agentloom/graphdef";
 import type { CanvasNode } from "@/lib/builder/adapter";
 import { sourceHandlesFor, TARGET_HANDLE, type SourceHandle } from "@/lib/pure/builder/ports";
+import { useNodeProblemCount } from "@/lib/builder/problems-context";
 import { StepNodeView } from "./StepNodeView";
 
 const RIGHT_HANDLES: SourceHandle[] = ["out", "approve", "reject"];
@@ -22,10 +23,11 @@ const HANDLE_LABEL: Record<SourceHandle, string> = {
   loop: "loop back",
 };
 
-export function StepNode({ data, selected }: NodeProps<CanvasNode>) {
+export function StepNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const step = (data as unknown as { step: Step }).step;
   const sources = sourceHandlesFor(step.type);
   const right = RIGHT_HANDLES.filter((h) => sources.includes(h));
+  const problemCount = useNodeProblemCount(id);
 
   return (
     <div className="relative">
@@ -36,7 +38,7 @@ export function StepNode({ data, selected }: NodeProps<CanvasNode>) {
         aria-label={`${step.id} input`}
         className="!h-3 !w-3 !border-2 !border-background !bg-muted-foreground"
       />
-      <StepNodeView step={step} selected={selected} />
+      <StepNodeView step={step} selected={selected} problemCount={problemCount} />
       {right.map((h, i) => {
         const top = ((i + 1) / (right.length + 1)) * 100;
         return (

@@ -1,0 +1,1691 @@
+{
+  "examples/definitions/agent_handoff.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/agent_pipeline.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/approval_gate.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/approval_reject_route.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/approval_timeout_approve.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/approval_timeout_park.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/blackboard.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/conditional_branch.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/context_assembly.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/context_compaction.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/context_summarization.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/context_window.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/critic_loop.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/echo_pipeline.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/fanout.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/kitchen_sink.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/linear.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/llm_judge.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/map_fanout.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/mock_pipeline.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/planner.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/rag_lite.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/research-critic-writer.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/semantic_retry.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "examples/definitions/structured_extract.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid/bad_on_failure.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "on_failure",
+        "msg": "unknown failure policy \"explode\" (expected one of: fail_fast, continue_independent_branches)"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/bad_param_type.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "params.goal.type",
+        "msg": "unknown param type \"text\" (expected one of: string, number, boolean, object, array)"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/blackboard_unknown_field.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].blackboard.writes",
+        "msg": "unknown field"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/cache_bad_mode.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].cache.mode",
+        "msg": "unknown cache mode \"always\" (expected one of: off, read_write, read_only)"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/cache_bad_scope.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].cache.scope",
+        "msg": "unknown cache scope \"tenant\" (expected one of: global, run)"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/cache_not_object.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].cache",
+        "msg": "expected object, got string"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/cache_unknown_field.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].cache.expiry",
+        "msg": "unknown field"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/cache_wrong_type.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].cache.ttl",
+        "msg": "expected string, got number"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/config_nested_unknown.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].config.messages[0].contnt",
+        "msg": "unknown field"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/config_not_object.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].config",
+        "msg": "expected object, got array"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/config_unknown_field.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].config.modle",
+        "msg": "unknown field"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/config_wrong_type.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].config.max_tokens",
+        "msg": "expected integer, got string"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/context_bad_kind.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].context.sources[0].kind",
+        "msg": "unknown context source kind \"database\" (expected one of: step_output, blackboard, retrieval, literal, thread)"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/context_unknown_field.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].context.srcs",
+        "msg": "unknown field"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/edge_missing_from.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "edges[0].from",
+        "msg": "required field is missing"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/join_bad_mode.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].config.mode",
+        "msg": "unknown join mode \"eventually\" (expected \"all\" or \"any\")"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/max_wall_clock_wrong_type.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "max_wall_clock",
+        "msg": "expected string, got number"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/missing_name_steps_edges.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "name",
+        "msg": "required field is missing"
+      },
+      {
+        "severity": "error",
+        "path": "steps",
+        "msg": "required field is missing"
+      },
+      {
+        "severity": "error",
+        "path": "edges",
+        "msg": "required field is missing"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/missing_schema_version.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "schema_version",
+        "msg": "required field is missing"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/multi_error.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "name",
+        "msg": "expected string, got number"
+      },
+      {
+        "severity": "error",
+        "path": "steps[0].type",
+        "msg": "unknown step type \"llmz\""
+      },
+      {
+        "severity": "error",
+        "path": "steps[1].config.modle",
+        "msg": "unknown field"
+      },
+      {
+        "severity": "error",
+        "path": "steps[1].config.max_tokens",
+        "msg": "expected integer, got string"
+      },
+      {
+        "severity": "error",
+        "path": "steps[1].retires",
+        "msg": "unknown field"
+      },
+      {
+        "severity": "error",
+        "path": "edges[0].from",
+        "msg": "required field is missing"
+      },
+      {
+        "severity": "error",
+        "path": "edges[0].whenever",
+        "msg": "unknown field"
+      },
+      {
+        "severity": "error",
+        "path": "extra",
+        "msg": "unknown field"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/param_entry_not_object.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "params.goal",
+        "msg": "expected object, got string"
+      },
+      {
+        "severity": "error",
+        "path": "params.goal.type",
+        "msg": "required field is missing"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/param_missing_type.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "params.goal.type",
+        "msg": "required field is missing"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/retry_backoff_unknown_field.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].retry.backoff.floor",
+        "msg": "unknown field"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/retry_bad_class.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].retry.retry_on[1]",
+        "msg": "unknown error class \"flaky\" (expected one of: transient, permanent, timeout, cancelled, validation_failed)"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/retry_bad_jitter.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].retry.jitter",
+        "msg": "unknown jitter mode \"half\" (expected one of: full, none)"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/retry_not_object.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].retry",
+        "msg": "expected object, got number"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/retry_unknown_field.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].retry.max_tries",
+        "msg": "unknown field"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/retry_wrong_type.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].retry.max_attempts",
+        "msg": "expected integer, got string"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/root_array.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "msg": "expected object, got array"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/schema_version_float.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "schema_version",
+        "msg": "expected integer, got 1.5"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/schema_version_string.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "schema_version",
+        "msg": "expected integer, got string"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/schema_version_unsupported.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "schema_version",
+        "msg": "unsupported schema_version 2 (this engine supports 1)"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/step_missing_id_type.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].id",
+        "msg": "required field is missing"
+      },
+      {
+        "severity": "error",
+        "path": "steps[0].type",
+        "msg": "required field is missing"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/steps_not_array.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps",
+        "msg": "expected array, got object"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/syntax.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "msg": "invalid JSON: unexpected end of JSON input"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/timeout_wrong_type.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].timeout",
+        "msg": "expected string, got number"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/ui_not_object.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "ui",
+        "msg": "expected object, got array"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/unknown_edge_field.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "edges[0].whenever",
+        "msg": "unknown field"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/unknown_edge_type.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "edges[0].type",
+        "msg": "unknown edge type \"loopy\" (expected \"normal\" or \"loop\")"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/unknown_step_field.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].retires",
+        "msg": "unknown field"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/unknown_step_type.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].type",
+        "msg": "unknown step type \"llmz\""
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/unknown_top_field.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "descriptionz",
+        "msg": "unknown field"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/validation_entry_unknown_field.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].validation.validators[0].weight",
+        "msg": "unknown field"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/validation_feedback_unknown_field.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].validation.feedback.tone",
+        "msg": "unknown field"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/validation_not_object.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].validation",
+        "msg": "expected object, got string"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/validation_unknown_field.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "steps[0].validation.unknown",
+        "msg": "unknown field"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid/wrong_type_name.json": {
+    "decode": [
+      {
+        "severity": "error",
+        "path": "name",
+        "msg": "expected string, got number"
+      }
+    ],
+    "issues": [],
+    "decode_failed": true
+  },
+  "internal/dag/testdata/invalid_structural/agent_merged_no_model.json": {
+    "issues": [
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[0].config.model",
+        "msg": "required field is missing"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/agent_missing_agent.json": {
+    "issues": [
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[0].config.agent",
+        "msg": "required field is missing"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/agent_ref_unknown.json": {
+    "issues": [
+      {
+        "code": "agent_ref_unknown",
+        "severity": "error",
+        "path": "steps[0].config.agent",
+        "msg": "agent \"reviewer\" names no agent in the definition's agents section"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/agent_section_invalid.json": {
+    "issues": [
+      {
+        "code": "agent_section_invalid",
+        "severity": "error",
+        "path": "agents.critic.tools[0]",
+        "msg": "tool name \"Bad-Tool\" does not match ^[a-z][a-z0-9_]*$"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/blackboard_bad.json": {
+    "issues": [
+      {
+        "code": "blackboard_field_required",
+        "severity": "error",
+        "path": "steps[0].blackboard.write",
+        "msg": "at least one write is required when a blackboard block is present"
+      },
+      {
+        "code": "blackboard_field_invalid",
+        "severity": "error",
+        "path": "steps[1].blackboard.write[0].key",
+        "msg": "blackboard: invalid key \"bad key\": must match ^[A-Za-z0-9_-]{1,128}$ (letters, digits, '_' and '-'; no dots)"
+      },
+      {
+        "code": "blackboard_field_invalid",
+        "severity": "error",
+        "path": "steps[2].blackboard.write[0].from",
+        "msg": "invalid JSON pointer: must start with '/'"
+      },
+      {
+        "code": "blackboard_field_invalid",
+        "severity": "error",
+        "path": "steps[3].blackboard.write[0].tags",
+        "msg": "blackboard: invalid tag \"Bad Tag\": must match ^[a-z0-9_.:-]{1,64}$"
+      },
+      {
+        "code": "blackboard_field_invalid",
+        "severity": "error",
+        "path": "steps[4].blackboard.write[1].key",
+        "msg": "duplicate write to key \"dup\" (first at write[0])"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/branch_default_not_last.json": {
+    "issues": [
+      {
+        "code": "branch_edge_unconditioned",
+        "severity": "error",
+        "path": "edges[1]",
+        "msg": "unconditioned out-edge of branch \"route\" must be the single trailing default"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/branch_multiple_defaults.json": {
+    "issues": [
+      {
+        "code": "branch_edge_unconditioned",
+        "severity": "error",
+        "path": "edges[1]",
+        "msg": "unconditioned out-edge of branch \"route\" must be the single trailing default"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/branch_no_out_edges.json": {
+    "issues": [
+      {
+        "code": "branch_no_out_edges",
+        "severity": "error",
+        "path": "steps[1]",
+        "msg": "branch step \"route\" has no outgoing edges"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/cache_bad_bounds.json": {
+    "issues": [
+      {
+        "code": "cache_field_required",
+        "severity": "error",
+        "path": "steps[0].cache.mode",
+        "msg": "mode is required when a cache block is present"
+      },
+      {
+        "code": "cache_field_invalid",
+        "severity": "error",
+        "path": "steps[1].cache.ttl",
+        "msg": "not a Go duration string: time: invalid duration \"nope\""
+      },
+      {
+        "code": "cache_field_invalid",
+        "severity": "error",
+        "path": "steps[2].cache.ttl",
+        "msg": "must be positive, got \"-5m\""
+      },
+      {
+        "code": "cache_field_invalid",
+        "severity": "error",
+        "path": "steps[3].cache.ttl",
+        "msg": "must be at most 720h0m0s, got \"800h\""
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/condition_syntax_error.json": {
+    "issues": [
+      {
+        "code": "invalid_expression",
+        "severity": "error",
+        "path": "edges[1].condition",
+        "msg": "1:18: Syntax error: mismatched input '\u003cEOF\u003e' expecting {'[', '{', '(', '.', '-', '!', 'true', 'false', 'null', NUM_FLOAT, NUM_INT, NUM_UINT, STRING, BYTES, IDENTIFIER}"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/context_bad.json": {
+    "issues": [
+      {
+        "code": "context_field_required",
+        "severity": "error",
+        "path": "steps[0].context.sources",
+        "msg": "at least one source is required when a context block is present"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[1].context",
+        "msg": "applies only to llm-family steps, not \"noop\""
+      },
+      {
+        "code": "context_field_required",
+        "severity": "error",
+        "path": "steps[2].context.sources[0].text",
+        "msg": "text is required for a literal source"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[3].context.sources[0]",
+        "msg": "a blackboard source cannot set both key and tags"
+      },
+      {
+        "code": "context_field_required",
+        "severity": "error",
+        "path": "steps[4].context.sources[0].query",
+        "msg": "query is required for a retrieval source"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[5].context.sources[0].max_tokens",
+        "msg": "a pinned source cannot also carry a per-source max_tokens cap"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[6].context.sources[0].step",
+        "msg": "step is not valid for a literal source"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[8].context.budget_tokens",
+        "msg": "must be at least 1, got 0"
+      },
+      {
+        "code": "context_field_required",
+        "severity": "error",
+        "path": "steps[9].context.compaction[0].n",
+        "msg": "n is required for a sliding_window strategy"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[10].context.compaction[0].n",
+        "msg": "must be at least 1, got 0"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[11].context.compaction[0].n",
+        "msg": "n is not valid for a truncate_oldest strategy"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[12].context.compaction[0].min_tokens",
+        "msg": "min_tokens is not valid for a drop_lowest_priority strategy"
+      },
+      {
+        "code": "context_field_required",
+        "severity": "error",
+        "path": "steps[13].context.compaction[0].model",
+        "msg": "model is required for a summarize strategy"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[14].context.compaction[1].strategy",
+        "msg": "duplicate strategy \"sliding_window\" (first at compaction[0])"
+      },
+      {
+        "code": "context_field_required",
+        "severity": "error",
+        "path": "steps[15].context.compaction[0].model",
+        "msg": "model is required for a summarize strategy"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[15].context.compaction[0].key",
+        "msg": "invalid blackboard key: blackboard: invalid key \"bad key\": must match ^[A-Za-z0-9_-]{1,128}$ (letters, digits, '_' and '-'; no dots)"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[16].context.compaction[0].timeout",
+        "msg": "not a Go duration string: time: invalid duration \"nope\""
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[17].context.compaction[0].max_tokens",
+        "msg": "must be at least 1, got 0"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[18].context.compaction[0].model",
+        "msg": "model is not valid for a sliding_window strategy"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[19].context.sources[0].tags",
+        "msg": "tags is not valid for a thread source"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[20].context.sources[0].role",
+        "msg": "role is not valid for a blackboard source"
+      },
+      {
+        "code": "context_field_invalid",
+        "severity": "error",
+        "path": "steps[7].context.sources[0].step",
+        "msg": "step_output source names unknown step \"ghost\""
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/cycle.json": {
+    "issues": [
+      {
+        "code": "cycle_detected",
+        "severity": "error",
+        "path": "edges[3]",
+        "msg": "edge closes the cycle a -\u003e b -\u003e c -\u003e a (mark a loop edge instead: only loop edges may form cycles)"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/duplicate_step_id.json": {
+    "issues": [
+      {
+        "code": "duplicate_step_id",
+        "severity": "error",
+        "path": "steps[1].id",
+        "msg": "duplicate step ID \"a\" (first declared at steps[0])"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/expansion_bad.json": {
+    "issues": [
+      {
+        "code": "expansion_field_invalid",
+        "severity": "error",
+        "path": "expansion.max_added_steps",
+        "msg": "must be positive, got 0"
+      },
+      {
+        "code": "expansion_field_invalid",
+        "severity": "error",
+        "path": "expansion.max_depth",
+        "msg": "must be positive, got -1"
+      },
+      {
+        "code": "expansion_field_invalid",
+        "severity": "error",
+        "path": "expansion.max_total_steps",
+        "msg": "must not exceed the definition ceiling 10000, got 100000"
+      },
+      {
+        "code": "config_field_invalid",
+        "severity": "error",
+        "path": "steps[0].config.max_added_steps",
+        "msg": "cannot exceed the run per-expansion cap 0, got 9999"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/expr_too_long.json": {
+    "issues": [
+      {
+        "code": "limit_exceeded",
+        "severity": "error",
+        "path": "edges[0].when",
+        "msg": "expression is 1053 bytes (max 1024)"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/human_approval_bad.json": {
+    "issues": [
+      {
+        "code": "config_field_invalid",
+        "severity": "error",
+        "path": "steps[0].config.allowed_decisions[1]",
+        "msg": "duplicate decision \"approve\""
+      },
+      {
+        "code": "config_field_invalid",
+        "severity": "error",
+        "path": "steps[0].config.timeout",
+        "msg": "must be at most 720h0m0s, got \"9000h\""
+      },
+      {
+        "code": "config_field_invalid",
+        "severity": "error",
+        "path": "steps[0].config.on_reject",
+        "msg": "\"route\" routing requires \"reject\" to be an allowed decision"
+      },
+      {
+        "code": "approval_reject_edge_required",
+        "severity": "error",
+        "path": "steps[0].config.on_reject",
+        "msg": "\"route\" reject routing requires at least one outgoing edge with \"\\\"decision\\\": \\\"reject\\\"\""
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/human_approval_missing_title.json": {
+    "issues": [
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[0].config.title",
+        "msg": "required field is missing"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/invalid_step_id.json": {
+    "issues": [
+      {
+        "code": "invalid_step_id",
+        "severity": "error",
+        "path": "steps[0].id",
+        "msg": "step ID \"Start\" does not match ^[a-z][a-z0-9_-]{0,63}$"
+      },
+      {
+        "code": "invalid_step_id",
+        "severity": "error",
+        "path": "steps[1].id",
+        "msg": "step ID \"9lives\" does not match ^[a-z][a-z0-9_-]{0,63}$"
+      },
+      {
+        "code": "invalid_step_id",
+        "severity": "error",
+        "path": "steps[2].id",
+        "msg": "step ID \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\" does not match ^[a-z][a-z0-9_-]{0,63}$"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/join_missing_mode.json": {
+    "issues": [
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[0].config.mode",
+        "msg": "required field is missing"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/llm_missing_model.json": {
+    "issues": [
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[0].config.model",
+        "msg": "required field is missing"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/llm_no_prompt_or_messages.json": {
+    "issues": [
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[0].config",
+        "msg": "exactly one of \"prompt\" or \"messages\" is required"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/llm_prompt_and_messages.json": {
+    "issues": [
+      {
+        "code": "config_field_conflict",
+        "severity": "error",
+        "path": "steps[0].config",
+        "msg": "\"prompt\" and \"messages\" are mutually exclusive"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/loop_edge_not_ancestor.json": {
+    "issues": [
+      {
+        "code": "loop_edge_not_ancestor",
+        "severity": "error",
+        "path": "edges[2]",
+        "msg": "loop edge target \"c\" is not an ancestor of source \"b\" (no loop body to iterate)"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/loop_edge_with_when.json": {
+    "issues": [
+      {
+        "code": "loop_field_forbidden",
+        "severity": "error",
+        "path": "edges[1].when",
+        "msg": "\"when\" is not valid on a loop edge (its predicate is \"condition\")"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/loop_max_iterations_range.json": {
+    "issues": [
+      {
+        "code": "limit_exceeded",
+        "severity": "error",
+        "path": "edges[1].max_iterations",
+        "msg": "must be between 1 and 100, got 101"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/loop_missing_condition.json": {
+    "issues": [
+      {
+        "code": "loop_field_required",
+        "severity": "error",
+        "path": "edges[1].condition",
+        "msg": "required on a loop edge"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/loop_missing_max_iterations.json": {
+    "issues": [
+      {
+        "code": "loop_field_required",
+        "severity": "error",
+        "path": "edges[1].max_iterations",
+        "msg": "required on a loop edge"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/loop_no_progress_bad.json": {
+    "issues": [
+      {
+        "code": "config_field_invalid",
+        "severity": "error",
+        "path": "edges[2].no_progress.policy",
+        "msg": "must be \"proceed\" or \"fail\", got \"maybe\""
+      },
+      {
+        "code": "config_field_invalid",
+        "severity": "error",
+        "path": "edges[2].no_progress.path",
+        "msg": "invalid JSON pointer: must start with '/'"
+      },
+      {
+        "code": "config_field_invalid",
+        "severity": "error",
+        "path": "edges[2].no_progress.step",
+        "msg": "step \"c\" is not a member of the loop body of \"a\" → \"b\""
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/map_missing_fields.json": {
+    "issues": [
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[0].config.items",
+        "msg": "required field is missing"
+      },
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[0].config.body",
+        "msg": "required field is missing"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/max_wall_clock_bad_bounds.json": {
+    "issues": [
+      {
+        "code": "max_wall_clock_field_invalid",
+        "severity": "error",
+        "path": "max_wall_clock",
+        "msg": "must be at most 720h0m0s, got \"800h\""
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/multi_error_structural.json": {
+    "issues": [
+      {
+        "code": "duplicate_step_id",
+        "severity": "error",
+        "path": "steps[1].id",
+        "msg": "duplicate step ID \"start\" (first declared at steps[0])"
+      },
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[1].config.model",
+        "msg": "required field is missing"
+      },
+      {
+        "code": "invalid_expression",
+        "severity": "error",
+        "path": "edges[0].when",
+        "msg": "1:1: undeclared reference to 'not_declared' (in container '')"
+      },
+      {
+        "code": "unknown_edge_endpoint",
+        "severity": "error",
+        "path": "edges[2].to",
+        "msg": "unknown step \"ghost\""
+      },
+      {
+        "code": "loop_field_forbidden",
+        "severity": "error",
+        "path": "edges[2].max_iterations",
+        "msg": "only valid on loop edges"
+      },
+      {
+        "code": "branch_edge_unconditioned",
+        "severity": "error",
+        "path": "edges[1]",
+        "msg": "unconditioned out-edge of branch \"route\" must be the single trailing default"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/name_too_long.json": {
+    "issues": [
+      {
+        "code": "limit_exceeded",
+        "severity": "error",
+        "path": "name",
+        "msg": "name is 129 bytes (max 128)"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/no_entry_step.json": {
+    "issues": [
+      {
+        "code": "no_entry_step",
+        "severity": "error",
+        "msg": "no entry step: every step has an incoming normal edge"
+      },
+      {
+        "code": "cycle_detected",
+        "severity": "error",
+        "path": "edges[1]",
+        "msg": "edge closes the cycle a -\u003e b -\u003e a (mark a loop edge instead: only loop edges may form cycles)"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/no_steps.json": {
+    "issues": [
+      {
+        "code": "no_steps",
+        "severity": "error",
+        "path": "steps",
+        "msg": "definition has no steps"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/normal_edge_loop_fields.json": {
+    "issues": [
+      {
+        "code": "loop_field_forbidden",
+        "severity": "error",
+        "path": "edges[0].condition",
+        "msg": "only valid on loop edges"
+      },
+      {
+        "code": "loop_field_forbidden",
+        "severity": "error",
+        "path": "edges[0].max_iterations",
+        "msg": "only valid on loop edges"
+      },
+      {
+        "code": "loop_field_forbidden",
+        "severity": "error",
+        "path": "edges[0].no_progress",
+        "msg": "only valid on loop edges"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/output_format_bad.json": {
+    "issues": [
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[0].config.output_format.type",
+        "msg": "required field is missing"
+      },
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[1].config.output_format.schema",
+        "msg": "required when type is \"json_schema\""
+      },
+      {
+        "code": "config_field_invalid",
+        "severity": "error",
+        "path": "steps[2].config.output_format.schema",
+        "msg": "must be a JSON object"
+      },
+      {
+        "code": "config_field_invalid",
+        "severity": "error",
+        "path": "steps[3].config.output_format.schema",
+        "msg": "applies only to type \"json_schema\"; a plain \"json\" format takes no schema"
+      },
+      {
+        "code": "config_field_invalid",
+        "severity": "error",
+        "path": "steps[4].config.output_format.type",
+        "msg": "unknown output format \"xml\" (expected one of \"json\", \"json_schema\")"
+      },
+      {
+        "code": "config_field_invalid",
+        "severity": "error",
+        "path": "steps[5].config.output_format.mode",
+        "msg": "unknown mode \"sometimes\" (expected one of \"auto\", \"repair_only\")"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/planner_missing_model.json": {
+    "issues": [
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[0].config.model",
+        "msg": "required field is missing"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/retrieve_missing_fields.json": {
+    "issues": [
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[0].config.retriever",
+        "msg": "required field is missing"
+      },
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[0].config.query",
+        "msg": "required field is missing"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/retry_bad_bounds.json": {
+    "issues": [
+      {
+        "code": "retry_field_invalid",
+        "severity": "error",
+        "path": "steps[0].retry.max_attempts",
+        "msg": "must be between 1 and 100, got 1000"
+      },
+      {
+        "code": "retry_field_invalid",
+        "severity": "error",
+        "path": "steps[0].retry.backoff.cap",
+        "msg": "must be at least backoff.initial (2m), got 1s"
+      },
+      {
+        "code": "retry_field_invalid",
+        "severity": "error",
+        "path": "steps[0].retry.backoff.multiplier",
+        "msg": "must be between 1 and 100, got 0.5"
+      },
+      {
+        "code": "retry_field_invalid",
+        "severity": "error",
+        "path": "steps[1].retry.max_attempts",
+        "msg": "must be between 1 and 100, got -1"
+      },
+      {
+        "code": "retry_field_invalid",
+        "severity": "error",
+        "path": "steps[1].retry.backoff.initial",
+        "msg": "not a Go duration string: time: invalid duration \"fast\""
+      },
+      {
+        "code": "retry_field_invalid",
+        "severity": "error",
+        "path": "steps[1].retry.backoff.cap",
+        "msg": "must be at most 24h0m0s, got \"25h\""
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/retry_missing_cap.json": {
+    "issues": [
+      {
+        "code": "retry_field_required",
+        "severity": "error",
+        "path": "steps[0].retry.backoff.cap",
+        "msg": "required field is missing"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/retry_on_invalid.json": {
+    "issues": [
+      {
+        "code": "retry_field_invalid",
+        "severity": "error",
+        "path": "steps[0].retry.retry_on[0]",
+        "msg": "\"validation_failed\" is not a transport retry class — configure semantic retries via the step's validation policy (ADR-013), not retry_on"
+      },
+      {
+        "code": "retry_field_invalid",
+        "severity": "error",
+        "path": "steps[0].retry.retry_on[1]",
+        "msg": "\"permanent\" is never retryable"
+      },
+      {
+        "code": "retry_field_invalid",
+        "severity": "error",
+        "path": "steps[0].retry.retry_on[3]",
+        "msg": "duplicate error class \"transient\""
+      },
+      {
+        "code": "retry_field_invalid",
+        "severity": "error",
+        "path": "steps[1].retry.retry_on",
+        "msg": "must not be empty when present (omit the key for the engine default)"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/timeout_bad_bounds.json": {
+    "issues": [
+      {
+        "code": "timeout_field_invalid",
+        "severity": "error",
+        "path": "steps[0].timeout",
+        "msg": "not a Go duration string: time: invalid duration \"fast\""
+      },
+      {
+        "code": "timeout_field_invalid",
+        "severity": "error",
+        "path": "steps[1].timeout",
+        "msg": "must be positive, got \"-1s\""
+      },
+      {
+        "code": "timeout_field_invalid",
+        "severity": "error",
+        "path": "steps[2].timeout",
+        "msg": "must be at most 24h0m0s, got \"25h\""
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/tool_missing_tool.json": {
+    "issues": [
+      {
+        "code": "config_field_required",
+        "severity": "error",
+        "path": "steps[0].config.tool",
+        "msg": "required field is missing"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/unknown_edge_endpoint.json": {
+    "issues": [
+      {
+        "code": "unknown_edge_endpoint",
+        "severity": "error",
+        "path": "edges[0].from",
+        "msg": "unknown step \"ghost\""
+      },
+      {
+        "code": "unknown_edge_endpoint",
+        "severity": "error",
+        "path": "edges[1].to",
+        "msg": "unknown step \"phantom\""
+      },
+      {
+        "code": "isolated_step",
+        "severity": "warning",
+        "path": "steps[0]",
+        "msg": "step \"start\" has no edges; it will run as an independent entry step"
+      },
+      {
+        "code": "isolated_step",
+        "severity": "warning",
+        "path": "steps[1]",
+        "msg": "step \"done\" has no edges; it will run as an independent entry step"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/validation_bad_chain.json": {
+    "issues": [
+      {
+        "code": "validation_field_required",
+        "severity": "error",
+        "path": "steps[0].validation.validators",
+        "msg": "at least one validator is required when a validation block is present"
+      },
+      {
+        "code": "validation_field_invalid",
+        "severity": "error",
+        "path": "steps[1].validation.validators[0].name",
+        "msg": "validator name \"Bad-Name\" does not match ^[a-z][a-z0-9_]*$"
+      },
+      {
+        "code": "validation_field_invalid",
+        "severity": "error",
+        "path": "steps[2].validation.validators[0].target",
+        "msg": "invalid JSON pointer: must start with '/'"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/validation_feedback_bad.json": {
+    "issues": [
+      {
+        "code": "validation_field_invalid",
+        "severity": "error",
+        "path": "steps[0].validation.feedback",
+        "msg": "applies only to llm-family steps, not \"noop\""
+      },
+      {
+        "code": "validation_field_invalid",
+        "severity": "error",
+        "path": "steps[1].validation.feedback",
+        "msg": "has no effect without max_attempts \u003e= 2 (a critique is only used on a re-attempt)"
+      },
+      {
+        "code": "validation_field_invalid",
+        "severity": "error",
+        "path": "steps[2].validation.feedback.template",
+        "msg": "unknown feedback token \"steps.a.output\" (available: feedback.prior_output, feedback.issues, feedback.attempt, feedback.max_attempts)"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/validation_max_attempts_bad.json": {
+    "issues": [
+      {
+        "code": "validation_field_invalid",
+        "severity": "error",
+        "path": "steps[0].validation.max_attempts",
+        "msg": "must be between 1 and 10, got 99"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/validation_too_many.json": {
+    "issues": [
+      {
+        "code": "validation_field_invalid",
+        "severity": "error",
+        "path": "steps[0].validation.validators",
+        "msg": "must have at most 16 validators, got 17"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/when_not_boolean.json": {
+    "issues": [
+      {
+        "code": "expression_not_boolean",
+        "severity": "error",
+        "path": "edges[0].when",
+        "msg": "expression must be a boolean predicate, but evaluates to int"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/when_syntax_error.json": {
+    "issues": [
+      {
+        "code": "invalid_expression",
+        "severity": "error",
+        "path": "edges[0].when",
+        "msg": "1:19: Syntax error: mismatched input '\u003cEOF\u003e' expecting {'[', '{', '(', '.', '-', '!', 'true', 'false', 'null', NUM_FLOAT, NUM_INT, NUM_UINT, STRING, BYTES, IDENTIFIER}"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/invalid_structural/when_undeclared_ref.json": {
+    "issues": [
+      {
+        "code": "invalid_expression",
+        "severity": "error",
+        "path": "edges[0].when",
+        "msg": "1:1: undeclared reference to 'outputs' (in container '')"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/valid/empty_params.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/valid/explicit_defaults.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/valid/expressions.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/valid/isolated_step.json": {
+    "issues": [
+      {
+        "code": "isolated_step",
+        "severity": "warning",
+        "path": "steps[2]",
+        "msg": "step \"stray\" has no edges; it will run as an independent entry step"
+      }
+    ],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/valid/kitchen_sink.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/valid/minimal.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/valid/payloads.json": {
+    "issues": [],
+    "decode_failed": false
+  },
+  "internal/dag/testdata/valid/ui_formatting.json": {
+    "issues": [],
+    "decode_failed": false
+  }
+}

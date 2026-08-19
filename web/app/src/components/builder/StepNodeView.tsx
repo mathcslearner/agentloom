@@ -21,18 +21,23 @@ export interface StepNodeViewProps {
   step: Step;
   selected?: boolean;
   skin?: NodeSkin;
+  /** Count of config-validation errors on the step (17.4); marks the node. */
+  problemCount?: number;
 }
 
-export function StepNodeView({ step, selected, skin }: StepNodeViewProps) {
+export function StepNodeView({ step, selected, skin, problemCount = 0 }: StepNodeViewProps) {
   const meta = stepMeta(step.type);
+  const invalid = problemCount > 0;
   return (
     <div
       data-testid="step-node"
       data-step-type={step.type}
       data-selected={selected ? "true" : "false"}
+      data-invalid={invalid ? "true" : "false"}
       className={cn(
         "w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors",
         selected ? "border-primary ring-2 ring-ring" : "border-border",
+        invalid ? "border-destructive ring-1 ring-destructive" : "",
         skin?.className,
       )}
     >
@@ -41,6 +46,15 @@ export function StepNodeView({ step, selected, skin }: StepNodeViewProps) {
           {step.id}
         </span>
         <div className="flex shrink-0 items-center gap-1.5">
+          {invalid ? (
+            <span
+              data-testid="node-problem-badge"
+              title={`${problemCount} config ${problemCount === 1 ? "error" : "errors"}`}
+              className="rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] font-semibold text-destructive"
+            >
+              {problemCount}
+            </span>
+          ) : null}
           {skin?.badge}
           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
             {meta.label}

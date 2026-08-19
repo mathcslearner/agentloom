@@ -730,15 +730,29 @@
     "OutputFormat": {
       "properties": {
         "type": {
-          "type": "string"
+          "$ref": "#/$defs/OutputFormatType"
         },
         "schema": true,
         "mode": {
-          "type": "string"
+          "$ref": "#/$defs/OutputFormatMode"
         }
       },
       "additionalProperties": false,
       "type": "object"
+    },
+    "OutputFormatMode": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "repair_only"
+      ]
+    },
+    "OutputFormatType": {
+      "type": "string",
+      "enum": [
+        "json",
+        "json_schema"
+      ]
     },
     "ParamSpec": {
       "properties": {

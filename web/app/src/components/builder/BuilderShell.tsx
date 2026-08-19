@@ -7,10 +7,13 @@
 // keyboard shortcuts (undo/redo/delete). The canvas seeds itself from the
 // store's empty starting document; import (17.6) calls store.load.
 
+import { useEffect } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { redo, undo, useBuilderStore } from "@/lib/builder/store";
 import { useBuilderKeyboardShortcuts } from "@/lib/builder/useKeyboardShortcuts";
+import { useCatalogStore } from "@/lib/builder/catalog-store";
+import { useProblems } from "@/lib/builder/problems";
 import { Button } from "@/components/ui/button";
 import { Canvas } from "./Canvas";
 import { Palette } from "./Palette";
@@ -18,6 +21,8 @@ import { Inspector } from "./Inspector";
 
 function Toolbar() {
   const count = useBuilderStore((s) => s.nodes.length);
+  const problems = useProblems();
+  const errorCount = problems.issues.filter((i) => i.severity === "error").length;
   return (
     <div className="flex items-center gap-2 border-b px-3 py-2">
       <span className="text-sm font-semibold tracking-tight">Builder</span>
@@ -29,7 +34,12 @@ function Toolbar() {
           Redo
         </Button>
       </div>
-      <span className="ml-auto text-xs text-muted-foreground" data-testid="node-count">
+      {errorCount > 0 ? (
+        <span className="ml-auto text-xs font-medium text-destructive" data-testid="problem-count">
+          {errorCount} {errorCount === 1 ? "error" : "errors"}
+        </span>
+      ) : null}
+      <span className={errorCount > 0 ? "text-xs text-muted-foreground" : "ml-auto text-xs text-muted-foreground"} data-testid="node-count">
         {count} {count === 1 ? "step" : "steps"}
       </span>
     </div>
@@ -38,6 +48,10 @@ function Toolbar() {
 
 export function BuilderShell() {
   useBuilderKeyboardShortcuts();
+  const loadCatalog = useCatalogStore((s) => s.load);
+  useEffect(() => {
+    void loadCatalog();
+  }, [loadCatalog]);
   return (
     <ReactFlowProvider>
       <div className="flex h-full min-h-0 flex-col">

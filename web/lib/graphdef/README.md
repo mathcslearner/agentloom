@@ -50,7 +50,30 @@ drift (`git diff` in the `web` job). We generate our own types rather than reuse
 `@agentloom/api-client`'s `Definition`, because openapi-typescript renders the
 `Step` `oneOf` with `config` collapsed to `Record<string, never>` — unusable for a
 config editor. Here `Step` is a discriminated union so `switch (step.type)`
-narrows `step.config`.
+narrows `step.config`. The same script also emits `src/generated/definition.schema.ts`
+(`DEFINITION_SCHEMA`), the published JSON Schema as a runtime constant.
+
+## Client-side config validation (17.4)
+
+`validateStepConfigs(def, schemas)` mirrors the backend's single-step-local
+config rules (`internal/dag/validate.go`), reporting the backend's
+`ValidationCode` vocabulary and path grammar so a client verdict and a server
+verdict name the same problem in the same place. Two layers:
+
+- **Shape** (`schema/schema.ts`) — a small JSON-Schema subset walker that
+  reproduces the strict-codec structural findings (wrong type, unknown field,
+  not-an-object) with the backend's messages.
+- **Semantics** (`validate/config.ts`) — the coded `config_field_*` rules
+  (required fields, `prompt` xor `messages`, `output_format`, `human_approval`).
+
+`fallbackConfigSchemas()` derives per-step-type config schemas from
+`DEFINITION_SCHEMA` (the offline source; the app layers the live `GET /v1/plugins`
+catalog over it). Parity is proven against the Go golden
+`internal/dag/testdata/verdicts.golden.json` (`TestVerdictsGolden`) in
+`test/config-validate.test.ts`: on decode-clean fixtures the client's
+`config_field_*` (code, path) set equals the golden's; decode-failed config
+fixtures are rejected; the example corpus produces no false positives. Full
+accept/reject parity over the whole corpus is 17.5.
 
 ## Scripts
 

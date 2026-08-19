@@ -3124,6 +3124,7 @@ components:
           $ref: "#/components/schemas/PluginCapabilities"
         config_schema:
           type: object
+          additionalProperties: true
           description: >
             The plugin's generated config JSON Schema (draft 2020-12),
             embedded verbatim — generated from the same Go structs the

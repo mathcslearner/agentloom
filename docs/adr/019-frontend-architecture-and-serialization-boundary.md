@@ -333,6 +333,81 @@ through typed accessors, since React Flow v12 constrains `data` to
   the loop port seeds a placeholder edge now (fields edited in 17.6); no cycle /
   ancestry rules until 17.5.
 
+### Schema-driven config panels (as built, 17.4)
+
+Selecting a step opens a config panel whose form is **generated from the
+plugin's JSON Schema** (`GET /v1/plugins`), never hand-written per plugin.
+
+**The catalog.** `GET /v1/plugins` returns each plugin's `kind`, `name`,
+`version`, `capabilities`, and (for executors/tools/validators) a `config_schema`
+— the same schema `internal/dag` decodes with, so it cannot drift. Two small
+backend touches made it consumable: `PluginInfo.config_schema` gained
+`additionalProperties: true` so `openapi-typescript` renders it as
+`{[k]: unknown}` instead of the unusable `Record<string, never>`; and
+`OutputFormatType`/`OutputFormatMode` gained `JSONSchema()` enum methods (the
+last two closed vocabularies in the dag package without one), so the
+`output_format.type`/`.mode` fields render as selects. `model_provider` and
+`retriever` entries carry no schema by design — they are name lists for the
+model / retriever pickers.
+
+**The validator lives in `graphdef`, not the app.** A new `graphdef/validate`
+module mirrors the backend's single-step-local config rules
+(`checkStepConfig`/`checkLLMConfig`/`checkOutputFormat`/`checkHumanApproval`),
+reporting the backend's `ValidationCode` vocabulary and path grammar. It is two
+layers: a small **JSON-Schema subset shape checker** (`schema/schema.ts`) that
+reproduces the strict-codec structural findings (wrong type, unknown field,
+not-an-object) with the backend's messages, and the **semantic config rules**
+(`validate/config.ts`) that reproduce the coded `config_field_*` findings.
+Enum semantics are owned by the config rules per field (join `mode` is a codeless
+decode error, `output_format.type` a coded validate error), so the shape checker
+skips enum checks. The published definition schema is emitted as a runtime
+constant (`generated/definition.schema.ts`) so `graphdef` and the app have the
+schema offline; `fallbackConfigSchemas()` derives per-step-type config schemas
+from it, the offline source when the live catalog is unavailable.
+
+**Parity is proven against a Go golden.** `internal/dag/TestVerdictsGolden`
+emits `internal/dag/testdata/verdicts.golden.json` — the exact Decode+Validate
+verdict for the whole corpus (examples + testdata, 131 fixtures) — and
+`graphdef`'s `config-validate.test.ts` runs the client validator over the same
+fixtures, asserting: (1) on decode-clean fixtures the client's `config_field_*`
+(code, path) set **equals** the golden's; (2) decode-failed config fixtures are
+rejected client-side (accept/reject on the config subset); (3) no false positives
+on the example corpus. Cross-section/cross-field rules (agent role merge, run
+expansion caps) are the two documented `DEFERRED_TO_17_5` fixtures — 17.5 lands
+the full accept/reject parity over the whole corpus.
+
+**The panel** (`components/builder/config`). `ConfigPanel` replaces the
+Inspector's selection section: a **Config** form (`SchemaForm` over the field
+plan from `fields.ts` — widget per field: model picker, tool/retriever/agent/
+template picker, prompt editor, enum select, number/boolean, string/object
+lists, JSON-editor fallback for `json.RawMessage` fields, all schema-driven),
+a **Problems** list for the step (issue code + path + message), and an
+**Envelope** raw-JSON editor (schema-driven envelope forms are 17.5). Required-
+ness and specialized-widget selection come from a small hand-maintained `hints.ts`
+(the schema encodes neither `required` nor field descriptions), keyed by
+(step type, field name). The **model picker** offers known-good demo models
+grouped by the configured providers and *warns* — never errors — when a bare
+model matches no vendor prefix (a run-time routing failure the backend does not
+catch at submit). "secret-ref" is deliberately **not built**: no backend secret
+concept exists, and storing a secret verbatim in the definition would be a leak.
+
+**Node marking & round-trip.** `useProblems` runs the client validator over the
+live canvas definition and maps each issue onto its node by the `steps[i]` index
+(a `ProblemsProvider` context computes it once, O(n), keeping marks out of the
+undoable node data). An invalid node gets a destructive ring + a problem-count
+badge (`StepNodeView.problemCount`, reused by the M18 dashboard's neutral node);
+the toolbar shows the total error count; `useHasBlockingErrors` is the selector
+17.6's submit consumes. `mapIssuesToNodes` is the same mapping a server 400's
+issues[] will ride onto nodes by path on submit (17.6).
+
+**Autocomplete (DoD-3).** The prompt editor's `${{ … }}` suggestions come from
+`refs.ts`: `upstreamStepIds` is the exact mirror of `classifyUpstreamRef` /
+`Graph.Ancestors` — ancestors over **normal edges only** (loop edges confer no
+ancestry), self excluded — so a wrong-direction reference is not offered. It
+suggests `steps.<upstream>.output.<field>` (first-level output shapes are
+statically known per executor) and `run.params.<key>` (from the document's
+declared params). A plain textarea + popover keeps it dependency-free.
+
 ## Consequences
 
 - **The serialization boundary is a single, testable leaf.** The whole

@@ -41,6 +41,21 @@ async function dragConnect(page: Page, source: Locator, target: Locator) {
   await page.mouse.up();
 }
 
+// New steps are placed on a tight diagonal cascade, so freshly-added nodes
+// overlap. Drag a node's header by (dx, dy) so its handles and body are clear
+// of its neighbours before interacting (mirrors how a user lays a graph out).
+async function moveNodeBy(page: Page, node: Locator, dx: number, dy: number) {
+  const b = await node.boundingBox();
+  if (!b) throw new Error("node not found");
+  // Grab the header strip (top of the node), away from the connection handles.
+  const x = b.x + b.width / 2;
+  const y = b.y + 10;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + dx, y + dy, { steps: 8 });
+  await page.mouse.up();
+}
+
 test("builds a 10-node graph with every core node type (mouse + keyboard)", async ({ page }) => {
   await page.goto("/builder");
   await expect(page.getByTestId("builder-canvas")).toBeVisible();
@@ -64,6 +79,9 @@ test("connects nodes, including a reject-port decision edge", async ({ page }) =
   await page.getByLabel("Add Approval step").click(); // human_approval_1
   await page.getByLabel("Add LLM step").click(); // llm_1
 
+  // Spread the two (cascade-overlapping) nodes so the ports are reachable.
+  await moveNodeBy(page, nodes(page).last(), 260, 160);
+
   // Drag from the approval step's reject port to the llm step's input.
   const reject = page.locator('[aria-label="human_approval_1 on reject"]');
   const input = page.locator('[aria-label="llm_1 input"]');
@@ -80,8 +98,10 @@ test("undo/redo across delete, and move", async ({ page }) => {
   await page.getByLabel("Add Tool step").click();
   await expect(nodes(page)).toHaveCount(2);
 
-  // Select the first node and delete it.
-  await nodes(page).first().click();
+  // Select a node and delete it. The freshly-added nodes overlap on the cascade
+  // (the second is on top), so we click the top, clickable one — this keeps the
+  // undo stack to exactly [delete], which the assertions below depend on.
+  await nodes(page).last().click();
   await page.keyboard.press("Delete");
   await expect(nodes(page)).toHaveCount(1);
 

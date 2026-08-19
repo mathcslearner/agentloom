@@ -1543,7 +1543,9 @@ export interface components {
             description?: string;
             capabilities: components["schemas"]["PluginCapabilities"];
             /** @description The plugin's generated config JSON Schema (draft 2020-12), embedded verbatim — generated from the same Go structs the engine decodes with, so it cannot drift. Absent when the plugin takes no config. */
-            config_schema?: Record<string, never>;
+            config_schema?: {
+                [key: string]: unknown;
+            };
         };
         /** @description The plugin catalog, sorted by kind then name. */
         ListPluginsResponse: {
@@ -1696,10 +1698,14 @@ export interface components {
             model?: string;
             at_budget_fraction?: number;
         };
+        /** @enum {string} */
+        OutputFormatType: "json" | "json_schema";
+        /** @enum {string} */
+        OutputFormatMode: "auto" | "repair_only";
         OutputFormat: {
-            type?: string;
+            type?: components["schemas"]["OutputFormatType"];
             schema?: unknown;
-            mode?: string;
+            mode?: components["schemas"]["OutputFormatMode"];
         };
         LLMConfig: {
             model?: string;

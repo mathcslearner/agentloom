@@ -112,3 +112,26 @@ export function codecInvalidObjectFixtures(): Fixture[] {
     return isObj(v) && Array.isArray(v["steps"]) && Array.isArray(v["edges"]);
   });
 }
+
+/** Every corpus fixture across all four directories (examples + testdata). */
+export function allCorpusFixtures(): Fixture[] {
+  return [
+    ...exampleDefinitions(),
+    ...validTestdata(),
+    ...invalidTestdata(),
+    ...invalidStructuralTestdata(),
+  ];
+}
+
+/** One fixture's Decode+Validate verdict, as emitted by the Go golden. */
+export interface GoldenVerdict {
+  decode?: Array<{ code?: string; severity: string; path?: string; msg: string }>;
+  issues: Array<{ code?: string; severity: string; path?: string; msg: string }>;
+  decode_failed: boolean;
+}
+
+/** Load the shared Go verdict golden (internal/dag/testdata/verdicts.golden.json). */
+export function loadVerdictsGolden(): Record<string, GoldenVerdict> {
+  const path = join(REPO_ROOT, "internal/dag/testdata/verdicts.golden.json");
+  return JSON.parse(readFileSync(path, "utf8")) as Record<string, GoldenVerdict>;
+}
