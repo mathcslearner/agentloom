@@ -167,6 +167,10 @@ export class RunController {
     const run = this.state.run ? applyEvent(this.state.run, env) : this.state.run;
     const topology = applyGraphEvent(this.state.topology, env);
     this.set({ events, lastSeq, run, topology });
+    // A new gate parked (18.5): the event carries no payload/edit_schema, so
+    // pull the authoritative record from the run body — cheap and rare — so the
+    // decision dialog can render the proposed action.
+    if (env.type === "approval_requested") void this.refreshViews();
   }
 
   private onCaughtUp(seq: number): void {

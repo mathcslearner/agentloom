@@ -733,6 +733,43 @@ run-state reducer under the `asOf` seq guard.
   one dialog; warn-not-block on a sub-spend budget; no backend change.
   **Accepted residuals:** the approval inbox (18.5) and DLQ/ops views (18.6).
 
+### Approval inbox & decision UI (as built, 18.5)
+
+18.5 added the `/approvals` inbox page and the decision dialog, entirely under
+`web/app`, layered on the existing 15.3/15.4 API and the 18.1–18.3 dashboard
+plumbing (the run controller, the firehose overlay, the graph node skins, the
+inspector tabs). The package layering held: all the reducers live under the
+`pure/dashboard/` no-React boundary and are unit-tested against an exported Go
+golden, and the only cross-package edit was four ergonomic type re-exports from
+`@agentloom/api-client`.
+
+- **Pure layer** (`src/lib/pure/dashboard/`): `approvals.ts` (the
+  `ApprovalRecord` map folded from events + the run body, with the partial /
+  seq-guarded / park-expired rules), `approval-aging.ts` (fresh/aging/stale tiers
+  + deadline countdown, `now` injected), `decision-outcome.ts` (`rejectPlan`
+  fail-vs-route from the gate config + reject-marked edges; a rendered outcome
+  string), `edit-validate.ts` (a CSP-safe JSON-Schema pre-check mirroring
+  validator semantics, distinct from `checkShape`), `approval-list.ts` (the
+  inbox row + filter codec). `run-state.ts` gained `RunState.approvals`;
+  `projection.ts` carries `pendingApprovalId` on a gate node.
+- **Glue** (`src/lib/dashboard/`): `streams.ts` (`listApprovals`/`decideApproval`
+  with a typed `DecisionOutcome` distinguishing the 409/422; `refetchApproval`),
+  `useApprovalActions` (the decide hook), `useApprovalInbox` (the `useRunListLive`
+  mirror over the approval events). The `RunController` refetches the body on a
+  live `approval_requested` to complete a partial record.
+- **Components:** `DecisionDialog` (the shared modal — payload viewer, optional
+  schema-validated JSON editor, comment, approve/reject with the reject-plan hint,
+  client + server issues, and the 409-recovery read-only state), the `/approvals`
+  inbox page, `ApprovalBanner` (the run-header affordance), a `RunStepNode` footer
+  Decide button injected via node data (the `RunGroupNode.onToggle` precedent),
+  and an InspectorPane **Approval** tab.
+- **Decisions:** apply the decide *response* immediately (no optimistic guess, no
+  rollback); the reject-outcome hint derived from config + edge markers (no
+  backend change); inbox discovery via `?run_id=` (no `GET /v1/approvals/{id}`);
+  the `:decide` proxy carve-out (a literal colon in a path segment). **Accepted
+  residuals:** no nav-wide pending badge; a per-field structured edit form
+  deferred; scope-gated control hiding is 18.6's; DLQ/ops views (18.6).
+
 ## Consequences
 
 - **The serialization boundary is a single, testable leaf.** The whole

@@ -58,7 +58,7 @@ async function proxy(req: Request, path: string[]): Promise<Response> {
   }
 
   const incoming = new URL(req.url);
-  const target = new URL(path.map(encodeURIComponent).join("/"), ensureTrailingSlash(apiUrl));
+  const target = new URL(path.map(encodeSegment).join("/"), ensureTrailingSlash(apiUrl));
   target.search = incoming.search;
 
   const headers = new Headers();
@@ -96,6 +96,19 @@ async function proxy(req: Request, path: string[]): Promise<Response> {
 
 function ensureTrailingSlash(u: string): string {
   return u.endsWith("/") ? u : `${u}/`;
+}
+
+/**
+ * Percent-encode a path segment while preserving a literal `:` verb suffix.
+ *
+ * Some routes carry a colon verb on the id segment, e.g.
+ * `approvals/<uuid>:decide`. A blanket `encodeURIComponent` turns the `:` into
+ * `%3A`, which the chi router (matching on the raw path, with `:` as its param
+ * delimiter) will not match — the request 404s before the handler. So we encode
+ * each colon-delimited part independently and rejoin with a literal `:`.
+ */
+function encodeSegment(segment: string): string {
+  return segment.split(":").map(encodeURIComponent).join(":");
 }
 
 interface RouteContext {

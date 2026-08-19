@@ -15,6 +15,7 @@ const NAV = [
   { href: "/builder", label: "Builder" },
   { href: "/definitions", label: "Definitions" },
   { href: "/runs", label: "Runs" },
+  { href: "/approvals", label: "Approvals" },
 ];
 
 // The root layout is the app chrome only (header + nav). The page body is laid

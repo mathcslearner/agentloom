@@ -43,6 +43,10 @@ export type CostByStepView = Schema<"CostByStepView">;
 export type CostByResourceView = Schema<"CostByResourceView">;
 export type StepLogsResponse = Schema<"StepLogsResponse">;
 export type StepLogLineView = Schema<"StepLogLineView">;
+export type ApprovalView = Schema<"ApprovalView">;
+export type ApprovalListResponse = Schema<"ApprovalListResponse">;
+export type DecideApprovalRequest = Schema<"DecideApprovalRequest">;
+export type DecideApprovalResponse = Schema<"DecideApprovalResponse">;
 export type PluginInfoView = Schema<"PluginInfo">;
 export type ListPluginsResponse = Schema<"ListPluginsResponse">;
 // The run-graph introspection view (ticket 13.6/18.2, ADR-015) — the dashboard's

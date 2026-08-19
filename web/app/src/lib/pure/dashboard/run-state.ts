@@ -11,7 +11,13 @@
  * No React/UI imports — under the app's `pure/` eslint boundary.
  */
 import type { EventEnvelope, EventType } from "@agentloom/engine-client";
-import type { RunView, StepView } from "@agentloom/api-client";
+import type { ApprovalView, RunView, StepView } from "@agentloom/api-client";
+import {
+  type ApprovalMap,
+  applyApprovalEvent,
+  approvalsFromViews,
+  mergeApprovalViews,
+} from "./approvals.js";
 
 /** Display step status: the store vocabulary plus the derived `throttled` skin. */
 export type DisplayStepStatus =
@@ -55,12 +61,18 @@ export interface StepState {
 export interface RunState {
   run: RunView;
   steps: Map<string, StepState>;
+  /** Pending/decided human-approval gates, folded from the feed + REST body
+   * (ticket 18.5). Keyed by approval id. */
+  approvals: ApprovalMap;
   /** Highest event seq reflected in derived state (the resume cursor). */
   asOf: number;
 }
 
+/** A snapshot / REST run body: steps plus the optional approvals array. */
+export type RunBody = { run: RunView; steps: StepView[]; approvals?: ApprovalView[] };
+
 /** Seed run state from a snapshot / REST run body. */
-export function fromSnapshot(snapshot: { run: RunView; steps: StepView[] }): RunState {
+export function fromSnapshot(snapshot: RunBody): RunState {
   const steps = new Map<string, StepState>();
   for (const s of snapshot.steps) {
     steps.set(s.id, {
@@ -78,7 +90,12 @@ export function fromSnapshot(snapshot: { run: RunView; steps: StepView[] }): Run
       viewSeq: snapshot.run.event_seq,
     });
   }
-  return { run: { ...snapshot.run }, steps, asOf: snapshot.run.event_seq };
+  const approvals = approvalsFromViews(
+    snapshot.approvals,
+    snapshot.run.id,
+    snapshot.run.event_seq,
+  );
+  return { run: { ...snapshot.run }, steps, approvals, asOf: snapshot.run.event_seq };
 }
 
 /**
@@ -91,10 +108,7 @@ export function fromSnapshot(snapshot: { run: RunView; steps: StepView[] }): Run
  * for live status. Steps present live but absent from the body (injected after
  * the body was read) keep their event-derived state.
  */
-export function mergeRunResponse(
-  state: RunState,
-  body: { run: RunView; steps: StepView[] },
-): RunState {
+export function mergeRunResponse(state: RunState, body: RunBody): RunState {
   const bodySeq = body.run.event_seq;
   // Fold the run-level projection (cost/budget/status/park_reason) only when the
   // body is at least as fresh as the derived state — so a refetch after a budget
@@ -118,7 +132,8 @@ export function mergeRunResponse(
       viewSeq: bodySeq,
     });
   }
-  return { ...state, run, steps };
+  const approvals = mergeApprovalViews(state.approvals, body.approvals, body.run.id, bodySeq);
+  return { ...state, run, steps, approvals };
 }
 
 /** Map a run-lifecycle event to a run status; undefined ⇒ no run-status change. */
@@ -257,10 +272,16 @@ export function applyEvent(state: RunState, env: EventEnvelope): RunState {
     });
   }
 
+  // Human-approval gate transitions (18.5): fold approval events into the
+  // record map. The step status is handled above (approval_requested ⇒
+  // awaiting_human; a decision leaves the step status to the ensuing step_*
+  // event the backend emits on settlement).
+  const approvals = applyApprovalEvent(state.approvals, env, run.id);
+
   run.steps_total = Math.max(run.steps_total, steps.size);
   recountFromSteps(run, steps);
 
-  return { run, steps, asOf: env.seq };
+  return { run, steps, approvals, asOf: env.seq };
 }
 
 /** The attempt number an event carries, if any. */

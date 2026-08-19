@@ -14,9 +14,12 @@ import { OutputTab } from "./inspector/OutputTab";
 import { LogsTab } from "./inspector/LogsTab";
 import { ValidationTab } from "./inspector/ValidationTab";
 import { CostTab } from "./inspector/CostTab";
+import { ApprovalTab } from "./inspector/ApprovalTab";
+import { recordsForStep, type ApprovalMap } from "@/lib/pure/dashboard/approvals";
+import type { GraphTopology } from "@/lib/pure/dashboard/graph-topology";
 
-type TabKey = "overview" | "output" | "logs" | "validation" | "cost";
-const TABS: { key: TabKey; label: string }[] = [
+type TabKey = "overview" | "output" | "logs" | "validation" | "cost" | "approval";
+const BASE_TABS: { key: TabKey; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "output", label: "Output" },
   { key: "logs", label: "Logs" },
@@ -37,12 +40,18 @@ export function InspectorPane({
   events,
   cost,
   controller,
+  approvals,
+  topology,
+  onDecide,
 }: {
   runId: string;
   step?: StepState;
   events: EventEnvelope[];
   cost?: RunCostResponse;
   controller: RunController;
+  approvals?: ApprovalMap;
+  topology?: GraphTopology;
+  onDecide?: (approvalId: string, stepId: string) => void;
 }) {
   const [tab, setTab] = useState<TabKey>("overview");
   useStepDetailRefresh(controller, step);
@@ -56,6 +65,12 @@ export function InspectorPane({
     return <p className="text-sm text-muted-foreground">Select a step to inspect it.</p>;
   }
   const view = step.view;
+
+  // The gate's latest approval record (if this is a human_approval step) —
+  // adds an Approval tab (18.5).
+  const stepRecords = approvals ? recordsForStep(approvals, step.id) : [];
+  const record = stepRecords.length > 0 ? stepRecords[stepRecords.length - 1] : undefined;
+  const TABS = record ? [...BASE_TABS, { key: "approval" as TabKey, label: "Approval" }] : BASE_TABS;
 
   return (
     <div className="flex min-h-0 flex-col" data-testid="inspector-pane" data-step-id={step.id}>
@@ -93,6 +108,15 @@ export function InspectorPane({
             {tab === "logs" ? <LogsTab runId={runId} step={view} /> : null}
             {tab === "validation" ? <ValidationTab step={view} /> : null}
             {tab === "cost" ? <CostTab step={view} cost={cost} /> : null}
+            {tab === "approval" && record ? (
+              <ApprovalTab
+                record={record}
+                topology={topology}
+                step={step}
+                now={Date.now()}
+                onDecide={onDecide}
+              />
+            ) : null}
           </div>
         </>
       ) : (

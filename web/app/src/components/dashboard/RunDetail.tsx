@@ -10,6 +10,8 @@ import { ConnectionPill } from "@/components/dashboard/ConnectionPill";
 import { CostMeter } from "@/components/dashboard/CostMeter";
 import { BudgetBanners } from "@/components/dashboard/BudgetBanners";
 import { RaiseBudgetDialog } from "@/components/dashboard/RaiseBudgetDialog";
+import { ApprovalBanner } from "@/components/dashboard/ApprovalBanner";
+import { DecisionDialog } from "@/components/dashboard/DecisionDialog";
 import { RunGraph } from "@/components/dashboard/graph/RunGraph";
 import { InspectorPane } from "@/components/dashboard/InspectorPane";
 import { Timeline } from "@/components/dashboard/Timeline";
@@ -24,11 +26,20 @@ export function RunDetail({ runId }: { runId: string }) {
   const { state: s, controller } = useRunController(runId);
   const [selected, setSelected] = useState<string | undefined>(undefined);
   const [budgetOpen, setBudgetOpen] = useState(false);
+  const [decideId, setDecideId] = useState<string | undefined>(undefined);
 
   const run = s.run?.run;
   const steps = s.run?.steps;
+  const approvals = s.run?.approvals;
   const topology = s.topology ?? emptyTopology();
   const selectedStep = selected && steps ? steps.get(selected) : undefined;
+
+  const openDecide = (approvalId: string, stepId: string) => {
+    setSelected(stepId);
+    setDecideId(approvalId);
+  };
+  const decideRecord = decideId ? approvals?.get(decideId) : undefined;
+  const decideStepConfig = decideRecord && steps ? steps.get(decideRecord.step_id)?.view?.config : undefined;
 
   // The cost breakdown feeds the inspector's Cost tab; refetch when a
   // cost_updated event lands (the count of them is the live cost cursor).
@@ -79,6 +90,7 @@ export function RunDetail({ runId }: { runId: string }) {
       </header>
 
       <BudgetBanners events={s.events} run={run} onRaise={() => setBudgetOpen(true)} />
+      <ApprovalBanner approvals={approvals} onDecide={openDecide} />
 
       {run ? (
         <RaiseBudgetDialog
@@ -90,6 +102,19 @@ export function RunDetail({ runId }: { runId: string }) {
         />
       ) : null}
 
+      {decideRecord ? (
+        <DecisionDialog
+          approval={decideRecord}
+          stepConfig={decideStepConfig}
+          topology={topology}
+          open={decideId !== undefined}
+          onOpenChange={(o) => {
+            if (!o) setDecideId(undefined);
+          }}
+          onDecided={() => void controller.refreshViews()}
+        />
+      ) : null}
+
       {s.error ? (
         <p className="px-6 py-2 text-sm text-red-600 dark:text-red-400">{s.error}</p>
       ) : null}
@@ -98,7 +123,14 @@ export function RunDetail({ runId }: { runId: string }) {
       <div className="flex min-h-0 flex-1">
         <div className="min-h-0 flex-1 border-r">
           {steps && steps.size > 0 ? (
-            <RunGraph topology={topology} steps={steps} selected={selected} onSelect={setSelected} />
+            <RunGraph
+              topology={topology}
+              steps={steps}
+              selected={selected}
+              onSelect={setSelected}
+              approvals={approvals}
+              onDecide={openDecide}
+            />
           ) : (
             <p className="p-4 text-sm text-muted-foreground">Waiting for steps…</p>
           )}
@@ -110,6 +142,9 @@ export function RunDetail({ runId }: { runId: string }) {
             events={s.events}
             cost={cost}
             controller={controller}
+            approvals={approvals}
+            topology={topology}
+            onDecide={openDecide}
           />
         </div>
       </div>

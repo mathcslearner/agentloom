@@ -155,18 +155,23 @@ export through the DOM, the nav guard) and `e2e/save-submit.spec.ts` (compose �
 the full import → edit → save v1/v2 → version-conflict → save anyway → submit
 loop, and open-in-builder).
 
-## Live execution dashboard (M18.1–18.4)
+## Live execution dashboard (M18.1–18.5)
 
 The dashboard watches runs execute live over the event feed
 (`@agentloom/engine-client`, ADR-018). 18.1 shipped the run list and the
 run-detail scaffold; 18.2 replaced the steps pane with the live DAG canvas; 18.3
 filled in the tabbed step inspector; 18.4 added the live cost meter and budget
-controls. Later M18 tickets add the approval inbox and ops views.
+controls; 18.5 added the approval inbox and decision UI. Later M18 tickets
+add the ops views (DLQ, queue health).
 
 - **`/runs`** — a runs table with live status chips over the multi-run firehose,
   status/definition/time filters (synced to the URL), keyset pagination, a
   connection pill, and per-row links into the detail page. A run submitted while
   the page is open appears live (via `run_created`).
+- **`/approvals`** — the human-approval inbox (18.5): pending gates listed
+  oldest-first over the firehose, filterable by status (default `pending`) and
+  run, with an aging indicator and a deadline countdown; each pending row opens
+  the decision dialog. Decided/expired rows show the outcome.
 - **`/runs/{id}`** — the run-detail view: a header (status, counters, cost,
   connection), the live **DAG canvas** (18.2 — builder node components with
   run-status skins, animated active edges, sticky elkjs layout honoring `ui`
@@ -195,6 +200,38 @@ and budget raises surface as dismissible **banners** (`BudgetBanners`); a live
 `e2e/dashboard-cost.spec.ts` climbs the meter, parks at cap, raises + resumes,
 asserts a downgrade banner, and checks the meter total equals `GET
 /v1/runs/{id}/cost` at completion.
+
+### The approval inbox & decision UI (18.5)
+
+A `human_approval` gate parks its step without a lease (ADR-017) and is decided
+through `POST /v1/approvals/{id}:decide`. The dashboard surfaces this three ways:
+
+- **`/approvals`** — the inbox: pending gates live over the firehose (the
+  `useApprovalInbox` mirror of `useRunListLive`), status + run filters synced to
+  the URL, an aging chip (fresh/aging/stale at 1h/24h) and a deadline countdown,
+  and a Decide action per pending row.
+- **The run-detail affordances** — a **"waiting on you"** header banner
+  (`ApprovalBanner`) and a **Decide** button on the gate's DAG node, both opening
+  the decision dialog; and an **Approval** inspector tab showing the record,
+  aging, and outcome.
+- **`DecisionDialog`** — renders the proposed action (a JSON viewer), an optional
+  schema-validated JSON editor (only when the gate permits an edit), a comment,
+  and approve/reject with a reject-plan hint (fail vs route → which steps),
+  derived from the gate config + graph edge markers. An edited payload is
+  pre-checked client-side against the `edit_schema`; the backend's 422
+  `approval_decision_invalid` `issues[]` are authoritative and shown too. A
+  concurrent decision from another session (409 `approval_not_pending`) flips the
+  dialog to a read-only "decided in another session" state (DoD-2).
+
+The reducers live in `src/lib/pure/dashboard/{approvals,approval-aging,
+decision-outcome,edit-validate,approval-list}.ts` (no-React, unit-tested against
+the Go golden `internal/api/testdata/approval_list_fixture.json`). E2e:
+`e2e/dashboard-approvals.spec.ts` covers approve-with-edit → downstream payload,
+the 409 recovery, reject routing, and the live inbox listing.
+
+> **Proxy note:** the `:decide` verb suffix on the decide route is preserved by
+> the same-origin proxy (a blanket `encodeURIComponent` would turn `:` into
+> `%3A`, which the chi router 404s) — see `src/app/api/agentloom/[...path]/route.ts`.
 
 ### The step inspector (18.3)
 

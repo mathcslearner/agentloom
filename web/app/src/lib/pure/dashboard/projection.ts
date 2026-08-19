@@ -13,6 +13,7 @@
  */
 import type { GraphTopology, TopoEdge } from "./graph-topology";
 import type { StepState } from "./run-state";
+import { type ApprovalMap, pendingForStep } from "./approvals";
 import type { LayoutState, Point } from "./layout";
 import { NODE_H, NODE_W } from "./layout";
 import { computeGroups, groupStatus, type NodeGroup } from "./groups";
@@ -32,6 +33,9 @@ export interface RunStepData {
   origin: { kind: string; step?: string };
   /** Whether the node was just injected (drives the enter animation). */
   entered: boolean;
+  /** The id of the pending approval on this step, if it is a `human_approval`
+   * gate awaiting a decision (ticket 18.5) — drives the "Decide" affordance. */
+  pendingApprovalId?: string;
 }
 
 export interface RunGroupData {
@@ -76,6 +80,9 @@ export interface ProjectInput {
   collapsed: Set<string>;
   /** Event seqs recently applied — a node whose addedSeq is here animates in. */
   recent?: Set<number>;
+  /** Pending/decided approvals (18.5) — a gate awaiting a decision gets a
+   * "Decide" affordance carrying its approval id. */
+  approvals?: ApprovalMap;
 }
 
 export interface Projection {
@@ -85,7 +92,7 @@ export interface Projection {
 }
 
 export function projectGraph(input: ProjectInput): Projection {
-  const { topology, steps, layout, collapsed, recent } = input;
+  const { topology, steps, layout, collapsed, recent, approvals } = input;
   const groups = computeGroups(topology);
   const groupOf = memberGroupIndex(groups);
 
@@ -134,6 +141,10 @@ export function projectGraph(input: ProjectInput): Projection {
         skin: state ? skinFor(state) : neutralSkin(),
         origin: node.origin,
         entered: node.addedSeq != null && recent?.has(node.addedSeq) === true,
+        pendingApprovalId:
+          state?.status === "awaiting_human" && approvals
+            ? pendingForStep(approvals, node.id)?.id
+            : undefined,
       },
     });
   }

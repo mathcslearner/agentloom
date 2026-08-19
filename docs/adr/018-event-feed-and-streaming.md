@@ -648,6 +648,63 @@ bar); the meter's budget arithmetic in the e2e is calibrated to the offline mock
 pricing (`mock:*` = $1/$2 per Mtok) with response caching disabled per step (the
 global cache would serve a repeat run for $0).
 
+### Approval inbox & decision UI (as built, 18.5)
+
+18.5 built the HITL approval inbox and the decision dialog on the existing
+15.3/15.4 contract with **no new API surface** — the six `approval_*` events and
+the two REST routes (`GET /v1/approvals`, `POST /v1/approvals/{id}:decide`) were
+already complete, and the generated api-client types already carried them.
+
+- **The approval events are the low-latency signal, the record is the truth.**
+  An `approval_requested` event carries only id/step/title/allowed_decisions/
+  allow_edit/timeout_at — NOT the proposed payload, description, or edit_schema —
+  so the dashboard folds it into a *partial* `ApprovalRecord` and completes it
+  from the authoritative run body (`GET /v1/runs/{id}`'s `approvals[]`). The
+  run controller refetches the body on a live `approval_requested` (cheap, rare)
+  so the decision dialog can render the proposed action; each record carries a
+  per-record `lastSeq` cursor so a re-backfilled or reconnected suffix folds
+  idempotently, absolutely by status. `approval_expired` with
+  `action: run_parked` (the `on_timeout: park` escalation) stamps `expired_at`
+  but leaves the record `pending` — the inbox renders that "parked at timeout,
+  still decidable" state distinctly from a settled `expired` row.
+
+- **Two additive, non-runtime backend touches.** (a) A proxy fix: the
+  same-origin Next.js proxy joined path segments with `encodeURIComponent`,
+  turning the `:decide` verb suffix into `%3Adecide`, which the chi router
+  (matching on the raw path with `:` as its param delimiter) 404s before the
+  handler; the proxy now preserves a literal `:` in a segment (encoding each
+  colon-delimited part independently), pinned by a `proxy.test.ts` case. (b) An
+  exported Go golden `internal/api/testdata/approval_list_fixture.json`
+  (`TestApprovalListFixtureGolden`, the 13.6/18.3 precedent) — the exact
+  `GET /v1/approvals` wire shape covering pending / approved-with-edit /
+  rejected / expired / park-expired rows, which the frontend approval tests read
+  as ground truth. No migration, no config var, no metric, no OpenAPI change.
+
+- **The 409 is a first-class UI state, not an error toast.** A concurrent
+  decision from another session (or the approval's own timeout) makes the second
+  decide a 409 `approval_not_pending`; the dialog re-reads the approval (there is
+  no `GET /v1/approvals/{id}`, so it re-lists the run's page and finds the row)
+  and flips to a read-only "decided in another session" summary with a link into
+  the run — DoD-2. Because the record also updates live from the
+  `approval_decided` event, the dialog reaches that state whether the click loses
+  the race or the event arrives first.
+
+- **Edit validation is a client pre-check; the server 422 is authoritative.**
+  The dialog validates an edited payload against the gate's `edit_schema` with a
+  small CSP-safe walker that mirrors JSON-Schema *validator* semantics (enforces
+  `required`/`enum`/`type`, allows extra properties unless
+  `additionalProperties:false`) — deliberately NOT the strict Go decoder /
+  graphdef `checkShape`, so it does not over-reject. The backend's
+  `approval_decision_invalid` (422) `issues[]` (RFC-6901 pointers) are shown too
+  and are the final word.
+
+**Accepted residuals:** no nav-wide pending badge (the inbox page counts only);
+a per-field structured edit form stays deferred (a raw JSON editor with
+pointer-keyed issues); the firehose's `MaxTrackedRuns` bound applies to the live
+inbox (a REST refetch heals). The flagship's own gate is decided in the Go
+`TestFlagshipResearchCriticWriter`; the Playwright e2e drives the identical UI
+path on the deterministic `approval_gate.json` shape offline.
+
 ## Consequences
 
 - **The feed is a versioned, generator-backed contract.** `events.v1.json` is

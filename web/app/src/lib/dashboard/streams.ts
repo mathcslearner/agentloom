@@ -11,7 +11,16 @@ import {
   type RunStreamHandlers,
   type FirehoseHandlers,
 } from "@agentloom/engine-client";
-import type { RunResponse, RunGraphResponse, RunCostResponse, StepLogsResponse } from "@agentloom/api-client";
+import type {
+  RunResponse,
+  RunGraphResponse,
+  RunCostResponse,
+  StepLogsResponse,
+  ApprovalListResponse,
+  ApprovalView,
+  DecideApprovalResponse,
+  Issue,
+} from "@agentloom/api-client";
 import { problem } from "@agentloom/api-client";
 import type { LogLevel } from "@/lib/pure/dashboard/logs";
 import { mintRunTicket, mintFirehoseTicket } from "@/lib/dashboard/tickets";
@@ -120,6 +129,80 @@ export async function unparkRun(runId: string): Promise<BudgetActionOutcome> {
     params: { path: { run_id: runId } },
   });
   return error ? classifyActionError(error) : { kind: "ok" };
+}
+
+/** Fetch a keyset page of approvals (GET /v1/approvals) through the proxy
+ * (ticket 18.5). */
+export async function listApprovals(
+  query: { status?: string; run_id?: string; cursor?: string; limit?: number } = {},
+): Promise<ApprovalListResponse> {
+  const q: Record<string, string | number> = {};
+  if (query.status) q.status = query.status;
+  if (query.run_id) q.run_id = query.run_id;
+  if (query.cursor) q.cursor = query.cursor;
+  if (query.limit !== undefined) q.limit = query.limit;
+  const { data, error } = await browserApi().GET("/v1/approvals", { params: { query: q } });
+  if (error || !data) throw new Error("approvals list fetch failed");
+  return data;
+}
+
+/** The typed outcome of a decide request (ticket 18.5). Beyond the budget
+ * action codes it distinguishes the two approval-specific 4xx: a 409
+ * `approval_not_pending` (a concurrent decision from another session — the DoD-2
+ * recovery case) and a 422 `approval_decision_invalid` carrying the edit-schema
+ * `issues[]`. */
+export type DecisionOutcome =
+  | { kind: "ok"; response: DecideApprovalResponse }
+  | { kind: "not_found"; message: string }
+  | { kind: "not_pending"; message: string }
+  | { kind: "invalid"; message: string; issues?: Issue[] }
+  | { kind: "conflict"; message: string }
+  | { kind: "forbidden"; message: string }
+  | { kind: "error"; message: string };
+
+/** Decide an approval (POST /v1/approvals/{id}:decide) through the proxy. */
+export async function decideApproval(
+  approvalID: string,
+  body: { decision: "approve" | "reject"; edited_payload?: unknown; comment?: string },
+): Promise<DecisionOutcome> {
+  const { data, error } = await browserApi().POST("/v1/approvals/{approvalID}:decide", {
+    params: { path: { approvalID } },
+    body,
+  });
+  if (data) return { kind: "ok", response: data };
+  const p = problem(error);
+  if (!p) return { kind: "error", message: "the request failed" };
+  switch (p.code) {
+    case "approval_not_found":
+      return { kind: "not_found", message: p.message };
+    case "approval_not_pending":
+      return { kind: "not_pending", message: p.message };
+    case "approval_decision_invalid":
+      return { kind: "invalid", message: p.message, issues: p.issues };
+    case "invalid_request":
+      return { kind: "invalid", message: p.message };
+    case "conflict":
+      return { kind: "conflict", message: p.message };
+    case "forbidden":
+      return { kind: "forbidden", message: p.message };
+    default:
+      return { kind: "error", message: p.message };
+  }
+}
+
+/** Fetch a single approval's current record by run + id (there is no
+ * GET /v1/approvals/{id}; the inbox re-reads a run's page and finds the row). */
+export async function refetchApproval(
+  approvalID: string,
+  runId: string | undefined,
+): Promise<ApprovalView | undefined> {
+  if (!runId) return undefined;
+  try {
+    const page = await listApprovals({ run_id: runId, limit: 200 });
+    return page.approvals.find((a) => a.id === approvalID);
+  } catch {
+    return undefined;
+  }
 }
 
 export function createFirehose(baseUrl: string, handlers: FirehoseHandlers): FirehoseStream {

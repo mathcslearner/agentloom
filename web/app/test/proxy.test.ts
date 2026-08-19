@@ -118,4 +118,27 @@ describe("same-origin API proxy", () => {
     expect(body.error.code).toBe("unauthorized");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  it("preserves a literal ':decide' verb suffix (ticket 18.5)", async () => {
+    // encodeURIComponent would turn ':' into '%3A', which chi (matching on the
+    // raw path with ':' as its param delimiter) would 404. The proxy must keep
+    // it literal so approvals/{id}:decide reaches the handler.
+    let url = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        url = String(input);
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+      }),
+    );
+    const { POST } = await importRoute();
+    const id = "11111111-2222-3333-4444-555555555555";
+    const req = new Request(`http://localhost:3000/api/agentloom/v1/approvals/${id}:decide`, {
+      method: "POST",
+      body: JSON.stringify({ decision: "approve" }),
+    });
+    await POST(req, ctx(["v1", "approvals", `${id}:decide`]));
+    expect(url).toBe(`http://backend.test:8080/v1/approvals/${id}:decide`);
+    expect(url).not.toContain("%3A");
+  });
 });

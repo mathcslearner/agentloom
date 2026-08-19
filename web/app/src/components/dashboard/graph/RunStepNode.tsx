@@ -35,10 +35,42 @@ const TONE_SHELL: Record<SkinTone, string> = {
 };
 
 export function RunStepNode({ id, data: raw, selected }: NodeProps) {
-  const { stepType, skin, origin, state, entered } = raw as unknown as RunStepData;
+  const { stepType, skin, origin, state, entered, pendingApprovalId, onDecide } =
+    raw as unknown as RunStepData & {
+      onDecide?: (approvalId: string, stepId: string) => void;
+    };
   const step = { id, type: stepType, config: {} } as unknown as Step;
   const sources = sourceHandlesFor(stepType as Step["type"]);
   const right = RIGHT_HANDLES.filter((h) => sources.includes(h));
+
+  // A gate awaiting a decision (18.5): the "waiting on you" affordance links
+  // into the decision dialog. Its click must not bubble to node selection.
+  const decideAffordance =
+    pendingApprovalId && onDecide ? (
+      <button
+        type="button"
+        data-testid="node-decide"
+        className="rounded bg-violet-600 px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-violet-500"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDecide(pendingApprovalId, id);
+        }}
+      >
+        Decide →
+      </button>
+    ) : null;
+
+  const provenance =
+    origin.kind !== "definition" ? (
+      <span
+        className="text-[10px] text-muted-foreground"
+        title={origin.step ? `injected by ${origin.step}` : undefined}
+        data-testid="node-provenance"
+      >
+        ⑂ {origin.kind}
+        {origin.step ? ` · ${origin.step}` : ""}
+      </span>
+    ) : null;
 
   const nodeSkin: NodeSkin = {
     className: cn(TONE_SHELL[skin.tone], skin.pulse && "animate-[dag-pulse_1.6s_ease-in-out_infinite]"),
@@ -54,14 +86,10 @@ export function RunStepNode({ id, data: raw, selected }: NodeProps) {
       </span>
     ),
     footer:
-      origin.kind !== "definition" ? (
-        <span
-          className="text-[10px] text-muted-foreground"
-          title={origin.step ? `injected by ${origin.step}` : undefined}
-          data-testid="node-provenance"
-        >
-          ⑂ {origin.kind}
-          {origin.step ? ` · ${origin.step}` : ""}
+      decideAffordance || provenance ? (
+        <span className="flex items-center justify-between gap-1.5">
+          {provenance ?? <span />}
+          {decideAffordance}
         </span>
       ) : undefined,
   };

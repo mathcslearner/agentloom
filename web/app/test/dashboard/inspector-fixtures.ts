@@ -27,3 +27,9 @@ export function fixtureStep(id: string) {
   if (!s) throw new Error(`fixture step not found: ${id}`);
   return s;
 }
+
+// The approval-inbox golden (ticket 18.5): the exact GET /v1/approvals wire
+// shape, covering pending/approved/rejected/expired/park-expired rows.
+export const approvalListFixture = load<import("@agentloom/api-client").ApprovalListResponse>(
+  "approval_list_fixture.json",
+);

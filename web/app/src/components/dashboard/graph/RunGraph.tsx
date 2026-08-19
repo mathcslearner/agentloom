@@ -23,6 +23,7 @@ import {
 } from "@xyflow/react";
 import type { GraphTopology } from "@/lib/pure/dashboard/graph-topology";
 import type { StepState } from "@/lib/pure/dashboard/run-state";
+import type { ApprovalMap } from "@/lib/pure/dashboard/approvals";
 import type { Layouter } from "@/lib/pure/dashboard/layout";
 import type { DagEdge, DagNode } from "@/lib/pure/dashboard/projection";
 import { useRunGraph } from "@/lib/dashboard/useRunGraph";
@@ -39,6 +40,10 @@ export interface RunGraphProps {
   steps: Map<string, StepState>;
   selected?: string;
   onSelect: (id: string) => void;
+  /** Pending/decided approvals (18.5) — drives the node "Decide" affordance. */
+  approvals?: ApprovalMap;
+  /** Open the decision dialog for a gate's pending approval. */
+  onDecide?: (approvalId: string, stepId: string) => void;
   /** Overridable for tests (defaults to the elkjs layouter). */
   layouter?: Layouter;
 }
@@ -51,14 +56,14 @@ export function RunGraph(props: RunGraphProps) {
   );
 }
 
-function RunGraphInner({ topology, steps, selected, onSelect, layouter }: RunGraphProps) {
-  const view = useRunGraph(topology, steps, layouter);
+function RunGraphInner({ topology, steps, selected, onSelect, approvals, onDecide, layouter }: RunGraphProps) {
+  const view = useRunGraph(topology, steps, layouter, approvals);
   const { fitView } = useReactFlow();
   const fitted = useRef(false);
 
   const rfNodes = useMemo<RFNode[]>(
-    () => view.nodes.map((n) => toRFNode(n, selected, view.toggleGroup)),
-    [view.nodes, selected, view.toggleGroup],
+    () => view.nodes.map((n) => toRFNode(n, selected, view.toggleGroup, onDecide)),
+    [view.nodes, selected, view.toggleGroup, onDecide],
   );
   const rfEdges = useMemo<RFEdge[]>(() => view.edges.map(toRFEdge), [view.edges]);
 
@@ -122,7 +127,12 @@ function RunGraphInner({ topology, steps, selected, onSelect, layouter }: RunGra
   );
 }
 
-function toRFNode(n: DagNode, selected: string | undefined, onToggle: (id: string) => void): RFNode {
+function toRFNode(
+  n: DagNode,
+  selected: string | undefined,
+  onToggle: (id: string) => void,
+  onDecide?: (approvalId: string, stepId: string) => void,
+): RFNode {
   const base = {
     id: n.id,
     type: n.kind,
@@ -135,8 +145,11 @@ function toRFNode(n: DagNode, selected: string | undefined, onToggle: (id: strin
     ...(n.width != null ? { width: n.width } : {}),
     ...(n.height != null ? { height: n.height } : {}),
     // React Flow constrains data to Record<string, unknown>; the typed shapes
-    // ride inside and are read back with a cast in the node components.
-    data: (n.kind === "runGroup" ? { ...n.data, onToggle } : n.data) as unknown as Record<string, unknown>,
+    // ride inside and are read back with a cast in the node components. Group
+    // nodes carry `onToggle`; a gate step carries `onDecide` (18.5).
+    data: (n.kind === "runGroup"
+      ? { ...n.data, onToggle }
+      : { ...n.data, onDecide }) as unknown as Record<string, unknown>,
   };
   return base as unknown as RFNode;
 }
