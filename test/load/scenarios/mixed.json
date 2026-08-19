@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "name": "mixed",
+  "description": "Weighted blend of all four workloads, the representative steady-state mix for the 1,000-active-run sustained target.",
+  "arrival": {
+    "mode": "constant",
+    "rate_per_sec": 40
+  },
+  "warmup": "60s",
+  "duration": "10m",
+  "target_active_runs": 1000,
+  "slo": {
+    "scheduling_p50": "250ms",
+    "scheduling_p99": "2s",
+    "api_p99": "100ms",
+    "end_to_end_p99": "30s"
+  },
+  "mix": [
+    {
+      "scenario": "linear-10",
+      "weight": 0.4
+    },
+    {
+      "scenario": "fanout-50",
+      "weight": 0.2
+    },
+    {
+      "scenario": "planner-heavy",
+      "weight": 0.2
+    },
+    {
+      "scenario": "agent-loop",
+      "weight": 0.2
+    }
+  ]
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mathcslearner/agentloom/internal/llm"
 )
@@ -101,6 +102,84 @@ func TestParseMockScript(t *testing.T) {
 	}
 	if deftext != "echoed" {
 		t.Errorf("default response = %q, want %q", deftext, "echoed")
+	}
+}
+
+// TestParseMockScriptDistributions parses the load-oriented latency/token/
+// injection wire fields (ticket 19.1) into a valid MockConfig and drives the
+// provider, proving the global token distribution and per-outcome overrides
+// reach the reported usage.
+func TestParseMockScriptDistributions(t *testing.T) {
+	t.Parallel()
+
+	script := []byte(`{
+		"seed": 11,
+		"latency": {"p50": "120ms", "p99": "800ms"},
+		"tokens": {"input": {"min": 400, "max": 500}, "output": {"fixed": 128}},
+		"inject": {"rate_429": 0.0, "retry_after": "250ms"},
+		"rules": [
+			{"substring": "cheap", "respond": [
+				{"text": "ok", "latency": {"fixed": "5ms"}, "tokens": {"input": {"fixed": 10}, "output": {"fixed": 20}}}
+			]},
+			{"substring": "pinned", "respond": [
+				{"text": "ok", "usage": {"input": 3, "output": 4}}
+			]}
+		],
+		"default": {"text": "d"}
+	}`)
+
+	cfg, err := llm.ParseMockScript(script)
+	if err != nil {
+		t.Fatalf("ParseMockScript: %v", err)
+	}
+	if cfg.Latency.P50 != 120*time.Millisecond || cfg.Latency.P99 != 800*time.Millisecond {
+		t.Errorf("global latency = %+v, want p50 120ms / p99 800ms", cfg.Latency)
+	}
+	if cfg.Tokens == nil || cfg.Tokens.Input.Min != 400 || cfg.Tokens.Output.Fixed != 128 {
+		t.Errorf("global tokens = %+v, want input[400,500] output fixed 128", cfg.Tokens)
+	}
+	if cfg.Inject.RetryAfter != 250*time.Millisecond {
+		t.Errorf("inject retry_after = %s, want 250ms", cfg.Inject.RetryAfter)
+	}
+
+	// Use an instant sleep so the p50 latency doesn't slow the test.
+	sl := &instantSleep{}
+	cfg.Sleep = sl.sleep
+	mock, err := llm.NewMock(cfg)
+	if err != nil {
+		t.Fatalf("NewMock: %v", err)
+	}
+	ctx := context.Background()
+	ask := func(prompt string) llm.ChatResponse {
+		resp, err := mock.Chat(ctx, llm.ChatRequest{Model: "mock/sim-1", MaxTokens: 64, Messages: []llm.Message{llm.UserText(prompt)}})
+		if err != nil {
+			t.Fatalf("Chat(%q): %v", prompt, err)
+		}
+		return resp
+	}
+	cheap := ask("cheap request")
+	if cheap.Usage.InputTokens != 10 || cheap.Usage.OutputTokens != 20 {
+		t.Errorf("cheap usage = %+v, want {10,20} from the per-rule token override", cheap.Usage)
+	}
+	pinned := ask("pinned request")
+	if pinned.Usage.InputTokens != 3 || pinned.Usage.OutputTokens != 4 {
+		t.Errorf("pinned usage = %+v, want {3,4} from the explicit usage override", pinned.Usage)
+	}
+	def := ask("unrelated")
+	if def.Usage.InputTokens < 400 || def.Usage.InputTokens >= 500 || def.Usage.OutputTokens != 128 {
+		t.Errorf("default usage = %+v, want global distribution input[400,500) output 128", def.Usage)
+	}
+}
+
+// TestParseMockScriptRejectsBadDuration: a malformed duration string fails at
+// parse.
+func TestParseMockScriptRejectsBadDuration(t *testing.T) {
+	t.Parallel()
+	if _, err := llm.ParseMockScript([]byte(`{"latency": {"p50": "notaduration"}}`)); err == nil {
+		t.Error("bad p50 duration: want a parse error, got nil")
+	}
+	if _, err := llm.ParseMockScript([]byte(`{"inject": {"retry_after": "10furlongs"}}`)); err == nil {
+		t.Error("bad retry_after duration: want a parse error, got nil")
 	}
 }
 

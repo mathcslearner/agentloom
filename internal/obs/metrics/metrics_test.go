@@ -85,6 +85,53 @@ func TestListenInvalidAddrFails(t *testing.T) {
 	}
 }
 
+// TestPprofMountedWhenEnabled: the pprof handlers are absent by default and
+// present under WithPprof(true) — the load-test investigation surface
+// (ticket 19.x).
+func TestPprofMountedWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	get := func(srv *metrics.Server, path string) int {
+		resp, err := http.Get("http://" + srv.Addr() + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		defer resp.Body.Close() //nolint:errcheck // status-only probe
+		return resp.StatusCode
+	}
+
+	// Default: no pprof.
+	off, err := metrics.Listen("127.0.0.1:0", metrics.NewRegistry(metrics.ServiceWorker))
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctxOff, cancelOff := context.WithCancel(context.Background())
+	doneOff := make(chan struct{})
+	go func() { defer close(doneOff); off.Serve(ctxOff, slog.New(slog.DiscardHandler)) }()
+	if code := get(off, "/debug/pprof/"); code != http.StatusNotFound {
+		t.Errorf("pprof off: GET /debug/pprof/ = %d, want 404", code)
+	}
+	cancelOff()
+	<-doneOff
+
+	// Enabled: pprof index and heap available.
+	on, err := metrics.Listen("127.0.0.1:0", metrics.NewRegistry(metrics.ServiceWorker), metrics.WithPprof(true))
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctxOn, cancelOn := context.WithCancel(context.Background())
+	doneOn := make(chan struct{})
+	go func() { defer close(doneOn); on.Serve(ctxOn, slog.New(slog.DiscardHandler)) }()
+	if code := get(on, "/debug/pprof/"); code != http.StatusOK {
+		t.Errorf("pprof on: GET /debug/pprof/ = %d, want 200", code)
+	}
+	if code := get(on, "/debug/pprof/heap?debug=1"); code != http.StatusOK {
+		t.Errorf("pprof on: GET /debug/pprof/heap = %d, want 200", code)
+	}
+	cancelOn()
+	<-doneOn
+}
+
 func scrape(t *testing.T, addr string) string {
 	t.Helper()
 	resp, err := http.Get("http://" + addr + "/metrics")

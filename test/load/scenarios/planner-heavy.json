@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "name": "planner-heavy",
+  "description": "Two sequential runtime graph expansions per run. Stresses the completion-transaction expansion path (H2).",
+  "definition": "../definitions/planner_heavy.json",
+  "params": {},
+  "arrival": {
+    "mode": "ramp",
+    "ramp": {
+      "from_per_sec": 1,
+      "to_per_sec": 30,
+      "step_per_sec": 1,
+      "step_duration": "30s"
+    }
+  },
+  "warmup": "60s",
+  "duration": "10m",
+  "target_active_runs": 1000,
+  "slo": {
+    "scheduling_p50": "250ms",
+    "scheduling_p99": "2s",
+    "api_p99": "100ms",
+    "end_to_end_p99": "30s"
+  }
+}

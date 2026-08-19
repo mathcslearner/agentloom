@@ -12,8 +12,5 @@
 - [Annotated example walkthroughs](examples/) — narrated tours of flagship workflows with real captured output. Currently: [research → write → critique](examples/research-critic-writer.md), the M14 multi-agent flagship (`make demo-research`).
 - [Demo scripts](demos/) — self-narrating compose-driven demos. Currently: [crash recovery](demos/crash-recovery.md) (`make demo-crash`).
 - [ROADMAP.md](../ROADMAP.md) (repo root) — the milestone/ticket build plan and source of truth for sequencing.
+- [Load-test plan](load/plan.md) — the M19 methodology: SLO targets, scenario definitions, measurement methodology, the resource-pinned environment (`make load-up`), and the pre-registered bottleneck hypotheses. The scenario/definition corpus lives in [`test/load/`](../test/load/README.md); certified numbers arrive in `BENCHMARKS.md` (ticket 19.6).
 - [Progress log](progress.md) — per-ticket implementation history: what each ticket delivered, non-obvious decisions, deferred quirks. Appended as tickets complete.
-
-Planned (arriving with later milestones):
-
-- `load/` — load-test methodology and published numbers.

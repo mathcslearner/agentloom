@@ -335,6 +335,7 @@ func TestLoadObsOverrides(t *testing.T) {
 
 	cfg, err := config.Load(lookupFrom(map[string]string{
 		config.EnvObsMetricsAddr:     "127.0.0.1:9090",
+		config.EnvObsPprofEnabled:    "true",
 		config.EnvObsOTelEnabled:     "true",
 		config.EnvObsOTelEndpoint:    "jaeger:4317",
 		config.EnvObsOTelInsecure:    "false",
@@ -345,6 +346,7 @@ func TestLoadObsOverrides(t *testing.T) {
 	}
 	want := config.ObsConfig{
 		MetricsAddr:     "127.0.0.1:9090",
+		PprofEnabled:    true,
 		OTelEnabled:     true,
 		OTelEndpoint:    "jaeger:4317",
 		OTelInsecure:    false,

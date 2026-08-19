@@ -9,6 +9,7 @@ import (
 // Environment variables read by ObsConfig (ticket 7.1, ADR-008).
 const (
 	EnvObsMetricsAddr     = "AGENTLOOM_OBS_METRICS_ADDR"
+	EnvObsPprofEnabled    = "AGENTLOOM_OBS_PPROF_ENABLED"
 	EnvObsOTelEnabled     = "AGENTLOOM_OBS_OTEL_ENABLED"
 	EnvObsOTelEndpoint    = "AGENTLOOM_OBS_OTEL_ENDPOINT"
 	EnvObsOTelInsecure    = "AGENTLOOM_OBS_OTEL_INSECURE"
@@ -50,6 +51,13 @@ type ObsConfig struct {
 	// argument in (0, 1]. Default 1.0 — sample everything; dev traffic is
 	// small, and production tuning is an env knob, not a redeploy.
 	OTelSampleRatio float64
+	// PprofEnabled mounts the net/http/pprof handlers on the admin
+	// listener (GET /debug/pprof/...). False (the default) leaves them
+	// off. Enabled for load-test investigation (ticket 19.x) so worker/API
+	// CPU and heap profiles can be captured over the in-network admin
+	// port; that port is never published to the host, so the profiles are
+	// not reachable from outside the compose network.
+	PprofEnabled bool
 }
 
 func defaultObsConfig() ObsConfig {
@@ -69,6 +77,7 @@ func defaultObsConfig() ObsConfig {
 func (c *ObsConfig) applyEnv(fn LookupFunc) []error {
 	var errs []error
 	applyString(fn, EnvObsMetricsAddr, &c.MetricsAddr)
+	errs = applyBool(errs, fn, EnvObsPprofEnabled, &c.PprofEnabled)
 	errs = applyBool(errs, fn, EnvObsOTelEnabled, &c.OTelEnabled)
 	applyString(fn, EnvObsOTelEndpoint, &c.OTelEndpoint)
 	errs = applyBool(errs, fn, EnvObsOTelInsecure, &c.OTelInsecure)

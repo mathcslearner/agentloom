@@ -130,6 +130,25 @@ smoke-trace: ## Boot app+obs, run a retrying fan-out, and assert one Jaeger trac
 smoke-ws-tail: ## Boot app, tail a run with the typed TS client through a forced api restart, assert no gaps/dupes (ticket 16.5)
 	bash scripts/ws-tail-smoke.sh
 
+# ── load environment (ticket 19.1): resource-pinned compose overlay ──
+# Layers docker-compose.load.yml over the base stack. AGENTLOOM_LOAD_WORKERS
+# (default 8) scales the fleet; AGENTLOOM_LOAD_OTEL=true turns trace export on.
+.PHONY: load-up
+load-up: ## Boot the resource-pinned load stack (app+obs), scaled workers, load mock, pprof on
+	bash scripts/load-env.sh up
+
+.PHONY: load-status
+load-status: ## Show the load stack's service status
+	bash scripts/load-env.sh status
+
+.PHONY: load-down
+load-down: ## Stop the load stack (dedicated load volumes are kept)
+	bash scripts/load-env.sh down
+
+.PHONY: load-nuke
+load-nuke: ## Stop the load stack AND drop its dedicated data volumes (pristine next boot)
+	bash scripts/load-env.sh nuke
+
 # ── web workspace (M16.5 onward): the typed TS engine client + (M17) the app ──
 # pnpm is managed via Corepack; the version is pinned by web/package.json's
 # `packageManager` field. `-r run` recurses into each package's own scripts

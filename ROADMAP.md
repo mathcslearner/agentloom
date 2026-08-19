@@ -1293,13 +1293,13 @@ DLQ page (dead-lettered steps with error/attempt context, requeue action), run c
 
 **Exit criteria:** ≥1,000 concurrently active runs sustained for 10 minutes on the documented local environment with p50/p99 scheduling latency and throughput published; zero lost runs / duplicate side effects at that load; top bottleneck found, fixed, and the improvement quantified.
 
-#### 19.1 — Load test plan & pinned environment
+#### 19.1 — Load test plan & pinned environment ✅
 **Depends on:** 7.5, 8.5
 `docs/load/plan.md`: SLO targets (sustain ≥1,000 concurrently active runs for 10 min; scheduling latency ready→running p50/p99 targets; API p99; zero lost/duplicated effects), scenario definitions (linear-10, fanout-50, planner-heavy, agent-loop, mixed), measurement methodology (warmup, steady-state windows, percentile sourcing from Prometheus histograms + loadgen HDR). `docker-compose.load.yml`: resource-pinned Postgres/Redis, scaled worker replicas, mock provider latency/token distributions.
 **Done when:**
-- [ ] Plan reviewed and committed; hypotheses list pre-registered
-- [ ] Load environment boots with one command; resource pins documented
-- [ ] Scenario definitions runnable as named configs
+- [x] Plan reviewed and committed; hypotheses list pre-registered
+- [x] Load environment boots with one command; resource pins documented
+- [x] Scenario definitions runnable as named configs
 
 #### 19.2 — Load generator
 **Depends on:** 19.1

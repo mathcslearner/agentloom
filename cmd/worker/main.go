@@ -112,7 +112,7 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer) error
 	engineMetrics := metrics.NewWorkerMetrics(promRegistry)
 	var admin *metrics.Server
 	if cfg.Obs.MetricsAddr != "" {
-		admin, err = metrics.Listen(cfg.Obs.MetricsAddr, promRegistry)
+		admin, err = metrics.Listen(cfg.Obs.MetricsAddr, promRegistry, metrics.WithPprof(cfg.Obs.PprofEnabled))
 		if err != nil {
 			return fmt.Errorf("obs: binding admin listener on %s: %w", cfg.Obs.MetricsAddr, err)
 		}

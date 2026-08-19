@@ -102,7 +102,7 @@ func run(ctx context.Context, lookup config.LookupFunc, logSink io.Writer, ready
 	// below is what makes them scrapeable.
 	apiMetrics := metrics.NewAPIMetrics(registry)
 	if cfg.Obs.MetricsAddr != "" {
-		admin, err := metrics.Listen(cfg.Obs.MetricsAddr, registry)
+		admin, err := metrics.Listen(cfg.Obs.MetricsAddr, registry, metrics.WithPprof(cfg.Obs.PprofEnabled))
 		if err != nil {
 			return fmt.Errorf("obs: binding admin listener on %s: %w", cfg.Obs.MetricsAddr, err)
 		}

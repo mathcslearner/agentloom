@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "name": "load-agent-loop",
+  "description": "Load scenario agent-loop (ticket 19.1): a bounded writer\u21c4critic refinement loop (ADR-016). The critic always returns {\"verdict\":\"revise\"} (scripted in the load mock), so every run does exactly max_iterations (3) loop-backs, each unrolled through store.ExpandRun and each auto-appending to the run thread (14.2), then exits via on_exhausted=proceed. Deterministic per-run work independent of the mock's per-process cursor, exercising loop unrolling + thread growth + expansion under load. Model `mock/load-std`.",
+  "agents": {
+    "writer": {
+      "role": "writer",
+      "system": "You are a writer. Draft or revise for the brief, addressing any critique notes.",
+      "model": "mock/load-std",
+      "max_tokens": 256,
+      "context": {
+        "sources": [
+          {
+            "kind": "thread",
+            "name": "critique_notes",
+            "key": "thread",
+            "role": "critic",
+            "on_missing": "skip"
+          }
+        ]
+      }
+    },
+    "critic": {
+      "role": "critic",
+      "system": "You are a load-test critic. Always request a revision.",
+      "model": "mock/load-std",
+      "max_tokens": 128,
+      "output_format": {
+        "type": "json"
+      }
+    }
+  },
+  "params": {
+    "brief": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "draft",
+      "type": "agent",
+      "config": {
+        "agent": "writer",
+        "prompt": "Write for this brief, addressing critique notes.\n\n${{ run.params.brief }}"
+      }
+    },
+    {
+      "id": "critique",
+      "type": "agent",
+      "config": {
+        "agent": "critic",
+        "prompt": "Review the latest draft:\n\n${{ steps.draft.output.text }}\n\nRespond JSON like {\"verdict\":\"revise\",\"notes\":[\"...\"]}."
+      }
+    },
+    {
+      "id": "publish",
+      "type": "echo",
+      "config": {
+        "input": {
+          "status": "published"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "draft",
+      "to": "critique"
+    },
+    {
+      "from": "critique",
+      "to": "draft",
+      "type": "loop",
+      "condition": "output.json.verdict == 'revise'",
+      "max_iterations": 3,
+      "on_exhausted": "proceed"
+    },
+    {
+      "from": "critique",
+      "to": "publish"
+    }
+  ]
+}

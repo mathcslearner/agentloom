@@ -394,6 +394,15 @@ polling the endpoint's cursor.
   not present bearer keys. In compose, admin ports stay in-network
   (never published to the host), which also sidesteps the host-port
   collision between the two worker replicas.
+- **pprof on the admin listener (added 19.1).** `AGENTLOOM_OBS_PPROF_ENABLED`
+  (off by default) mounts the `net/http/pprof` handlers
+  (`GET /debug/pprof/...`) on the same in-network admin listener, for
+  load-test CPU/heap profiling (M19). Because the admin port is never
+  published to the host, the profiles are not reachable from outside the
+  deployment network — the same access boundary as `/metrics`. When pprof
+  is enabled the listener's write timeout is dropped (a CPU profile can
+  take 30–60 s), which is acceptable on a debugging-only in-network port.
+  The load overlay (`docker-compose.load.yml`) turns it on.
 - **Traces via OTLP.** The OTel SDK exports OTLP/gRPC to
   `AGENTLOOM_OBS_OTEL_ENDPOINT` (Jaeger all-in-one with OTLP enabled in
   dev; a collector is a config change, not a code change). Resources

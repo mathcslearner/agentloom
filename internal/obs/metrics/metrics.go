@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -66,11 +67,30 @@ type Server struct {
 	srv *http.Server
 }
 
+// ListenOption configures the admin listener.
+type ListenOption func(*listenOptions)
+
+type listenOptions struct {
+	pprof bool
+}
+
+// WithPprof mounts the net/http/pprof handlers on the admin listener
+// (GET /debug/pprof/...). Off by default; enabled for load-test
+// investigation (ticket 19.x). The admin port is in-network only, so the
+// profiles are not reachable from outside the deployment network.
+func WithPprof(enabled bool) ListenOption {
+	return func(o *listenOptions) { o.pprof = enabled }
+}
+
 // Listen binds the admin listener on addr. Binding is split from Serve so
 // a misconfigured address fails the deployable's boot (fail fast), while
 // serve-time errors only log — telemetry must never take the service
 // down (ADR-008). Tests pass "127.0.0.1:0" and read Addr.
-func Listen(addr string, reg *prometheus.Registry) (*Server, error) {
+func Listen(addr string, reg *prometheus.Registry, opts ...ListenOption) (*Server, error) {
+	var o listenOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -81,6 +101,19 @@ func Listen(addr string, reg *prometheus.Registry) (*Server, error) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	// A CPU/heap profile can take 30–60s to collect, which the scrape
+	// WriteTimeout below would abort. Disable the write timeout only when
+	// pprof is mounted — acceptable on the in-network admin port used for
+	// deliberate debugging.
+	writeTimeout := 30 * time.Second
+	if o.pprof {
+		mux.HandleFunc("GET /debug/pprof/", pprof.Index)
+		mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
+		writeTimeout = 0
+	}
 	return &Server{
 		ln: ln,
 		srv: &http.Server{
@@ -88,7 +121,7 @@ func Listen(addr string, reg *prometheus.Registry) (*Server, error) {
 			// A scrape is one small read and one bounded write; generous
 			// caps so a stuck client can never pin a connection forever.
 			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 30 * time.Second,
+			WriteTimeout: writeTimeout,
 			IdleTimeout:  2 * time.Minute,
 		},
 	}, nil

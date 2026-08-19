@@ -345,6 +345,84 @@ func TestMockLatencyDraws(t *testing.T) {
 	}
 }
 
+// TestMockLognormalLatency: a lognormal spec draws its median near P50 and
+// a long right tail bounded loosely by P99 — deterministic under a seed.
+func TestMockLognormalLatency(t *testing.T) {
+	t.Parallel()
+	sl := &instantSleep{}
+	m, err := llm.NewMock(llm.MockConfig{
+		Seed:    7,
+		Latency: llm.LatencySpec{P50: 100 * time.Millisecond, P99: 1 * time.Second},
+		Sleep:   sl.sleep,
+	})
+	if err != nil {
+		t.Fatalf("NewMock: %v", err)
+	}
+	const n = 400
+	for i := 0; i < n; i++ {
+		if _, err := m.Chat(context.Background(), mockReq("x")); err != nil {
+			t.Fatalf("Chat %d: %v", i, err)
+		}
+	}
+	waits := sl.recorded()
+	if len(waits) != n {
+		t.Fatalf("recorded %d waits, want %d", len(waits), n)
+	}
+	// Sort and check the empirical median is within a factor of ~1.5 of P50
+	// and the max is a long tail (well above P50). A lognormal is skewed, so
+	// this is a loose but meaningful sanity band, not an exact assertion.
+	sorted := append([]time.Duration(nil), waits...)
+	for i := 1; i < len(sorted); i++ {
+		for j := i; j > 0 && sorted[j] < sorted[j-1]; j-- {
+			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+		}
+	}
+	median := sorted[len(sorted)/2]
+	if median < 60*time.Millisecond || median > 170*time.Millisecond {
+		t.Errorf("empirical median %s not near P50 100ms", median)
+	}
+	if sorted[len(sorted)-1] < 250*time.Millisecond {
+		t.Errorf("no long tail: max wait %s, expected a lognormal tail toward P99 1s", sorted[len(sorted)-1])
+	}
+}
+
+// TestMockTokenDistribution: a token distribution overrides the estimator;
+// an explicit per-outcome Usage still wins; draws are deterministic and
+// within bounds.
+func TestMockTokenDistribution(t *testing.T) {
+	t.Parallel()
+	m, err := llm.NewMock(llm.MockConfig{
+		Seed:   3,
+		Tokens: &llm.TokenDist{Input: llm.TokenSpec{Min: 500, Max: 600}, Output: llm.TokenSpec{Fixed: 42}},
+		Rules: []llm.MockRule{{
+			Substring: "explicit",
+			Respond:   []llm.MockOutcome{{Text: "y", Usage: &llm.Usage{InputTokens: 7, OutputTokens: 9}}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewMock: %v", err)
+	}
+	// Global distribution applies to the default echo.
+	resp, err := m.Chat(context.Background(), mockReq("hello"))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if resp.Usage.InputTokens < 500 || resp.Usage.InputTokens >= 600 {
+		t.Errorf("drawn input tokens %d out of [500,600)", resp.Usage.InputTokens)
+	}
+	if resp.Usage.OutputTokens != 42 {
+		t.Errorf("fixed output tokens = %d, want 42", resp.Usage.OutputTokens)
+	}
+	// Explicit Usage wins over the distribution.
+	resp2, err := m.Chat(context.Background(), mockReq("explicit please"))
+	if err != nil {
+		t.Fatalf("Chat explicit: %v", err)
+	}
+	if resp2.Usage.InputTokens != 7 || resp2.Usage.OutputTokens != 9 {
+		t.Errorf("explicit usage = %+v, want {7,9}", resp2.Usage)
+	}
+}
+
 // TestMockHangUntilCancelled: a Hang outcome blocks until ctx is
 // cancelled and returns an unclassified wrapped context error — the
 // engine keeps the timeout/cancel judgment (ADR-006).
@@ -531,6 +609,10 @@ func TestMockConstructionValidation(t *testing.T) {
 		{Inject: llm.MockInjection{Rate500: -0.1}},
 		{Rules: []llm.MockRule{{Substring: "x"}}},                                        // no responses
 		{Rules: []llm.MockRule{{Pattern: "(", Respond: []llm.MockOutcome{{Text: "x"}}}}}, // bad regex
+		{Latency: llm.LatencySpec{P50: 2 * time.Second, P99: time.Second}},               // p99 below p50
+		{Latency: llm.LatencySpec{P99: time.Second}},                                     // p99 without p50
+		{Tokens: &llm.TokenDist{Input: llm.TokenSpec{Min: 10, Max: 5}}},                  // token max below min
+		{Tokens: &llm.TokenDist{Output: llm.TokenSpec{Fixed: -1}}},                       // negative tokens
 	}
 	for i, c := range bad {
 		if _, err := llm.NewMock(c); err == nil {

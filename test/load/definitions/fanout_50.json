@@ -1,0 +1,894 @@
+{
+  "schema_version": 1,
+  "name": "load-fanout-50",
+  "description": "Load scenario fanout-50 (ticket 19.1): a seed `llm` step fans out to 50 independent `llm` steps that fan back into a single `join` (mode all) and a final `llm`. 53 steps per run, a 53-node instantiation transaction, and 50 concurrent completions decrementing one join-counter row \u2014 the stress for hypotheses H2 (write amplification), H4 (join-counter hot row), and H6 (submission-path instantiation cost). Fully offline on model `mock/load-fast`.",
+  "params": {
+    "topic": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "seed",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Plan work on ${{ run.params.topic }}.",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w1",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 1 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w2",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 2 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w3",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 3 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w4",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 4 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w5",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 5 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w6",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 6 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w7",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 7 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w8",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 8 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w9",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 9 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w10",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 10 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w11",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 11 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w12",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 12 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w13",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 13 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w14",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 14 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w15",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 15 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w16",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 16 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w17",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 17 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w18",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 18 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w19",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 19 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w20",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 20 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w21",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 21 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w22",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 22 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w23",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 23 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w24",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 24 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w25",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 25 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w26",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 26 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w27",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 27 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w28",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 28 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w29",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 29 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w30",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 30 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w31",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 31 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w32",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 32 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w33",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 33 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w34",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 34 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w35",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 35 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w36",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 36 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w37",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 37 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w38",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 38 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w39",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 39 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w40",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 40 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w41",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 41 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w42",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 42 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w43",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 43 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w44",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 44 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w45",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 45 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w46",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 46 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w47",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 47 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w48",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 48 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w49",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 49 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "w50",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Work item 50 for ${{ steps.seed.output.text }}",
+        "max_tokens": 64
+      }
+    },
+    {
+      "id": "gather",
+      "type": "join",
+      "config": {
+        "mode": "all"
+      }
+    },
+    {
+      "id": "finalize",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "Summarize the ${{ run.params.topic }} work.",
+        "max_tokens": 128
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "seed",
+      "to": "w1"
+    },
+    {
+      "from": "w1",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w2"
+    },
+    {
+      "from": "w2",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w3"
+    },
+    {
+      "from": "w3",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w4"
+    },
+    {
+      "from": "w4",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w5"
+    },
+    {
+      "from": "w5",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w6"
+    },
+    {
+      "from": "w6",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w7"
+    },
+    {
+      "from": "w7",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w8"
+    },
+    {
+      "from": "w8",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w9"
+    },
+    {
+      "from": "w9",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w10"
+    },
+    {
+      "from": "w10",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w11"
+    },
+    {
+      "from": "w11",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w12"
+    },
+    {
+      "from": "w12",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w13"
+    },
+    {
+      "from": "w13",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w14"
+    },
+    {
+      "from": "w14",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w15"
+    },
+    {
+      "from": "w15",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w16"
+    },
+    {
+      "from": "w16",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w17"
+    },
+    {
+      "from": "w17",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w18"
+    },
+    {
+      "from": "w18",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w19"
+    },
+    {
+      "from": "w19",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w20"
+    },
+    {
+      "from": "w20",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w21"
+    },
+    {
+      "from": "w21",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w22"
+    },
+    {
+      "from": "w22",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w23"
+    },
+    {
+      "from": "w23",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w24"
+    },
+    {
+      "from": "w24",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w25"
+    },
+    {
+      "from": "w25",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w26"
+    },
+    {
+      "from": "w26",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w27"
+    },
+    {
+      "from": "w27",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w28"
+    },
+    {
+      "from": "w28",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w29"
+    },
+    {
+      "from": "w29",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w30"
+    },
+    {
+      "from": "w30",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w31"
+    },
+    {
+      "from": "w31",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w32"
+    },
+    {
+      "from": "w32",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w33"
+    },
+    {
+      "from": "w33",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w34"
+    },
+    {
+      "from": "w34",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w35"
+    },
+    {
+      "from": "w35",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w36"
+    },
+    {
+      "from": "w36",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w37"
+    },
+    {
+      "from": "w37",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w38"
+    },
+    {
+      "from": "w38",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w39"
+    },
+    {
+      "from": "w39",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w40"
+    },
+    {
+      "from": "w40",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w41"
+    },
+    {
+      "from": "w41",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w42"
+    },
+    {
+      "from": "w42",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w43"
+    },
+    {
+      "from": "w43",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w44"
+    },
+    {
+      "from": "w44",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w45"
+    },
+    {
+      "from": "w45",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w46"
+    },
+    {
+      "from": "w46",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w47"
+    },
+    {
+      "from": "w47",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w48"
+    },
+    {
+      "from": "w48",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w49"
+    },
+    {
+      "from": "w49",
+      "to": "gather"
+    },
+    {
+      "from": "seed",
+      "to": "w50"
+    },
+    {
+      "from": "w50",
+      "to": "gather"
+    },
+    {
+      "from": "gather",
+      "to": "finalize"
+    }
+  ]
+}

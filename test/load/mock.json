@@ -1,0 +1,14 @@
+{
+  "seed": 1919,
+  "latency": {"p50": "120ms", "p99": "900ms"},
+  "tokens": {"input": {"min": 400, "max": 1200}, "output": {"min": 80, "max": 400}},
+  "rules": [
+    {
+      "substring": "load-test critic",
+      "respond": [
+        {"structured": {"verdict": "revise", "notes": ["tighten the argument", "add an example"]}}
+      ]
+    }
+  ],
+  "default": {"text": "load workload step complete"}
+}

@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "name": "load-linear-10",
+  "description": "Load scenario linear-10 (ticket 19.1): a 10-step chain of mock `llm` calls, each templating the previous step's output. Exercises the per-completion write path (events + attempts + outbox + fan-out) at a fixed depth with no fan-out, so throughput is bounded by sequential step latency across the fleet \u2014 the baseline for hypothesis H1 (serial per-worker execution). Fully offline on model `mock/load-std`.",
+  "params": {
+    "topic": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "s1",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-std",
+        "prompt": "Begin working on ${{ run.params.topic }}.",
+        "max_tokens": 128
+      }
+    },
+    {
+      "id": "s2",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-std",
+        "prompt": "Continue from: ${{ steps.s1.output.text }}",
+        "max_tokens": 128
+      }
+    },
+    {
+      "id": "s3",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-std",
+        "prompt": "Continue from: ${{ steps.s2.output.text }}",
+        "max_tokens": 128
+      }
+    },
+    {
+      "id": "s4",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-std",
+        "prompt": "Continue from: ${{ steps.s3.output.text }}",
+        "max_tokens": 128
+      }
+    },
+    {
+      "id": "s5",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-std",
+        "prompt": "Continue from: ${{ steps.s4.output.text }}",
+        "max_tokens": 128
+      }
+    },
+    {
+      "id": "s6",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-std",
+        "prompt": "Continue from: ${{ steps.s5.output.text }}",
+        "max_tokens": 128
+      }
+    },
+    {
+      "id": "s7",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-std",
+        "prompt": "Continue from: ${{ steps.s6.output.text }}",
+        "max_tokens": 128
+      }
+    },
+    {
+      "id": "s8",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-std",
+        "prompt": "Continue from: ${{ steps.s7.output.text }}",
+        "max_tokens": 128
+      }
+    },
+    {
+      "id": "s9",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-std",
+        "prompt": "Continue from: ${{ steps.s8.output.text }}",
+        "max_tokens": 128
+      }
+    },
+    {
+      "id": "s10",
+      "type": "llm",
+      "config": {
+        "model": "mock/load-std",
+        "prompt": "Continue from: ${{ steps.s9.output.text }}",
+        "max_tokens": 128
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "s1",
+      "to": "s2"
+    },
+    {
+      "from": "s2",
+      "to": "s3"
+    },
+    {
+      "from": "s3",
+      "to": "s4"
+    },
+    {
+      "from": "s4",
+      "to": "s5"
+    },
+    {
+      "from": "s5",
+      "to": "s6"
+    },
+    {
+      "from": "s6",
+      "to": "s7"
+    },
+    {
+      "from": "s7",
+      "to": "s8"
+    },
+    {
+      "from": "s8",
+      "to": "s9"
+    },
+    {
+      "from": "s9",
+      "to": "s10"
+    }
+  ]
+}

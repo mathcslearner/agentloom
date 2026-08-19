@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "name": "fanout-50",
+  "description": "53-step wide fan-out into one join. Stresses write amplification, join-counter contention, and instantiation cost (H2/H4/H6).",
+  "definition": "../definitions/fanout_50.json",
+  "params": {
+    "topic": "load test bravo"
+  },
+  "arrival": {
+    "mode": "ramp",
+    "ramp": {
+      "from_per_sec": 1,
+      "to_per_sec": 20,
+      "step_per_sec": 1,
+      "step_duration": "30s"
+    }
+  },
+  "warmup": "60s",
+  "duration": "10m",
+  "target_active_runs": 1000,
+  "slo": {
+    "scheduling_p50": "250ms",
+    "scheduling_p99": "2s",
+    "api_p99": "100ms",
+    "end_to_end_p99": "30s"
+  }
+}

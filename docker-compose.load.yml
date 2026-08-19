@@ -1,0 +1,111 @@
+# agentloom load environment overlay (ticket 19.1, ADR-002/005 scale claim).
+#
+# Layered on top of docker-compose.yml — never a replacement — so the base
+# stack stays the single source of truth:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.load.yml \
+#     --profile app --profile obs up -d --build --wait
+#
+# `make load-up` runs exactly that with the pins echoed. This overlay:
+#   * resource-pins Postgres and Redis (so the knee point is a property of a
+#     documented machine, not the host's spare capacity);
+#   * enables pg_stat_statements on Postgres (the write-amplification evidence);
+#   * scales the worker fleet (AGENTLOOM_LOAD_WORKERS, default 8);
+#   * disables the response cache (an identical-prompt load run would otherwise
+#     be served for $0 with no provider call — the M9 cache is global-scoped);
+#   * raises the API rate limits far above the loadgen's arrival rate (the
+#     default submit bucket is 20/10rps — a loadgen would 429 immediately);
+#   * points the fleet mock at the load script (realistic latency + tokens);
+#   * mounts pprof on the in-network admin port (worker/API CPU + heap capture);
+#   * keeps OTel export OFF by default (sampling overhead is a confound under
+#     load) — set AGENTLOOM_LOAD_OTEL=true to turn it on for a targeted trace.
+#
+# The load stack uses DEDICATED volumes (postgres-load-data, redis-load-data)
+# so campaigns start from a pristine database and never touch dev/CI data.
+# `make load-nuke` drops them.
+
+services:
+  postgres:
+    # Preload pg_stat_statements and give Postgres enough headroom to be the
+    # thing under test, not an artificially starved bottleneck. shared_buffers
+    # / work_mem / max_connections are documented pins (docs/load/plan.md).
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - pg_stat_statements.max=10000
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - max_wal_size=4GB
+    volumes:
+      # Dedicated load volume (not the dev `postgres-data`), plus the
+      # extension bootstrap that runs once on a fresh volume.
+      - postgres-load-data:/var/lib/postgresql/data
+      - ./deploy/load/postgres-init.sql:/docker-entrypoint-initdb.d/00-load-init.sql:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+
+  redis:
+    volumes:
+      - redis-load-data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768m
+
+  api:
+    environment:
+      # No response cache under load (see header).
+      AGENTLOOM_CACHE_ENABLED: "false"
+      # Rate limits well above the loadgen's arrival rate — the 429 path stays
+      # representative (it isn't disabled), just far from binding.
+      AGENTLOOM_API_RATELIMIT_SUBMIT_CAPACITY: "4000"
+      AGENTLOOM_API_RATELIMIT_SUBMIT_REFILL_PER_SEC: "2000"
+      AGENTLOOM_API_RATELIMIT_READ_CAPACITY: "8000"
+      AGENTLOOM_API_RATELIMIT_READ_REFILL_PER_SEC: "4000"
+      AGENTLOOM_API_RATELIMIT_GLOBAL_CAPACITY: "20000"
+      AGENTLOOM_API_RATELIMIT_GLOBAL_REFILL_PER_SEC: "10000"
+      # pprof on the in-network admin port for API profiling.
+      AGENTLOOM_OBS_PPROF_ENABLED: "true"
+      AGENTLOOM_OBS_OTEL_ENABLED: ${AGENTLOOM_LOAD_OTEL:-false}
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768m
+
+  worker:
+    environment:
+      AGENTLOOM_CACHE_ENABLED: "false"
+      # The fleet mock script: realistic latency + token distributions and the
+      # always-revise critic rule the agent-loop scenario needs (ticket 19.1).
+      AGENTLOOM_LLM_MOCK_SCRIPT_FILE: /etc/agentloom/load-mock.json
+      # An explicit empty inline script so the base compose's optional inline
+      # var can't collide with the file form (they are mutually exclusive).
+      AGENTLOOM_LLM_MOCK_SCRIPT: ""
+      AGENTLOOM_OBS_PPROF_ENABLED: "true"
+      AGENTLOOM_OBS_OTEL_ENABLED: ${AGENTLOOM_LOAD_OTEL:-false}
+    volumes:
+      - ./test/load/mock.json:/etc/agentloom/load-mock.json:ro
+    deploy:
+      replicas: ${AGENTLOOM_LOAD_WORKERS:-8}
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 384m
+
+volumes:
+  postgres-load-data:
+  redis-load-data:

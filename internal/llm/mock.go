@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"regexp"
 	"strings"
@@ -40,6 +41,7 @@ type Mock struct {
 	def     MockOutcome
 	inject  MockInjection
 	latency LatencySpec
+	tokens  *TokenDist
 	sleep   func(ctx context.Context, d time.Duration) error
 
 	contextWindow int64 // provider context window; 0 = no window enforcement
@@ -72,6 +74,13 @@ type MockConfig struct {
 	// Latency is the global latency distribution, applied to every call
 	// unless the matched outcome overrides it.
 	Latency LatencySpec
+	// Tokens, when set, is the global token distribution: every successful
+	// outcome without its own Tokens override or explicit Usage draws its
+	// reported Usage from it instead of the char-count estimator. Gives
+	// load tests realistic, tunable accounting (ticket 19.1). Nil (default)
+	// keeps the estimator, so the 12.1 mock token-counter parity holds
+	// unless a script opts in.
+	Tokens *TokenDist
 	// Sleep waits for d or until ctx is done, returning ctx.Err() on
 	// cancellation. Nil installs a real ctx-aware timer; tests inject a
 	// recording or instantaneous implementation to keep time controlled.
@@ -141,6 +150,9 @@ type MockOutcome struct {
 	Hang bool
 	// Latency overrides the global latency distribution for this outcome.
 	Latency *LatencySpec
+	// Tokens overrides the global token distribution for this outcome. An
+	// explicit Usage still wins over a drawn one.
+	Tokens *TokenDist
 }
 
 // MockInjection configures per-call failure injection. Rates are
@@ -156,37 +168,135 @@ type MockInjection struct {
 	RetryAfter time.Duration
 }
 
-// LatencySpec is a latency distribution. Fixed, when non-zero, is a
-// constant wait; otherwise a wait is drawn uniformly from [Min, Max]
-// (both zero means no wait).
+// LatencySpec is a latency distribution with three mutually-exclusive
+// modes, resolved in priority order by draw: Fixed (a constant wait), then
+// lognormal (P50>0, a realistic long-tailed distribution parametrized by
+// its median and 99th percentile — the load-test workhorse, ticket 19.1),
+// then uniform (a wait drawn uniformly from [Min, Max]). All zero means no
+// wait.
 type LatencySpec struct {
 	Fixed time.Duration
 	Min   time.Duration
 	Max   time.Duration
+	// P50 and P99 parametrize a lognormal distribution when P50 is
+	// positive: median = P50, 99th percentile = P99. Real provider latency
+	// is long-tailed, so a lognormal draw gives load tests a far more
+	// representative scheduling-latency signal than a uniform band.
+	P50 time.Duration
+	P99 time.Duration
 }
+
+// p99Sigmas is the standard-normal quantile at the 99th percentile
+// (Φ⁻¹(0.99) ≈ 2.326), the multiplier that maps a lognormal's P50/P99 pair
+// onto its σ.
+const p99Sigmas = 2.3263478740408408
 
 // validate checks the spec's shape; construction rejects a malformed one.
 func (l LatencySpec) validate() error {
-	if l.Fixed < 0 || l.Min < 0 || l.Max < 0 {
-		return fmt.Errorf("latency durations must be non-negative (fixed=%s min=%s max=%s)", l.Fixed, l.Min, l.Max)
+	if l.Fixed < 0 || l.Min < 0 || l.Max < 0 || l.P50 < 0 || l.P99 < 0 {
+		return fmt.Errorf("latency durations must be non-negative (fixed=%s min=%s max=%s p50=%s p99=%s)", l.Fixed, l.Min, l.Max, l.P50, l.P99)
 	}
 	if l.Max < l.Min {
 		return fmt.Errorf("latency max %s is below min %s", l.Max, l.Min)
 	}
+	if l.P50 > 0 && l.P99 < l.P50 {
+		return fmt.Errorf("latency p99 %s is below p50 %s", l.P99, l.P50)
+	}
+	if l.P99 > 0 && l.P50 == 0 {
+		return fmt.Errorf("latency p99 %s set without p50", l.P99)
+	}
 	return nil
 }
 
-// draw samples a wait from the spec using rng. Fixed wins; otherwise a
-// uniform draw from [Min, Max].
+// draw samples a wait from the spec using rng, resolving the mode by
+// priority: Fixed, then lognormal (P50>0), then uniform [Min, Max].
 func (l LatencySpec) draw(rng *rand.Rand) time.Duration {
 	if l.Fixed > 0 {
 		return l.Fixed
+	}
+	if l.P50 > 0 {
+		mu := math.Log(float64(l.P50))
+		sigma := 0.0
+		if l.P99 > l.P50 {
+			sigma = (math.Log(float64(l.P99)) - mu) / p99Sigmas
+		}
+		d := time.Duration(math.Exp(mu + sigma*rng.NormFloat64()))
+		if d < 0 {
+			return 0
+		}
+		return d
 	}
 	if l.Max <= l.Min {
 		return l.Min
 	}
 	span := int64(l.Max - l.Min)
 	return l.Min + time.Duration(rng.Int64N(span))
+}
+
+// TokenSpec is a token-count distribution: a Fixed count, or a uniform
+// draw from [Min, Max] (Max<=Min yields Min). All zero means "unset" — the
+// caller falls back to the estimator. Used to give load tests realistic,
+// tunable usage without a tokenizer (ticket 19.1).
+type TokenSpec struct {
+	Fixed int
+	Min   int
+	Max   int
+}
+
+// set reports whether the spec carries any distribution.
+func (t TokenSpec) set() bool { return t.Fixed > 0 || t.Min > 0 || t.Max > 0 }
+
+// validate checks the spec's shape.
+func (t TokenSpec) validate() error {
+	if t.Fixed < 0 || t.Min < 0 || t.Max < 0 {
+		return fmt.Errorf("token counts must be non-negative (fixed=%d min=%d max=%d)", t.Fixed, t.Min, t.Max)
+	}
+	if t.Max < t.Min {
+		return fmt.Errorf("token max %d is below min %d", t.Max, t.Min)
+	}
+	return nil
+}
+
+// draw samples a count using rng: Fixed wins, else a uniform draw.
+func (t TokenSpec) draw(rng *rand.Rand) int64 {
+	if t.Fixed > 0 {
+		return int64(t.Fixed)
+	}
+	if t.Max <= t.Min {
+		return int64(t.Min)
+	}
+	return int64(t.Min) + rng.Int64N(int64(t.Max-t.Min))
+}
+
+// TokenDist is a paired input/output token distribution. When either half
+// is set, a mock outcome draws its Usage from the distribution instead of
+// the char-count estimator; an explicit MockOutcome.Usage still wins over
+// both.
+type TokenDist struct {
+	Input  TokenSpec
+	Output TokenSpec
+}
+
+// set reports whether either half carries a distribution.
+func (t TokenDist) set() bool { return t.Input.set() || t.Output.set() }
+
+// validate checks both halves.
+func (t TokenDist) validate() error {
+	if err := t.Input.validate(); err != nil {
+		return fmt.Errorf("input %w", err)
+	}
+	if err := t.Output.validate(); err != nil {
+		return fmt.Errorf("output %w", err)
+	}
+	return nil
+}
+
+// draw samples a Usage, filling only the set halves (an unset half stays
+// zero so the caller can leave it to the estimator; here both are always
+// drawn when TokenDist.set() so a zero half means "0 tokens" only if
+// explicitly Min/Fixed 0 — see drawUsage).
+func (t TokenDist) draw(rng *rand.Rand) Usage {
+	return Usage{InputTokens: t.Input.draw(rng), OutputTokens: t.Output.draw(rng)}
 }
 
 // compiledRule is a MockRule with its regex compiled and matcher
@@ -224,6 +334,11 @@ func NewMock(cfg MockConfig) (*Mock, error) {
 	if cfg.Inject.Rate429 < 0 || cfg.Inject.Rate429 > 1 || cfg.Inject.Rate500 < 0 || cfg.Inject.Rate500 > 1 {
 		return nil, fmt.Errorf("llm: mock: injection rates must be in [0,1] (429=%g 500=%g)", cfg.Inject.Rate429, cfg.Inject.Rate500)
 	}
+	if cfg.Tokens != nil {
+		if err := cfg.Tokens.validate(); err != nil {
+			return nil, fmt.Errorf("llm: mock: tokens: %w", err)
+		}
+	}
 	rules := make([]compiledRule, 0, len(cfg.Rules))
 	for i, mr := range cfg.Rules {
 		if len(mr.Respond) == 0 {
@@ -244,12 +359,22 @@ func NewMock(cfg MockConfig) (*Mock, error) {
 			if err := o.Latency.validateOptional(); err != nil {
 				return nil, fmt.Errorf("llm: mock: rule %d response %d: %w", i, j, err)
 			}
+			if o.Tokens != nil {
+				if err := o.Tokens.validate(); err != nil {
+					return nil, fmt.Errorf("llm: mock: rule %d response %d tokens: %w", i, j, err)
+				}
+			}
 		}
 		rules = append(rules, cr)
 	}
 	if cfg.Default != nil {
 		if err := cfg.Default.Latency.validateOptional(); err != nil {
 			return nil, fmt.Errorf("llm: mock: default response: %w", err)
+		}
+		if cfg.Default.Tokens != nil {
+			if err := cfg.Default.Tokens.validate(); err != nil {
+				return nil, fmt.Errorf("llm: mock: default response tokens: %w", err)
+			}
 		}
 	}
 	def := makeDefaultOutcome(cfg.Default)
@@ -265,6 +390,7 @@ func NewMock(cfg MockConfig) (*Mock, error) {
 		def:           def,
 		inject:        cfg.Inject,
 		latency:       cfg.Latency,
+		tokens:        cfg.Tokens,
 		sleep:         sleep,
 		contextWindow: cfg.ContextWindow,
 		//nolint:gosec // G404: a seeded PRNG is the point — deterministic simulation, never security-sensitive.
@@ -350,6 +476,7 @@ func (m *Mock) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) 
 	injected := m.drawInjection()
 	outcome, hang := m.resolveOutcome(prompt, call, injected)
 	wait := m.drawLatency(outcome)
+	drawn := m.drawUsage(outcome)
 	m.mu.Unlock()
 
 	// Simulate latency (or an indefinite hang) outside the lock, honoring
@@ -368,7 +495,28 @@ func (m *Mock) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) 
 	if outcome.Status != 0 {
 		return ChatResponse{}, scriptedError(outcome)
 	}
-	return buildResponse(req, prompt, outcome), nil
+	return buildResponse(req, prompt, outcome, drawn), nil
+}
+
+// drawUsage samples the reported Usage for a successful outcome from its
+// token distribution (its override, else the global one), or returns nil
+// when neither is set (the caller falls back to the char-count estimator).
+// Called under the lock; advances the RNG only when a distribution is
+// present, keeping the transcript deterministic. Skipped for error
+// outcomes, which carry no response usage.
+func (m *Mock) drawUsage(o MockOutcome) *Usage {
+	if o.Status != 0 {
+		return nil
+	}
+	dist := m.tokens
+	if o.Tokens != nil {
+		dist = o.Tokens
+	}
+	if dist == nil || !dist.set() {
+		return nil
+	}
+	u := dist.draw(m.rng)
+	return &u
 }
 
 // drawInjection returns a scripted-error outcome when the per-call
@@ -454,14 +602,11 @@ func scriptedError(o MockOutcome) *Error {
 // zero outcome (the built-in default) echoes the last user text — as native
 // structured JSON when the request carried a ResponseFormat, so a chained
 // structured-output step gets a well-formed answer with zero scripting.
-func buildResponse(req ChatRequest, prompt string, o MockOutcome) ChatResponse {
+func buildResponse(req ChatRequest, prompt string, o MockOutcome, drawn *Usage) ChatResponse {
 	// Scripted native structured output (ticket 11.3): the JSON rides on
 	// Structured, and the completion carries no text/tool blocks.
 	if len(o.Structured) > 0 {
-		usage := estimateUsage(prompt, []Block{TextBlock(string(o.Structured))})
-		if o.Usage != nil {
-			usage = *o.Usage
-		}
+		usage := resolveUsage(o, drawn, estimateUsage(prompt, []Block{TextBlock(string(o.Structured))}))
 		stop := o.StopReason
 		if stop == "" {
 			stop = "end_turn"
@@ -476,7 +621,7 @@ func buildResponse(req ChatRequest, prompt string, o MockOutcome) ChatResponse {
 			// well-formed JSON object natively (mirroring a real provider's
 			// forced-tool-use / response_format) instead of "[mock] ..." text.
 			if req.ResponseFormat != nil {
-				return echoStructured(req, prompt, o)
+				return echoStructured(req, prompt, o, drawn)
 			}
 			text = "[mock] " + lastUserText(req)
 		}
@@ -492,11 +637,21 @@ func buildResponse(req ChatRequest, prompt string, o MockOutcome) ChatResponse {
 			}
 		}
 	}
-	usage := estimateUsage(prompt, blocks)
-	if o.Usage != nil {
-		usage = *o.Usage
-	}
+	usage := resolveUsage(o, drawn, estimateUsage(prompt, blocks))
 	return ChatResponse{Model: req.Model, StopReason: stop, Blocks: blocks, Usage: usage}
+}
+
+// resolveUsage applies the usage precedence: an explicit outcome Usage
+// wins, else a distribution-drawn Usage, else the char-count estimate.
+func resolveUsage(o MockOutcome, drawn *Usage, estimate Usage) Usage {
+	switch {
+	case o.Usage != nil:
+		return *o.Usage
+	case drawn != nil:
+		return *drawn
+	default:
+		return estimate
+	}
 }
 
 // echoStructured is the default structured-output echo. When the last user
@@ -507,12 +662,9 @@ func buildResponse(req ChatRequest, prompt string, o MockOutcome) ChatResponse {
 // wrapped as a JSON object {"echo": "<text>"}, so a chained structured-output
 // step still flows well-formed JSON through templating. Deterministic and
 // offline either way.
-func echoStructured(req ChatRequest, prompt string, o MockOutcome) ChatResponse {
+func echoStructured(req ChatRequest, prompt string, o MockOutcome, drawn *Usage) ChatResponse {
 	payload := structuredEchoPayload(req)
-	usage := estimateUsage(prompt, []Block{TextBlock(string(payload))})
-	if o.Usage != nil {
-		usage = *o.Usage
-	}
+	usage := resolveUsage(o, drawn, estimateUsage(prompt, []Block{TextBlock(string(payload))}))
 	return ChatResponse{Model: req.Model, StopReason: "end_turn", Structured: payload, Usage: usage}
 }
 

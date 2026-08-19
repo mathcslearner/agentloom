@@ -337,6 +337,24 @@ construction.
   of two `llm` steps passing data via 8.2 templating — is the reused e2e
   fixture, executed end-to-end against the mock in the engine integration
   suite.
+- **Load distributions (added 19.1).** For the load campaign the mock's
+  latency/token simulation grew additively without touching the transcript
+  determinism: `LatencySpec` gained a **lognormal** mode (`P50`/`P99` →
+  μ/σ) alongside the existing fixed/uniform modes, so a fleet mock can
+  simulate a realistic long-tailed provider latency; a new `TokenDist`
+  (`{Input, Output TokenSpec}`) lets an outcome **draw** its reported
+  `Usage` from a distribution instead of the char-count estimator (an
+  explicit `Usage` still wins). Both draw from the same seeded PRNG under
+  the same lock, so a seed + call order still yields a byte-identical
+  transcript; both default nil/zero, so the 12.1 mock token-counter parity
+  holds unless a script opts in. The offline-run wire contract
+  (`ParseMockScript`) gained matching `latency`/`tokens`/`inject` blocks
+  (global) and per-outcome `latency`/`tokens`/`usage` overrides, with
+  durations as Go-duration strings — the same strict-decode leaf-parser
+  discipline as the 14.5 script. The compose load overlay
+  (`docker-compose.load.yml`) mounts `test/load/mock.json` (lognormal
+  p50 120 ms / p99 900 ms, uniform token draws, always-revise critic rule)
+  into every worker via `AGENTLOOM_LLM_MOCK_SCRIPT_FILE`.
 
 ### Tool SPI & built-in tools (as built, 8.7)
 

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "name": "linear-10",
+  "description": "10-step sequential mock-llm chain. Baseline for per-worker serial throughput (H1).",
+  "definition": "../definitions/linear_10.json",
+  "params": {
+    "topic": "load test alpha"
+  },
+  "arrival": {
+    "mode": "ramp",
+    "ramp": {
+      "from_per_sec": 2,
+      "to_per_sec": 60,
+      "step_per_sec": 2,
+      "step_duration": "30s"
+    }
+  },
+  "warmup": "60s",
+  "duration": "10m",
+  "target_active_runs": 1000,
+  "slo": {
+    "scheduling_p50": "250ms",
+    "scheduling_p99": "2s",
+    "api_p99": "100ms",
+    "end_to_end_p99": "30s"
+  }
+}

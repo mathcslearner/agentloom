@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "name": "load-planner-heavy",
+  "description": "Load scenario planner-heavy (ticket 19.1): two sequential `planner` steps, each injecting 8 `llm` worker steps that fan into a `join`, driving two runtime graph expansions (store.ExpandRun) per run. Each planner is a mock `llm` whose prompt IS a valid PlanOutput returned verbatim by the mock's structured-echo, so the expansion runs fully offline. Stresses the completion-transaction expansion path and graph-mutation write amplification (hypothesis H2) alongside the join-counter contention of the injected fan-in. Model `mock/load-fast`.",
+  "steps": [
+    {
+      "id": "plan_a",
+      "type": "planner",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "{\"schema_version\": 1, \"steps\": [{\"id\": \"a_1\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 1\", \"max_tokens\": 48, \"temperature\": 0}}, {\"id\": \"a_2\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 2\", \"max_tokens\": 48, \"temperature\": 0}}, {\"id\": \"a_3\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 3\", \"max_tokens\": 48, \"temperature\": 0}}, {\"id\": \"a_4\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 4\", \"max_tokens\": 48, \"temperature\": 0}}, {\"id\": \"a_5\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 5\", \"max_tokens\": 48, \"temperature\": 0}}, {\"id\": \"a_6\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 6\", \"max_tokens\": 48, \"temperature\": 0}}, {\"id\": \"a_7\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 7\", \"max_tokens\": 48, \"temperature\": 0}}, {\"id\": \"a_8\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 8\", \"max_tokens\": 48, \"temperature\": 0}}], \"edges\": [{\"from\": \"plan_a\", \"to\": \"a_1\"}, {\"from\": \"plan_a\", \"to\": \"a_2\"}, {\"from\": \"plan_a\", \"to\": \"a_3\"}, {\"from\": \"plan_a\", \"to\": \"a_4\"}, {\"from\": \"plan_a\", \"to\": \"a_5\"}, {\"from\": \"plan_a\", \"to\": \"a_6\"}, {\"from\": \"plan_a\", \"to\": \"a_7\"}, {\"from\": \"plan_a\", \"to\": \"a_8\"}, {\"from\": \"a_1\", \"to\": \"gather_a\"}, {\"from\": \"a_2\", \"to\": \"gather_a\"}, {\"from\": \"a_3\", \"to\": \"gather_a\"}, {\"from\": \"a_4\", \"to\": \"gather_a\"}, {\"from\": \"a_5\", \"to\": \"gather_a\"}, {\"from\": \"a_6\", \"to\": \"gather_a\"}, {\"from\": \"a_7\", \"to\": \"gather_a\"}, {\"from\": \"a_8\", \"to\": \"gather_a\"}]}",
+        "max_tokens": 1024,
+        "temperature": 0,
+        "max_added_steps": 20
+      },
+      "validation": {
+        "max_attempts": 3
+      }
+    },
+    {
+      "id": "gather_a",
+      "type": "join",
+      "config": {
+        "mode": "all"
+      }
+    },
+    {
+      "id": "plan_b",
+      "type": "planner",
+      "config": {
+        "model": "mock/load-fast",
+        "prompt": "{\"schema_version\": 1, \"steps\": [{\"id\": \"b_1\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 1\", \"max_tokens\": 48, \"temperature\": 0}}, {\"id\": \"b_2\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 2\", \"max_tokens\": 48, \"temperature\": 0}}, {\"id\": \"b_3\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 3\", \"max_tokens\": 48, \"temperature\": 0}}, {\"id\": \"b_4\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 4\", \"max_tokens\": 48, \"temperature\": 0}}, {\"id\": \"b_5\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 5\", \"max_tokens\": 48, \"temperature\": 0}}, {\"id\": \"b_6\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 6\", \"max_tokens\": 48, \"temperature\": 0}}, {\"id\": \"b_7\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 7\", \"max_tokens\": 48, \"temperature\": 0}}, {\"id\": \"b_8\", \"type\": \"llm\", \"config\": {\"model\": \"mock/load-fast\", \"prompt\": \"Analyze aspect 8\", \"max_tokens\": 48, \"temperature\": 0}}], \"edges\": [{\"from\": \"plan_b\", \"to\": \"b_1\"}, {\"from\": \"plan_b\", \"to\": \"b_2\"}, {\"from\": \"plan_b\", \"to\": \"b_3\"}, {\"from\": \"plan_b\", \"to\": \"b_4\"}, {\"from\": \"plan_b\", \"to\": \"b_5\"}, {\"from\": \"plan_b\", \"to\": \"b_6\"}, {\"from\": \"plan_b\", \"to\": \"b_7\"}, {\"from\": \"plan_b\", \"to\": \"b_8\"}, {\"from\": \"b_1\", \"to\": \"gather_b\"}, {\"from\": \"b_2\", \"to\": \"gather_b\"}, {\"from\": \"b_3\", \"to\": \"gather_b\"}, {\"from\": \"b_4\", \"to\": \"gather_b\"}, {\"from\": \"b_5\", \"to\": \"gather_b\"}, {\"from\": \"b_6\", \"to\": \"gather_b\"}, {\"from\": \"b_7\", \"to\": \"gather_b\"}, {\"from\": \"b_8\", \"to\": \"gather_b\"}]}",
+        "max_tokens": 1024,
+        "temperature": 0,
+        "max_added_steps": 20
+      },
+      "validation": {
+        "max_attempts": 3
+      }
+    },
+    {
+      "id": "gather_b",
+      "type": "join",
+      "config": {
+        "mode": "all"
+      }
+    },
+    {
+      "id": "report",
+      "type": "echo",
+      "config": {
+        "input": {
+          "status": "two expansions complete"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "plan_a",
+      "to": "gather_a"
+    },
+    {
+      "from": "gather_a",
+      "to": "plan_b"
+    },
+    {
+      "from": "plan_b",
+      "to": "gather_b"
+    },
+    {
+      "from": "gather_b",
+      "to": "report"
+    }
+  ],
+  "expansion": {
+    "max_added_steps": 32,
+    "max_expansions": 10,
+    "max_depth": 2
+  }
+}
