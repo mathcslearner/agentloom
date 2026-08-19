@@ -403,7 +403,7 @@ func ValidateExpansion(in ExpansionInput) ExpansionVerdict {
 	deltaIDs := make(map[string]int, len(plan.Steps))
 	for i, s := range plan.Steps {
 		p := stepPath(i)
-		if !(stepIDRe.MatchString(s.ID) || (allowInstanceIDs && instanceStepIDRe.MatchString(s.ID))) {
+		if !stepIDRe.MatchString(s.ID) && (!allowInstanceIDs || !instanceStepIDRe.MatchString(s.ID)) {
 			v.add(CodeInvalidStepID, p+".id", "step ID %q does not match %s", s.ID, stepIDRe)
 		}
 		if _, exists := in.Existing[s.ID]; exists {
@@ -474,7 +474,7 @@ func ValidateExpansion(in ExpansionInput) ExpansionVerdict {
 	if !v.has(CodeDuplicateStepID, CodeUnknownEdgeEndpoint, CodeExpansionAnchorInvalid, CodeInvalidStepID) {
 		if merged, g := buildMergedGraph(in); g != nil {
 			v.checkMergedGraph(in, merged, g, deltaIDs)
-			v.checkExpansionRefs(in, g, deltaIDs)
+			v.checkExpansionRefs(in, g)
 		}
 	}
 
@@ -640,7 +640,7 @@ func (v *validator) checkMergedGraph(in ExpansionInput, merged *Definition, g *G
 // Reuses classifyUpstreamRef and the same codes as the authored-template lint
 // (checkTemplates / checkContextGraph) so an injected step is held to exactly
 // the same reference contract as an authored one.
-func (v *validator) checkExpansionRefs(in ExpansionInput, g *Graph, deltaIDs map[string]int) {
+func (v *validator) checkExpansionRefs(in ExpansionInput, g *Graph) {
 	var params map[string]json.RawMessage
 	paramsDecoded := false
 	paramDeclared := func(key string) bool {

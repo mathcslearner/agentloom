@@ -913,14 +913,18 @@ func TestValidateHumanApproval(t *testing.T) {
 		},
 		{
 			name: "on_timeout records a disallowed decision",
-			def: def(&dag.HumanApprovalConfig{Title: "t", Timeout: "1h", OnTimeout: dag.ApprovalTimeoutApprove,
-				AllowedDecisions: []dag.ApprovalDecision{dag.ApprovalReject}}, nil, nil),
+			def: def(&dag.HumanApprovalConfig{
+				Title: "t", Timeout: "1h", OnTimeout: dag.ApprovalTimeoutApprove,
+				AllowedDecisions: []dag.ApprovalDecision{dag.ApprovalReject},
+			}, nil, nil),
 			wantErrs: []issueRef{{dag.CodeConfigFieldInvalid, "steps[0].config.on_timeout"}},
 		},
 		{
 			name: "on_reject route with reject not allowed",
-			def: def(&dag.HumanApprovalConfig{Title: "t", OnReject: dag.ApprovalRejectRoute,
-				AllowedDecisions: []dag.ApprovalDecision{dag.ApprovalApprove}},
+			def: def(&dag.HumanApprovalConfig{
+				Title: "t", OnReject: dag.ApprovalRejectRoute,
+				AllowedDecisions: []dag.ApprovalDecision{dag.ApprovalApprove},
+			},
 				[]dag.Step{echo("ok"), echo("rej")}, []dag.Edge{
 					{From: "gate", To: "ok"},
 					{From: "gate", To: "rej", Decision: dag.ApprovalReject},
@@ -929,15 +933,19 @@ func TestValidateHumanApproval(t *testing.T) {
 		},
 		{
 			name: "on_reject route with no reject edge",
-			def: def(&dag.HumanApprovalConfig{Title: "t", OnReject: dag.ApprovalRejectRoute,
-				AllowedDecisions: []dag.ApprovalDecision{dag.ApprovalApprove, dag.ApprovalReject}},
+			def: def(&dag.HumanApprovalConfig{
+				Title: "t", OnReject: dag.ApprovalRejectRoute,
+				AllowedDecisions: []dag.ApprovalDecision{dag.ApprovalApprove, dag.ApprovalReject},
+			},
 				[]dag.Step{echo("ok")}, []dag.Edge{{From: "gate", To: "ok"}}),
 			wantErrs: []issueRef{{dag.CodeApprovalRejectEdgeRequired, "steps[0].config.on_reject"}},
 		},
 		{
 			name: "reject edge under fail policy",
-			def: def(&dag.HumanApprovalConfig{Title: "t",
-				AllowedDecisions: []dag.ApprovalDecision{dag.ApprovalApprove, dag.ApprovalReject}},
+			def: def(&dag.HumanApprovalConfig{
+				Title:            "t",
+				AllowedDecisions: []dag.ApprovalDecision{dag.ApprovalApprove, dag.ApprovalReject},
+			},
 				[]dag.Step{echo("ok"), echo("rej")}, []dag.Edge{
 					{From: "gate", To: "ok"},
 					{From: "gate", To: "rej", Decision: dag.ApprovalReject},
@@ -956,12 +964,14 @@ func TestValidateHumanApproval(t *testing.T) {
 		},
 		{
 			name: "decision on a loop edge",
-			def: &dag.Definition{SchemaVersion: dag.CurrentSchemaVersion, Name: "t",
+			def: &dag.Definition{
+				SchemaVersion: dag.CurrentSchemaVersion, Name: "t",
 				Steps: []dag.Step{noop("a"), noop("b")},
 				Edges: []dag.Edge{
 					{From: "a", To: "b"},
 					{From: "b", To: "a", Type: dag.EdgeLoop, Condition: "true", MaxIterations: 3, Decision: dag.ApprovalReject},
-				}},
+				},
+			},
 			wantErrs: []issueRef{{dag.CodeApprovalEdgeInvalid, "edges[1].decision"}},
 		},
 		{
