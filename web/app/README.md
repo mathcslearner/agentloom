@@ -105,8 +105,22 @@ lists, JSON-editor fallback for raw-JSON fields). Required-ness and specialized
 widgets come from a small hand-maintained `hints.ts` (the schema encodes
 neither). Invalid config marks the node (a destructive ring + a problem count)
 and the toolbar shows the total error count; the client validator lives in
-`@agentloom/graphdef` (`validateStepConfigs`) and reports the backend's issue
-codes/paths (proven against the Go verdict golden). The autocomplete offers
-exactly the upstream steps' output paths (ancestors over normal edges only,
-mirroring the backend) and declared run params. Client-side graph validation and
-the submit flow are 17.5/17.6.
+`@agentloom/graphdef` and reports the backend's issue codes/paths (proven
+against the Go verdict golden). The autocomplete offers exactly the upstream
+steps' output paths (ancestors over normal edges only, mirroring the backend)
+and declared run params.
+
+## Client-side graph validation (M17.5)
+
+`useProblems` runs `@agentloom/graphdef`'s full `validateDefinition` over the
+live canvas and maps every issue onto its node or edge by array index. A hoisted
+`ProblemsProvider` (inside `ReactFlowProvider`) runs that one validation and
+provides per-element error counts, highlight state, and `focusIssue`. The
+**Problems panel** (`ProblemsPanel`, in the Inspector) lists every problem
+(errors first, warnings after), and **clicking a row selects the element the
+issue's own path points at** — a cycle's `edges[i]` opens the minimal edge
+inspector (`EdgePanel`) where it's fixed by marking the edge a loop — and
+`fitView`s to it; hovering previews the highlight. Invalid/highlighted nodes and
+edges get destructive/amber strokes. The toolbar shows `N errors · M warnings`
+and disables Submit while errors block it (the real submit flow is 17.6). Import/
+export/save/submit and full loop-edge authoring polish are 17.6.

@@ -22,7 +22,6 @@ import {
 import { STEP_TYPES } from "@agentloom/graphdef";
 import { isValidConnection as portsValid } from "@/lib/pure/builder/ports";
 import { beginInteraction, endInteraction, useBuilderStore } from "@/lib/builder/store";
-import { ProblemsProvider } from "@/lib/builder/problems-context";
 import { StepNode } from "./StepNode";
 import { LoopEdge, StepEdge } from "./edges";
 import { STEP_DND_MIME } from "./Palette";
@@ -61,7 +60,6 @@ export function Canvas() {
 
   return (
     <div className="h-full w-full" data-testid="builder-canvas">
-      <ProblemsProvider>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -88,7 +86,6 @@ export function Canvas() {
         <MiniMap pannable zoomable />
         <Controls />
       </ReactFlow>
-      </ProblemsProvider>
     </div>
   );
 }

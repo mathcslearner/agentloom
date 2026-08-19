@@ -23,9 +23,11 @@ export interface StepNodeViewProps {
   skin?: NodeSkin;
   /** Count of config-validation errors on the step (17.4); marks the node. */
   problemCount?: number;
+  /** Whether a focused/hovered problem highlights this node (17.5). */
+  highlighted?: boolean;
 }
 
-export function StepNodeView({ step, selected, skin, problemCount = 0 }: StepNodeViewProps) {
+export function StepNodeView({ step, selected, skin, problemCount = 0, highlighted = false }: StepNodeViewProps) {
   const meta = stepMeta(step.type);
   const invalid = problemCount > 0;
   return (
@@ -34,10 +36,12 @@ export function StepNodeView({ step, selected, skin, problemCount = 0 }: StepNod
       data-step-type={step.type}
       data-selected={selected ? "true" : "false"}
       data-invalid={invalid ? "true" : "false"}
+      data-highlight={highlighted ? "true" : undefined}
       className={cn(
         "w-52 rounded-md border bg-card text-card-foreground shadow-sm transition-colors",
         selected ? "border-primary ring-2 ring-ring" : "border-border",
         invalid ? "border-destructive ring-1 ring-destructive" : "",
+        highlighted ? "ring-2 ring-amber-500" : "",
         skin?.className,
       )}
     >

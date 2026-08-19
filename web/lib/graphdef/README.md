@@ -53,27 +53,36 @@ config editor. Here `Step` is a discriminated union so `switch (step.type)`
 narrows `step.config`. The same script also emits `src/generated/definition.schema.ts`
 (`DEFINITION_SCHEMA`), the published JSON Schema as a runtime constant.
 
-## Client-side config validation (17.4)
+## Client-side graph validation (17.5)
 
-`validateStepConfigs(def, schemas)` mirrors the backend's single-step-local
-config rules (`internal/dag/validate.go`), reporting the backend's
-`ValidationCode` vocabulary and path grammar so a client verdict and a server
-verdict name the same problem in the same place. Two layers:
+`validateDefinition(value)` ports the whole `internal/dag` validator to the
+browser, reporting the backend's `ValidationCode` vocabulary and path grammar so
+a client verdict and a server verdict name the same problem in the same place.
+It runs the backend's two stages:
 
-- **Shape** (`schema/schema.ts`) — a small JSON-Schema subset walker that
-  reproduces the strict-codec structural findings (wrong type, unknown field,
-  not-an-object) with the backend's messages.
-- **Semantics** (`validate/config.ts`) — the coded `config_field_*` rules
-  (required fields, `prompt` xor `messages`, `output_format`, `human_approval`).
+- **Decode** (`validate/decode.ts`) — a schema-driven walker over the published
+  definition schema reproducing the strict codec's shape/enum/required findings
+  (non-object root, `schema_version` short-circuit, unknown fields, wrong types,
+  decode-enforced enums) as codeless issues. When it finds anything the validate
+  stage does not run (exactly like the backend).
+- **Validate** (`validate/definition.ts`) — every rule in the backend's order:
+  document limits, run budget/expansion, per-step config + all seven envelope
+  blocks, edges, approvals, graph degree rules, the templates/agents/maps
+  libraries, and — behind the well-formed-graph gate — cycle detection
+  (`graph.ts`, the ported three-colour DFS reporting the closing edge + cycle
+  path), loop ancestry, and the step_output/template reference lint. CEL
+  (`cel.ts`) and the `${{ }}` template lint (`template.ts`) are **lenient**
+  client checkers: they report the backend's codes but treat anything
+  unrecognised as valid, so the client never over-rejects.
 
-`fallbackConfigSchemas()` derives per-step-type config schemas from
-`DEFINITION_SCHEMA` (the offline source; the app layers the live `GET /v1/plugins`
-catalog over it). Parity is proven against the Go golden
+Issues carry a client-only `related[]` (a cycle's nodes + closing edge) for
+highlight, and client-only `advisory_*` warnings surface budget-sanity nudges
+the backend does not model. `validateStepConfigs(def)` remains as a config-scoped
+façade (17.4 API). Parity is proven against the Go golden
 `internal/dag/testdata/verdicts.golden.json` (`TestVerdictsGolden`) in
-`test/config-validate.test.ts`: on decode-clean fixtures the client's
-`config_field_*` (code, path) set equals the golden's; decode-failed config
-fixtures are rejected; the example corpus produces no false positives. Full
-accept/reject parity over the whole corpus is 17.5.
+`test/parity.test.ts`: **identical accept/reject over all 131 fixtures**, plus
+exact (severity, code, path) equality over the validate stage. `cel.test.ts` /
+`validate.test.ts` add focused tables.
 
 ## Scripts
 

@@ -42,6 +42,10 @@ export interface BuilderState {
   patchStep: (id: string, patch: Record<string, unknown>) => void;
   /** Replace a step's envelope blocks (everything but id/type/config), 17.4. */
   setStepEnvelope: (id: string, envelope: Record<string, unknown>) => void;
+  /** Shallow-merge a patch into an edge's object (loop-edge inspector, 17.5). */
+  patchEdge: (id: string, patch: Record<string, unknown>) => void;
+  /** Select exactly one node or edge, clearing every other selection (17.5). */
+  selectOnly: (kind: "node" | "edge", id: string) => void;
   /** Create an edge from a proposed connection, honoring the port rules. */
   connect: (conn: ConnectionLike) => void;
   /** Delete the currently selected nodes (and their edges) and selected edges. */
@@ -157,6 +161,41 @@ export const useBuilderStore = create<BuilderState>()(
             const s = data.step;
             const step = { id: s["id"], type: s["type"], ...(s["config"] !== undefined ? { config: s["config"] } : {}), ...envelope };
             return { ...n, data: { ...data, step } as unknown as Record<string, unknown> };
+          }),
+        });
+      },
+
+      patchEdge: (id, patch) => {
+        const { edges } = get();
+        set({
+          edges: edges.map((e) => {
+            if (e.id !== id) return e;
+            const data = e.data as unknown as { edge: Record<string, unknown> };
+            const merged: Record<string, unknown> = { ...data.edge, ...patch };
+            // A patch value of undefined removes the key (a clean edge object).
+            for (const k of Object.keys(patch)) if (patch[k] === undefined) delete merged[k];
+            const edgeObj = merged as unknown as Edge;
+            const handles = deriveHandles(edgeObj);
+            return {
+              ...e,
+              type: edgeRenderType(edgeObj),
+              sourceHandle: handles.sourceHandle,
+              data: { ...data, edge: edgeObj } as unknown as Record<string, unknown>,
+            };
+          }),
+        });
+      },
+
+      selectOnly: (kind, id) => {
+        const { nodes, edges } = get();
+        set({
+          nodes: nodes.map((n) => {
+            const sel = kind === "node" && n.id === id;
+            return n.selected === sel ? n : { ...n, selected: sel };
+          }),
+          edges: edges.map((e) => {
+            const sel = kind === "edge" && e.id === id;
+            return e.selected === sel ? e : { ...e, selected: sel };
           }),
         });
       },

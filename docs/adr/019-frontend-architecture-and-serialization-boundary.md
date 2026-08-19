@@ -408,6 +408,84 @@ suggests `steps.<upstream>.output.<field>` (first-level output shapes are
 statically known per executor) and `run.params.<key>` (from the document's
 declared params). A plain textarea + popover keeps it dependency-free.
 
+### Client-side graph validation (as built, 17.5)
+
+17.4 mirrored only the single-step-local config rules. 17.5 completes the
+**validation-parity strategy** above: the whole `internal/dag` validator is
+ported to `graphdef/validate` so a client verdict and a server verdict agree,
+proven over the whole backend fixture corpus.
+
+**Two-stage pipeline, mirroring the backend.** `validateDefinition(value)` runs
+a **decode stage** (`validate/decode.ts`) — a schema-driven walker over the
+published definition schema reproducing the strict codec's shape/enum/required
+findings (non-object root, `schema_version` short-circuit, unknown fields,
+wrong types, decode-enforced enums, structural `required`) as codeless
+findings — and, only when the document decodes cleanly (exactly as the backend
+returns decode errors *instead of* validate errors), a **validate stage**
+(`validate/definition.ts`) running every rule in the backend's order:
+document limits, run budget/expansion, per-step config + all seven envelope
+blocks, edges, approvals, graph degree rules, the `templates`/`agents`/`maps`
+libraries, and — behind the same well-formed-graph gate the backend uses
+(`!has(duplicate_step_id, unknown_edge_endpoint)` + endpoints resolve) — the
+graph-semantic checks: cycle detection (a port of the iterative three-colour DFS
+in `validate/graph.ts`, reporting the closing edge index and the cycle path),
+loop-edge ancestry, and the `step_output`/template reference ancestry lint.
+
+**Mirror, don't re-derive; under-report, never over-report.** The backend stays
+the authority (ADR-019 §"Validation parity"). Two rules the client cannot
+reproduce exactly are approximated *leniently*: a client CEL checker
+(`validate/cel.ts`, a tokenizer + Pratt parser with coarse type inference) that
+reports `invalid_expression` / `expression_not_boolean` but treats any
+unrecognised construct as CEL `dyn` (which the backend's `DynType` also accepts,
+so it never over-rejects), and a ref-level template lint (`validate/template.ts`)
+that scans the three recognised roots (`steps.<id>`, `run.params.<key>`,
+`item`/`item_index`) rather than re-running the whole 8.2 rewrite. A plugin's
+`ConfigCompiler` pre-flight (regex/CEL/schema compilability) and the exact
+cel-go message stay backend-only. Grammar helpers (`grammar.ts`: RFC-6901,
+blackboard key/tag) and bounds (`limits.ts`) are ported verbatim with their Go
+source cited, so a bound change is a one-line change caught by the parity test.
+
+**Parity is proven over the whole corpus** (`test/parity.test.ts`, DoD-1):
+against the Go golden (`verdicts.golden.json`, 131 fixtures) it asserts
+**identical accept/reject over every fixture**, plus **exact (severity, code,
+path) equality over the validate stage** (decode-clean fixtures) — the stronger
+guarantee the 17.4 `DEFERRED_TO_17_5` fixtures (agent role-merge, expansion
+caps) now also satisfy. `cel.test.ts` and `validate.test.ts` add focused tables
+(the CEL grammar, cycle path/`related`, the loop-edge flow, the template-ref
+paths, advisory warnings). No new Go corpus fixture was added — the port is
+proven against the existing golden and the TS tables, keeping the change
+TS-only with no Go golden regeneration.
+
+**Issues carry a client-only `related[]`** of extra definition paths (a cycle's
+nodes + closing edge) so the UI can highlight the whole offending shape; it is
+never on the wire. Client-only **advisory warnings** (an `advisory_` code
+prefix, excluded from parity, never blocking) surface budget-sanity nudges the
+backend does not model (a run budget with no cost-bearing step; a step cap at or
+above the run budget).
+
+**The app** (`web/app`): `useProblems` now runs `validateDefinition` over the
+live canvas and maps issues onto nodes *and edges* by array index (`steps[i] ↔
+nodes[i]`, `edges[i] ↔ edges[i]`, both emitted in canvas order by
+`toDefinition`); a hoisted `ProblemsProvider` (inside `ReactFlowProvider`) runs
+that one validation and provides per-element error counts, highlight state, and
+`focusIssue`. A **Problems panel** (`ProblemsPanel`) lists every problem
+(errors first), and **clicking a row selects the element the issue's own path
+points at** (a cycle's `edges[i]` opens the edge inspector) and centres it via
+`fitView` (DoD-3); invalid/highlighted nodes and edges get destructive/amber
+strokes. A **minimal edge inspector** (`EdgePanel`) is pulled forward from 17.6
+so the loop-edge flow (DoD-2) is completable — mark a normal edge as a loop, set
+its `condition`/`max_iterations`/`on_exhausted` — via a new `store.patchEdge`
+(re-derives the render type + handle) and `store.selectOnly` (history-neutral
+selection). The toolbar shows `N errors · M warnings` and disables Submit while
+errors block it (the real submit is 17.6). **Decisions:** the validator lives in
+`graphdef` (pure, parity-tested), not the app; CEL and the template lint are
+lenient client checkers, not exact ports; `focusIssue` selects by the issue's
+primary path (better UX and avoids a flaky canvas edge-click in e2e); the
+minimal edge inspector lands early because DoD-2's "marked loop OK" flow needs
+it. **Accepted residuals:** full loop-edge authoring polish (autocomplete in
+conditions, `no_progress`, decision routing) and import/export/save/submit are
+17.6; the advisory set is deliberately small.
+
 ## Consequences
 
 - **The serialization boundary is a single, testable leaf.** The whole

@@ -62,6 +62,9 @@ describe("useProblems over the canvas", () => {
     });
     const [n0, n1] = store.getState().nodes;
     act(() => {
+      // Connect them so neither is an isolated step (the 17.5 graph validator
+      // warns on isolated nodes), then fix the llm's config.
+      store.getState().connect({ source: n0!.id, target: n1!.id, sourceHandle: "out", targetHandle: "in" });
       store.getState().patchStep(n0!.id, { config: { model: "mock/sim-1", prompt: "hi" } });
     });
     const { result } = renderHook(() => useProblems());
