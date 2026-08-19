@@ -256,5 +256,6 @@ signature and selects the real top target.
 - `test/load/scenarios/*.json` — the five named scenario configs.
 - `test/load/mock.json` — the fleet mock script.
 - `internal/loadtest` — the scenario contract + parser (CI-validated corpus).
-- (19.2) `cmd/loadgen`; (19.3) `docs/load/findings-baseline.md`;
+- `cmd/loadgen` + [`docs/load/loadgen.md`](loadgen.md) — the load generator
+  (delivered 19.2). (19.3) `docs/load/findings-baseline.md`;
   (19.6) `BENCHMARKS.md`.

@@ -149,6 +149,20 @@ load-down: ## Stop the load stack (dedicated load volumes are kept)
 load-nuke: ## Stop the load stack AND drop its dedicated data volumes (pristine next boot)
 	bash scripts/load-env.sh nuke
 
+# The load generator (ticket 19.2): open-loop arrival control + run-lifecycle
+# tracking + HDR-percentile report artifact. Runs from the host against the
+# load stack (or any API). AGENTLOOM_API_KEY / AGENTLOOM_API_URL are honored.
+.PHONY: loadgen-build
+loadgen-build: ## Build the cmd/loadgen binary into ./bin
+	go build -o bin/loadgen ./cmd/loadgen
+
+SCENARIO ?= linear-10
+RUNS ?= 100
+RATE ?= 20
+.PHONY: load-dry-run
+load-dry-run: ## 100-run linear-10 dry run against $AGENTLOOM_API_URL (report → results/); override SCENARIO/RUNS/RATE
+	go run ./cmd/loadgen --scenario $(SCENARIO) --runs $(RUNS) --rate $(RATE)
+
 # ── web workspace (M16.5 onward): the typed TS engine client + (M17) the app ──
 # pnpm is managed via Corepack; the version is pinned by web/package.json's
 # `packageManager` field. `-r run` recurses into each package's own scripts

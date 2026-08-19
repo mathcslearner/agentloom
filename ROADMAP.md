@@ -1301,13 +1301,13 @@ DLQ page (dead-lettered steps with error/attempt context, requeue action), run c
 - [x] Load environment boots with one command; resource pins documented
 - [x] Scenario definitions runnable as named configs
 
-#### 19.2 — Load generator
+#### 19.2 — Load generator ✅
 **Depends on:** 19.1
 `cmd/loadgen`: open-loop arrival-rate control (constant + ramp), scenario execution against the API, run-lifecycle tracking (submit→terminal via polling/firehose sampling), HDR histograms (submit latency, end-to-end run latency, scheduling latency sampled), live progress output, JSON/CSV results + summary report artifact.
 **Done when:**
-- [ ] Dry run (100 runs) produces a complete report artifact with percentiles
-- [ ] Open-loop rate verified accurate ±5% under load (no coordinated omission)
-- [ ] Failure taxonomy in the report (rejected submits vs failed runs vs timeouts)
+- [x] Dry run (100 runs) produces a complete report artifact with percentiles
+- [x] Open-loop rate verified accurate ±5% under load (no coordinated omission)
+- [x] Failure taxonomy in the report (rejected submits vs failed runs vs timeouts)
 
 #### 19.3 — Baseline campaign & bottleneck identification
 **Depends on:** 19.2

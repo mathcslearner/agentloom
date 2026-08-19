@@ -20,11 +20,19 @@ mock.json      the fleet mock script: lognormal latency + token distributions +
   CI before any load run.
 - **Scenarios** are parsed and cross-checked (definition exists, mix entries
   resolve) by the same package — "runnable as named configs" is a unit test,
-  not a promise. The load generator (`cmd/loadgen`, ticket 19.2) consumes the
-  same parser.
+  not a promise. The load generator (`cmd/loadgen`, ticket 19.2 —
+  [usage](../../docs/load/loadgen.md)) consumes the same parser.
 - **The mock script** is mounted into every worker by `docker-compose.load.yml`
   (`AGENTLOOM_LLM_MOCK_SCRIPT_FILE`). It is parsed by `llm.ParseMockScript` +
   `llm.NewMock`; a malformed script fails worker boot.
 
 Boot the pinned environment with `make load-up` (see the plan for pins and the
-one-command details).
+one-command details), then drive it with the load generator:
+
+```bash
+go run ./cmd/loadgen --scenario linear-10 --runs 100 --rate 20   # dry run
+go run ./cmd/loadgen --scenario mixed --out results/mixed        # full campaign
+```
+
+See [`docs/load/loadgen.md`](../../docs/load/loadgen.md) for flags, the report
+artifact, and the failure taxonomy.

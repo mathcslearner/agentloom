@@ -5,6 +5,9 @@ dist/
 *.test
 *.out
 
+# Load-generator campaign output (cmd/loadgen --out default, ticket 19.2)
+results/
+
 # Go coverage
 coverage.*
 *.coverprofile
