@@ -2,7 +2,7 @@
 
 agentloom is a distributed, durable execution engine purpose-built for AI agent workflows: **Temporal-grade distributed-systems guarantees, AI-native orchestration semantics.** Users define workflows as DAGs of steps (LLM calls, tool calls, conditionals, fan-out/fan-in, human approvals); the engine distributes execution across independent worker processes, persists durable state so runs survive crashes and resume from the last completed step, and provides retries, timeouts, idempotency, and dead-lettering.
 
-It sits deliberately between three categories: **n8n / Zapier** (easy visual automation, not production-grade), **Temporal / Airflow** (production-grade durable execution, not AI-native), and **LangGraph** (excellent agent logic, but an in-process library with no distributed coordination or crash recovery). The AI-native capabilities — semantic/self-correcting retries, dynamic runtime DAG generation, cost-aware scheduling with budgets, context/memory management, multi-agent handoff, human-in-the-loop approvals, and a pluggable tool/agent/retrieval SPI — are core features of the engine, not add-ons. See the [README](../README.md) for positioning and [ROADMAP.md](../ROADMAP.md) for the full build plan.
+It sits deliberately between three categories: **n8n / Zapier** (easy visual automation, not production-grade), **Temporal / Airflow** (production-grade durable execution, not AI-native), and **LangGraph** (excellent agent logic, but an in-process library with no distributed coordination or crash recovery). The AI-native capabilities — semantic/self-correcting retries, dynamic runtime DAG generation, cost-aware scheduling with budgets, context/memory management, multi-agent handoff, human-in-the-loop approvals, and a pluggable tool/agent/retrieval SPI — are core features of the engine, not add-ons. See the [README](../README.md) for positioning.
 
 This document is the system overview: components, the execution data flow, tech-stack rationale, and the project glossary. Individual design decisions are governed by ADRs in [`docs/adr/`](adr/README.md).
 
@@ -205,7 +205,7 @@ There is no scheduler service. Scheduling is **event-driven and worker-embedded*
 
 ## Tech stack
 
-Condensed rationale; the full decision table with rejected alternatives is in [ROADMAP.md](../ROADMAP.md#stack-decisions-and-alternatives-considered).
+Condensed rationale for the main technology choices.
 
 | Layer | Choice | Why |
 |---|---|---|

@@ -7,8 +7,8 @@ if reality contradicts one, the ADR is updated (or superseded) in the same
 change that diverges from it.
 
 Conventions (numbering, statuses, supersession) are documented in the
-[template](template.md), which every new ADR starts from. ROADMAP.md
-pre-assigns numbers to some future decisions (ADR-003 workflow definition
+[template](template.md), which every new ADR starts from. Numbers are
+pre-assigned to some future decisions (ADR-003 workflow definition
 format, ADR-004 persistence model, ADR-005 queue protocol, ...); those numbers
 are reserved and appear here once the ADR is written.
 

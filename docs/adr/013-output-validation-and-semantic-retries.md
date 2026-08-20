@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-15
-- **Ticket:** ROADMAP.md ticket 11.1
+- **Ticket:** ticket 11.1
 
 <!--
 This ADR opens M11 (output validation & semantic retries). 11.1 delivers the
@@ -202,7 +202,7 @@ nests.
 
 ### The engine `validate` stage and where it sits
 
-The executor middleware chain (ADR summary in CLAUDE.md) gains a `validate`
+The executor middleware chain gains a `validate`
 stage. Its placement is forced by the M9/M10 pre-wiring:
 
 ```

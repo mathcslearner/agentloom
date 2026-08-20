@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-17
-- **Ticket:** ROADMAP.md ticket 15.1 (opens Milestone 15)
+- **Ticket:** ticket 15.1 (opens Milestone 15)
 
 <!--
 This ADR opens M15. Ticket 15.1 fixes the whole human-in-the-loop contract —

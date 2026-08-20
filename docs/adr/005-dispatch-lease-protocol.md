@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-08
-- **Ticket:** ROADMAP.md ticket 3.1
+- **Ticket:** ticket 3.1
 - **Amended:** 2026-08-10 (ticket 3.7, post-M3 audit) — stream retention
   section added; heartbeat specified as ownership-guarded.
 

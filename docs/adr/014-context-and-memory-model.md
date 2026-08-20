@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-15
-- **Ticket:** ROADMAP.md ticket 12.1
+- **Ticket:** ticket 12.1
 
 <!--
 This ADR opens M12 (context & memory management). 12.1 delivers the token

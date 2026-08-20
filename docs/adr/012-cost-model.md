@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-14
-- **Ticket:** ROADMAP.md ticket 10.1
+- **Ticket:** ticket 10.1
 
 ## Context
 

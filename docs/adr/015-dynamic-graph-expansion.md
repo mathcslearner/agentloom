@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-15
-- **Ticket:** ROADMAP.md ticket 13.1 (opens Milestone 13)
+- **Ticket:** ticket 13.1 (opens Milestone 13)
 
 <!--
 This ADR opens M13. Ticket 13.1 fixes the whole expansion contract — the

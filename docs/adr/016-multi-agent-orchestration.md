@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-16
-- **Ticket:** ROADMAP.md ticket 14.1 (opens Milestone 14)
+- **Ticket:** ticket 14.1 (opens Milestone 14)
 
 <!--
 This ADR opens M14. Ticket 14.1 fixes the agent model — the `agents` section,

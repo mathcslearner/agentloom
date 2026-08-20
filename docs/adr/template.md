@@ -2,13 +2,13 @@
 
 - **Status:** Proposed | Accepted | Superseded by [ADR-MMM](MMM-title.md)
 - **Date:** YYYY-MM-DD
-- **Ticket:** ROADMAP.md ticket X.Y
+- **Ticket:** ticket X.Y
 
 <!--
 Convention:
 - Filename: NNN-short-kebab-title.md (e.g. 001-service-boundaries.md).
-- Numbers are assigned once and never reused. ROADMAP.md pre-assigns some
-  numbers to future decisions (ADR-003, ADR-004, ...); keep them stable.
+- Numbers are assigned once and never reused. Some numbers are pre-assigned
+  to future decisions (ADR-003, ADR-004, ...); keep them stable.
 - ADRs are immutable once Accepted, except for status changes. To change a
   decision, write a new ADR that supersedes the old one and update the old
   ADR's status line to point at it.

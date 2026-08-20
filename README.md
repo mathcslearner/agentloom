@@ -10,7 +10,7 @@ Go module path: `github.com/mathcslearner/agentloom`
 
 ## Status
 
-Early development. The engine is being built milestone-by-milestone per [ROADMAP.md](ROADMAP.md); currently in **Milestone 2 — Durable state: Postgres persistence**.
+Actively developed. The core engine is implemented: durable run execution with crash recovery, retries, timeouts, idempotency and dead-lettering; distributed rate limiting and response caching; cost budgets; output validation with semantic retries; context/memory management; dynamic DAG expansion; multi-agent orchestration; and human-in-the-loop approvals — behind a REST + WebSocket API, a Next.js visual builder and live execution dashboard, and a Prometheus/Grafana/Jaeger observability stack.
 
 ## Getting started
 
@@ -54,7 +54,7 @@ go run ./cmd/ctl validate examples/definitions/fanout.json
 go run ./cmd/ctl watch "$(go run ./cmd/ctl submit examples/definitions/fanout.json --params '{"topic": "durable execution"}')"
 ```
 
-(`llm`/`tool`/`retrieve` steps run as deterministic dev stubs until the real executors land in M8/M9.)
+(`fanout.json`'s `llm` steps use the built-in deterministic mock provider and its tool/retrieve steps run offline, so the example completes on the stack with no API keys configured. Set `AGENTLOOM_ANTHROPIC_API_KEY` / `AGENTLOOM_OPENAI_API_KEY` and target a real model to run against Anthropic or OpenAI.)
 
 To see the headline crash-recovery guarantee live — a worker SIGKILLed mid-step, the survivor reclaiming and finishing the run, then a full-stack restart resuming mid-run — run the narrated two-act demo against the stack:
 
@@ -62,7 +62,7 @@ To see the headline crash-recovery guarantee live — a worker SIGKILLed mid-ste
 make demo-crash
 ```
 
-It is documented in [docs/demos/crash-recovery.md](docs/demos/crash-recovery.md).
+It is documented in [docs/demos/crash-recovery.md](docs/demos/crash-recovery.md). For an AI-native end-to-end example, `make demo-research` runs the flagship research → write → critique pipeline (multi-agent handoff, a critic refinement loop, output validation, budgets, and context compaction) against the stack on a deterministic mock provider — see [docs/examples/research-critic-writer.md](docs/examples/research-critic-writer.md).
 
 The stack works out of the box with dev-only defaults; to change credentials or host ports (e.g. if 5432/6379 are taken by a Postgres/Redis already on your machine), copy [.env.example](.env.example) to `.env` and edit it — both Compose and the Make targets pick it up automatically, so keep the `AGENTLOOM_*_DSN` entries in sync with the ports. `.env` is gitignored; never commit it.
 
@@ -73,6 +73,28 @@ make nuke
 ```
 
 **`make nuke` is destructive**: it tears down the stack *and deletes all data volumes*. It prompts for confirmation before doing anything.
+
+### Web UI
+
+The web workspace (`web/`) is a Next.js app providing a visual DAG builder — drag-and-drop steps, schema-driven config panels, client-side graph validation, import/export — and a live execution dashboard — the run graph updating in real time over the event WebSocket, a step inspector, a live cost meter, the approval inbox, and operator views (dead-letter queue, queue health, run controls). It talks to the API through a same-origin proxy that holds the bearer key server-side.
+
+```sh
+make web-install   # install workspace deps (pnpm via Corepack; first run only)
+make up-app        # the API + workers it talks to
+make web-dev       # run the app at http://localhost:3000
+```
+
+Configure the app's API endpoint and key in `web/app/.env.local` (see `web/app/README.md`).
+
+### Observability
+
+The `obs` compose profile adds Prometheus, Grafana (with provisioned Engine and API dashboards), and Jaeger; the deployables expose Prometheus metrics on an admin listener and export OpenTelemetry traces that propagate through the queue.
+
+```sh
+make up-obs   # full stack + Prometheus/Grafana/Jaeger, with trace export on
+```
+
+See [docs/observability.md](docs/observability.md) for the dashboards, example alert rules, and how to correlate metrics → traces → logs.
 
 ### Migrations & integration tests
 
@@ -97,37 +119,45 @@ Each test gets its own throwaway database via `internal/store/storetest` (create
 
 ## Repository layout
 
-Directories marked *(planned)* are placeholders that gain content in later milestones.
-
 ```
-cmd/            deployables and tools (loadgen planned)
-  api/          ingest/inspection API server (dev mode; auth in M6)
-  worker/       step-execution worker (claim, execute, complete, dispatch duties)
-  ctl/          operator CLI: validate / submit / watch
-  migrate/      dev-time schema migration tool (make migrate-up/down/new)
+cmd/
+  api/          REST + WebSocket API server (auth, run/definition lifecycle, plugins, event streaming)
+  worker/       step-execution worker (claim, execute, complete, dispatch, reconcile, lease heartbeats)
+  ctl/          operator CLI: validate / submit / watch / keys / runs / plugins / cache / approvals / ...
+  migrate/      schema migration tool (make migrate-up/down/new)
 internal/
   version/      build version of agentloom binaries
   config/       env-driven configuration (defaults < env, fail-fast validation)
-  dag/          definition types, validation, graph algorithms, CEL
-  store/        Postgres persistence: migrations + migrator, storetest/ harness, sqlc repositories, WithTx, atomic run instantiation, guarded CAS transitions
+  dag/          definition types, validation, graph algorithms, CEL, input templating, dynamic-expansion contract
+  store/        Postgres persistence: migrations, sqlc repositories, WithTx, run instantiation, guarded CAS transitions
   queue/        Redis Streams: producer/consumer, leases, delayed delivery, queuetest/ chaos harness
-  engine/       claim/execute/complete pipeline, outbox dispatcher, reconciler, fencing
-  exec/         executor SPI v0, registry, test + dev-stub executors (middleware, journal planned)
-  llm/          provider interface: Anthropic, OpenAI, mock (planned)
-  tools/        tool SPI + built-ins (planned)
-  ratelimit/    Redis token buckets (planned)
-  cache/        response cache (planned)
-  cost/         pricing catalog, ledger, budget enforcement (planned)
-  contextmgr/   token counting, blackboard, assembly, compaction (planned)
-  validate/     validator SPI, deterministic + LLM-judge validators (planned)
-  api/          HTTP handlers + wire types (dev mode; auth + WS planned)
-  obs/          observability: log/ (slog JSON logger, context helpers); metrics, tracing (planned)
-web/            Next.js builder + dashboard (planned)
-deploy/         dockerfiles/ (compose app profile); helm/, terraform/ (planned)
-docs/           architecture.md + doc index; adr/, demos/, load/ (planned)
+  engine/       claim/execute/complete pipeline, executor middleware chain, outbox dispatcher, reconciler, fencing, control surface
+  exec/         executor SPI, registry, built-in executors, side-effect journal, per-step log capture
+  plugin/       shared plugin registry + manifest model (the five plugin kinds)
+  llm/          model-provider interface + Anthropic, OpenAI, and deterministic mock providers; model routing
+  tools/        tool SPI + built-ins (http_request, json_transform)
+  retrieval/    retriever SPI + Postgres full-text reference backend
+  validate/     validator SPI + deterministic validators and the llm_judge
+  jsonrepair/   deterministic JSON repair for structured-output modes
+  tokens/       token counting (tiktoken + provider estimators)
+  contextmgr/   context assembly and compaction (deterministic + summarization)
+  blackboard/   run-scoped shared memory store
+  cost/         pricing catalog, cost ledger, budget enforcement
+  ratelimit/    Redis token buckets (shared by API rate limiting and fleet resource limits)
+  limits/       resource-limit configuration
+  cache/        response cache + cache-key builder
+  notify/       outbound approval-notification webhooks (HMAC-signed)
+  event/        event taxonomy, typed payloads, and Redis pub/sub fan-out
+  api/          HTTP handlers, auth, wire types, WebSocket endpoints
+  obs/          observability: structured logging, Prometheus metrics, OpenTelemetry tracing
+web/
+  app/          Next.js visual DAG builder + live execution dashboard (App Router, TS strict)
+  lib/          pure TS packages: api-client, engine-client (typed event stream), graphdef (serialization boundary)
+deploy/         dockerfiles/ (compose app profile), observability/ (Grafana dashboards + Prometheus rules)
+docs/           architecture.md, adr/ (decision records), api.md, observability.md, schema/, demos/, examples/
 examples/       canonical workflow JSON fixtures (definitions/)
-test/           cross-cutting integration + chaos suites (smoke/ env checks today)
-api/            openapi.yaml — the REST API contract (planned)
+test/           cross-cutting integration and chaos suites
+api/            openapi.yaml — the REST API contract (drift-checked in CI)
 ```
 
 ## License

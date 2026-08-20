@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-07
-- **Ticket:** ROADMAP.md ticket 0.4
+- **Ticket:** ticket 0.4
 
 ## Context
 
@@ -14,8 +14,8 @@ and a worker crash mid-step must not take the API down, because crash recovery
 is the product's core differentiator, not an edge case.
 
 At the same time, this is a monorepo built by a small team with operational
-simplicity as a stated goal (see ROADMAP.md non-goals: "No fine-grained
-microservices"). Every additional deployable adds an RPC contract, a deploy
+simplicity as a stated goal (fine-grained microservices are an explicit
+non-goal). Every additional deployable adds an RPC contract, a deploy
 pipeline, an HA story, and a failure mode. The question is where to draw the
 line: how many long-running processes, and what lives inside them versus in
 shared code?

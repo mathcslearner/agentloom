@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-18
-- **Ticket:** ROADMAP.md ticket 16.1 (opens Milestone 16)
+- **Ticket:** ticket 16.1 (opens Milestone 16)
 
 <!--
 This ADR opens M16. Ticket 16.1 fixes the whole event-feed contract — the

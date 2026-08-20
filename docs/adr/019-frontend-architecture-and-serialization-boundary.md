@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-18
-- **Ticket:** ROADMAP.md ticket 17.2 (Milestone 17)
+- **Ticket:** ticket 17.2 (Milestone 17)
 
 <!--
 This ADR governs the M17 visual builder and the M18 dashboard. Ticket 17.2 fixes
